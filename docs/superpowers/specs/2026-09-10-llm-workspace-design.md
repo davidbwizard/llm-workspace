@@ -734,6 +734,41 @@ count it as corrupt.
 | Answer in-app | Yes | Only via provider-native path, else jump |
 | State accuracy | Exact | Exact **with hooks**; heuristic without |
 
+### 7.1a Transcripts are the source of truth; processes are enrichment
+
+**Most live sessions have no discoverable process.** Measured on the development
+machine while the app's own index was being built: **144 sessions had events in
+the last hour, while `pgrep -x claude` found 8 processes.** Among transcripts
+active in that hour, 10 carried `entrypoint: sdk-py` and 9 `entrypoint: cli`, so
+more than half were not CLI processes at all.
+
+The session writing this very design was verified live — its transcript modified
+two seconds before the check — with **no `claude` process holding its working
+directory**.
+
+Revision 6 implied that process discovery enumerates sessions. It does not, and
+a fleet view built on it would have displayed 8 sessions out of 144 while
+appearing to work.
+
+The correct model:
+
+- **Transcript activity determines which sessions exist.** A session is present
+  in the fleet because it is writing events, not because a process was found.
+- **Process discovery is enrichment.** It supplies pid, tty and host app, which
+  in turn enable the jump-to-terminal action of section 7.3.
+- **A session with no matching process is not absent, and not broken.** It is a
+  session whose host we cannot identify. It renders fully — graph, beats, alerts
+  — and loses only the actions that need a terminal to jump to.
+
+This makes the `unknown` match quality the common case rather than the failure
+case, and section 7.2's rule stands unchanged: precision actions are enabled only
+on `unique`.
+
+Note also that `pgrep -x claude` matches 8 processes where a loose match finds 19
+and Claude.app contributes 4 helpers. Any future attempt to widen process
+discovery must widen the pattern deliberately rather than assuming the exact-name
+match is complete.
+
 ### 7.2 Process matching is ambiguous — and must be treated as such
 
 Revision 1 claimed `process → tty → cwd → transcript file` "closes the loop." **It
