@@ -460,12 +460,34 @@ The flat envelope maps as follows, for files that use it:
 | `event_msg/agent_message` | `prose` |
 | `event_msg/task_complete` | `turn.completed` |
 | `response_item/function_call` | `tool.used` |
-| `response_item/custom_tool_call` | `tool.used` |
+| `response_item/custom_tool_call` | known, not mapped — see below |
 | `event_msg/task_started`, `token_count`, `agent_reasoning` | known, not mapped in v1 |
 
 Known top-level types that are not `session_meta`, `event_msg` or
 `response_item`: `turn_context`, `world_state`, `compacted`. Recognise them so
 they do not flood the `unparsed` channel; mapping them is deferred.
+
+**`custom_tool_call` must NOT be mapped: it is the request half of a call the
+`item_completed` envelope already reports as complete.** Measured across the
+corpus: 180 `item_completed` tool items and 158 `custom_tool_call` records, with
+all 338 confined to the same 11 files. Same file, same action:
+
+```
+item_completed/CommandExecution : ['/bin/zsh','-lc',"sed -n '1,240p' /Users/..."]
+response_item /custom_tool_call : const r = await tools.exec_command({"cmd":"sed -n '1,240p' /..."})
+```
+
+Mapping both double-counts every tool invocation in those sessions. Since
+section 8.2 sizes each graph node by tool count, that renders those agents at
+roughly twice their real size. The corpus contains zero `function_call` records,
+so that one stays mapped: it is the flat envelope's own tool record and shows no
+duplication.
+
+This was arrived at twice from the wrong direction — first by leaving
+`custom_tool_call` unmapped on the assumption it was redundant, then by mapping
+it on the assumption its absence hid half the tool activity. Only counting the
+corpus settled it. A test must pin the property directly: one file carrying both
+records for one command yields exactly one `tool.used`.
 
 **This was found only because section 6.2's fail-loudly rule was implemented.**
 The parser surfaced 47.5 percent unparsed rather than silently discarding it.
