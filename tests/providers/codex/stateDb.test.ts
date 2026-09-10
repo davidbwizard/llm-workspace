@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readCodexThreads, readSpawnEdges } from '../../../src/providers/codex/stateDb.ts';
+import { readCodexThreads, readSpawnEdges, lastStateDbError } from '../../../src/providers/codex/stateDb.ts';
 
 let dir: string, dbPath: string;
 
@@ -74,5 +74,46 @@ describe('readSpawnEdges', () => {
     d.exec('CREATE TABLE threads (id TEXT)');
     d.close();
     expect(readSpawnEdges(p)).toEqual([]);
+  });
+});
+
+// A missing file, a locked/corrupt database, an unrecognized schema, and a
+// bug in our own row mapping all collapse to the same null/[] from outside.
+// lastStateDbError is how a caller (namely `probe`) tells them apart without
+// either function's return contract changing.
+describe('lastStateDbError', () => {
+  it('is null after a successful read', () => {
+    readCodexThreads(dbPath);
+    expect(lastStateDbError()).toBeNull();
+  });
+
+  it('names the missing file when readCodexThreads fails that way', () => {
+    const p = join(dir, 'nope.sqlite');
+    readCodexThreads(p);
+    expect(lastStateDbError()).toContain(p);
+  });
+
+  it('reports a reason when the schema is unrecognized', () => {
+    const p = join(dir, 'wrong.sqlite');
+    const d = new Database(p);
+    d.exec('CREATE TABLE unrelated (x INTEGER)');
+    d.close();
+    readCodexThreads(p);
+    expect(lastStateDbError()).toBeTruthy();
+  });
+
+  it('is cleared by a subsequent successful call', () => {
+    readCodexThreads(join(dir, 'nope.sqlite'));
+    expect(lastStateDbError()).not.toBeNull();
+    readCodexThreads(dbPath);
+    expect(lastStateDbError()).toBeNull();
+  });
+
+  it('tracks readSpawnEdges independently — a threads success does not mask an edges failure', () => {
+    readCodexThreads(dbPath);
+    expect(lastStateDbError()).toBeNull();
+    const p = join(dir, 'nope.sqlite');
+    readSpawnEdges(p);
+    expect(lastStateDbError()).toContain(p);
   });
 });
