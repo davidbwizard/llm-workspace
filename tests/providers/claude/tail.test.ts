@@ -75,6 +75,38 @@ describe('readTail', () => {
     expect(r.lines[1]!.offset).toBe(firstLen);
   });
 
+  it('parks the offset behind a multi-byte character caught mid-write at EOF, then recovers on the next read', () => {
+    // The transcript is appended live, so a read can land while the writer is
+    // partway through emitting a multi-byte character -- the file genuinely
+    // ends mid-sequence, not just a chunk boundary. StringDecoder holds those
+    // trailing bytes internally rather than emitting them (or U+FFFD), so
+    // they never get folded into newOffset. Written as raw bytes (not a JS
+    // string) because half a UTF-8 sequence isn't representable as one.
+    const line1 = Buffer.from('{"a":1}\n', 'utf8');
+    const prefix = Buffer.from('{"b":"', 'utf8');
+    const suffix = Buffer.from('"}\n', 'utf8');
+    const emojiBytes = Buffer.from('🌟', 'utf8');
+    const firstHalf = emojiBytes.subarray(0, 2);
+    const secondHalf = emojiBytes.subarray(2);
+
+    writeFileSync(file, Buffer.concat([line1, prefix, firstHalf]));
+    const first = readTail(file, 0, null, 5);
+    expect(first.lines.map(l => l.text)).toEqual(['{"a":1}']);
+    // Not just short of the truncated character -- short of the whole
+    // in-progress line, since none of it is newline-terminated yet.
+    expect(first.newOffset).toBeLessThanOrEqual(line1.length + prefix.length);
+    expect(first.restarted).toBe(false);
+
+    appendFileSync(file, Buffer.concat([secondHalf, suffix]));
+    const second = readTail(file, first.newOffset, first.inode, 5);
+    expect(second.lines).toHaveLength(1);
+    const text = second.lines[0]!.text;
+    expect(text).toBe('{"b":"🌟"}');
+    expect(text).not.toContain('�');
+    expect(() => JSON.parse(text)).not.toThrow();
+    expect(second.newOffset).toBe(statSync(file).size);
+  });
+
   it('returns nothing for an empty file', () => {
     writeFileSync(file, '');
     const r = readTail(file, 0, null);
