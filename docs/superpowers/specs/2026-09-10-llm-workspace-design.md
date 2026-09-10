@@ -696,6 +696,18 @@ Gated on a `unique` match per §7.2.
 
 ## 8. Interface
 
+> **Icon system (David, 2026-09-10):** use **Phosphor Icons**
+> (https://phosphoricons.com/) throughout the UI. No emoji anywhere — not in
+> the interface, not in status markers, not in copy. Phosphor's weight range
+> (thin through fill/duotone) carries the state distinctions this app needs:
+> a running agent, a finished one, and one waiting on the user can differ by
+> weight and fill rather than by colour alone, which keeps the fleet view
+> legible for colour-vision differences and in dark mode. Verify the exact
+> React package name at install time.
+>
+> Terminal output (the Plan 1 CLI) has no icons available: use plain text
+> markers there — `PASS`, `FAIL`, `WARN`, `>` — never emoji.
+
 > **Process gate (David, 2026-09-10):** before any UI task is implemented,
 > show visual examples first and get a pick. This applies to the fleet view,
 > the agent graph, beat cards, and the Needs You rail — every screen in
