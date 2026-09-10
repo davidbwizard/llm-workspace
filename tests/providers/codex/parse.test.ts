@@ -142,6 +142,27 @@ describe('parseCodexLines (item_completed envelope)', () => {
     expect(p[0]!.payload).toMatchObject({ text: 'Reading the migration file for issues.', role: 'assistant' });
   });
 
+  // Pinned deliberately: measured across the full real corpus, EVERY
+  // AgentMessage content block uses "Text" (capital T) — 28,197 of them,
+  // zero exceptions — while UserMessage blocks use "text". A parser that
+  // narrowed itemText()'s match to a strict `type === 'text'` would drop
+  // the entire agent narration stream while reporting zero unparsed. This
+  // test exists so that regression fails loudly instead of silently.
+  it('extracts AgentMessage text from a "Text" (capital T) content block', () => {
+    const evs = parseCodexLines([{
+      text: JSON.stringify({
+        timestamp: 't', type: 'event_msg',
+        payload: { type: 'item_completed', item: {
+          type: 'AgentMessage', id: 'x', content: [{ type: 'Text', text: 'capital T block' }],
+        } },
+      }),
+      offset: 0,
+    }], '/r.jsonl');
+    const prose = evs.filter(e => e.kind === 'prose');
+    expect(prose).toHaveLength(1);
+    expect(prose[0]!.payload.text).toBe('capital T block');
+  });
+
   it('maps item_completed/CommandExecution to tool.used carrying the argv command', () => {
     const t = events.filter(e => e.kind === 'tool.used' && e.payload.name === 'shell');
     expect(t).toHaveLength(1);
@@ -180,9 +201,20 @@ describe('parseCodexLines (item_completed envelope)', () => {
     expect(u[0]!.payload).toMatchObject({ itemType: 'McpToolCall' });
   });
 
-  it('recognises custom_tool_call, custom_tool_call_output, thread_settings_applied, turn_context, world_state, and compacted without marking them unparsed', () => {
-    // These fixture lines cover exactly those six record types; none should
-    // contribute an unparsed event once past the item_completed line above.
+  it('maps response_item/custom_tool_call to tool.used — same shape as function_call, different type label', () => {
+    const t = events.filter(e => e.kind === 'tool.used' && e.payload.name === 'exec');
+    expect(t).toHaveLength(1);
+    expect(t[0]!.payload).toMatchObject({
+      target: 'const r = await tools.exec_command({"cmd":"grep -n TODO migration.sql"});',
+      toolUseId: 'call-1',
+    });
+  });
+
+  it('recognises custom_tool_call_output, thread_settings_applied, turn_context, world_state, and compacted without marking them unparsed', () => {
+    // These fixture lines cover exactly those five record types (plus
+    // custom_tool_call, mapped above); none should contribute an unparsed
+    // event beyond the one genuinely unknown item.type on the
+    // item_completed line.
     const unparsedReasons = events
       .filter(e => e.kind === 'unparsed')
       .map(e => e.payload.reason);

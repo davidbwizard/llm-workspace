@@ -16,7 +16,8 @@ const KNOWN_EVENT_MSG = new Set([
 ]);
 const KNOWN_RESPONSE_ITEM = new Set([
   'message', 'function_call', 'function_call_output', 'reasoning',
-  // Known but not mapped in v1 (spec §5.6).
+  // Spec §5.6: custom_tool_call is function_call under a different label
+  // (mapped below); custom_tool_call_output is known but not mapped in v1.
   'custom_tool_call', 'custom_tool_call_output',
 ]);
 
@@ -81,6 +82,12 @@ export function parseCodexLines(lines: TailLine[], sourceFile: string): Normaliz
         break;
       case 'CommandExecution': {
         const command = Array.isArray(item.command) ? item.command : null;
+        // item_completed carries no explicit tool-name field for this item
+        // type (unlike the flat envelope's function_call.name). Hardcoding
+        // 'shell' — rather than deriving something from the command itself
+        // — keeps tool-name aggregation consistent across both envelopes,
+        // since both represent the same underlying "run a shell command"
+        // action.
         out.push(base(line, 'tool.used', {
           name: 'shell', target: command ? command.join(' ') : null, command,
           isError: item.status === 'failed'
@@ -224,10 +231,24 @@ export function parseCodexLines(lines: TailLine[], sourceFile: string): Normaliz
           name: p.name ?? null, target: p.arguments ?? null, isError: false,
           toolUseId: p.call_id ?? null,
         }, ts, threadAgentId, p.call_id ?? null));
+      } else if (p.type === 'custom_tool_call') {
+        // Same shape as function_call under a different type label (the
+        // argument payload is in `input` rather than `arguments`). 158 of
+        // these in the real corpus against 180 function_call events —
+        // leaving this unmapped hid roughly half of all Codex tool
+        // activity, undersizing every node in the agent graph.
+        out.push(base(line, 'tool.used', {
+          name: p.name ?? null, target: p.input ?? null, isError: false,
+          toolUseId: p.call_id ?? null,
+        }, ts, threadAgentId, p.call_id ?? null));
       }
       // `message` is intentionally skipped: event_msg/user_message and
       // event_msg/agent_message already carry the human and assistant
       // text, so emitting this too would double-count every turn.
+      // `custom_tool_call_output` stays unmapped: neither envelope emits
+      // events for tool *results* (only for the calls), and mapping the
+      // result on one side only would skew tool-count comparisons the
+      // other way.
       continue;
     }
 
