@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-10
 **Status:** Approved design, pre-implementation
-**Revision:** 5 — scope-creep review; Codex hooks correction (see §15)
+**Revision:** 6 — mailbox deferred to phase 7; Codex hooks correction (see §15)
 **Location:** `/Users/davidbrabbins/Documents/David/llm-workspace`
 
 ---
@@ -65,13 +65,11 @@ accordingly. Accepted risk.
 - Keystroke injection into terminals this app does not own (§11)
 - File-level contention detection and launch-time worktree selection (§9.5 is v1;
   the rest is v2)
-- **Agent-to-agent messaging of any kind** — no mailbox, no cross-agent channel,
-  no human-gated message broker between Claude and Codex. This app shows you what
-  agents are doing; it does not give them a way to talk to each other. A separate
-  "Cross-Agent Mailbox" spec was reviewed and rejected for v1 (§15, revision 5).
-  Writing it down here because it is the most plausible thing to drift back in:
-  it shares this app's surface area — Electron, adapters, hooks, Claude + Codex —
-  while serving an entirely different purpose.
+- **Agent-to-agent messaging** — the cross-agent mailbox is **deferred, not
+  rejected**. It is planned work for this app, starting at phase 7 (§14.2). Out
+  of v1 because roughly two-thirds of it is v1's own foundation, so building it
+  first or alongside means building that foundation twice or debugging two
+  unproven systems together.
 
 ---
 
@@ -1059,7 +1057,12 @@ absence means writing that heuristic twice.
 
 ---
 
-## 14. v2 — farm sim
+## 14. Beyond v1
+
+Two committed follow-ons. Both are recorded here rather than left vague, because
+each imposes constraints on v1 that are cheap now and expensive later.
+
+### 14.1 Farm sim
 
 Each session is a farmer in a field. Interactions become field actions; a finished
 run triggers a harvest whose bounty reflects work done.
@@ -1084,6 +1087,67 @@ third renderer over existing data.
 
 munder-difflin's pixel office failed this test — the world *was* the interface, so
 finding anything meant navigating a game.
+
+### 14.2 Cross-agent mailbox — phase 7+
+
+A human-gated message channel between Claude and Codex sessions: an agent writes
+to its own outbox, something with the user's authority moves the file into the
+recipient's inbox, and the recipient is told it has mail at its next turn.
+
+**Why it comes after v1, not with it.** Most of it is already v1:
+
+| The mailbox needs | v1 section |
+|---|---|
+| Adapter interface, both providers | §4.1 |
+| Session / run / agent identity | §6.3 |
+| Hook helper, spool, transactional install | §5.3–5.4 |
+| File watcher and ingestion | §4.4, §6.6 |
+| Electron IPC hardening | §11.1 |
+| A UI that already understands both providers | Phases 3–5 |
+| Message schema, outbox/inbox, the gate, thread view | **new** |
+
+Only the last row is new work. Built standalone, everything above gets written
+twice and the two copies drift.
+
+**Design invariants to carry forward** (from the reviewed mailbox spec, kept
+because they are correct and cheap to honor):
+
+- **The on-disk mailbox is canonical; any broker is an accelerator over it.** If
+  the app is closed, the channel degrades to the hook path and still works. Test
+  every feature against: *does a session the app didn't spawn still work?*
+- **Pointer, never payload.** The hook injects "2 unread from `claude:main` —
+  *subject line*", never the body. The recipient fetches the body with its own
+  tool call, in-band and visible. Auto-injecting bodies would make every message
+  an indirect prompt injection with guaranteed delivery — this is the single most
+  important rule in the feature.
+- **Outbox-only write access, enforced by directory permissions**, not app logic.
+- **Path validation on refs at write time** — workspace-relative only; reject
+  absolute paths, `..`, and symlink escapes. Otherwise a message is a trusted
+  instruction to read `~/.ssh/id_ed25519`.
+- Hop ceiling, body size cap, per-adapter send rate limit.
+- Message bodies render as visibly untrusted content — no live links, no HTML,
+  never styled like app chrome (extends §11.2).
+
+**What v1 must not foreclose.** Three decisions would be expensive to reverse:
+
+1. **The hook helper needs a future read path.** §5.4 currently specifies it as
+   write-only. The mailbox needs a hook that *returns* data — `additionalContext`
+   on `SessionStart` / `UserPromptSubmit`, which both providers expose. Keep the
+   installed hook command indirected through a launcher so a second mode can be
+   added without rewriting installed configuration.
+2. **Hook installation must handle more than one hook set.** §5.3's manifest and
+   merge logic should key on *which feature owns which fragment*, not assume a
+   single "our hooks" blob.
+3. **Sessions need a stable human-facing alias.** The mailbox addresses
+   `claude:main`, `codex:art` — adapter instance ids, not provider conversation
+   ids, and not agent types, since two Claude sessions will exist. v1 should mint
+   and persist that alias alongside the session identity in §6.3.
+
+**Open question, deliberately unanswered.** Whether the approval gate earns its
+friction, or whether one-hop requests should auto-approve with the reply landing
+silently. Gated-by-default is the safe direction to be wrong in; the honest
+answer depends on how often the answer is actually "no", which is unknowable
+before the feature exists.
 
 ---
 
@@ -1151,14 +1215,22 @@ One run-model bug, two consistency/race issues, three cleanups.
 ### Revision 5 — scope-creep review
 
 A "Cross-Agent Mailbox" spec was put forward as "workspace spec — component 1".
-**Rejected for v1.** It is a different product: agent-to-agent messaging behind a
-human approval gate, write-path first, with its own data model (mailbox files,
-threads, hop ceilings) and its own six-phase build order. It reuses none of this
-spec's event log, identities, or state machine, and solves a problem that was
-never among the three this app exists for (§1). Adopting it would mean twelve
-phases before either v1 shipped. Recorded as an explicit non-goal in §2, because
-it shares enough surface area — Electron, adapters, hooks, both providers — to
-drift back in.
+
+**Deferred to phase 7, not rejected** (§14.2). The first reading of it here was
+that it constituted a separate product; on review that was wrong. It is a
+different *layer* of this app, and roughly two-thirds of what it specifies —
+adapter interface, session identity, hook helper, file watcher, Electron
+hardening, a two-provider UI — is v1's foundation restated in different words.
+Its "adapter interface" section is this spec's §4.1; its "adopting a session you
+didn't spawn" is §7.2 plus the hook handshake.
+
+Out of v1 for sequencing reasons only: nothing would be usable until much later,
+and the mailbox is the highest-risk component in the system — a message from one
+agent to another is an indirect prompt injection with guaranteed delivery.
+Building that on a foundation that has never run compounds two unproven things.
+
+§14.2 records its design invariants and, more importantly, the three v1 decisions
+that would otherwise foreclose it.
 
 **Two factual corrections it did surface, both verified and applied:**
 
@@ -1222,4 +1294,4 @@ insufficient.
 | Cross-provider | Worktree contention badge |
 | Launching | Probed capabilities; multi-location executable discovery |
 | Excluded from v1 | Search, deep history, keystroke injection, AI summarization, file-level contention |
-| v2 | Farm sim over the same event log |
+| Beyond v1 | Farm sim (§14.1) and cross-agent mailbox from phase 7 (§14.2) |
