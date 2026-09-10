@@ -4,10 +4,10 @@ import type { NormalizedEvent } from '../core/types.ts';
 const INSERT = `
 INSERT INTO events
   (provider, session_id, run_id, agent_id, ts, kind, payload, native_id,
-   source_file, source_offset, content_hash, parser_version)
+   source_file, source_offset, content_hash, sub_index, parser_version)
 VALUES
   (@provider, @sessionId, @runId, @agentId, @ts, @kind, @payload, @nativeId,
-   @sourceFile, @sourceOffset, @contentHash, @parserVersion)`;
+   @sourceFile, @sourceOffset, @contentHash, @subIndex, @parserVersion)`;
 
 /** Insert events, skipping any whose identity triple is already present.
  *  Spec §6.1: watchers fire redundantly, so ingestion must be idempotent.

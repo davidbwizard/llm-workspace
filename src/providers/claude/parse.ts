@@ -43,15 +43,21 @@ export function parseClaudeLines(lines: TailLine[], sourceFile: string): Normali
   let sessionId = 'unknown';
   let sessionStartEmitted = false;
 
+  // sub_index disambiguates sibling events emitted from the same source
+  // line (same offset and content hash) — see schema.ts events_identity.
+  // `base` is given the current ordinal and bumps it for the next call.
+  let subIndex = 0;
   const base = (line: TailLine, kind: NormalizedEvent['kind'],
                 payload: Record<string, unknown>, agentId: string | null,
                 ts: string, nativeId: string | null): NormalizedEvent => ({
     provider: 'claude', sessionId, runId: null, agentId, ts, kind, payload,
     nativeId, sourceFile, sourceOffset: line.offset,
-    contentHash: hashRecord(line.text), parserVersion: CLAUDE_PARSER_VERSION,
+    contentHash: hashRecord(line.text), subIndex: subIndex++,
+    parserVersion: CLAUDE_PARSER_VERSION,
   });
 
   for (const line of lines) {
+    subIndex = 0;
     let rec: any;
     try {
       rec = JSON.parse(line.text);

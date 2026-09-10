@@ -33,10 +33,16 @@ CREATE TABLE IF NOT EXISTS events (
   source_file TEXT NOT NULL,
   source_offset INTEGER NOT NULL,
   content_hash TEXT NOT NULL,
+  -- One source record can emit several events (e.g. an assistant record
+  -- emits prose, one tool.used per tool block, and turn.completed), all
+  -- sharing source_offset and content_hash. sub_index is the event's
+  -- ordinal within that record's emission, assigned deterministically by
+  -- the parser, so it disambiguates siblings without weakening dedup.
+  sub_index INTEGER NOT NULL,
   parser_version INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS events_identity
-  ON events(source_file, source_offset, content_hash);
+  ON events(source_file, source_offset, content_hash, sub_index);
 CREATE INDEX IF NOT EXISTS events_session_ts ON events(session_id, ts);
 CREATE INDEX IF NOT EXISTS events_source ON events(source_file);
 

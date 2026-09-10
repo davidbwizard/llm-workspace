@@ -98,4 +98,23 @@ describe('parseClaudeLines', () => {
     expect(evs).toHaveLength(1);
     expect(evs[0]!.kind).toBe('unparsed');
   });
+
+  it('emits 8 events from basic.jsonl, each with a distinct (sourceOffset, subIndex) pair', () => {
+    expect(events).toHaveLength(8);
+    const pairs = events.map(e => `${e.sourceOffset}:${e.subIndex}`);
+    expect(new Set(pairs).size).toBe(pairs.length);
+  });
+
+  it('restarts subIndex at 0 for each new source line', () => {
+    const byOffset = new Map<number, number[]>();
+    for (const e of events) {
+      const list = byOffset.get(e.sourceOffset) ?? [];
+      list.push(e.subIndex);
+      byOffset.set(e.sourceOffset, list);
+    }
+    for (const subIndices of byOffset.values()) {
+      expect(subIndices[0]).toBe(0);
+      expect(subIndices).toEqual(subIndices.map((_, i) => i));
+    }
+  });
 });

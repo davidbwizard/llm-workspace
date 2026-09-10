@@ -3,12 +3,12 @@ import { openDb } from '../../src/store/db.ts';
 import { insertEvents, countEvents, reparseFile, getIngestState } from '../../src/store/ingest.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 
-function ev(offset: number, kind: NormalizedEvent['kind'] = 'prose'): NormalizedEvent {
+function ev(offset: number, kind: NormalizedEvent['kind'] = 'prose', subIndex = 0): NormalizedEvent {
   return {
     provider: 'claude', sessionId: 's1', runId: null, agentId: null,
     ts: '2026-09-10T00:00:00Z', kind, payload: {}, nativeId: null,
     sourceFile: '/f.jsonl', sourceOffset: offset, contentHash: 'h' + offset,
-    parserVersion: 1,
+    subIndex, parserVersion: 1,
   };
 }
 
@@ -62,6 +62,16 @@ describe('reparseFile', () => {
     });
     const st = getIngestState(db, '/f.jsonl');
     expect(st).toMatchObject({ inode: 42, size: 500, bytes_consumed: 500, parser_version: 1 });
+  });
+
+  it('stores sibling events from one line without throwing', () => {
+    const db = openDb(':memory:');
+    const siblings = [ev(0, 'prose', 0), ev(0, 'tool.used', 1), ev(0, 'turn.completed', 2)];
+    expect(() => reparseFile(db, '/f.jsonl', () => siblings, {
+      inode: 1, size: 100, mtime: 'm', bytesConsumed: 100,
+      parserVersion: 1, providerCliVersion: null,
+    })).not.toThrow();
+    expect(countEvents(db, '/f.jsonl')).toBe(siblings.length);
   });
 
   it('rolls back entirely if the parser throws', () => {

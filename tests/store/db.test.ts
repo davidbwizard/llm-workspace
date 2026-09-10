@@ -16,13 +16,13 @@ describe('openDb', () => {
     const db = openDb(':memory:');
     const ins = db.prepare(`insert into events
       (provider, session_id, run_id, agent_id, ts, kind, payload, native_id,
-       source_file, source_offset, content_hash, parser_version)
+       source_file, source_offset, content_hash, sub_index, parser_version)
       values (@provider,@session_id,@run_id,@agent_id,@ts,@kind,@payload,
-              @native_id,@source_file,@source_offset,@content_hash,@parser_version)`);
+              @native_id,@source_file,@source_offset,@content_hash,@sub_index,@parser_version)`);
     const row = {
       provider: 'claude', session_id: 's', run_id: null, agent_id: null,
       ts: 't', kind: 'prose', payload: '{}', native_id: null,
-      source_file: '/f', source_offset: 0, content_hash: 'h', parser_version: 1,
+      source_file: '/f', source_offset: 0, content_hash: 'h', sub_index: 0, parser_version: 1,
     };
     ins.run(row);
     expect(() => ins.run(row)).toThrow(/UNIQUE/i);

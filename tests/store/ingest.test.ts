@@ -3,12 +3,12 @@ import { openDb } from '../../src/store/db.ts';
 import { insertEvents, countEvents } from '../../src/store/ingest.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 
-function ev(offset: number, hash = 'h' + offset): NormalizedEvent {
+function ev(offset: number, hash = 'h' + offset, subIndex = 0): NormalizedEvent {
   return {
     provider: 'claude', sessionId: 's1', runId: null, agentId: null,
     ts: '2026-09-10T00:00:00Z', kind: 'prose', payload: { text: 'hi' },
     nativeId: null, sourceFile: '/f.jsonl', sourceOffset: offset,
-    contentHash: hash, parserVersion: 1,
+    contentHash: hash, subIndex, parserVersion: 1,
   };
 }
 
@@ -44,5 +44,20 @@ describe('insertEvents', () => {
     const db = openDb(':memory:');
     insertEvents(db, [ev(0), { ...ev(0), sourceFile: '/other.jsonl' }]);
     expect(countEvents(db, '/f.jsonl')).toBe(1);
+  });
+
+  it('persists sibling events from one source line — same offset and hash, differing sub_index', () => {
+    const db = openDb(':memory:');
+    const siblings = [ev(0, 'h0', 0), ev(0, 'h0', 1), ev(0, 'h0', 2)];
+    expect(insertEvents(db, siblings)).toBe(siblings.length);
+    expect(countEvents(db)).toBe(siblings.length);
+  });
+
+  it('is idempotent for sibling events — re-inserting the same set writes nothing', () => {
+    const db = openDb(':memory:');
+    const siblings = [ev(0, 'h0', 0), ev(0, 'h0', 1), ev(0, 'h0', 2)];
+    insertEvents(db, siblings);
+    expect(insertEvents(db, siblings)).toBe(0);
+    expect(countEvents(db)).toBe(siblings.length);
   });
 });

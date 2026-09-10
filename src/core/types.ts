@@ -30,5 +30,6 @@ export interface NormalizedEvent {
   sourceFile: string;
   sourceOffset: number;       // byte offset of the record's first byte
   contentHash: string;
+  subIndex: number;           // ordinal within the source record's events, from 0
   parserVersion: number;
 }
