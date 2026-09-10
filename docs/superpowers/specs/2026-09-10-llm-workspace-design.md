@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-10
 **Status:** Approved design, pre-implementation
-**Revision:** 4 — third review round applied (see §15)
+**Revision:** 5 — scope-creep review; Codex hooks correction (see §15)
 **Location:** `/Users/davidbrabbins/Documents/David/llm-workspace`
 
 ---
@@ -65,6 +65,13 @@ accordingly. Accepted risk.
 - Keystroke injection into terminals this app does not own (§11)
 - File-level contention detection and launch-time worktree selection (§9.5 is v1;
   the rest is v2)
+- **Agent-to-agent messaging of any kind** — no mailbox, no cross-agent channel,
+  no human-gated message broker between Claude and Codex. This app shows you what
+  agents are doing; it does not give them a way to talk to each other. A separate
+  "Cross-Agent Mailbox" spec was reviewed and rejected for v1 (§15, revision 5).
+  Writing it down here because it is the most plausible thing to drift back in:
+  it shares this app's surface area — Electron, adapters, hooks, Claude + Codex —
+  while serving an entirely different purpose.
 
 ---
 
@@ -189,10 +196,14 @@ disabled **with its `reason` shown** — never silently missing.
 
 | | Claude | Codex |
 |---|---|---|
-| Observation, exact | Lifecycle hooks (§5) | Transcript `session_meta` |
-| Observation, narrative | Transcripts | Transcripts |
+| Observation, exact | Lifecycle hooks — 33 events (§5.1) | Lifecycle hooks — narrower set (§5.5) |
+| Observation, indexed | — | `state_5.sqlite` / `thread_history_1.sqlite`, read-only (§5.5) |
+| Observation, narrative | Transcripts | Rollout transcripts |
 | Control | PTY → tmux | PTY → tmux |
 | Control, native | Remote Control (§10.4, unverified) | app-server (§4.3, unverified) |
+
+Both providers supply hooks, which makes the adapter boundary a genuine
+abstraction rather than a Claude-shaped interface with a Codex shim behind it.
 
 ### 4.3 Codex native control — deliberately deferred
 
@@ -365,8 +376,46 @@ never treat its absence as a parse failure — reconcile later by `prompt_id`.
 
 ### 5.5 Codex signals
 
-Codex has no hook system. Its `session_meta` carries structure directly —
-verified on disk:
+**Correction (revision 5): Codex has a hook system.** Revisions 2–4 said it did
+not. Verified: `~/.codex/hooks.json` exists and already carries user-configured
+`PreToolUse` hooks with matchers, timeouts, and `statusMessage`; the binary
+contains `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+`additionalContext`, and `permissionDecision`. The shape closely mirrors
+Claude's, which makes the §4.1 adapter boundary cleaner rather than harder — both
+providers supply exact signals, and the normalized event model absorbs both.
+
+Codex's hook set is narrower than Claude's 33, so its degraded-mode surface is
+larger: there is no Codex equivalent of `PermissionRequest` or `SubagentStop`
+found so far. Probe per event and fall back per §9.3.
+
+**Codex also maintains its own SQLite state**, which is a better observation
+source than globbing rollout files:
+
+| Database | Tables of interest |
+|---|---|
+| `~/.codex/state_5.sqlite` | `threads` (297 rows here), `thread_spawn_edges`, `thread_sections`, `projects` |
+| `~/.codex/thread_history_1.sqlite` | `thread_turns`, `thread_items`, `thread_realtime_items` |
+
+`threads` carries `id`, **`rollout_path`**, `cwd`, `git_branch`, `git_sha`,
+`git_origin_url`, `source` (e.g. `vscode`), `cli_version`, `model`,
+`agent_nickname`, `agent_role`, `thread_source`, `tokens_used`, `archived`. That
+answers discovery, host attribution, and §9.5 worktree contention in one query,
+and hands over the transcript path instead of making us derive it.
+
+`thread_spawn_edges (parent_thread_id, child_thread_id, status)` is the spawn
+tree as a first-class table. **It is empty on this machine**, while August
+rollout files do carry `parent_thread_id` in `session_meta` — so both paths are
+live and the adapter reads both, preferring the table when populated.
+
+**Treat these databases the way §4.3 treats app-server: an accelerator, never a
+dependency.** Open strictly read-only (`mode=ro`), never write, tolerate WAL and
+locking, and fall back to rollout-file parsing when the schema is unrecognized.
+The `state_5` / `thread_history_1` names and `_sqlx_migrations` tables say
+plainly that this schema is versioned and will change — §6.2's loud-failure rule
+applies unchanged.
+
+The rollout `session_meta` remains the always-available fallback — verified on
+disk:
 
 ```json
 { "session_id": "01a043c5-…", "id": "01a043c7-…",
@@ -1098,6 +1147,34 @@ One run-model bug, two consistency/race issues, three cleanups.
 
 **Adopted from the full hook enumeration:** `PostCompact` (for #1) and
 `PermissionDenied` (a correlated resolution signal for #3).
+
+### Revision 5 — scope-creep review
+
+A "Cross-Agent Mailbox" spec was put forward as "workspace spec — component 1".
+**Rejected for v1.** It is a different product: agent-to-agent messaging behind a
+human approval gate, write-path first, with its own data model (mailbox files,
+threads, hop ceilings) and its own six-phase build order. It reuses none of this
+spec's event log, identities, or state machine, and solves a problem that was
+never among the three this app exists for (§1). Adopting it would mean twelve
+phases before either v1 shipped. Recorded as an explicit non-goal in §2, because
+it shares enough surface area — Electron, adapters, hooks, both providers — to
+drift back in.
+
+**Two factual corrections it did surface, both verified and applied:**
+
+| Change | Evidence |
+|---|---|
+| **Codex has a hook system** (§4.2, §5.5). Revisions 2–4 said it did not | `~/.codex/hooks.json` holds user-configured `PreToolUse` hooks today; binary contains `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `additionalContext`, `permissionDecision` |
+| **Codex maintains a SQLite session index** (§5.5), a better discovery source than globbing rollout files | `state_5.sqlite` → `threads` (297 rows, with `rollout_path`, `cwd`, `git_branch`, `source`), `thread_spawn_edges`; `thread_history_1.sqlite` → `thread_turns`, `thread_items` |
+
+Both are read-only accelerators with rollout-file fallback, per §4.3's pattern.
+`thread_spawn_edges` is empty on this machine while `parent_thread_id` in
+`session_meta` is populated, so the adapter reads both.
+
+*Claims in that spec left unverified and therefore not adopted:* `codex
+mcp-server` exposing `codex()`, `codex-reply(threadId)`, and hook-level
+`additionalContext` injection semantics. These belong to control and injection
+paths this app does not have.
 
 **Available but deliberately not adopted.** The binary exposes 33 hook events,
 including `PostToolUseFailure`, `PostToolBatch`, `UserPromptExpansion`,
