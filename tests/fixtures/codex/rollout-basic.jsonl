@@ -1,0 +1,7 @@
+{"timestamp":"2026-09-08T23:33:43.457Z","type":"session_meta","payload":{"session_id":"01a0835e-cda1","id":"01a0835e-cda1","timestamp":"2026-09-08T23:33:43.457Z","cwd":"/repo","originator":"Codex Desktop","cli_version":"0.152.1","model_provider":"openai"}}
+{"timestamp":"2026-09-08T23:33:44.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1","started_at":1788904306}}
+{"timestamp":"2026-09-08T23:33:45.000Z","type":"event_msg","payload":{"type":"user_message","message":"Review this change for security vulnerabilities."}}
+{"timestamp":"2026-09-08T23:33:46.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Tracing user-controlled inputs to sinks."}}
+{"timestamp":"2026-09-08T23:33:47.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":\"grep -r eval\"}","call_id":"c1"}}
+{"timestamp":"2026-09-08T23:33:48.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":50,"total_tokens":150}}}}
+{"timestamp":"2026-09-08T23:33:49.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","started_at":1788904306,"completed_at":1788904423}}
