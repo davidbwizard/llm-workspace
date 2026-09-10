@@ -34,7 +34,7 @@
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `EventKind`, `NormalizedEvent`, `Provider`, `PARSER_VERSION` — used by every later task.
+- Produces: `EventKind`, `NormalizedEvent`, `Provider`, `isEventKind`, `EVENT_KINDS` — used by every later task. (Parser versions are per-provider constants defined in Tasks 7 and 9, not here.)
 
 - [ ] **Step 1: Create the project files**
 
@@ -494,8 +494,12 @@ Expected: FAIL — cannot resolve `../../src/store/ingest.ts`
 import type { Db } from './db.ts';
 import type { NormalizedEvent } from '../core/types.ts';
 
+// NOT `INSERT OR IGNORE`: that suppresses EVERY constraint failure, not just
+// the UNIQUE identity conflict. A malformed event (null session_id from a
+// parser bug) would vanish silently — exactly the failure spec §6.2 forbids.
+// Duplicates are swallowed by error code in insertEvents instead.
 const INSERT = `
-INSERT OR IGNORE INTO events
+INSERT INTO events
   (provider, session_id, run_id, agent_id, ts, kind, payload, native_id,
    source_file, source_offset, content_hash, parser_version)
 VALUES
@@ -511,8 +515,15 @@ export function insertEvents(db: Db, events: NormalizedEvent[]): number {
   const run = db.transaction((batch: NormalizedEvent[]) => {
     let written = 0;
     for (const e of batch) {
-      const info = stmt.run({ ...e, payload: JSON.stringify(e.payload) });
-      written += info.changes;
+      try {
+        const info = stmt.run({ ...e, payload: JSON.stringify(e.payload) });
+        written += info.changes;
+      } catch (err) {
+        // Only a duplicate identity triple is expected and benign — that is
+        // what makes redundant watcher fires safe. Anything else (NOT NULL,
+        // type failure) is a real defect and must abort the batch.
+        if ((err as { code?: string }).code !== 'SQLITE_CONSTRAINT_UNIQUE') throw err;
+      }
     }
     return written;
   });
