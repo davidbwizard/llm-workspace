@@ -84,29 +84,55 @@ function liveClaudeProcesses(): LiveProcess[] {
   }));
 }
 
-/** Candidate sessions for matching: every distinct session_id the store has
- *  seen a session.started event for, with the cwd that event recorded.
- *  Requires `ingest` to have run at least once — this reads whatever is
- *  already in the store, it does not ingest on the caller's behalf.
+/** A session with no event newer than this is treated as ended, not a live
+ *  candidate for cwd matching. Without this, `sessions` matches a running
+ *  process against every session that ever used that directory -- on a
+ *  machine with months of history that is 6 to 199 "candidates" for every
+ *  single live process, which is ambiguity in name only: it is not a
+ *  genuine collision, just the caller feeding classifyMatch a candidate
+ *  pool it was never meant to see. 30 minutes is generous enough that an
+ *  idle-but-still-open session is not falsely dropped. */
+const SESSION_RECENCY_WINDOW_MS = 30 * 60 * 1000;
+
+/** Candidate sessions for matching: every session_id whose most recent
+ *  event (of any kind, not just session.started) falls within
+ *  SESSION_RECENCY_WINDOW_MS of now, paired with the cwd its session.started
+ *  event recorded. Requires `ingest` to have run at least once — this reads
+ *  whatever is already in the store, it does not ingest on the caller's
+ *  behalf.
  *
- *  Ordered most-recent-first (by row id, a proxy for ingestion/event order)
- *  so that when classifyMatch's candidate lists get truncated for display,
- *  the entries kept are the ones most likely to still be live — on a
- *  machine with months of history, a cwd can accumulate hundreds of past
- *  sessions, and "ambiguous" is correct but unreadable without this. */
+ *  Ordered most-recent-first, so that when classifyMatch's candidate lists
+ *  still get truncated for display (a genuine, still-live collision can
+ *  itself run to several entries), the ones shown are the most likely to
+ *  matter. */
 function sessionRefs(db: Db): SessionRef[] {
-  const rows = db.prepare(
+  const startedRows = db.prepare(
     `SELECT session_id as sessionId, payload FROM events
      WHERE kind = 'session.started' ORDER BY id DESC`,
   ).all() as { sessionId: string; payload: string }[];
-  const byId = new Map<string, string | null>();
-  for (const r of rows) {
-    if (byId.has(r.sessionId)) continue; // keep the most recent row per session
+  const cwdBySession = new Map<string, string | null>();
+  for (const r of startedRows) {
+    if (cwdBySession.has(r.sessionId)) continue; // keep the most recent row per session
     let cwd: string | null = null;
     try { cwd = JSON.parse(r.payload)?.cwd ?? null; } catch { cwd = null; }
-    byId.set(r.sessionId, cwd);
+    cwdBySession.set(r.sessionId, cwd);
   }
-  return [...byId.entries()].map(([sessionId, cwd]) => ({ sessionId, cwd }));
+
+  const lastSeenRows = db.prepare(
+    `SELECT session_id as sessionId, MAX(ts) as lastTs FROM events
+     GROUP BY session_id ORDER BY lastTs DESC`,
+  ).all() as { sessionId: string; lastTs: string }[];
+
+  const cutoff = Date.now() - SESSION_RECENCY_WINDOW_MS;
+  const out: SessionRef[] = [];
+  for (const row of lastSeenRows) {
+    const cwd = cwdBySession.get(row.sessionId);
+    if (cwd === undefined) continue; // no session.started event -- cwd unknown, cannot match on it
+    const lastMs = Date.parse(row.lastTs);
+    if (!Number.isFinite(lastMs) || lastMs < cutoff) continue; // ended, or timestamp unparseable
+    out.push({ sessionId: row.sessionId, cwd });
+  }
+  return out;
 }
 
 const MAX_CANDIDATES_SHOWN = 5;
@@ -161,7 +187,7 @@ if (cmd === 'probe') {
     }
   }
   if (sessions.length === 0) {
-    console.log('\nWARN  no sessions recorded in the store yet -- run `ingest` first so cwd matching has something to match against');
+    console.log('\nWARN  no sessions active in the last 30 minutes were found in the store -- run `ingest` first if the store is empty, or none of the matching sessions has had activity that recently');
   }
 } else if (cmd === 'ingest') {
   const db = open();
