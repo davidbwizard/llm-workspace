@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-10
 **Status:** Approved design, pre-implementation
-**Revision:** 2 — incorporates external review (see §15)
+**Revision:** 3 — second review round applied (see §15)
 **Location:** `/Users/davidbrabbins/Documents/David/llm-workspace`
 
 ---
@@ -135,27 +135,55 @@ only normalized events.
 
 ### 4.1 Provider adapters
 
+Capabilities exist at **two levels**. Provider-level answers "could this ever
+work here"; target-level answers "can I do it to *this* session, right now".
+Revision 2 had only the first, which is too coarse: Claude can simultaneously
+have one attached session that accepts input, one observed session with an exact
+hook mapping, and a third whose terminal match is ambiguous.
+
 ```ts
 interface ProviderAdapter {
   id: 'claude' | 'codex';
-  capabilities(): Capabilities;      // probed at startup, not assumed
+
+  // Environment-level: probed at startup. "Is tmux present, is the hook
+  // helper installed and active, is a native protocol reachable."
+  providerCapabilities(): ProviderCapabilities;
 
   // OBSERVATION
   discoverSessions(): Promise<SessionRef[]>;
   watch(onEvent: (e: NormalizedEvent) => void): Disposable;
 
-  // CONTROL — each optional; absence is a capability, not an error
-  launch?(opts: LaunchOpts): Promise<RunHandle>;
-  sendInput?(run: RunHandle, text: string): Promise<void>;
-  answerPermission?(run: RunHandle, decision: Decision): Promise<void>;
-  interrupt?(run: RunHandle): Promise<void>;
+  // Per-target: derived per live session/run from how it was discovered,
+  // whether hooks mapped it, and whether its process match is unique.
+  effectiveCapabilities(target: TargetRef): EffectiveCapabilities;
+
+  // CONTROL — target is a normalized identity, NOT a process handle.
+  // The adapter chooses the transport: owned PTY, native protocol, or none.
+  sendInput?(target: TargetRef, text: string): Promise<void>;
+  answerPermission?(target: TargetRef, d: Decision): Promise<void>;
+  interrupt?(target: TargetRef): Promise<void>;
+  launch?(opts: LaunchOpts): Promise<TargetRef>;
+}
+
+type TargetRef = { sessionId: string; runId?: string };
+
+interface EffectiveCapabilities {
+  canSendInput: boolean;
+  canAnswerPermission: boolean;
+  canInterrupt: boolean;
+  canJumpToTerminal: boolean;
+  reason?: string;          // why not — shown in the UI, never hidden
 }
 ```
 
-`capabilities()` is **probed**, never hardcoded: is `tmux` present, is a hook
-helper installed, is a native control protocol reachable. The UI renders from
-capabilities — a button that cannot work is not shown, or is shown disabled with
-the reason.
+Targeting identity rather than a `RunHandle` matters for the case revision 2
+could not express: an **observed** session reachable through a native protocol
+has no app-owned process handle, yet is still controllable. Conversely an
+attached run whose tmux session vanished has a handle that no longer works.
+Capability is a property of the target now, not of how it was created.
+
+The UI renders from `effectiveCapabilities`. A button that cannot work is
+disabled **with its `reason` shown** — never silently missing.
 
 ### 4.2 Per-provider plan
 
@@ -241,28 +269,63 @@ Sparse lifecycle only:
 
 | Hook | Gives us |
 |---|---|
+| `SessionStart` | Exact run boundaries with source: `startup` / `resume` / `clear` / `fork` / `compact` (§6.3) |
 | `UserPromptSubmit` | Exact beat boundaries (§8.3) — no heuristic needed |
 | `PermissionRequest` | Blocked, the instant it happens, with the request text |
-| `Notification` | `permission_prompt` / `idle_prompt` / `agent_needs_input` |
+| `Notification` | `permission_prompt` / `idle_prompt` / `agent_needs_input` — see §9.3, these do **not** mean the same thing |
+| `Stop` | Turn finished. Fires once per turn, so `working` → `idle` is exact |
+| `StopFailure` | Turn ended in an API error. **Not** run death (§9.2) |
 | `SubagentStart` / `SubagentStop` | Exact graph node lifecycle |
-| `SessionEnd` / `StopFailure` | Run end, and whether it failed |
+| `SessionEnd` | Run end |
 | `CwdChanged` | Keeps worktree contention (§9.5) correct mid-session |
+| `PreToolUse`, matcher `AskUserQuestion\|ExitPlanMode` | Exact "answer this question" / "approve this plan" |
+| `Elicitation` / `ElicitationResult` | An MCP server is showing a form — definitionally Needs You |
+
+All of the above are verified present in `claude` 2.1.267, along with the
+`Notification` subtypes and payload fields `session_id`, `transcript_path`,
+`prompt_id`, `hook_event_name`, `permission_mode`, `cwd`.
+
+**On `PreToolUse` cost:** matcher filtering happens *before* the helper is
+spawned, so a matcher of `AskUserQuestion|ExitPlanMode` does not run the helper
+for every `Bash`, `Edit`, or `Read` call. `"AskUserQuestion"` and
+`"ExitPlanMode"` are verified tool names. Without this, the only signal for "the
+agent asked you a multiple-choice question" would be transcript inference.
+
+`Elicitation` is lowest priority of the set — it only fires for MCP servers that
+elicit — but it is cheap and exactly on-target for the rail.
 
 **`MessageDisplay` is deliberately not used.** It fires during streaming; one
 subprocess per token-flush is unacceptable churn, and transcript watching already
 renders prose well. Hooks are for status, not narration.
 
-### 5.3 Hooks are opt-in
+### 5.3 Hooks are opt-in, and installation is transactional
 
-Installing hooks modifies `~/.claude/settings.json` — the user's own
-configuration. Presented as **"Enable enhanced Claude integration"** with an
-explicit diff of what will be added and a one-click uninstall.
+Installing hooks modifies `~/.claude/settings.json` — a file the user already
+uses (`Notification` and `PreToolUse` are configured today). This is the app's
+only write into provider configuration, so it gets treated like a database
+migration, not a file edit.
 
-Without it the app runs in **degraded mode** on §9.3 heuristics, and says so in
-the UI rather than silently being less accurate.
+Presented as **"Enable enhanced Claude integration"** with an explicit diff and
+one-click uninstall. Without it, the app runs in **degraded mode** on §9.3
+heuristics and says so in the UI rather than being quietly less accurate.
 
-The user already runs `Notification` and `PreToolUse` hooks, so the installer
-must **merge** rather than overwrite, and must never remove a hook it did not add.
+Requirements:
+
+1. **Re-read before write.** On Apply, re-read `settings.json` and confirm it
+   still matches the version the displayed diff was computed against. If another
+   tool changed it in between, **recompute and re-show the diff** — never
+   overwrite the newer file.
+2. **Atomic replacement.** Write a temp file in the same directory, `fsync`,
+   then rename over the original. Never truncate-and-write in place.
+3. **Ownership manifest.** A sidecar records the exact hook fragments this app
+   installed. Uninstall removes only structural matches to that manifest.
+   Anything the user edited by hand is left alone and reported.
+4. **Merge, never replace.** Existing hooks are preserved. The app never removes
+   a hook it did not add.
+5. **Configured ≠ active.** Managed settings can disable user-level hooks —
+   `allowManagedHooksOnly` is present in the binary. After installing, the app
+   must verify signals actually arrive before claiming enhanced mode, and fall
+   back to degraded mode with an explanation if they do not.
 
 ### 5.4 The hook helper
 
@@ -271,9 +334,32 @@ the app watches. Constraints, because it runs inside the user's agent sessions:
 
 - Exits in single-digit milliseconds; never blocks the agent
 - Writes only; never reads app state, never prompts
-- Records originating PID and TTY when available, giving a **real** process ↔
-  session mapping rather than the §7.2 heuristic
+- Stamps every invocation with a **unique event id**, so ingestion is idempotent
+  (§6.1) and a re-read of the spool cannot duplicate events
 - If the app is not running, lines spool to disk and are ingested on next launch
+- The spool is **capped and rotated**. Six months with the app closed must not
+  turn it into an accidental log archive
+
+**What hooks make exact — and what they do not.**
+
+Exact: **session ↔ transcript**. Payloads carry `session_id` and
+`transcript_path`, plus `prompt_id`, which correlates every event belonging to
+one user prompt. Capture `prompt_id` everywhere it appears; it is the join key
+that makes beats reconstructable without inference.
+
+*Not* exact: **process identity.** Revision 2 claimed the helper could record the
+originating TTY and make process ↔ session "unique by construction." Withdrawn —
+command hooks on macOS and Linux run in their own session without a controlling
+terminal, so the helper cannot simply read its own TTY.
+
+Instead: record cheap ancestry (the helper's parent identity) and resolve it
+outside the hook where possible. **When it cannot be proven, the match stays
+`ambiguous`** and §7.2's rules apply. Hooks improve process mapping; they do not
+guarantee it.
+
+**Transcript lag.** Transcript writes are asynchronous, so a hook can arrive
+before the corresponding transcript record exists. Never block on finding it, and
+never treat its absence as a parse failure — reconcile later by `prompt_id`.
 
 ### 5.5 Codex signals
 
@@ -314,12 +400,15 @@ ingested events uncorrectable. So:
 -- Durable: no other source exists for these.
 CREATE TABLE signal_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL,          -- stamped by the hook helper
   received_at TEXT NOT NULL,
   provider TEXT NOT NULL,
-  session_id TEXT, run_id TEXT, agent_id TEXT,
+  session_id TEXT, run_id TEXT, control_handle_id TEXT, agent_id TEXT,
+  prompt_id TEXT,                  -- correlates events within one user prompt
   kind TEXT NOT NULL,
   payload TEXT NOT NULL
 );
+CREATE UNIQUE INDEX signal_identity ON signal_events(event_id);
 
 -- Derived: rebuildable from transcripts at any time.
 CREATE TABLE events (
@@ -352,8 +441,29 @@ CREATE TABLE ingest_files (
 
 Identity is `(source_file, source_offset, content_hash)` plus `native_id` where a
 provider supplies one. Content hash means a rewritten record re-ingests instead
-of being silently skipped. `parser_version` bumps force re-ingest of affected
-files.
+of being silently skipped.
+
+**Reparse is delete-then-parse, not insert.** Revision 2 said a `parser_version`
+bump "forces re-ingest," but the unique key does not contain `parser_version` —
+so re-parsing an unchanged file produces byte-identical identities and every row
+collides with the one already there. The old, wrongly-parsed rows would survive a
+parser fix forever.
+
+Reparse is therefore defined explicitly, and runs in one transaction:
+
+```
+BEGIN
+  DELETE FROM events WHERE source_file = ?;
+  -- re-parse the whole file with the current parser
+  INSERT ...;
+  UPDATE ingest_files SET parser_version = ?, bytes_consumed = ?;
+COMMIT
+```
+
+Triggered by: a `parser_version` bump affecting that provider, a detected
+truncation or inode change (§6.6), or an explicit rebuild. Deleting derived rows
+is consistent with §6.1 — `events` is disposable by design, and `signal_events`
+is untouched.
 
 ### 6.2 Format drift must fail loudly
 
@@ -368,27 +478,50 @@ an unknown record shape:
 Silent partial parsing is the failure mode that cost munder-difflin months. Loud
 degradation is the requirement.
 
-### 6.3 Three identities: session, run, agent
+### 6.3 Four identities: session, run, control handle, agent
 
-Previously conflated. Separating them is what makes `/resume` work.
+Revision 2 defined a run as "one process lifetime" and hung PID/TTY/tmux off it.
+**That is wrong**, and Claude's own lifecycle proves it: `SessionStart` fires with
+source `startup`, `resume`, `clear`, `fork`, or `compact` — all five verified in
+the binary. A single live CLI process can leave one conversation and enter
+another without its PID or TTY changing.
+
+So a process is a **transport**, not an identity. Four things, not three:
 
 | Identity | Is | Lifetime | Carries |
 |---|---|---|---|
-| **Session** | Provider conversation / thread id | Days. Survives resume, host changes | Provider, cwd history, agents |
-| **Run** | One live invocation | One process lifetime | PID, TTY, host app, tmux name, exit code |
+| **Session** | Provider conversation / thread id | Days. Survives resume, host change, process death | Provider, cwd history, agents |
+| **Run** | One live **activation of one session** | Start → that conversation stops being active | session_id, start/end, end reason |
+| **Control handle** | One OS-level transport | One process lifetime | PID, TTY, host app, tmux name, exit code |
 | **Agent** | Root or subagent within a session | One spawn → stop | name, type, model, color, parent |
 
-A session can have many runs over days. **A run ends; a session usually does
-not.** `session.ended` in revision 1 actually meant `run.ended` — corrected below.
+The relationship is many-to-many over time: one control handle hosts a sequence
+of runs, and one session accumulates runs across many handles.
+
+```
+/resume in the same terminal:
+  run(session A) ends → run(session B) starts → SAME control handle
+
+app restart, tmux survives:
+  control handle re-established → run continues → SAME run, SAME session
+
+/clear:
+  run(session A) ends → run(session A') starts → same handle, NEW session
+```
+
+This is what makes resume modelable. It also cleans up the adapter: control
+operations address a **run or session identity**, and the adapter decides which
+transport carries them (§4.1).
 
 ### 6.4 Event kinds
 
 | kind | scope | payload | source |
 |---|---|---|---|
 | `session.started` | session | provider, cwd, model | transcript |
-| `session.resumed` | session | previous_run_id | transcript / hook |
-| `run.started` | run | pid, tty, host_app, tmux_name, attached | discovery / launch |
-| `run.ended` | run | exit_code, duration_ms, reason | hook / discovery |
+| `run.started` | run | session_id, control_handle_id, source (`startup`/`resume`/`clear`/`fork`/`compact`) | **`SessionStart` hook**, else transcript |
+| `run.ended` | run | duration_ms, reason (`completed`/`exited`/`killed`/`superseded_by_resume`) | `SessionEnd` hook / discovery |
+| `control.attached` | handle | pid, tty, host_app, tmux_name, attached | discovery / launch |
+| `control.detached` | handle | exit_code, reason | discovery / launch |
 | `prompt.submitted` | agent | text | **`UserPromptSubmit` hook**, else transcript |
 | `turn.completed` | agent | duration_ms, tokens, cost_usd | transcript |
 | `agent.spawned` | agent | name, type, model, color, parent_agent_id, depth | `SubagentStart` / `.meta.json` / `parent_thread_id` |
@@ -582,30 +715,66 @@ looking at Codex project A, Claude project B can tell you it needs you.*
 | Observed, `unique` match | Jump to terminal (§7.3) |
 | Observed, `ambiguous` match | **"Locate manually"** with candidates — never guess |
 
-### 9.2 Unified state machine
+### 9.2 State: two axes, not one list
 
-Replaces the fuzzy working/idle/blocked triple. Every state carries `confidence`
-(`exact` | `likely` | `guess`) and `source` (`hook` | `native` | `transcript` |
-`process`).
+Revision 2's flat seven-state list allowed impossible questions — does
+`disconnected` overwrite an outstanding `waiting_permission`? Splitting the axes
+removes the class of bug entirely.
 
-| State | Meaning |
+**Lifecycle** — is this run reachable?
+
+| | Meaning |
+|---|---|
+| `active` | Alive and observable |
+| `disconnected` | Was known, signal lost, state unclear |
+| `ended` | Run over, with `reason` (`completed`, `exited`, `killed`, `superseded_by_resume`) |
+
+**Activity** — what is it doing? Meaningful only while `active`.
+
+| | Meaning |
 |---|---|
 | `working` | Actively producing |
 | `waiting_permission` | Wants approval for a specific action |
-| `waiting_input` | Asked a question |
-| `idle` | Alive, turn complete, nothing pending |
-| `failed` | Ended in error (`StopFailure`, non-zero exit) |
-| `disconnected` | Was known, signal lost, process state unclear |
-| `ended` | Run finished cleanly |
+| `waiting_input` | Asked the user a question |
+| `idle` | Turn complete, nothing pending |
+| `error` | Last turn ended in an error; **still alive and promptable** |
 
-The UI shows inferred states differently from exact ones. It never presents a
-guess with the same authority as a hook.
+Each carries `confidence` (`exact` | `likely` | `guess`) and `source` (`hook` |
+`native` | `transcript` | `process`). The UI collapses both axes into one status
+dot, but never presents a `guess` with the authority of a `hook`.
+
+**`error` is an activity, not a lifecycle state.** Revision 2 had `failed` as
+terminal, mapping `StopFailure` to a dead run. Wrong: `StopFailure` means the
+*turn* ended in an API error. The session is still sitting there, ready for
+another prompt. A dead run is `ended`; a failed turn is `active` + `error`.
+
+Losing a signal never erases a pending blocker: `disconnected` preserves the last
+known activity so an outstanding `waiting_permission` stays visible in the rail,
+marked stale rather than silently dropped.
 
 ### 9.3 Blocked detection
 
-**With hooks (exact).** `PermissionRequest` → `waiting_permission` with the actual
-request text. `Notification/permission_prompt` → same. `Notification/idle_prompt`
-and `agent_needs_input` → `waiting_input`. No inference.
+**With hooks (exact).** No inference:
+
+| Signal | Activity |
+|---|---|
+| `PermissionRequest` | `waiting_permission`, with the actual request text |
+| `Notification/permission_prompt` | `waiting_permission` |
+| `PreToolUse` matching `AskUserQuestion` | `waiting_input`, with the question |
+| `PreToolUse` matching `ExitPlanMode` | `waiting_input` — plan awaiting approval |
+| `Elicitation` | `waiting_input` — an MCP form is open |
+| `Notification/agent_needs_input` | `waiting_input` |
+| `Stop` | `idle` |
+| `StopFailure` | `error` — **still active** (§9.2) |
+| `Notification/idle_prompt` | **`idle`. Not a blocker.** |
+
+**`idle_prompt` must not enter the rail.** It is timer-driven, not
+agent-driven — the binary sends it as `{ message: "Claude is waiting for your
+input", notificationType: "idle_prompt" }` gated by `getIdleNotifThresholdMs`.
+It fires because *you* haven't typed for a while, not because the agent needs
+anything. Revision 2 mapped it to `waiting_input`, which would have made every
+finished turn you didn't answer promptly into an alert — precisely the noise this
+rail exists to avoid.
 
 **Without hooks (degraded).** All of: process alive, transcript unchanged > 20s,
 and the last assistant text block ends in a question mark → `waiting_input`,
@@ -849,6 +1018,26 @@ External review, with claims verified against this machine before acceptance.
   worktree-root badge is cheap and applies today; the rest is speculative.
 - **`MessageDisplay` hooks for prose** — rejected on churn grounds (§5.2).
 
+### Revision 3 — second review round
+
+Two architectural blockers and five corrections. All claims re-verified against
+`claude` 2.1.267 before acceptance.
+
+| # | Change | Evidence |
+|---|---|---|
+| 1 | **Run redefined** as one activation of one session; PID/TTY/tmux moved to a separate **control handle** (§6.3) | **Verified**: `"SessionStart"` with sources `startup`/`resume`/`clear`/`fork`/`compact` — one process spans many sessions |
+| 2 | **Per-target effective capabilities**; control targets identity, not a process handle (§4.1) | Provider-level probing cannot express one attached + one hook-mapped + one ambiguous session at once |
+| 3 | Hook set expanded: `SessionStart`, `Stop`, `PreToolUse`(`AskUserQuestion\|ExitPlanMode`), `Elicitation`/`ElicitationResult` (§5.2) | **Verified**: all present, as are `"AskUserQuestion"` and `"ExitPlanMode"` |
+| 4 | `idle_prompt` → `idle`, not a blocker; `StopFailure` → `error` while still active; state split into two axes (§9.2–9.3) | **Verified**: `sendIdleNotification` is gated by `getIdleNotifThresholdMs` — timer-driven, not agent-driven |
+| 5 | Hook helper's TTY claim **withdrawn**; `prompt_id` captured everywhere; transcript lag handled (§5.4) | Command hooks run without a controlling terminal; `"prompt_id"` verified in payload fields |
+| 6 | Hook install made transactional: re-read before write, atomic rename, ownership manifest, configured ≠ active (§5.3) | **Verified**: `"allowManagedHooksOnly"` present — managed settings can disable user hooks |
+| 7 | Reparse defined as **delete-then-parse**; `signal_events` given a unique `event_id`; spool capped (§5.4, §6.1–6.2) | Logic bug: the unique key omits `parser_version`, so a fixed parser's output collided with the rows it was meant to replace |
+
+**Correction to revision 2's own evidence:** the earlier check reported
+`SessionStart` and `Stop` as absent from the binary. That was a bad grep — `-x`
+requires a whole line to match, and the binary is a bundled JS blob where
+literals sit inside very long minified lines. Both are present.
+
 ---
 
 ## 16. Prerequisites and open items
@@ -872,7 +1061,9 @@ External review, with claims verified against this machine before acceptance.
 | Shell | Native Electron app |
 | Foundation | ~2,200 harvested lines from munder-difflin (MIT + NOTICE) |
 | Signal hierarchy | Hooks/native → exact · transcripts → history · heuristics → fallback |
-| Identities | Session / run / agent, modelled separately |
+| Identities | Session / run / control handle / agent, modelled separately |
+| Capabilities | Provider-level **and** per-target effective capabilities |
+| State | Two axes: lifecycle (active/disconnected/ended) × activity |
 | Store | SQLite as rebuildable index; `signal_events` durable |
 | Run ownership | tmux underneath; app attaches |
 | Home screen | One card per session |
