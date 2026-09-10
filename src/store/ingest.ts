@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { Db } from './db.ts';
-import type { NormalizedEvent } from '../core/types.ts';
+import type { NormalizedEvent, ParseResumeContext } from '../core/types.ts';
 
 const INSERT = `
 INSERT INTO events
@@ -32,6 +32,8 @@ interface Statements {
   countAll: Database.Statement;
   countBySource: Database.Statement;
   getIngestState: Database.Statement;
+  lastEventForSource: Database.Statement;
+  hasSessionStarted: Database.Statement;
 }
 
 /** A prepared Statement is a native handle that must eventually be
@@ -62,6 +64,11 @@ function statementsFor(db: Db): Statements {
       countAll: db.prepare('SELECT COUNT(*) c FROM events'),
       countBySource: db.prepare('SELECT COUNT(*) c FROM events WHERE source_file = ?'),
       getIngestState: db.prepare('SELECT * FROM ingest_files WHERE path = ?'),
+      lastEventForSource: db.prepare(
+        `SELECT session_id as sessionId, agent_id as agentId FROM events
+         WHERE source_file = ? ORDER BY id DESC LIMIT 1`),
+      hasSessionStarted: db.prepare(
+        `SELECT 1 FROM events WHERE source_file = ? AND kind = 'session.started' LIMIT 1`),
     };
     statementCache.set(db, s);
   }
@@ -129,6 +136,31 @@ export interface IngestState {
 
 export function getIngestState(db: Db, path: string): IngestState | undefined {
   return statementsFor(db).getIngestState.get(path) as IngestState | undefined;
+}
+
+/** B2/B3: parsers are pure and never query the database (spec §11), but a
+ *  tail chunk on its own cannot recover a session's identity -- Codex's
+ *  session_meta and Claude's first cwd-bearing record both live at byte 0,
+ *  before a resumed chunk's start offset. The caller (ingestFileOnce) asks
+ *  the store what a prior ingest of this exact file already established and
+ *  passes it back in as the parser's resume context.
+ *
+ *  One file belongs to exactly one session_id and (for Codex) one constant
+ *  thread agent_id for its whole lifetime, so the most recently inserted
+ *  event for this source_file carries both correctly -- there is no need to
+ *  distinguish root from subagent files here, only to echo back whichever
+ *  identity this file's own prior events already settled on. Returns
+ *  undefined when no prior event exists for this file (nothing to resume
+ *  from yet), in which case the caller should parse as if from scratch. */
+export function resumeContextFor(db: Db, path: string): ParseResumeContext | undefined {
+  const { lastEventForSource, hasSessionStarted } = statementsFor(db);
+  const last = lastEventForSource.get(path) as { sessionId: string; agentId: string | null } | undefined;
+  if (!last) return undefined;
+  return {
+    sessionId: last.sessionId,
+    sessionStartEmitted: hasSessionStarted.get(path) !== undefined,
+    agentId: last.agentId ?? undefined,
+  };
 }
 
 /** Spec §6.1. A parser fix produces byte-identical identity keys, so a

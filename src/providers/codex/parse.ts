@@ -1,5 +1,5 @@
 import { hashRecord } from '../../core/identity.ts';
-import type { NormalizedEvent } from '../../core/types.ts';
+import type { NormalizedEvent, ParseResumeContext } from '../../core/types.ts';
 import type { TailLine } from '../claude/tail.ts';
 
 export const CODEX_PARSER_VERSION = 1;
@@ -42,9 +42,16 @@ function itemText(item: any): string {
     .join('\n');
 }
 
-export function parseCodexLines(lines: TailLine[], sourceFile: string): NormalizedEvent[] {
+export function parseCodexLines(
+  lines: TailLine[], sourceFile: string, resume?: ParseResumeContext,
+): NormalizedEvent[] {
   const out: NormalizedEvent[] = [];
-  let sessionId = 'unknown';
+  // B2: session_meta -- the only source of sessionId -- occurs once, at
+  // byte 0. A tail chunk resumed mid-file never sees it again, so without
+  // seeding from the resume context every event in that chunk parsed to
+  // sessionId "unknown". Falls back to 'unknown' exactly as before when
+  // `resume` is undefined (a from-zero parse).
+  let sessionId = resume?.sessionId ?? 'unknown';
 
   // Codex has no per-record agentId field the way Claude does. A subagent
   // thread is a whole separate rollout file whose own session_meta names
@@ -52,7 +59,12 @@ export function parseCodexLines(lines: TailLine[], sourceFile: string): Normaliz
   // (if ever) a later session_meta says otherwise. Spec §6.4: agent-scoped
   // kinds use NULL for the root/director, so a root thread's events keep
   // agentId null and only a genuine subagent thread sets it.
-  let threadAgentId: string | null = null;
+  //
+  // Resumed the same way as sessionId, and for the same reason: a
+  // subagent's own rollout file sets this once from its own session_meta,
+  // at byte 0 -- a tail chunk that never sees that line again must not
+  // fall back to null and misattribute the rest of the file to the root.
+  let threadAgentId: string | null = resume?.agentId ?? null;
 
   // sub_index disambiguates sibling events emitted from the same source
   // line (same offset and content hash) — see schema.ts events_identity.

@@ -121,6 +121,50 @@ describe('parseCodexLines', () => {
   });
 });
 
+// B2: session_meta -- the only source of sessionId, and (for a subagent
+// file) of the thread's own agentId -- occurs once, at byte 0. A tail chunk
+// resumed mid-file never sees it again. Without a resume context, every one
+// of these events used to parse to sessionId "unknown", and a subagent tail
+// chunk lost its agentId back to null, misattributing it to the root.
+describe('parseCodexLines — resume context (B2)', () => {
+  it('carries the correct session id through a tail chunk with no session_meta', () => {
+    const tailChunk: TailLine[] = [{
+      text: JSON.stringify({
+        timestamp: '2026-09-08T23:33:50.000Z', type: 'event_msg',
+        payload: { type: 'agent_message', message: 'continuing after the tail' },
+      }),
+      offset: 999,
+    }];
+    const evs = parseCodexLines(tailChunk, '/r.jsonl', {
+      sessionId: '01a0835e-cda1', sessionStartEmitted: true,
+    });
+    expect(evs).toHaveLength(1);
+    expect(evs[0]!.sessionId).toBe('01a0835e-cda1');
+  });
+
+  it('restores threadAgentId for a subagent tail chunk with no session_meta', () => {
+    const tailChunk: TailLine[] = [{
+      text: JSON.stringify({
+        timestamp: '2026-09-08T23:33:50.000Z', type: 'event_msg',
+        payload: { type: 'agent_message', message: 'subagent keeps talking' },
+      }),
+      offset: 999,
+    }];
+    const evs = parseCodexLines(tailChunk, '/r2.jsonl', {
+      sessionId: '01a043c5-f268', sessionStartEmitted: true, agentId: '01a043c7-0799',
+    });
+    expect(evs).toHaveLength(1);
+    expect(evs[0]!.sessionId).toBe('01a043c5-f268');
+    expect(evs[0]!.agentId).toBe('01a043c7-0799');
+  });
+
+  it('behaves exactly as a from-zero parse when no resume context is given', () => {
+    const withResume = parseCodexLines(linesOf('rollout-basic.jsonl'), '/r.jsonl', undefined);
+    const withoutArg = parseCodexLines(linesOf('rollout-basic.jsonl'), '/r.jsonl');
+    expect(withResume).toEqual(withoutArg);
+  });
+});
+
 // Spec §5.6: roughly half of real rollout files use this envelope instead of
 // the flat one above — event_msg/item_completed wrapping a typed `item` —
 // and the two are mutually exclusive per file. A parser handling only the

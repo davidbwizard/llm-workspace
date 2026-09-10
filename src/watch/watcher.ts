@@ -5,7 +5,7 @@ import { readTail } from '../providers/claude/tail.ts';
 import { parseClaudeLines, CLAUDE_PARSER_VERSION } from '../providers/claude/parse.ts';
 import { findSubagents, parseAgentMeta, type SubagentRef } from '../providers/claude/subagents.ts';
 import { parseCodexLines, CODEX_PARSER_VERSION } from '../providers/codex/parse.ts';
-import { insertEvents, getIngestState, recordIngest, reparseFile } from '../store/ingest.ts';
+import { insertEvents, getIngestState, recordIngest, reparseFile, resumeContextFor } from '../store/ingest.ts';
 import type { Db } from '../store/db.ts';
 import type { Provider, NormalizedEvent } from '../core/types.ts';
 
@@ -102,7 +102,17 @@ export function ingestFileOnce(db: Db, path: string, provider: Provider): Ingest
   const from = staleParser ? 0 : (prior?.bytes_consumed ?? 0);
   const knownInode = staleParser ? null : (prior?.inode ?? null);
   const tail = readTail(path, from, knownInode);
-  const events = parse(tail.lines, path);
+
+  // B2/B3: resuming (a prior, non-stale ingest of this exact file exists,
+  // and this pass is a plain tail, not a forced from-zero re-read) means the
+  // parser is about to see a chunk with no session_meta (Codex) or no
+  // cwd-bearing first record (Claude) -- so its session/agent identity must
+  // be seeded from what the store already recorded for this file, not
+  // re-derived from scratch.
+  const resuming = prior !== undefined && !staleParser && !tail.restarted;
+  const resume = resuming ? resumeContextFor(db, path) : undefined;
+
+  const events = parse(tail.lines, path, resume);
   const unparsed = events.filter(e => e.kind === 'unparsed').length;
 
   const meta = {

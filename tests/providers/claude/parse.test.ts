@@ -133,3 +133,40 @@ describe('parseClaudeLines', () => {
     }
   });
 });
+
+// B3: real Claude records ALL carry cwd (basic.jsonl's later lines omit it
+// only because it is trimmed for fixture brevity), and sessionStartEmitted
+// used to reset to false on every invocation of parseClaudeLines -- so a
+// tail chunk resumed mid-file, whose first record still carried cwd,
+// re-emitted a second session.started for the same session.
+describe('parseClaudeLines — resume context (B3)', () => {
+  const tailRecord = (uuid: string) => JSON.stringify({
+    type: 'assistant', sessionId: 's1', cwd: '/repo', timestamp: '2026-09-10T00:00:05.000Z',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'still going' }] }, uuid,
+  });
+
+  it('emits no second session.started when resumed with sessionStartEmitted: true', () => {
+    const evs = parseClaudeLines(
+      [{ text: tailRecord('u6'), offset: 999 }], '/f.jsonl',
+      { sessionId: 's1', sessionStartEmitted: true },
+    );
+    expect(evs.filter(e => e.kind === 'session.started')).toHaveLength(0);
+  });
+
+  it('carries the resumed session id even on a record with no sessionId field', () => {
+    const noSessionId = JSON.stringify({
+      type: 'assistant', cwd: '/repo', timestamp: '2026-09-10T00:00:05.000Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'still going' }] }, uuid: 'u7',
+    });
+    const evs = parseClaudeLines(
+      [{ text: noSessionId, offset: 999 }], '/f.jsonl',
+      { sessionId: 's1', sessionStartEmitted: true },
+    );
+    expect(evs.every(e => e.sessionId === 's1')).toBe(true);
+  });
+
+  it('still emits session.started on a from-zero parse (no resume context)', () => {
+    const evs = parseClaudeLines([{ text: tailRecord('u6'), offset: 0 }], '/f.jsonl');
+    expect(evs.filter(e => e.kind === 'session.started')).toHaveLength(1);
+  });
+});

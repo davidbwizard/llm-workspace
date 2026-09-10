@@ -33,3 +33,17 @@ export interface NormalizedEvent {
   subIndex: number;           // ordinal within the source record's events, from 0
   parserVersion: number;
 }
+
+/** Optional parser state to resume from, supplied by the caller when tailing
+ *  a file from a nonzero offset rather than parsing it from byte 0. Parsers
+ *  are pure and never query the database themselves (spec §11) -- a tail
+ *  chunk on its own carries no session_meta (Codex) or first-record cwd
+ *  (Claude), so without this, a resumed Codex chunk parses to sessionId
+ *  "unknown" and a resumed Claude chunk re-emits a duplicate session.started
+ *  every pass. The caller (ingestFileOnce) looks up what a prior ingest of
+ *  this same file already established and passes it back in here. */
+export interface ParseResumeContext {
+  sessionId?: string;
+  sessionStartEmitted: boolean;
+  agentId?: string;
+}

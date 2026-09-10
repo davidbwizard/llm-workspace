@@ -11,6 +11,13 @@ const REC = (u: string, text: string) => JSON.stringify({
   type: 'assistant', uuid: u, sessionId: 's1', timestamp: '2026-09-10T00:00:00.000Z',
   message: { role: 'assistant', content: [{ type: 'text', text }], usage: {} },
 }) + '\n';
+// Real Claude records ALL carry cwd; REC above omits it for brevity in the
+// tests that don't care. B3's fix needs it present on every record, the way
+// a real transcript actually is.
+const RECC = (u: string, text: string) => JSON.stringify({
+  type: 'assistant', uuid: u, sessionId: 's1', cwd: '/repo', timestamp: '2026-09-10T00:00:00.000Z',
+  message: { role: 'assistant', content: [{ type: 'text', text }], usage: {} },
+}) + '\n';
 
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'watch-')); file = join(dir, 's1.jsonl'); });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -139,5 +146,53 @@ describe('ingestFileOnce — subagent discovery', () => {
 
     const rows = db.prepare("SELECT agent_id FROM events WHERE kind='agent.spawned'").all() as any[];
     expect(rows.map(r => r.agent_id)).toContain('agent-late-joiner');
+  });
+});
+
+// B2/B3: parser state (session id, sessionStartEmitted, threadAgentId) does
+// not survive across separate ingestFileOnce calls on their own -- only
+// ingestFileOnce, via resumeContextFor, carries it across the incremental
+// tail boundary that chokidar/the real watcher actually exercises. These
+// tests drive the bug through that real path (a temp file, appended to,
+// re-ingested), not through the parsers directly.
+describe('ingestFileOnce — resume across a tail (B2/B3)', () => {
+  it('B3: appending to and re-ingesting a Claude transcript yields exactly one session.started, never a duplicate', () => {
+    const db = openDb(':memory:');
+    writeFileSync(file, RECC('u1', 'one'));
+    ingestFileOnce(db, file, 'claude');
+    appendFileSync(file, RECC('u2', 'two'));
+    ingestFileOnce(db, file, 'claude');
+
+    const started = db.prepare(
+      "SELECT COUNT(*) c FROM events WHERE kind='session.started' AND source_file=?",
+    ).get(file) as any;
+    expect(started.c).toBe(1);
+  });
+
+  it('B2: appending to and re-ingesting a Codex rollout never leaves session_id "unknown"', () => {
+    const db = openDb(':memory:');
+    const rollout = join(dir, 'rollout-y.jsonl');
+    const metaLine = JSON.stringify({
+      timestamp: '2026-09-10T00:00:00Z', type: 'session_meta',
+      payload: { session_id: 'sess-abc', id: 'sess-abc', cwd: '/repo' },
+    }) + '\n';
+    const msgLine = (text: string) => JSON.stringify({
+      timestamp: '2026-09-10T00:00:01Z', type: 'event_msg',
+      payload: { type: 'agent_message', message: text },
+    }) + '\n';
+
+    writeFileSync(rollout, metaLine + msgLine('first'));
+    ingestFileOnce(db, rollout, 'codex');
+    appendFileSync(rollout, msgLine('second'));
+    ingestFileOnce(db, rollout, 'codex');
+
+    const rows = db.prepare('SELECT DISTINCT session_id FROM events WHERE source_file=?')
+      .all(rollout) as any[];
+    expect(rows.map(r => r.session_id)).toEqual(['sess-abc']);
+
+    const prose = db.prepare(
+      "SELECT payload FROM events WHERE kind='prose' AND source_file=? ORDER BY id",
+    ).all(rollout) as any[];
+    expect(prose.map(r => JSON.parse(r.payload).text)).toEqual(['first', 'second']);
   });
 });

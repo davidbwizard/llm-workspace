@@ -1,5 +1,5 @@
 import { hashRecord } from '../../core/identity.ts';
-import type { NormalizedEvent } from '../../core/types.ts';
+import type { NormalizedEvent, ParseResumeContext } from '../../core/types.ts';
 import type { TailLine } from './tail.ts';
 
 // Bumped to 2: recognising KNOWN_UNMAPPED_TYPES changes what already-ingested
@@ -58,10 +58,19 @@ function toolTarget(input: unknown): string | null {
   return null;
 }
 
-export function parseClaudeLines(lines: TailLine[], sourceFile: string): NormalizedEvent[] {
+export function parseClaudeLines(
+  lines: TailLine[], sourceFile: string, resume?: ParseResumeContext,
+): NormalizedEvent[] {
   const out: NormalizedEvent[] = [];
-  let sessionId = 'unknown';
-  let sessionStartEmitted = false;
+  // B3: every Claude record carries `cwd`, and sessionStartEmitted used to
+  // start false on every invocation -- so a tail chunk resumed mid-file,
+  // whose first record still carries cwd, re-emitted a second
+  // session.started for the same session. Seeding both from the resume
+  // context (when the caller says this is a continuation, not a from-zero
+  // parse) fixes that without touching from-zero behavior, since `resume`
+  // is undefined there and these fall back to exactly what they were before.
+  let sessionId = resume?.sessionId ?? 'unknown';
+  let sessionStartEmitted = resume?.sessionStartEmitted ?? false;
 
   // sub_index disambiguates sibling events emitted from the same source
   // line (same offset and content hash) — see schema.ts events_identity.
