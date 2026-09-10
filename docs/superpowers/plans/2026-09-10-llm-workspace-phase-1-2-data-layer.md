@@ -161,6 +161,7 @@ export interface NormalizedEvent {
   sourceFile: string;
   sourceOffset: number;       // byte offset of the record's first byte
   contentHash: string;
+  subIndex: number;           // ordinal WITHIN the source record (see Task 3)
   parserVersion: number;
 }
 ```
@@ -358,10 +359,15 @@ CREATE TABLE IF NOT EXISTS events (
   source_file TEXT NOT NULL,
   source_offset INTEGER NOT NULL,
   content_hash TEXT NOT NULL,
+  sub_index INTEGER NOT NULL,
   parser_version INTEGER NOT NULL
 );
+-- sub_index discriminates the several events one source record can produce
+-- (prose + N tool.used + turn.completed all share an offset and hash).
+-- Without it they collide: insertEvents silently drops siblings and
+-- reparseFile throws and rolls back to zero rows.
 CREATE UNIQUE INDEX IF NOT EXISTS events_identity
-  ON events(source_file, source_offset, content_hash);
+  ON events(source_file, source_offset, content_hash, sub_index);
 CREATE INDEX IF NOT EXISTS events_session_ts ON events(session_id, ts);
 CREATE INDEX IF NOT EXISTS events_source ON events(source_file);
 
@@ -442,7 +448,7 @@ function ev(offset: number, hash = 'h' + offset): NormalizedEvent {
     provider: 'claude', sessionId: 's1', runId: null, agentId: null,
     ts: '2026-09-10T00:00:00Z', kind: 'prose', payload: { text: 'hi' },
     nativeId: null, sourceFile: '/f.jsonl', sourceOffset: offset,
-    contentHash: hash, parserVersion: 1,
+    contentHash: hash, subIndex: 0, parserVersion: 1,
   };
 }
 
@@ -501,10 +507,10 @@ import type { NormalizedEvent } from '../core/types.ts';
 const INSERT = `
 INSERT INTO events
   (provider, session_id, run_id, agent_id, ts, kind, payload, native_id,
-   source_file, source_offset, content_hash, parser_version)
+   source_file, source_offset, content_hash, sub_index, parser_version)
 VALUES
   (@provider, @sessionId, @runId, @agentId, @ts, @kind, @payload, @nativeId,
-   @sourceFile, @sourceOffset, @contentHash, @parserVersion)`;
+   @sourceFile, @sourceOffset, @contentHash, @subIndex, @parserVersion)`;
 
 /** Insert events, skipping any whose identity triple is already present.
  *  Spec §6.1: watchers fire redundantly, so ingestion must be idempotent.
@@ -576,7 +582,7 @@ function ev(offset: number, kind: NormalizedEvent['kind'] = 'prose'): Normalized
     provider: 'claude', sessionId: 's1', runId: null, agentId: null,
     ts: '2026-09-10T00:00:00Z', kind, payload: {}, nativeId: null,
     sourceFile: '/f.jsonl', sourceOffset: offset, contentHash: 'h' + offset,
-    parserVersion: 1,
+    subIndex: 0, parserVersion: 1,
   };
 }
 
