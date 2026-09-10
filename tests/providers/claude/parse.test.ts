@@ -93,6 +93,21 @@ describe('parseClaudeLines', () => {
     expect(unparsed[0]!.payload).toMatchObject({ recordType: 'telemetry-v9' });
   });
 
+  it('silences a known-but-unmapped record type -- no event at all, not even unparsed', () => {
+    const evs = parseClaudeLines(
+      [{ text: JSON.stringify({ type: 'attachment', sessionId: 's1', timestamp: '2026-09-10T00:00:00.000Z' }), offset: 0 }],
+      '/f.jsonl',
+    );
+    expect(evs).toHaveLength(0);
+  });
+
+  it('still reports a genuinely unrecognized type as unparsed -- recognising the known-unmapped set does not blunt the drift signal', () => {
+    const evs = parseClaudeLines(linesOf('unknown-record.jsonl'), '/f.jsonl');
+    const unparsed = evs.filter(e => e.kind === 'unparsed');
+    expect(unparsed).toHaveLength(1);
+    expect(unparsed[0]!.payload).toMatchObject({ recordType: 'telemetry-v9' });
+  });
+
   it('stores a corrupt line as unparsed rather than throwing', () => {
     const evs = parseClaudeLines([{ text: 'not json at all', offset: 0 }], '/f.jsonl');
     expect(evs).toHaveLength(1);

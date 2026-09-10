@@ -2,11 +2,31 @@ import { hashRecord } from '../../core/identity.ts';
 import type { NormalizedEvent } from '../../core/types.ts';
 import type { TailLine } from './tail.ts';
 
-export const CLAUDE_PARSER_VERSION = 1;
+// Bumped to 2: recognising KNOWN_UNMAPPED_TYPES changes what already-ingested
+// records parse to (silenced instead of unparsed), so existing files must be
+// reparsed (spec §6.1 / store/ingest.ts's reparseFile) rather than merely
+// tailed from their prior byte offset.
+export const CLAUDE_PARSER_VERSION = 2;
 
 /** Record types this parser understands. Anything else becomes `unparsed`
  *  so format drift surfaces instead of vanishing (spec §6.2). */
 const KNOWN_TYPES = new Set(['user', 'assistant', 'ai-title', 'last-prompt', 'summary']);
+
+/** Record types Claude Code writes -- editor/IDE state, not agent activity
+ *  -- that this parser recognizes but does not map to an event in v1.
+ *  Mirrors the Codex parser's KNOWN_TOP_LEVEL_UNMAPPED. Recognised so they
+ *  do not flood the unparsed channel: measured on a real ~1170-transcript
+ *  corpus, these 18 types alone were 63,045 of 63,048 unparsed records (26
+ *  percent of the whole index) -- enough that the channel stopped being a
+ *  useful drift signal. A genuinely new record type still surfaces as
+ *  unparsed; only these named ones are silenced. */
+const KNOWN_UNMAPPED_TYPES = new Set([
+  'attachment', 'mode', 'atis-latch', 'permission-mode', 'system',
+  'bridge-session', 'queue-operation', 'file-history-snapshot',
+  'file-history-delta', 'worktree-state', 'relocated', 'frame-link',
+  'pr-link', 'agent-name', 'artifact-autoreact-ledger', 'cost-state',
+  'artifact-comment-monitor', 'agent-setting',
+]);
 
 /** Spec §8.3. Claude records TOOL RESULTS as `type: "user"` messages.
  *  Measured on a real transcript: 58 of 73 `user` records were tool_result.
@@ -75,6 +95,8 @@ export function parseClaudeLines(lines: TailLine[], sourceFile: string): Normali
     if (typeof rec.sessionId === 'string') sessionId = rec.sessionId;
     const ts = typeof rec.timestamp === 'string' ? rec.timestamp : new Date(0).toISOString();
     const agentId = typeof rec.agentId === 'string' ? rec.agentId : null;
+
+    if (KNOWN_UNMAPPED_TYPES.has(rec.type)) continue;
 
     if (!KNOWN_TYPES.has(rec.type)) {
       out.push(base(line, 'unparsed', { reason: 'unknown-record-type', recordType: rec.type },
