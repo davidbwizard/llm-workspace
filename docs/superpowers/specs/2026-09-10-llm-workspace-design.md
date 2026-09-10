@@ -696,6 +696,13 @@ Gated on a `unique` match per §7.2.
 
 ## 8. Interface
 
+> **Process gate (David, 2026-09-10):** before any UI task is implemented,
+> show visual examples first and get a pick. This applies to the fleet view,
+> the agent graph, beat cards, and the Needs You rail — every screen in
+> §8 and §9.1. Mockups precede code; do not implement a screen from prose
+> description alone.
+
+
 ### 8.1 Fleet view — session cards
 
 One card per **session**; a session with 44 agents is still one card.
