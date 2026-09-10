@@ -475,9 +475,11 @@ CREATE TABLE events (
   source_file TEXT NOT NULL,
   source_offset INTEGER NOT NULL,  -- byte offset, not line number
   content_hash TEXT NOT NULL,      -- hash of the source record
+  sub_index INTEGER NOT NULL,      -- ordinal WITHIN the source record
   parser_version INTEGER NOT NULL
 );
-CREATE UNIQUE INDEX events_identity ON events(source_file, source_offset, content_hash);
+CREATE UNIQUE INDEX events_identity
+  ON events(source_file, source_offset, content_hash, sub_index);
 
 -- Ingestion bookkeeping: detects truncation, replacement, rotation.
 CREATE TABLE ingest_files (
@@ -490,9 +492,27 @@ CREATE TABLE ingest_files (
 );
 ```
 
-Identity is `(source_file, source_offset, content_hash)` plus `native_id` where a
-provider supplies one. Content hash means a rewritten record re-ingests instead
-of being silently skipped.
+Identity is `(source_file, source_offset, content_hash, sub_index)`. Content hash
+means a rewritten record re-ingests instead of being silently skipped.
+
+**`sub_index` is not optional, and revision 6 was wrong to omit it.** One source
+record routinely yields several events: an assistant turn emits `prose`, one
+`tool.used` per tool block, and `turn.completed` — all from the same line, so all
+sharing an offset and hash. Without a discriminator they collide. Measured
+against the real implementation on a five-line fixture: the parser emitted 8
+events, `insertEvents` silently stored 4 — losing a human prompt, the only tool
+call, and both `turn.completed` events — and `reparseFile` threw
+`SQLITE_CONSTRAINT_UNIQUE` and rolled back to zero rows, so any rebuild wiped
+the index entirely.
+
+`sub_index` is the event's ordinal within its source record, assigned by the
+parser in emission order. It is deterministic, so re-parsing the same bytes
+reproduces the same identities and idempotency holds exactly.
+
+**Do not use `native_id` as the discriminator.** SQLite treats NULLs as distinct
+in a UNIQUE index, so rows with a null `native_id` would never conflict — a
+re-ingest would duplicate them instead of being rejected, breaking the exact
+guarantee the index exists to provide. Verified.
 
 **Reparse is delete-then-parse, not insert.** Revision 2 said a `parser_version`
 bump "forces re-ingest," but the unique key does not contain `parser_version` —
@@ -505,7 +525,7 @@ Reparse is therefore defined explicitly, and runs in one transaction:
 ```
 BEGIN
   DELETE FROM events WHERE source_file = ?;
-  -- re-parse the whole file with the current parser
+  -- re-parse the whole file with the current parser, assigning sub_index
   INSERT ...;
   UPDATE ingest_files SET parser_version = ?, bytes_consumed = ?;
 COMMIT
