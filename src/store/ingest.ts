@@ -9,14 +9,15 @@ VALUES
   (@provider, @sessionId, @runId, @agentId, @ts, @kind, @payload, @nativeId,
    @sourceFile, @sourceOffset, @contentHash, @subIndex, @parserVersion)`;
 
-/** Insert events, skipping any whose identity triple is already present.
+/** Insert events, skipping any whose identity key
+ *  (source_file, source_offset, content_hash, sub_index) is already present.
  *  Spec §6.1: watchers fire redundantly, so ingestion must be idempotent.
  *  Runs in one transaction — a bad record aborts the whole batch rather
  *  than leaving a half-ingested file behind. Returns rows actually written.
  *
  *  DEVIATION from the brief text: the brief's INSERT used `OR IGNORE`, but
  *  `OR IGNORE` suppresses every constraint failure SQLite can raise, not
- *  just the identity-triple UNIQUE conflict this function means to
+ *  just the identity-key UNIQUE conflict this function means to
  *  dedupe — including NOT NULL. That silently swallows genuinely bad
  *  records instead of failing the batch, which breaks the all-or-nothing
  *  guarantee this docstring (and the brief's own test) requires. A plain
@@ -88,7 +89,7 @@ export function getIngestState(db: Db, path: string): IngestState | undefined {
     IngestState | undefined;
 }
 
-/** Spec §6.1. A parser fix produces byte-identical identity triples, so a
+/** Spec §6.1. A parser fix produces byte-identical identity keys, so a
  *  plain re-insert is silently ignored by the unique index and the bad rows
  *  survive forever. Reparse therefore DELETES this file's derived events
  *  first, then parses, in one transaction.
