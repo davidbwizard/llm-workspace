@@ -1859,7 +1859,11 @@ export function readCodexThreads(dbPath: string): CodexThread[] | null {
   if (!existsSync(dbPath)) return null;
   let db: Database.Database | undefined;
   try {
-    db = new Database(`file:${dbPath}?mode=ro`, { readonly: true, fileMustExist: true, uri: true } as any);
+    // NOT `file:...?mode=ro` with uri:true — better-sqlite3 treats that string
+    // as a literal path and throws "directory does not exist", so the reader
+    // would return null every time and the accelerator would never engage.
+    // The failure is silent by design (null means fall back), so nobody notices.
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
     const rows = db.prepare(`
       SELECT id, rollout_path, cwd, source, cli_version, git_branch, model,
              agent_role, thread_source, tokens_used, archived
@@ -1888,7 +1892,11 @@ export function readSpawnEdges(dbPath: string): SpawnEdge[] {
   if (!existsSync(dbPath)) return [];
   let db: Database.Database | undefined;
   try {
-    db = new Database(`file:${dbPath}?mode=ro`, { readonly: true, fileMustExist: true, uri: true } as any);
+    // NOT `file:...?mode=ro` with uri:true — better-sqlite3 treats that string
+    // as a literal path and throws "directory does not exist", so the reader
+    // would return null every time and the accelerator would never engage.
+    // The failure is silent by design (null means fall back), so nobody notices.
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
     const rows = db.prepare(
       'SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges').all() as any[];
     return rows.map(r => ({
@@ -2068,7 +2076,9 @@ export function parseLsofCwd(out: string): string | null {
  *  decides which jump action is offered, and VS Code deliberately gets a
  *  weaker one because a specific tab cannot be targeted. */
 export function classifyHost(chain: string[]): HostApp {
-  const names = chain.map(n => n.toLowerCase());
+  // chain[0] is the subject process itself ("claude"), not an ancestor.
+  // Including it makes every Claude process self-match as claude-app.
+  const names = chain.slice(1).map(n => n.toLowerCase());
   if (names.some(n => n.includes('iterm'))) return 'iterm2';
   if (names.some(n => n === 'code' || n.includes('code helper'))) return 'vscode';
   if (names.some(n => n === 'terminal')) return 'terminal';
