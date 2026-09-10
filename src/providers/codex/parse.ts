@@ -16,8 +16,10 @@ const KNOWN_EVENT_MSG = new Set([
 ]);
 const KNOWN_RESPONSE_ITEM = new Set([
   'message', 'function_call', 'function_call_output', 'reasoning',
-  // Spec §5.6: custom_tool_call is function_call under a different label
-  // (mapped below); custom_tool_call_output is known but not mapped in v1.
+  // Spec §5.6: known but not mapped — custom_tool_call is the request half
+  // of a tool call whose completion is already counted via item_completed
+  // (see the comment where response_item is handled below); mapping it too
+  // double-counts every tool invocation.
   'custom_tool_call', 'custom_tool_call_output',
 ]);
 
@@ -231,24 +233,27 @@ export function parseCodexLines(lines: TailLine[], sourceFile: string): Normaliz
           name: p.name ?? null, target: p.arguments ?? null, isError: false,
           toolUseId: p.call_id ?? null,
         }, ts, threadAgentId, p.call_id ?? null));
-      } else if (p.type === 'custom_tool_call') {
-        // Same shape as function_call under a different type label (the
-        // argument payload is in `input` rather than `arguments`). 158 of
-        // these in the real corpus against 180 function_call events —
-        // leaving this unmapped hid roughly half of all Codex tool
-        // activity, undersizing every node in the agent graph.
-        out.push(base(line, 'tool.used', {
-          name: p.name ?? null, target: p.input ?? null, isError: false,
-          toolUseId: p.call_id ?? null,
-        }, ts, threadAgentId, p.call_id ?? null));
       }
       // `message` is intentionally skipped: event_msg/user_message and
       // event_msg/agent_message already carry the human and assistant
       // text, so emitting this too would double-count every turn.
-      // `custom_tool_call_output` stays unmapped: neither envelope emits
-      // events for tool *results* (only for the calls), and mapping the
-      // result on one side only would skew tool-count comparisons the
-      // other way.
+      //
+      // `custom_tool_call` is deliberately NOT mapped, despite having the
+      // same fields as function_call. Measured on the real corpus:
+      // custom_tool_call and item_completed/CommandExecution|Extension|
+      // FileChange are the REQUEST and COMPLETION halves of the same tool
+      // invocation, not two separate activities — every one of the 158
+      // custom_tool_call records lives in a file whose item_completed tool
+      // items already total 180, and same-file/same-command pairs (e.g. the
+      // same `sed -n '1,240p' ...` appearing as both a CommandExecution
+      // item and a custom_tool_call input) confirm it. Mapping this too
+      // double-counted every Codex tool call and inflated agent-graph node
+      // sizes. Do not re-add this mapping on a "half the tool activity is
+      // hidden" argument without re-checking for this pairing first.
+      //
+      // `custom_tool_call_output` stays unmapped for the same reason as
+      // `function_call_output`: neither envelope emits events for tool
+      // *results*, only for the calls.
       continue;
     }
 

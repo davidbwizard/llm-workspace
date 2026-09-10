@@ -201,20 +201,26 @@ describe('parseCodexLines (item_completed envelope)', () => {
     expect(u[0]!.payload).toMatchObject({ itemType: 'McpToolCall' });
   });
 
-  it('maps response_item/custom_tool_call to tool.used — same shape as function_call, different type label', () => {
-    const t = events.filter(e => e.kind === 'tool.used' && e.payload.name === 'exec');
-    expect(t).toHaveLength(1);
-    expect(t[0]!.payload).toMatchObject({
-      target: 'const r = await tools.exec_command({"cmd":"grep -n TODO migration.sql"});',
-      toolUseId: 'call-1',
-    });
+  // response_item/custom_tool_call is the REQUEST half of the same tool
+  // invocation that item_completed/CommandExecution reports as COMPLETE —
+  // not a separate activity. This fixture's custom_tool_call line and its
+  // CommandExecution line both describe the same `grep -n TODO
+  // migration.sql` command (measured on the real corpus: every
+  // custom_tool_call there paired with an item_completed tool item for the
+  // same call). Mapping both would double-count every Codex tool call and
+  // inflate agent-graph node sizes accordingly, so exactly one tool.used
+  // must come out of the pair, not two.
+  it('does not double-count a tool call reported by both item_completed/CommandExecution and response_item/custom_tool_call', () => {
+    const shellCalls = events.filter(e => e.kind === 'tool.used' && e.payload.name === 'shell');
+    expect(shellCalls).toHaveLength(1);
+    const fromCustomToolCall = events.filter(e => e.nativeId === 'call-1');
+    expect(fromCustomToolCall).toHaveLength(0);
   });
 
-  it('recognises custom_tool_call_output, thread_settings_applied, turn_context, world_state, and compacted without marking them unparsed', () => {
-    // These fixture lines cover exactly those five record types (plus
-    // custom_tool_call, mapped above); none should contribute an unparsed
-    // event beyond the one genuinely unknown item.type on the
-    // item_completed line.
+  it('recognises custom_tool_call, custom_tool_call_output, thread_settings_applied, turn_context, world_state, and compacted without marking them unparsed', () => {
+    // These fixture lines cover exactly those six record types; none should
+    // contribute an unparsed event beyond the one genuinely unknown
+    // item.type on the item_completed line.
     const unparsedReasons = events
       .filter(e => e.kind === 'unparsed')
       .map(e => e.payload.reason);
