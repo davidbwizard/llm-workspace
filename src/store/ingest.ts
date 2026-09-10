@@ -47,3 +47,74 @@ export function countEvents(db: Db, sourceFile?: string): number {
     : db.prepare('SELECT COUNT(*) c FROM events').get();
   return (row as { c: number }).c;
 }
+
+export interface IngestMeta {
+  inode: number | null;
+  size: number;
+  mtime: string;
+  bytesConsumed: number;
+  parserVersion: number;
+  providerCliVersion: string | null;
+}
+
+export interface IngestState {
+  path: string;
+  inode: number | null;
+  size: number;
+  mtime: string;
+  bytes_consumed: number;
+  parser_version: number;
+  provider_cli_version: string | null;
+  last_ok_at: string | null;
+}
+
+// Shared by reparseFile and recordIngest — see task-4-5 report for why this
+// was extracted (the brief duplicated this SQL verbatim in both functions).
+const UPSERT_INGEST = `
+INSERT INTO ingest_files
+  (path, inode, size, mtime, bytes_consumed, parser_version,
+   provider_cli_version, last_ok_at)
+VALUES (@path, @inode, @size, @mtime, @bytesConsumed, @parserVersion,
+        @providerCliVersion, @lastOkAt)
+ON CONFLICT(path) DO UPDATE SET
+  inode = excluded.inode, size = excluded.size, mtime = excluded.mtime,
+  bytes_consumed = excluded.bytes_consumed,
+  parser_version = excluded.parser_version,
+  provider_cli_version = excluded.provider_cli_version,
+  last_ok_at = excluded.last_ok_at`;
+
+export function getIngestState(db: Db, path: string): IngestState | undefined {
+  return db.prepare('SELECT * FROM ingest_files WHERE path = ?').get(path) as
+    IngestState | undefined;
+}
+
+/** Spec §6.1. A parser fix produces byte-identical identity triples, so a
+ *  plain re-insert is silently ignored by the unique index and the bad rows
+ *  survive forever. Reparse therefore DELETES this file's derived events
+ *  first, then parses, in one transaction.
+ *
+ *  `signal_events` is untouched by design: hook output has no other source. */
+export function reparseFile(
+  db: Db,
+  path: string,
+  parse: () => NormalizedEvent[],
+  meta: IngestMeta,
+): void {
+  const del = db.prepare('DELETE FROM events WHERE source_file = ?');
+  const insert = db.prepare(INSERT);
+  const book = db.prepare(UPSERT_INGEST);
+
+  const run = db.transaction(() => {
+    del.run(path);
+    for (const e of parse()) {
+      insert.run({ ...e, payload: JSON.stringify(e.payload) });
+    }
+    book.run({ path, ...meta, lastOkAt: new Date().toISOString() });
+  });
+  run();
+}
+
+export function recordIngest(db: Db, path: string, meta: IngestMeta): void {
+  db.prepare(UPSERT_INGEST)
+    .run({ path, ...meta, lastOkAt: new Date().toISOString() });
+}
