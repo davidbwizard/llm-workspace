@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-10
 **Status:** Approved design, pre-implementation
-**Revision:** 3 — second review round applied (see §15)
+**Revision:** 4 — third review round applied (see §15)
 **Location:** `/Users/davidbrabbins/Documents/David/llm-workspace`
 
 ---
@@ -269,7 +269,9 @@ Sparse lifecycle only:
 
 | Hook | Gives us |
 |---|---|
-| `SessionStart` | Exact run boundaries with source: `startup` / `resume` / `clear` / `fork` / `compact` (§6.3) |
+| `SessionStart` | Run boundaries — but **only** for source `startup` / `resume` / `clear` / `fork`. `compact` is not a boundary (§6.3) |
+| `PreCompact` / `PostCompact` | Context compaction **within** a run — never a run boundary |
+| `PermissionDenied` | Correlated resolution of a `waiting_permission` blocker (§9.4) |
 | `UserPromptSubmit` | Exact beat boundaries (§8.3) — no heuristic needed |
 | `PermissionRequest` | Blocked, the instant it happens, with the request text |
 | `Notification` | `permission_prompt` / `idle_prompt` / `agent_needs_input` — see §9.3, these do **not** mean the same thing |
@@ -401,10 +403,12 @@ ingested events uncorrectable. So:
 CREATE TABLE signal_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id TEXT NOT NULL,          -- stamped by the hook helper
-  received_at TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,       -- when the hook FIRED (helper stamps it)
+  ingested_at TEXT NOT NULL,       -- when the app read it from the spool
   provider TEXT NOT NULL,
   session_id TEXT, run_id TEXT, control_handle_id TEXT, agent_id TEXT,
   prompt_id TEXT,                  -- correlates events within one user prompt
+  tool_use_id TEXT,                -- correlates a blocker with its resolution
   kind TEXT NOT NULL,
   payload TEXT NOT NULL
 );
@@ -482,9 +486,25 @@ degradation is the requirement.
 
 Revision 2 defined a run as "one process lifetime" and hung PID/TTY/tmux off it.
 **That is wrong**, and Claude's own lifecycle proves it: `SessionStart` fires with
-source `startup`, `resume`, `clear`, `fork`, or `compact` — all five verified in
-the binary. A single live CLI process can leave one conversation and enter
-another without its PID or TTY changing.
+source `startup`, `resume`, `clear`, or `fork` — a single live CLI process can
+leave one conversation and enter another without its PID or TTY changing.
+
+**`compact` is the exception, and it is not a run boundary.** `SessionStart` does
+fire with source `compact`, but compaction happens *inside* a live conversation.
+The binary's own schema settles it:
+
+```js
+Kle = ["clear","resume","logout","prompt_input_exit","other"],
+$le = () => Se().and(c({ hook_event_name: k("SessionEnd"), reason: Wle() }))
+```
+
+`SessionEnd.reason` has no `compact`. A run that compacts never ends, so no new
+run begins — it is one activation throughout. Treating compaction as a boundary
+would shred a long session into a new "run" every time its context filled.
+
+`compact` is therefore normalized to `context.compacted` (§6.4) and the run model
+ignores it. `PreCompact`/`PostCompact` carry the same meaning and are preferred
+where available.
 
 So a process is a **transport**, not an identity. Four things, not three:
 
@@ -518,8 +538,9 @@ transport carries them (§4.1).
 | kind | scope | payload | source |
 |---|---|---|---|
 | `session.started` | session | provider, cwd, model | transcript |
-| `run.started` | run | session_id, control_handle_id, source (`startup`/`resume`/`clear`/`fork`/`compact`) | **`SessionStart` hook**, else transcript |
-| `run.ended` | run | duration_ms, reason (`completed`/`exited`/`killed`/`superseded_by_resume`) | `SessionEnd` hook / discovery |
+| `run.started` | run | session_id, control_handle_id, source (`startup`/`resume`/`clear`/`fork` — **never `compact`**) | **`SessionStart` hook**, else transcript |
+| `run.ended` | run | duration_ms, reason (`clear`/`resume`/`logout`/`prompt_input_exit`/`other`/`exited`/`killed`) | `SessionEnd` hook / discovery |
+| `context.compacted` | run | trigger | `PostCompact`, or `SessionStart` source `compact`. **Not** a run boundary |
 | `control.attached` | handle | pid, tty, host_app, tmux_name, attached | discovery / launch |
 | `control.detached` | handle | exit_code, reason | discovery / launch |
 | `prompt.submitted` | agent | text | **`UserPromptSubmit` hook**, else transcript |
@@ -596,9 +617,10 @@ directory match is time-dependent.
   on `unique`**
 - On `ambiguous`, the UI offers **"Locate manually"** and lists the candidates. It
   never guesses
-- With the hook helper installed, matches come from hook payloads
-  (`session_id` + `transcript_path` + recorded PID/TTY) and are `unique` by
-  construction
+- The hook helper makes the **session ↔ transcript** association exact
+  (`session_id` + `transcript_path`), and may *improve* process association via
+  ancestry — but it cannot read its own TTY (§5.4). A process match becomes
+  `unique` only when separately proven, never by virtue of hooks being installed
 
 Discovery chain, verified across all six live sessions here:
 
@@ -729,7 +751,8 @@ removes the class of bug entirely.
 | `disconnected` | Was known, signal lost, state unclear |
 | `ended` | Run over, with `reason` (`completed`, `exited`, `killed`, `superseded_by_resume`) |
 
-**Activity** — what is it doing? Meaningful only while `active`.
+**Activity** — what is it doing? **Current** while `active`; **last known** while
+`disconnected`. Never blank, and never silently reset by losing observability.
 
 | | Meaning |
 |---|---|
@@ -789,10 +812,32 @@ input to `disconnected` after a much longer threshold.
 false negative costs a stalled session — the problem this app exists to solve.
 Tune toward over-reporting, but label confidence honestly.
 
-### 9.4 Clearing
+### 9.4 Clearing — correlated, not "the transcript moved"
 
-An item clears when the transcript advances, a hook reports resolution, the run
-ends, or the user dismisses it.
+Naive clearing has a race with the transcript lag in §5.4:
+
+```
+PermissionRequest arrives      → Needs You appears
+…the delayed tool_use record finally lands in the JSONL…
+transcript "advances"          → Needs You disappears
+…while the permission dialog is still sitting there waiting
+```
+
+The blocker vanishes from the rail while the session is still blocked — the
+single worst failure this feature can have.
+
+**Every exact blocker carries a correlation identity.** Verified present in hook
+payloads: `prompt_id` and `tool_use_id` (plus `tool_name`, `tool_input`).
+
+- Signals sharing a correlation id **coalesce into one rail item**, so
+  `PreToolUse(ExitPlanMode)` plus a related notification is one entry, not two
+- An exact blocker clears **only** on a correlated resolution: the matching
+  `tool_result` / `PostToolUse`, `PermissionDenied`, `ElicitationResult`, an
+  in-app answer, `run.ended`, or explicit dismissal
+- **"Transcript advanced" clears only degraded heuristic blockers** (§9.3), which
+  have no correlation id to work with
+
+Unresolved but stale items are marked stale, never silently removed (§9.2).
 
 ### 9.5 Worktree contention (v1, minimal)
 
@@ -947,7 +992,7 @@ Only genuine end-to-end runs against real providers stay manual.
 
 ## 13. Build order
 
-Phases 1–5 are pure observation and touch nothing running. Phase 6 is the only one
+Phases 1–5 never control a run or send input to one. Phase 6 is the only one
 that owns processes, and is last by design.
 
 | Phase | Ends when |
@@ -1038,6 +1083,32 @@ Two architectural blockers and five corrections. All claims re-verified against
 requires a whole line to match, and the binary is a bundled JS blob where
 literals sit inside very long minified lines. Both are present.
 
+### Revision 4 — third review round
+
+One run-model bug, two consistency/race issues, three cleanups.
+
+| # | Change | Evidence |
+|---|---|---|
+| 1 | **`compact` is not a run boundary** (§5.2, §6.3, §6.4). Normalized to `context.compacted`; `run.started` sources are `startup`/`resume`/`clear`/`fork` only | **Verified from the binary's schema**: `SessionEnd.reason ∈ {clear, resume, logout, prompt_input_exit, other}` — no `compact`. A compacting run never ends, so no new run begins |
+| 2 | §7.2's "unique by construction" bullet **deleted** — it contradicted the corrected §5.4 | Stale revision-2 text; hooks make session↔transcript exact, not process identity |
+| 3 | **Correlated blocker clearing** (§9.4). Exact blockers clear only on correlated resolution; "transcript advanced" now clears heuristic blockers only | **Verified**: `prompt_id` and `tool_use_id` present in hook payloads. Without this, transcript lag (§5.4) makes a live permission dialog vanish from the rail |
+| 4 | `signal_events` splits `occurred_at` (hook fired) from `ingested_at` (spool read) | A spooled event may be ingested hours later; ordering by ingestion would be wrong |
+| 5 | Activity is **current while active, last known while disconnected** (§9.2) | Wording; prevents reading a lost signal as "nothing pending" |
+| 6 | Summary no longer says "7-state machine"; §13 says phases 1–5 "never control a run or send input" rather than "touch nothing running" | Phase 2 optionally installs hooks, so the old claim was literally false |
+
+**Adopted from the full hook enumeration:** `PostCompact` (for #1) and
+`PermissionDenied` (a correlated resolution signal for #3).
+
+**Available but deliberately not adopted.** The binary exposes 33 hook events,
+including `PostToolUseFailure`, `PostToolBatch`, `UserPromptExpansion`,
+`PreModelSwitch`/`PostModelSwitch`, `TeammateIdle`, `TaskCreated`/`TaskCompleted`,
+`ConfigChange`, `WorktreeCreate`/`WorktreeRemove`, `InstructionsLoaded`,
+`FileChanged`, `DirectoryAdded`, `Setup`. `WorktreeCreate`/`WorktreeRemove` are
+the most tempting — they bear directly on §9.5 — but v1's worktree badge already
+works from `cwd` plus `CwdChanged`, and every added hook is another subprocess
+per event in the user's sessions. Revisit if the cwd-based badge proves
+insufficient.
+
 ---
 
 ## 16. Prerequisites and open items
@@ -1069,7 +1140,8 @@ literals sit inside very long minified lines. Both are present.
 | Home screen | One card per session |
 | Graph | Radial, multi-depth, angle = spawn order, radius grows with siblings |
 | Messages | Beat = human turn; deterministic headlines; full text one click away |
-| Alerts | Global rail incl. attached; 7-state machine with confidence + source |
+| Alerts | Global rail incl. attached; lifecycle × activity state, confidence + source |
+| Blocker clearing | Correlated by `prompt_id` / `tool_use_id`, never "transcript moved" |
 | Cross-provider | Worktree contention badge |
 | Launching | Probed capabilities; multi-location executable discovery |
 | Excluded from v1 | Search, deep history, keystroke injection, AI summarization, file-level contention |
