@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../../src/store/db.ts';
-import { countEvents } from '../../src/store/ingest.ts';
+import { countEvents, getIngestState } from '../../src/store/ingest.ts';
 import { ingestFileOnce } from '../../src/watch/watcher.ts';
 
 let dir: string, file: string;
@@ -194,5 +194,46 @@ describe('ingestFileOnce — resume across a tail (B2/B3)', () => {
       "SELECT payload FROM events WHERE kind='prose' AND source_file=? ORDER BY id",
     ).all(rollout) as any[];
     expect(prose.map(r => JSON.parse(r.payload).text)).toEqual(['first', 'second']);
+  });
+});
+
+// F1: both parsers already extract provider_cli_version onto the
+// session.started event's payload; it was simply never plumbed into the
+// ingest meta ingestFileOnce writes, so ingest_files.provider_cli_version
+// was always NULL regardless.
+describe('ingestFileOnce — provider_cli_version (F1)', () => {
+  it('records the Claude CLI version from the session.started record', () => {
+    const db = openDb(':memory:');
+    writeFileSync(file, JSON.stringify({
+      type: 'assistant', uuid: 'u1', sessionId: 's1', cwd: '/repo', version: '2.1.267',
+      timestamp: '2026-09-10T00:00:00.000Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'one' }], usage: {} },
+    }) + '\n');
+    ingestFileOnce(db, file, 'claude');
+    expect(getIngestState(db, file)?.provider_cli_version).toBe('2.1.267');
+  });
+
+  it('records the Codex CLI version from the session_meta record', () => {
+    const db = openDb(':memory:');
+    const rollout = join(dir, 'rollout-v.jsonl');
+    writeFileSync(rollout, JSON.stringify({
+      timestamp: '2026-09-10T00:00:00Z', type: 'session_meta',
+      payload: { session_id: 's1', id: 's1', cwd: '/repo', cli_version: '0.152.1' },
+    }) + '\n');
+    ingestFileOnce(db, rollout, 'codex');
+    expect(getIngestState(db, rollout)?.provider_cli_version).toBe('0.152.1');
+  });
+
+  it('preserves a previously recorded cli version across a tail chunk that carries none', () => {
+    const db = openDb(':memory:');
+    writeFileSync(file, JSON.stringify({
+      type: 'assistant', uuid: 'u1', sessionId: 's1', cwd: '/repo', version: '2.1.267',
+      timestamp: '2026-09-10T00:00:00.000Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'one' }], usage: {} },
+    }) + '\n');
+    ingestFileOnce(db, file, 'claude');
+    appendFileSync(file, REC('u2', 'two')); // no cwd/version -- a plain tail record
+    ingestFileOnce(db, file, 'claude');
+    expect(getIngestState(db, file)?.provider_cli_version).toBe('2.1.267');
   });
 });

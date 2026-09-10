@@ -115,10 +115,18 @@ export function ingestFileOnce(db: Db, path: string, provider: Provider): Ingest
   const events = parse(tail.lines, path, resume);
   const unparsed = events.filter(e => e.kind === 'unparsed').length;
 
+  // F1: provider_cli_version is only ever present on the session.started
+  // record, which (like session identity above) is seen once, at byte 0 --
+  // a tail chunk with no session.started must not clobber the value an
+  // earlier full parse of this file already recorded.
+  const started = events.find(e => e.kind === 'session.started');
+  const providerCliVersion = started
+    ? ((started.payload as { cliVersion?: string | null }).cliVersion ?? null)
+    : (prior?.provider_cli_version ?? null);
+
   const meta = {
     inode: tail.inode, size: tail.size, mtime: new Date().toISOString(),
-    bytesConsumed: tail.newOffset, parserVersion: version,
-    providerCliVersion: null as string | null,
+    bytesConsumed: tail.newOffset, parserVersion: version, providerCliVersion,
   };
 
   let written = 0;
