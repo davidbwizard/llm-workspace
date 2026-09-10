@@ -10,7 +10,7 @@
     "cli": "node --experimental-strip-types src/cli.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1",
+    "better-sqlite3": "^12.11.1",
     "chokidar": "^4.0.3"
   },
   "devDependencies": {
