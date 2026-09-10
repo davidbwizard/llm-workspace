@@ -72,6 +72,80 @@ describe('formatEventLine', () => {
   });
 });
 
+// formatEventLine runs sanitizeForTerminal over every provider-sourced field
+// it prints: prose text, prompt.submitted text, tool.used name and target,
+// unparsed reason and recordType, agent.spawned name, and agentId. The test
+// above only exercises the prose branch -- a regression that dropped
+// sanitizeForTerminal from any of the other fields would pass the rest of
+// this suite untouched, since sanitizeForTerminal's own tests (below) never
+// go through formatEventLine. This table drives a hostile payload through
+// every one of those fields, and -- so an over-aggressive sanitizer would be
+// caught too -- a plain-text one alongside it.
+describe('formatEventLine sanitizes every provider-sourced field', () => {
+  // Built programmatically rather than pasted as literal bytes, which would
+  // be invisible in a diff and prone to being mangled by tooling.
+  const ESC = String.fromCharCode(27);  // CSI / OSC lead-in
+  const BEL = String.fromCharCode(7);   // classic OSC terminator
+  const C0 = String.fromCharCode(1);    // a C0 control other than ESC
+  const DEL = String.fromCharCode(127);
+  const C1 = String.fromCharCode(0x9b); // 8-bit CSI equivalent
+
+  const HOSTILE =
+    `safe${ESC}]52;c;aGVsbG8=${BEL}` + // OSC 52 clipboard write
+    `${ESC}[2K` +                      // CSI erase-line
+    `${C0}${DEL}${C1}` +                // bare C0 / DEL / C1
+    `end`;
+  const PLAIN = 'café -> "quote" ┌─┐ 日本語 ↑↓';
+  const DANGEROUS = /[\x00-\x1f\x7f-\x9f]/; // ESC falls in the C0 range
+
+  const fields: { field: string; event: (text: string) => any }[] = [
+    { field: 'prose text', event: text => ({
+      ts: '2026-09-10T14:31:22Z', kind: 'prose', agentId: null,
+      payload: { text },
+    }) },
+    { field: 'prompt.submitted text', event: text => ({
+      ts: '2026-09-10T14:31:22Z', kind: 'prompt.submitted', agentId: null,
+      payload: { text },
+    }) },
+    { field: 'tool.used name', event: text => ({
+      ts: '2026-09-10T14:31:22Z', kind: 'tool.used', agentId: null,
+      payload: { name: text, target: 'npm test' },
+    }) },
+    { field: 'tool.used target', event: text => ({
+      ts: '2026-09-10T14:31:22Z', kind: 'tool.used', agentId: null,
+      payload: { name: 'Bash', target: text },
+    }) },
+    { field: 'unparsed reason', event: text => ({
+      ts: '2026-09-10T14:31:22Z', kind: 'unparsed', agentId: null,
+      payload: { reason: text, recordType: 'weird_record' },
+    }) },
+    { field: 'unparsed recordType', event: text => ({
+      ts: '2026-09-10T14:31:22Z', kind: 'unparsed', agentId: null,
+      payload: { reason: 'unrecognized shape', recordType: text },
+    }) },
+    { field: 'agent.spawned name', event: text => ({
+      ts: '2026-09-10T14:31:22Z', kind: 'agent.spawned', agentId: null,
+      payload: { name: text, depth: 1 },
+    }) },
+    { field: 'agentId', event: text => ({
+      ts: '2026-09-10T14:31:22Z', kind: 'prose', agentId: text,
+      payload: { text: 'body' },
+    }) },
+  ];
+
+  for (const { field, event } of fields) {
+    it(`strips control sequences from ${field}`, () => {
+      const line = formatEventLine(event(HOSTILE));
+      expect(line).not.toMatch(DANGEROUS);
+    });
+
+    it(`leaves ordinary text in ${field} unchanged`, () => {
+      const line = formatEventLine(event(PLAIN));
+      expect(line).toContain(PLAIN);
+    });
+  }
+});
+
 // Transcript text is untrusted: it embeds raw tool output (file contents,
 // command output), so a crafted file read by an agent can carry a terminal
 // escape sequence. `stream` prints this text directly to stdout, so anything
