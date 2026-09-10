@@ -52,6 +52,10 @@ describe('parseAgentMeta', () => {
       name: 'final-review', type: 'final-review', model: 'opus',
       color: 'blue', depth: 0, parentAgentId: null,
     });
+    // Runtime check, not just a type-level one: this field's absence was
+    // the worst defect in this plan (colliding identity keys, silently
+    // dropped events).
+    expect(e.subIndex).toBe(0);
   });
 
   it('defaults depth to 0 when spawnDepth is absent', () => {

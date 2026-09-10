@@ -46,8 +46,9 @@ export function readTail(
     // A multi-byte character straddling a chunk boundary must NOT be decoded
     // as two halves: `buf.toString('utf8')` would yield U+FFFD replacement
     // chars, corrupting the line AND inflating its byte length — which shifts
-    // every subsequent offset, poisoning both the identity triple and
-    // newOffset, so the next incremental read resumes in the wrong place.
+    // every subsequent offset, poisoning both the identity key (source_file,
+    // source_offset, content_hash, sub_index) and newOffset, so the next
+    // incremental read resumes in the wrong place.
     // StringDecoder holds the partial sequence until the next chunk supplies
     // the rest. Verified: splitting a 4-byte emoji naively turns 19 bytes into
     // 27. 105 transcripts on the dev machine already exceed one chunk.

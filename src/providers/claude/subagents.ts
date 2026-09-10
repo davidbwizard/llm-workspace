@@ -17,7 +17,17 @@ export function findSubagents(sessionDir: string): SubagentRef[] {
   const dir = join(sessionDir, 'subagents');
   if (!existsSync(dir)) return [];
 
-  const entries = readdirSync(dir);
+  // Claude Code deletes its own transcripts once it decides it no longer
+  // needs them, and this app watches these directories continuously, so
+  // the directory can vanish between the existsSync check above and this
+  // read. That race is not a format error — treat it like "no subagents".
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return [];
+    throw err;
+  }
   const transcripts = new Set(
     entries.filter(f => f.endsWith('.jsonl')).map(f => f.slice(0, -'.jsonl'.length)),
   );
