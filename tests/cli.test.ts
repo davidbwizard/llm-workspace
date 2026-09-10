@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
 import { openDb } from '../src/store/db.ts';
 import { insertEvents } from '../src/store/ingest.ts';
 import type { NormalizedEvent } from '../src/core/types.ts';
 import type { LiveProcess } from '../src/discovery/parse.ts';
+import { buildHookFragments, planInstall, applyInstall, uninstall } from '../src/hooks/install.ts';
 import {
   resolvePaths, probeCapabilities, formatEventLine, sanitizeForTerminal,
   sessionRefs, formatCandidates, MAX_CANDIDATES_SHOWN,
@@ -35,6 +38,50 @@ describe('probeCapabilities', () => {
     const paths = resolvePaths(process.env.HOME!);
     const caps = probeCapabilities(paths);
     expect(caps.claudeTranscripts).toBe(existsSync(paths.claudeProjects));
+  });
+});
+
+// B1: task 12 removed the `_llmws` marker installed fragments used to carry
+// (settings.json entries now hold only the documented type/command/timeout
+// fields), but probeCapabilities kept grepping for it — so hooksInstalled
+// reported FAIL forever, even immediately after a correct install. The fix
+// recognizes ownership by the command string's shape instead, the same way
+// planInstall/uninstall do. These tests drive a REAL install (buildHookFragments
+// + planInstall + applyInstall) into a temp settings.json and then probe it,
+// so the installer and the prober cannot silently drift apart again.
+describe('probeCapabilities — hooksInstalled', () => {
+  function tempSettingsPaths() {
+    const home = mkdtempSync(join(tmpdir(), 'llmws-home-'));
+    const paths = resolvePaths(home);
+    mkdirSync(dirname(paths.claudeSettings), { recursive: true });
+    writeFileSync(paths.claudeSettings, JSON.stringify({ hooks: {} }));
+    return paths;
+  }
+
+  it('is true right after a real install, and false again after uninstall', () => {
+    const paths = tempSettingsPaths();
+    const fragments = buildHookFragments(join(dirname(paths.claudeSettings), 'helper.sh'));
+    const base = readFileSync(paths.claudeSettings, 'utf8');
+    const plan = planInstall(JSON.parse(base), fragments);
+    applyInstall(paths.claudeSettings, { ...plan, baseText: base });
+
+    expect(probeCapabilities(paths).hooksInstalled).toBe(true);
+
+    uninstall(paths.claudeSettings, plan.manifest);
+    expect(probeCapabilities(paths).hooksInstalled).toBe(false);
+  });
+
+  it('is false when settings.json has hooks that are not ours', () => {
+    const paths = tempSettingsPaths();
+    writeFileSync(paths.claudeSettings, JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] },
+    }));
+    expect(probeCapabilities(paths).hooksInstalled).toBe(false);
+  });
+
+  it('is false when settings.json does not exist', () => {
+    const home = mkdtempSync(join(tmpdir(), 'llmws-home-'));
+    expect(probeCapabilities(resolvePaths(home)).hooksInstalled).toBe(false);
   });
 });
 

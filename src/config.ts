@@ -5,6 +5,7 @@ import type { NormalizedEvent } from './core/types.ts';
 import type { Db } from './store/db.ts';
 import type { LiveProcess } from './discovery/parse.ts';
 import { classifyMatch, type SessionRef } from './discovery/match.ts';
+import { isOwnedHookCommand } from './hooks/install.ts';
 
 export interface Paths {
   claudeProjects: string;
@@ -36,6 +37,21 @@ export interface Capabilities {
   hooksInstalled: boolean;
 }
 
+/** Whether settings.json's hooks contain a fragment this app installed.
+ *  Installed fragments carry only the documented schema fields (type,
+ *  command, timeout) -- no private marker, no on-disk manifest to compare
+ *  against -- so ownership is recognized the same way planInstall and
+ *  uninstall recognize it: by the shape of the command string itself
+ *  (isOwnedHookCommand), not by a marker task 12 deliberately stopped
+ *  writing. */
+function hasOwnedHooks(settings: any): boolean {
+  const hooks = settings?.hooks;
+  if (!hooks || typeof hooks !== 'object') return false;
+  return Object.values(hooks).some((entries: any) =>
+    Array.isArray(entries) && entries.some((entry: any) =>
+      Array.isArray(entry?.hooks) && entry.hooks.some((h: any) => isOwnedHookCommand(h?.command))));
+}
+
 /** Spec §4.1: capabilities are PROBED, never hardcoded. A capability that is
  *  absent is a fact to report, not an error. */
 export function probeCapabilities(paths: Paths): Capabilities {
@@ -47,8 +63,9 @@ export function probeCapabilities(paths: Paths): Capabilities {
 
   let hooksInstalled = false;
   try {
-    hooksInstalled = existsSync(paths.claudeSettings)
-      && /_llmws/.test(readFileSync(paths.claudeSettings, 'utf8'));
+    hooksInstalled = existsSync(paths.claudeSettings) && hasOwnedHooks(
+      JSON.parse(readFileSync(paths.claudeSettings, 'utf8')),
+    );
   } catch { hooksInstalled = false; }
 
   return {

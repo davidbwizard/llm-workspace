@@ -45,6 +45,18 @@ function entryFor(f: Fragment) {
   };
 }
 
+/** Recognizes a hook command emitted by buildHookFragments, for any helper
+ *  path: `sh '<path>'` where `<path>` ends in `helper.sh`. Installed
+ *  fragments carry only the documented schema fields (type, command,
+ *  timeout) -- there is no `_llmws` marker and no on-disk manifest to read
+ *  back later -- so this is the one identifying shape our own installer
+ *  ever writes, and it is what both the hooksInstalled probe (config.ts)
+ *  and a future "discover what we own without a manifest" path should test
+ *  against, rather than re-deriving their own notion of ownership. */
+export function isOwnedHookCommand(command: unknown): boolean {
+  return typeof command === 'string' && /^sh '.*helper\.sh'$/.test(command);
+}
+
 /** Removes every hook entry whose `hooks[].command` exactly equals `command`.
  *  Exact match, never a substring: a user hook that merely mentions our
  *  helper's path (e.g. as an argument to their own command) is left alone. */
