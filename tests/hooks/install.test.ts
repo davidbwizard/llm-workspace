@@ -39,6 +39,17 @@ describe('planInstall', () => {
     const second = planInstall(first.next, buildHookFragments('/h.sh'));
     expect(JSON.stringify(second.next)).toBe(JSON.stringify(first.next));
   });
+
+  it('emits only schema fields on hook objects — no private marker property', () => {
+    const plan = planInstall({}, buildHookFragments('/h.sh'));
+    for (const event of Object.keys(plan.next.hooks)) {
+      for (const entry of plan.next.hooks[event]) {
+        for (const h of entry.hooks) {
+          expect(Object.keys(h).sort()).toEqual(['command', 'timeout', 'type']);
+        }
+      }
+    }
+  });
 });
 
 describe('applyInstall', () => {
@@ -72,5 +83,26 @@ describe('uninstall', () => {
     const after = JSON.parse(readFileSync(settings, 'utf8'));
     expect(after.hooks.PreToolUse.some((e: any) => e.hooks[0].command === 'mine.sh')).toBe(true);
     expect(JSON.stringify(after)).not.toContain('/h.sh');
+  });
+
+  it('matches the command exactly, not as a substring — a user hook merely mentioning our path is untouched', () => {
+    const fragments = buildHookFragments('/h.sh');
+    const ourCommand = fragments[0]!.command;
+    const existing = {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: `echo "runs ${ourCommand} too" further-arg` }] }],
+      },
+    };
+    writeFileSync(settings, JSON.stringify(existing));
+    const base = readFileSync(settings, 'utf8');
+    const plan = planInstall(JSON.parse(base), fragments);
+    applyInstall(settings, { ...plan, baseText: base });
+
+    uninstall(settings, plan.manifest);
+    const after = JSON.parse(readFileSync(settings, 'utf8'));
+    // the user's entry merely mentions our command as a substring of its own —
+    // it must survive, and only our exact-match entry is removed.
+    expect(after.hooks.Stop.some((e: any) => e.hooks[0].command.startsWith('echo'))).toBe(true);
+    expect(after.hooks.Stop.some((e: any) => e.hooks[0].command === ourCommand)).toBe(false);
   });
 });

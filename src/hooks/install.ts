@@ -31,10 +31,17 @@ export function buildHookFragments(helperPath: string): Fragment[] {
   return frags;
 }
 
+/** Emits only fields the documented hook schema defines (type, command,
+ *  timeout). Earlier drafts tagged each entry with a private `_llmws`
+ *  marker field for ownership tracking, but that assumes unknown fields on
+ *  a hook object are tolerated — unverified, and not worth risking against
+ *  the user's live config. Ownership is tracked by the `command` string
+ *  instead (see planInstall/uninstall below), which is already a real,
+ *  unambiguous schema field: our helper's absolute path. */
 function entryFor(f: Fragment) {
   return {
     ...(f.matcher ? { matcher: f.matcher } : {}),
-    hooks: [{ type: 'command', command: f.command, timeout: 5, _llmws: f.id }],
+    hooks: [{ type: 'command', command: f.command, timeout: 5 }],
   };
 }
 
@@ -48,7 +55,7 @@ export function planInstall(existing: any, fragments: Fragment[]): InstallPlan {
     next.hooks[f.event] ??= [];
     const list: any[] = next.hooks[f.event];
     const already = list.some(e =>
-      Array.isArray(e?.hooks) && e.hooks.some((h: any) => h?._llmws === f.id));
+      Array.isArray(e?.hooks) && e.hooks.some((h: any) => h?.command === f.command));
     if (!already) list.push(entryFor(f));
     owned.push(f.id);
   }
@@ -73,14 +80,16 @@ export function applyInstall(settingsPath: string, plan: InstallPlan & { baseTex
   renameSync(tmp, settingsPath);
 }
 
-/** Removes only entries whose `_llmws` id is in the manifest. Anything the
- *  user added or edited by hand is left alone. */
+/** Removes only entries whose `hooks[].command` exactly equals the
+ *  manifest's recorded command. Exact match, never a substring: a user
+ *  hook that merely mentions our helper's path (e.g. as an argument to
+ *  their own command) is left alone. Anything the user added or edited by
+ *  hand is left alone. */
 export function uninstall(settingsPath: string, manifest: Manifest): void {
   const cfg = JSON.parse(readFileSync(settingsPath, 'utf8'));
-  const owned = new Set(manifest.owned);
   for (const event of Object.keys(cfg.hooks ?? {})) {
     cfg.hooks[event] = (cfg.hooks[event] as any[]).filter(entry =>
-      !(Array.isArray(entry?.hooks) && entry.hooks.some((h: any) => owned.has(h?._llmws))));
+      !(Array.isArray(entry?.hooks) && entry.hooks.some((h: any) => h?.command === manifest.command)));
     if (cfg.hooks[event].length === 0) delete cfg.hooks[event];
   }
   const tmp = join(dirname(settingsPath), `.settings.json.llmws.${process.pid}.tmp`);
