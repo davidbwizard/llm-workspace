@@ -427,6 +427,52 @@ disk:
 threads are separate rollout files linked by parent id, so the graph is built by
 walking that tree.
 
+### 5.6 Codex writes two record envelopes, and they are mutually exclusive
+
+Measured across 293 real rollouts on the development machine: **131 files use a
+flat `event_msg/agent_message` shape; 163 use `event_msg/item_completed`
+wrapping a typed `item`.** Both occur under `cli_version 0.152.1` with the same
+originator, so this is not a version cutover that can be assumed away. **No file
+mixes them**, so a parser handling both cannot double-count.
+
+A parser recognising only the flat shape leaves **47.5 percent of real records
+unparsed** — including 3,926 `AgentMessage` prose events across 40 sessions.
+That is the narration stream section 8.3's beat cards are built from, so Codex
+sessions would render essentially empty while reporting success.
+
+`item_completed` carries `item.type`:
+
+| `item.type` | normalized event |
+|---|---|
+| `AgentMessage` | `prose` |
+| `UserMessage` | `prompt.submitted` |
+| `CommandExecution` | `tool.used` (payload carries `command`) |
+| `Extension` (e.g. `web.search`) | `tool.used` (payload carries `kind`, `query`) |
+| `FileChange` | `tool.used` |
+| `ContextCompaction` | `context.compacted` |
+| `Reasoning` | known, not mapped in v1 |
+
+The flat envelope maps as follows, for files that use it:
+
+| Codex record | normalized event |
+|---|---|
+| `event_msg/user_message` | `prompt.submitted` |
+| `event_msg/agent_message` | `prose` |
+| `event_msg/task_complete` | `turn.completed` |
+| `response_item/function_call` | `tool.used` |
+| `response_item/custom_tool_call` | `tool.used` |
+| `event_msg/task_started`, `token_count`, `agent_reasoning` | known, not mapped in v1 |
+
+Known top-level types that are not `session_meta`, `event_msg` or
+`response_item`: `turn_context`, `world_state`, `compacted`. Recognise them so
+they do not flood the `unparsed` channel; mapping them is deferred.
+
+**This was found only because section 6.2's fail-loudly rule was implemented.**
+The parser surfaced 47.5 percent unparsed rather than silently discarding it.
+An earlier design that skipped unrecognized records would have shipped Codex
+support that quietly displayed nothing, and the gap would have looked like an
+empty session rather than a parser defect.
+
 ---
 
 ## 6. Data model
