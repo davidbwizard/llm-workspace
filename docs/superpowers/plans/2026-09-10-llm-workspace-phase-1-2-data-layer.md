@@ -3133,6 +3133,126 @@ git commit -m "feat(cli): probe, ingest and live stream — phases 1-2 deliverab
 
 ---
 
+---
+
+### Task 16: MIT attribution for harvested code
+
+Added during execution. The spec's section 3 states the licence obligation
+("MIT requires the copyright notice travel with substantial portions. Carry a
+NOTICE crediting Chaitanya Giri; keep licence headers on harvested files") but
+no task implemented it. This closes that gap. Run it LAST, so it reflects
+everything Plan 1 actually harvested.
+
+**Files:**
+- Create: `NOTICE`
+- Test: `tests/notice.test.ts`
+
+**Interfaces:**
+- Consumes: nothing
+- Produces: nothing. This is a compliance artefact.
+
+- [ ] **Step 1: Establish what was actually harvested**
+
+Run and record the result:
+
+```bash
+grep -rn "harvested\|munder-difflin" src/ --include=*.ts
+```
+
+Every file that appears must be listed in `NOTICE`. Do not list files that were
+merely *informed by* munder-difflin — only ones carrying its code. As of this
+task that is `src/providers/claude/projectKey.ts` (the `projectKey` and
+`legacyProjectKey` bodies are verbatim); verify rather than assume, since later
+tasks may add more.
+
+- [ ] **Step 2: Write the failing test**
+
+`tests/notice.test.ts`:
+```ts
+import { describe, it, expect } from 'vitest';
+import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+
+describe('NOTICE', () => {
+  it('exists', () => {
+    expect(existsSync('NOTICE')).toBe(true);
+  });
+
+  it('carries the upstream MIT copyright line verbatim', () => {
+    const notice = readFileSync('NOTICE', 'utf8');
+    expect(notice).toContain('Copyright (c) 2026 Chaitanya Giri');
+    expect(notice).toContain('MIT');
+    expect(notice).toContain('munder-difflin');
+  });
+
+  it('lists every source file that carries harvested code', () => {
+    const notice = readFileSync('NOTICE', 'utf8');
+    const hits = execFileSync('grep', ['-rl', 'harvested', 'src'], { encoding: 'utf8' })
+      .split('\n').filter(Boolean);
+    expect(hits.length).toBeGreaterThan(0);
+    for (const file of hits) expect(notice).toContain(file);
+  });
+});
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `npx vitest run tests/notice.test.ts`
+Expected: FAIL, NOTICE does not exist.
+
+- [ ] **Step 4: Write NOTICE**
+
+Use this exact structure, substituting the real file list from Step 1:
+
+```
+llm-workspace
+
+This project incorporates code from munder-difflin
+(https://github.com/chaitanyagiri/munder-difflin), used under the MIT licence.
+
+    MIT License
+
+    Copyright (c) 2026 Chaitanya Giri
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+Files containing harvested code:
+
+  <one line per file from Step 1>
+```
+
+Copy the licence body from `../munder-difflin/LICENSE` rather than retyping it,
+so the text is exact.
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `npx vitest run tests/notice.test.ts`
+Expected: PASS, 3 tests.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add NOTICE tests/notice.test.ts
+git commit -m "docs: MIT attribution for code harvested from munder-difflin"
+```
+
+
 ## Self-Review
 
 **Spec coverage.** Every phase-1/2 requirement maps to a task:
