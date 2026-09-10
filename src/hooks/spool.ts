@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import type Database from 'better-sqlite3';
 import type { Db } from '../store/db.ts';
 
 const INSERT = `
@@ -10,6 +11,23 @@ VALUES
   (@eventId, @occurredAt, @ingestedAt, @provider, @sessionId, @runId,
    @controlHandleId, @agentId, @promptId, @toolUseId, @kind, @payload)`;
 
+/** ingestSpool runs on a timer for the life of the watcher process, so a
+ *  fresh db.prepare() on every call has the same exposure as store/ingest.ts
+ *  had: native Statement handles piling up faster than GC reaps them, which
+ *  under Node 24 + better-sqlite3 can abort the process during finalization
+ *  (see store/ingest.ts's statementsFor for the full account). Cache the one
+ *  statement this module needs per Db instance, the same way. */
+const statementCache = new WeakMap<Db, Database.Statement>();
+
+function insertStatement(db: Db): Database.Statement {
+  let stmt = statementCache.get(db);
+  if (!stmt) {
+    stmt = db.prepare(INSERT);
+    statementCache.set(db, stmt);
+  }
+  return stmt;
+}
+
 /** Spec §5.4 / §6.1. The helper stamps a unique event_id, so ingestion is
  *  idempotent and a re-read of the spool cannot duplicate events.
  *  `occurred_at` (when the hook fired) is kept distinct from `ingested_at`
@@ -17,7 +35,7 @@ VALUES
  *  ordering by ingestion time would be wrong. */
 export function ingestSpool(db: Db, spoolDir: string, provider = 'claude'): number {
   if (!existsSync(spoolDir)) return 0;
-  const stmt = db.prepare(INSERT);
+  const stmt = insertStatement(db);
   const ingestedAt = new Date().toISOString();
   let written = 0;
 
