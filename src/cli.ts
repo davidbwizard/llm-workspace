@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 import { mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { openDb } from './store/db.ts';
 import { ingestFileOnce, startWatcher } from './watch/watcher.ts';
 import { ingestSpool, rotateSpool } from './hooks/spool.ts';
 import { readCodexThreads, readSpawnEdges, lastStateDbError } from './providers/codex/stateDb.ts';
 import { parsePgrep, parseTty, parseLsofCwd, classifyHost, type LiveProcess } from './discovery/parse.ts';
-import { classifyMatch, type SessionRef } from './discovery/match.ts';
-import { resolvePaths, probeCapabilities, formatEventLine } from './config.ts';
+import {
+  resolvePaths, probeCapabilities, formatEventLine,
+  sessionRefs, buildProcessChain, annotateSessionsWithProcesses, formatCandidates,
+} from './config.ts';
 import type { Provider } from './core/types.ts';
-import type { Db } from './store/db.ts';
 
 const paths = resolvePaths(homedir());
 const cmd = process.argv[2] ?? 'help';
@@ -33,7 +34,7 @@ function open() {
   return openDb(paths.db);
 }
 
-// --- sessions: discovery/match wiring (Task 11) -----------------------
+// --- sessions: live process discovery (Task 11's discovery/parse.ts) ---
 //
 // Everything here shells out to pgrep/ps/lsof. Every argument reaches
 // execFileSync as its own argv entry, never interpolated into a shell
@@ -47,100 +48,14 @@ function safeExec(bin: string, args: string[]): string {
   }
 }
 
-/** Walk the parent chain via `ps -o ppid=,comm=`, one hop per call, so
- *  classifyHost gets `[self, parent, grandparent, ...]` (spec §7.3 expects
- *  chain[0] to be the process being classified, not an ancestor).
- *
- *  `comm=` on macOS often returns a full executable path rather than a bare
- *  name (e.g. ".../iTerm.app/Contents/MacOS/iTerm2"); classifyHost's fixture
- *  chains use bare names ('iTerm2', 'Code Helper', '-zsh'), so basename()
- *  each hop to match — verified against live ancestry chains on this
- *  machine that iTerm2/Terminal/VS Code all end in a plain basename either
- *  way. */
-function processChain(pid: number, maxDepth = 12): string[] {
-  const chain: string[] = [];
-  let cur: number | null = pid;
-  let depth = 0;
-  while (cur !== null && depth < maxDepth) {
-    const line: string = safeExec('ps', ['-o', 'ppid=,comm=', '-p', String(cur)]).trim();
-    const m: RegExpMatchArray | null = line.match(/^(\d+)\s+(.*)$/);
-    if (!m) break;
-    chain.push(basename(m[2]!.trim()));
-    const ppid: number = Number(m[1]);
-    if (ppid <= 1) break;
-    cur = ppid;
-    depth++;
-  }
-  return chain;
-}
-
 function liveClaudeProcesses(): LiveProcess[] {
   const pids = parsePgrep(safeExec('pgrep', ['-x', 'claude']));
   return pids.map(pid => ({
     pid,
     tty: parseTty(safeExec('ps', ['-o', 'tty=', '-p', String(pid)])),
     cwd: parseLsofCwd(safeExec('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'])),
-    host: classifyHost(processChain(pid)),
+    host: classifyHost(buildProcessChain(pid, p => safeExec('ps', ['-o', 'ppid=,comm=', '-p', String(p)]))),
   }));
-}
-
-/** A session with no event newer than this is treated as ended, not a live
- *  candidate for cwd matching. Without this, `sessions` matches a running
- *  process against every session that ever used that directory -- on a
- *  machine with months of history that is 6 to 199 "candidates" for every
- *  single live process, which is ambiguity in name only: it is not a
- *  genuine collision, just the caller feeding classifyMatch a candidate
- *  pool it was never meant to see. 30 minutes is generous enough that an
- *  idle-but-still-open session is not falsely dropped. */
-const SESSION_RECENCY_WINDOW_MS = 30 * 60 * 1000;
-
-/** Candidate sessions for matching: every session_id whose most recent
- *  event (of any kind, not just session.started) falls within
- *  SESSION_RECENCY_WINDOW_MS of now, paired with the cwd its session.started
- *  event recorded. Requires `ingest` to have run at least once — this reads
- *  whatever is already in the store, it does not ingest on the caller's
- *  behalf.
- *
- *  Ordered most-recent-first, so that when classifyMatch's candidate lists
- *  still get truncated for display (a genuine, still-live collision can
- *  itself run to several entries), the ones shown are the most likely to
- *  matter. */
-function sessionRefs(db: Db): SessionRef[] {
-  const startedRows = db.prepare(
-    `SELECT session_id as sessionId, payload FROM events
-     WHERE kind = 'session.started' ORDER BY id DESC`,
-  ).all() as { sessionId: string; payload: string }[];
-  const cwdBySession = new Map<string, string | null>();
-  for (const r of startedRows) {
-    if (cwdBySession.has(r.sessionId)) continue; // keep the most recent row per session
-    let cwd: string | null = null;
-    try { cwd = JSON.parse(r.payload)?.cwd ?? null; } catch { cwd = null; }
-    cwdBySession.set(r.sessionId, cwd);
-  }
-
-  const lastSeenRows = db.prepare(
-    `SELECT session_id as sessionId, MAX(ts) as lastTs FROM events
-     GROUP BY session_id ORDER BY lastTs DESC`,
-  ).all() as { sessionId: string; lastTs: string }[];
-
-  const cutoff = Date.now() - SESSION_RECENCY_WINDOW_MS;
-  const out: SessionRef[] = [];
-  for (const row of lastSeenRows) {
-    const cwd = cwdBySession.get(row.sessionId);
-    if (cwd === undefined) continue; // no session.started event -- cwd unknown, cannot match on it
-    const lastMs = Date.parse(row.lastTs);
-    if (!Number.isFinite(lastMs) || lastMs < cutoff) continue; // ended, or timestamp unparseable
-    out.push({ sessionId: row.sessionId, cwd });
-  }
-  return out;
-}
-
-const MAX_CANDIDATES_SHOWN = 5;
-
-function formatCandidates(candidates: string[]): string {
-  if (candidates.length <= MAX_CANDIDATES_SHOWN) return candidates.join(', ');
-  const shown = candidates.slice(0, MAX_CANDIDATES_SHOWN).join(', ');
-  return `${shown}, and ${candidates.length - MAX_CANDIDATES_SHOWN} more`;
 }
 
 if (cmd === 'probe') {
@@ -169,25 +84,29 @@ if (cmd === 'probe') {
     console.log(`PASS  codex spawn edges readable -- ${edges.length} edges`);
   }
 } else if (cmd === 'sessions') {
+  // Spec §7.1a: the store's transcript activity is the source of truth for
+  // which sessions exist; live process discovery only enriches each one
+  // with pid/tty/host where a process can be found. A session with no
+  // matching process still lists, with match `unknown` -- it does not
+  // disappear the way it would under a process-first enumeration.
   const db = open();
   const procs = liveClaudeProcesses();
   const sessions = sessionRefs(db);
-  const matches = classifyMatch(procs, sessions);
+  const annotated = annotateSessionsWithProcesses(sessions, procs);
 
-  if (matches.length === 0) {
-    console.log('no live claude processes found');
+  if (annotated.length === 0) {
+    console.log('no sessions active in the last 30 minutes were found in the store -- run `ingest` first if the store is empty, or none of the sessions in it has had activity that recently');
   }
-  for (const m of matches) {
-    const proc = procs.find(p => p.pid === m.pid);
-    console.log(`pid ${m.pid}  tty ${m.tty ?? '-'}  host ${m.host}  match ${m.quality}`);
-    console.log(`    cwd ${proc?.cwd ?? '(unknown)'}`);
-    if (m.quality === 'unique') console.log(`    session ${m.sessionId}`);
-    if (m.quality === 'ambiguous') {
-      console.log(`    candidates (${m.candidates.length}): ${formatCandidates(m.candidates)}`);
+  for (const s of annotated) {
+    console.log(`session ${s.sessionId}  match ${s.quality}`);
+    console.log(`    cwd ${s.cwd ?? '(unknown)'}`);
+    if (s.quality === 'unique' && s.process) {
+      console.log(`    pid ${s.process.pid}  tty ${s.process.tty ?? '-'}  host ${s.process.host}`);
     }
-  }
-  if (sessions.length === 0) {
-    console.log('\nWARN  no sessions active in the last 30 minutes were found in the store -- run `ingest` first if the store is empty, or none of the matching sessions has had activity that recently');
+    if (s.quality === 'ambiguous') {
+      const pidStrs = s.candidatePids.map(String);
+      console.log(`    candidate processes (${pidStrs.length}): ${formatCandidates(pidStrs)}`);
+    }
   }
 } else if (cmd === 'ingest') {
   const db = open();
@@ -224,7 +143,7 @@ if (cmd === 'probe') {
   console.log(`llm-workspace (phases 1-2)
 
   probe      report which providers, databases and tools are present
-  sessions   list live provider processes and their session match quality
+  sessions   list recently active sessions and their live process, if any
   ingest     one-shot ingest of every transcript into the index
   stream     watch live and print the normalized event stream
 `);

@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import type { NormalizedEvent } from './core/types.ts';
+import type { Db } from './store/db.ts';
+import type { LiveProcess } from './discovery/parse.ts';
+import { classifyMatch, type SessionRef } from './discovery/match.ts';
 
 export interface Paths {
   claudeProjects: string;
@@ -115,4 +118,182 @@ export function formatEventLine(e: Pick<NormalizedEvent, 'ts' | 'kind' | 'agentI
   if (e.kind === 'unparsed') return `${time}  ! unparsed: ${text(p.reason)} ${text(p.recordType ?? '')}`;
   if (NOISY.has(e.kind)) return `${time}    * ${e.kind}`;
   return `${time}  ${e.kind}`;
+}
+
+// --- sessions -----------------------------------------------------------
+//
+// Spec §7.1a: transcript activity determines which sessions exist; process
+// discovery is enrichment, not the source of truth. So the `sessions`
+// command enumerates sessions from the store (sessionRefs, below) and
+// annotates each with a live process where one is found
+// (annotateSessionsWithProcesses), rather than enumerating processes and
+// treating a session as invisible when none matches.
+
+/** A session with no event newer than this is treated as ended, not a live
+ *  candidate for cwd matching. Without this, `sessions` matches a running
+ *  process against every session that ever used that directory -- on a
+ *  machine with months of history that is 6 to 199 "candidates" for every
+ *  single live process, which is ambiguity in name only: it is not a
+ *  genuine collision, just the caller feeding classifyMatch a candidate
+ *  pool it was never meant to see. 30 minutes is generous enough that an
+ *  idle-but-still-open session is not falsely dropped. */
+export const SESSION_RECENCY_WINDOW_MS = 30 * 60 * 1000;
+
+/** Candidate sessions for matching: every session_id whose most recent
+ *  event (of any kind, not just session.started) falls within
+ *  SESSION_RECENCY_WINDOW_MS of `now`, paired with the cwd its
+ *  session.started event recorded. Requires `ingest` to have run at least
+ *  once — this reads whatever is already in the store, it does not ingest
+ *  on the caller's behalf.
+ *
+ *  `now` is injectable (defaults to `Date.now()`) so tests can pin it
+ *  instead of racing the wall clock.
+ *
+ *  Ordered most-recent-first, so that when a candidate list still gets
+ *  truncated for display (a genuine, still-live collision can itself run
+ *  to several entries), the ones shown are the most likely to matter. */
+export function sessionRefs(db: Db, now: number = Date.now()): SessionRef[] {
+  const startedRows = db.prepare(
+    `SELECT session_id as sessionId, payload FROM events
+     WHERE kind = 'session.started' ORDER BY id DESC`,
+  ).all() as { sessionId: string; payload: string }[];
+  const cwdBySession = new Map<string, string | null>();
+  for (const r of startedRows) {
+    if (cwdBySession.has(r.sessionId)) continue; // keep the most recent row per session
+    let cwd: string | null = null;
+    try { cwd = JSON.parse(r.payload)?.cwd ?? null; } catch { cwd = null; }
+    cwdBySession.set(r.sessionId, cwd);
+  }
+
+  const lastSeenRows = db.prepare(
+    `SELECT session_id as sessionId, MAX(ts) as lastTs FROM events
+     GROUP BY session_id ORDER BY lastTs DESC`,
+  ).all() as { sessionId: string; lastTs: string }[];
+
+  const cutoff = now - SESSION_RECENCY_WINDOW_MS;
+  const out: SessionRef[] = [];
+  for (const row of lastSeenRows) {
+    const cwd = cwdBySession.get(row.sessionId);
+    if (cwd === undefined) continue; // no session.started event -- cwd unknown, cannot match on it
+    const lastMs = Date.parse(row.lastTs);
+    if (!Number.isFinite(lastMs) || lastMs < cutoff) continue; // ended, or timestamp unparseable
+    out.push({ sessionId: row.sessionId, cwd });
+  }
+  return out;
+}
+
+export const MAX_CANDIDATES_SHOWN = 5;
+
+/** Truncates a long candidate list to MAX_CANDIDATES_SHOWN entries plus a
+ *  count, for terminal readability -- a cwd with months of history can
+ *  otherwise dump hundreds of ids on one line. */
+export function formatCandidates(candidates: string[]): string {
+  if (candidates.length <= MAX_CANDIDATES_SHOWN) return candidates.join(', ');
+  const shown = candidates.slice(0, MAX_CANDIDATES_SHOWN).join(', ');
+  return `${shown}, and ${candidates.length - MAX_CANDIDATES_SHOWN} more`;
+}
+
+export interface ProcessChainHop { ppid: number; comm: string }
+
+/** Parse one hop of `ps -o ppid=,comm= -p <pid>` output: the parent pid and
+ *  this process's own command name. Returns null when the process no longer
+ *  exists (empty output, e.g. it exited between discovery and inspection)
+ *  or the output isn't in the expected shape. */
+export function parseProcessChainHop(raw: string): ProcessChainHop | null {
+  const line = raw.trim();
+  const m = line.match(/^(\d+)\s+(.*)$/);
+  if (!m) return null;
+  return { ppid: Number(m[1]), comm: m[2]!.trim() };
+}
+
+/** Walk the parent chain, one hop per call to `hop(pid)`, so classifyHost
+ *  gets `[self, parent, grandparent, ...]` (chain[0] is the process being
+ *  classified, not an ancestor). `hop` is injected — cli.ts passes a real
+ *  `ps` invocation; tests pass a canned sequence, so this walk (the depth
+ *  cap, the stop conditions, the basename normalization) is verifiable
+ *  without shelling out.
+ *
+ *  `comm` from `ps -o comm=` on macOS is often a full executable path
+ *  rather than a bare name (e.g. ".../iTerm.app/Contents/MacOS/iTerm2");
+ *  classifyHost's fixtures use bare names ('iTerm2', 'Code Helper', '-zsh'),
+ *  so each hop is basename()'d to match. */
+export function buildProcessChain(pid: number, hop: (pid: number) => string, maxDepth = 12): string[] {
+  const chain: string[] = [];
+  let cur: number | null = pid;
+  let depth = 0;
+  while (cur !== null && depth < maxDepth) {
+    const step = parseProcessChainHop(hop(cur));
+    if (!step) break;
+    chain.push(basename(step.comm));
+    if (step.ppid <= 1) break;
+    cur = step.ppid;
+    depth++;
+  }
+  return chain;
+}
+
+export type SessionMatchQuality = 'unique' | 'ambiguous' | 'unknown';
+
+export interface SessionMatch {
+  sessionId: string;
+  cwd: string | null;
+  quality: SessionMatchQuality;
+  /** Populated only when quality is 'unique'. */
+  process: { pid: number; tty: string | null; host: LiveProcess['host'] } | null;
+  /** Populated only when quality is 'ambiguous': the live pids whose cwd
+   *  could plausibly be this session (more than one process at that cwd,
+   *  or the one process there is itself ambiguous among several sessions). */
+  candidatePids: number[];
+}
+
+/** Enumerates SESSIONS (already recency-scoped by the caller via
+ *  sessionRefs) and annotates each with a live process where exactly one
+ *  unambiguously matches — rather than enumerating processes and letting a
+ *  session with no matching OS process go invisible, which is the model
+ *  spec §7.1a supersedes (prompted directly by a real finding: 5 sessions
+ *  active in the store shared one cwd here while `pgrep` saw 0 processes at
+ *  that cwd at all — a process-keyed view would have shown nothing).
+ *
+ *  Reuses classifyMatch (Task 11, process-keyed) unchanged and inverts its
+ *  output rather than duplicating its cwd-matching logic: a session is
+ *  `unique` when exactly one live process names it as a candidate AND that
+ *  process itself considers it their only candidate (both sides agree,
+ *  one-to-one); anything looser — more than one process pointing at this
+ *  session, or the one that does is itself ambiguous among several sessions
+ *  sharing its cwd — is `ambiguous`; no live process pointing here at all
+ *  is `unknown`. */
+export function annotateSessionsWithProcesses(sessions: SessionRef[], procs: LiveProcess[]): SessionMatch[] {
+  const matches = classifyMatch(procs, sessions);
+  const matchByPid = new Map(matches.map(m => [m.pid, m]));
+  const procByPid = new Map(procs.map(p => [p.pid, p]));
+
+  const pidsBySession = new Map<string, number[]>();
+  for (const m of matches) {
+    for (const sessionId of m.candidates) {
+      const list = pidsBySession.get(sessionId) ?? [];
+      list.push(m.pid);
+      pidsBySession.set(sessionId, list);
+    }
+  }
+
+  return sessions.map((s): SessionMatch => {
+    const pids = pidsBySession.get(s.sessionId) ?? [];
+
+    if (pids.length === 1) {
+      const m = matchByPid.get(pids[0]!);
+      if (m && m.quality === 'unique') {
+        const p = procByPid.get(pids[0]!)!;
+        return {
+          sessionId: s.sessionId, cwd: s.cwd, quality: 'unique',
+          process: { pid: p.pid, tty: p.tty, host: p.host }, candidatePids: [],
+        };
+      }
+    }
+
+    if (pids.length === 0) {
+      return { sessionId: s.sessionId, cwd: s.cwd, quality: 'unknown', process: null, candidatePids: [] };
+    }
+
+    return { sessionId: s.sessionId, cwd: s.cwd, quality: 'ambiguous', process: null, candidatePids: pids };
+  });
 }
