@@ -50,6 +50,18 @@ describe('planInstall', () => {
       }
     }
   });
+
+  it('reconciles against a previous manifest when the helper path changes — no stale fragments left behind', () => {
+    const existing = { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'mine.sh' }] }] } };
+    const planA = planInstall(existing, buildHookFragments('/path/a.sh'));
+
+    const planB = planInstall(planA.next, buildHookFragments('/path/b.sh'), planA.manifest);
+
+    const json = JSON.stringify(planB.next);
+    expect(json).not.toContain('/path/a.sh');
+    expect(json).toContain('/path/b.sh');
+    expect(planB.next.hooks.PreToolUse.some((e: any) => e.hooks[0].command === 'mine.sh')).toBe(true);
+  });
 });
 
 describe('applyInstall', () => {
@@ -104,5 +116,19 @@ describe('uninstall', () => {
     // it must survive, and only our exact-match entry is removed.
     expect(after.hooks.Stop.some((e: any) => e.hooks[0].command.startsWith('echo'))).toBe(true);
     expect(after.hooks.Stop.some((e: any) => e.hooks[0].command === ourCommand)).toBe(false);
+  });
+});
+
+describe('atomic writes', () => {
+  it('both applyInstall and uninstall leave valid, parseable JSON', () => {
+    writeFileSync(settings, JSON.stringify({ hooks: {} }));
+    const base = readFileSync(settings, 'utf8');
+    const plan = planInstall(JSON.parse(base), buildHookFragments('/h.sh'));
+
+    applyInstall(settings, { ...plan, baseText: base });
+    expect(() => JSON.parse(readFileSync(settings, 'utf8'))).not.toThrow();
+
+    uninstall(settings, plan.manifest);
+    expect(() => JSON.parse(readFileSync(settings, 'utf8'))).not.toThrow();
   });
 });

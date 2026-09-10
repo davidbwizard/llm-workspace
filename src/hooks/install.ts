@@ -45,12 +45,46 @@ function entryFor(f: Fragment) {
   };
 }
 
-/** Spec §5.3. Merge, never replace. The user already runs their own hooks. */
-export function planInstall(existing: any, fragments: Fragment[]): InstallPlan {
+/** Removes every hook entry whose `hooks[].command` exactly equals `command`.
+ *  Exact match, never a substring: a user hook that merely mentions our
+ *  helper's path (e.g. as an argument to their own command) is left alone. */
+function removeByCommand(hooks: any, command: string): void {
+  for (const event of Object.keys(hooks ?? {})) {
+    hooks[event] = (hooks[event] as any[]).filter((entry: any) =>
+      !(Array.isArray(entry?.hooks) && entry.hooks.some((h: any) => h?.command === command)));
+    if (hooks[event].length === 0) delete hooks[event];
+  }
+}
+
+/** Spec §5.3: write a temp file in the same directory, fsync it, then
+ *  rename over the original. Never truncate in place — a crash mid-write
+ *  would leave the user with an unparseable config and a broken Claude
+ *  Code. Shared by applyInstall and uninstall so the two write paths
+ *  cannot drift apart. */
+function writeJsonAtomic(settingsPath: string, data: any): void {
+  const tmp = join(dirname(settingsPath), `.settings.json.llmws.${process.pid}.tmp`);
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  const fd = openSync(tmp, 'r+');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(tmp, settingsPath);
+}
+
+/** Spec §5.3. Merge, never replace. The user already runs their own hooks.
+ *
+ *  `previousManifest`, when supplied, reconciles against an earlier install
+ *  before adding the current fragments: fragments whose command matches the
+ *  previous manifest's recorded command are removed first (exact match
+ *  only, never a substring or filename match — same discipline as
+ *  uninstall). Without this, a project move that changes the helper's
+ *  absolute path would add fragments for the new path while the old ones
+ *  stayed behind, pointing at a script that no longer exists but still
+ *  matching on every relevant event in every session. */
+export function planInstall(existing: any, fragments: Fragment[], previousManifest?: Manifest): InstallPlan {
   const next = JSON.parse(JSON.stringify(existing ?? {}));
   next.hooks ??= {};
-  const owned: string[] = [];
+  if (previousManifest) removeByCommand(next.hooks, previousManifest.command);
 
+  const owned: string[] = [];
   for (const f of fragments) {
     next.hooks[f.event] ??= [];
     const list: any[] = next.hooks[f.event];
@@ -72,27 +106,14 @@ export function applyInstall(settingsPath: string, plan: InstallPlan & { baseTex
   if (current !== plan.baseText) {
     throw new Error('settings.json changed on disk since the diff was computed');
   }
-
-  const tmp = join(dirname(settingsPath), `.settings.json.llmws.${process.pid}.tmp`);
-  writeFileSync(tmp, JSON.stringify(plan.next, null, 2) + '\n', 'utf8');
-  const fd = openSync(tmp, 'r+');
-  try { fsyncSync(fd); } finally { closeSync(fd); }
-  renameSync(tmp, settingsPath);
+  writeJsonAtomic(settingsPath, plan.next);
 }
 
 /** Removes only entries whose `hooks[].command` exactly equals the
- *  manifest's recorded command. Exact match, never a substring: a user
- *  hook that merely mentions our helper's path (e.g. as an argument to
- *  their own command) is left alone. Anything the user added or edited by
- *  hand is left alone. */
+ *  manifest's recorded command. Anything the user added or edited by hand
+ *  is left alone. */
 export function uninstall(settingsPath: string, manifest: Manifest): void {
   const cfg = JSON.parse(readFileSync(settingsPath, 'utf8'));
-  for (const event of Object.keys(cfg.hooks ?? {})) {
-    cfg.hooks[event] = (cfg.hooks[event] as any[]).filter(entry =>
-      !(Array.isArray(entry?.hooks) && entry.hooks.some((h: any) => h?.command === manifest.command)));
-    if (cfg.hooks[event].length === 0) delete cfg.hooks[event];
-  }
-  const tmp = join(dirname(settingsPath), `.settings.json.llmws.${process.pid}.tmp`);
-  writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-  renameSync(tmp, settingsPath);
+  removeByCommand(cfg.hooks, manifest.command);
+  writeJsonAtomic(settingsPath, cfg);
 }
