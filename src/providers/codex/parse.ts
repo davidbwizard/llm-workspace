@@ -10,10 +10,34 @@ export const CODEX_PARSER_VERSION = 1;
 const KNOWN_EVENT_MSG = new Set([
   'task_started', 'task_complete', 'user_message', 'agent_message',
   'token_count', 'agent_reasoning', 'error',
+  // Spec §5.6: the item_completed envelope, and a settings record that is
+  // known but not mapped in v1.
+  'item_completed', 'thread_settings_applied',
 ]);
 const KNOWN_RESPONSE_ITEM = new Set([
   'message', 'function_call', 'function_call_output', 'reasoning',
+  // Known but not mapped in v1 (spec §5.6).
+  'custom_tool_call', 'custom_tool_call_output',
 ]);
+
+/** Top-level record types, sibling to session_meta/event_msg/response_item,
+ *  that Codex writes but this parser does not map in v1. Recognised so they
+ *  do not flood the unparsed channel (spec §5.6). */
+const KNOWN_TOP_LEVEL_UNMAPPED = new Set(['turn_context', 'world_state', 'compacted']);
+
+/** Text blocks inside an `item_completed` item's `content[]`. Measured on
+ *  real transcripts: AgentMessage blocks carry `{type:"Text", ...}`,
+ *  UserMessage blocks carry `{type:"text", ...}` — same field, inconsistent
+ *  case — so this matches case-insensitively rather than trusting one spelling. */
+function itemText(item: any): string {
+  const content = item?.content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((b: any) => b && typeof b.text === 'string' && typeof b.type === 'string'
+      && b.type.toLowerCase() === 'text')
+    .map((b: any) => b.text)
+    .join('\n');
+}
 
 export function parseCodexLines(lines: TailLine[], sourceFile: string): NormalizedEvent[] {
   const out: NormalizedEvent[] = [];
@@ -40,6 +64,65 @@ export function parseCodexLines(lines: TailLine[], sourceFile: string): Normaliz
     parserVersion: CODEX_PARSER_VERSION,
   });
 
+  // Spec §5.6: item_completed wraps a typed `item`; dispatch on item.type.
+  // Defined here (not module scope) so it can push through `base` and share
+  // sub_index with every other event on this line.
+  const pushFromItem = (item: any, payload: any, line: TailLine, ts: string,
+                         agentId: string | null): void => {
+    const type = item?.type;
+    switch (type) {
+      case 'AgentMessage':
+        out.push(base(line, 'prose', { text: itemText(item), role: 'assistant' },
+          ts, agentId, item.id ?? null));
+        break;
+      case 'UserMessage':
+        out.push(base(line, 'prompt.submitted', { text: itemText(item) },
+          ts, agentId, item.id ?? null));
+        break;
+      case 'CommandExecution': {
+        const command = Array.isArray(item.command) ? item.command : null;
+        out.push(base(line, 'tool.used', {
+          name: 'shell', target: command ? command.join(' ') : null, command,
+          isError: item.status === 'failed'
+            || (typeof item.exit_code === 'number' && item.exit_code !== 0),
+          toolUseId: item.id ?? null,
+        }, ts, agentId, item.id ?? null));
+        break;
+      }
+      case 'Extension':
+        out.push(base(line, 'tool.used', {
+          name: item.kind ?? 'Extension', target: item.query ?? null, isError: false,
+          toolUseId: item.id ?? null,
+        }, ts, agentId, item.id ?? null));
+        break;
+      case 'FileChange': {
+        const paths = item.changes && typeof item.changes === 'object'
+          ? Object.keys(item.changes) : [];
+        out.push(base(line, 'tool.used', {
+          name: 'FileChange', target: paths.length ? paths.join(', ') : null,
+          isError: item.status === 'failed', toolUseId: item.id ?? null,
+        }, ts, agentId, item.id ?? null));
+        break;
+      }
+      case 'ContextCompaction': {
+        // started_at_ms/completed_at_ms sit on the item_completed payload,
+        // as siblings of `item`, not on the item itself. Measured on a real
+        // transcript.
+        const started = typeof payload?.started_at_ms === 'number' ? payload.started_at_ms : null;
+        const done = typeof payload?.completed_at_ms === 'number' ? payload.completed_at_ms : null;
+        out.push(base(line, 'context.compacted', {
+          trigger: null, durationMs: started !== null && done !== null ? done - started : null,
+        }, ts, agentId, item.id ?? null));
+        break;
+      }
+      case 'Reasoning':
+        break; // known, not mapped in v1
+      default:
+        out.push(base(line, 'unparsed', { reason: 'unknown-item-type', itemType: type },
+          ts, agentId, null));
+    }
+  };
+
   for (const line of lines) {
     subIndex = 0;
     let rec: any;
@@ -53,6 +136,12 @@ export function parseCodexLines(lines: TailLine[], sourceFile: string): Normaliz
 
     const ts = typeof rec?.timestamp === 'string' ? rec.timestamp : new Date(0).toISOString();
     const p = rec?.payload ?? {};
+
+    // Known top-level record types (siblings of session_meta/event_msg/
+    // response_item) that are not mapped in v1. Spec §5.6.
+    if (KNOWN_TOP_LEVEL_UNMAPPED.has(rec?.type)) {
+      continue;
+    }
 
     if (rec?.type === 'session_meta') {
       sessionId = typeof p.session_id === 'string' ? p.session_id : sessionId;
@@ -110,8 +199,16 @@ export function parseCodexLines(lines: TailLine[], sourceFile: string): Normaliz
           }, ts, threadAgentId, p.turn_id ?? null));
           break;
         }
+        case 'item_completed':
+          // Spec §5.6: the alternative envelope some rollout files use
+          // instead of flat agent_message/user_message/task_complete
+          // records. The two envelopes are mutually exclusive per file, so
+          // handling both here cannot double-count.
+          pushFromItem(p.item, p, line, ts, threadAgentId);
+          break;
         default:
-          break; // task_started, token_count, agent_reasoning, error: known, not mapped in v1
+          break; // task_started, token_count, agent_reasoning, error,
+                 // thread_settings_applied: known, not mapped in v1
       }
       continue;
     }

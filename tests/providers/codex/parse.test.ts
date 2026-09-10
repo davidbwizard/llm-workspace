@@ -120,3 +120,79 @@ describe('parseCodexLines', () => {
     }
   });
 });
+
+// Spec §5.6: roughly half of real rollout files use this envelope instead of
+// the flat one above — event_msg/item_completed wrapping a typed `item` —
+// and the two are mutually exclusive per file. A parser handling only the
+// flat shape left 47.5 percent of real records unparsed, including the bulk
+// of the prose narration stream (AgentMessage). This fixture is derived from
+// a real rollout with paths and text anonymised.
+describe('parseCodexLines (item_completed envelope)', () => {
+  const events = parseCodexLines(linesOf('rollout-item-completed.jsonl'), '/r3.jsonl');
+
+  it('maps item_completed/UserMessage to prompt.submitted', () => {
+    const p = events.filter(e => e.kind === 'prompt.submitted');
+    expect(p).toHaveLength(1);
+    expect(p[0]!.payload.text).toBe('Review this migration for correctness.');
+  });
+
+  it('maps item_completed/AgentMessage to prose, despite its differently-cased content block type', () => {
+    const p = events.filter(e => e.kind === 'prose');
+    expect(p).toHaveLength(1);
+    expect(p[0]!.payload).toMatchObject({ text: 'Reading the migration file for issues.', role: 'assistant' });
+  });
+
+  it('maps item_completed/CommandExecution to tool.used carrying the argv command', () => {
+    const t = events.filter(e => e.kind === 'tool.used' && e.payload.name === 'shell');
+    expect(t).toHaveLength(1);
+    expect(t[0]!.payload).toMatchObject({
+      command: ['/bin/zsh', '-lc', 'grep -n TODO migration.sql'],
+      isError: false,
+    });
+  });
+
+  it('maps item_completed/Extension to tool.used carrying kind and query', () => {
+    const t = events.filter(e => e.kind === 'tool.used' && e.payload.name === 'web.search');
+    expect(t).toHaveLength(1);
+    expect(t[0]!.payload).toMatchObject({ target: 'site:example.com migration best practices' });
+  });
+
+  it('maps item_completed/FileChange to tool.used carrying the changed path', () => {
+    const t = events.filter(e => e.kind === 'tool.used' && e.payload.name === 'FileChange');
+    expect(t).toHaveLength(1);
+    expect(t[0]!.payload).toMatchObject({ target: '/repo/migration.sql' });
+  });
+
+  it('maps item_completed/ContextCompaction to context.compacted', () => {
+    const c = events.filter(e => e.kind === 'context.compacted');
+    expect(c).toHaveLength(1);
+    expect(c[0]!.payload.durationMs).toBe(27000);
+  });
+
+  it('does not emit or mark unparsed for item_completed/Reasoning (known, not mapped in v1)', () => {
+    const fromReasoningLine = events.filter(e => e.nativeId === 'rs-1');
+    expect(fromReasoningLine).toHaveLength(0);
+  });
+
+  it('stores an unknown item.type inside item_completed as unparsed, carrying the item type', () => {
+    const u = events.filter(e => e.kind === 'unparsed' && e.payload.reason === 'unknown-item-type');
+    expect(u).toHaveLength(1);
+    expect(u[0]!.payload).toMatchObject({ itemType: 'McpToolCall' });
+  });
+
+  it('recognises custom_tool_call, custom_tool_call_output, thread_settings_applied, turn_context, world_state, and compacted without marking them unparsed', () => {
+    // These fixture lines cover exactly those six record types; none should
+    // contribute an unparsed event once past the item_completed line above.
+    const unparsedReasons = events
+      .filter(e => e.kind === 'unparsed')
+      .map(e => e.payload.reason);
+    expect(unparsedReasons).toEqual(['unknown-item-type']);
+  });
+
+  it('normalises both envelopes to the same prose vocabulary', () => {
+    const flat = parseCodexLines(linesOf('rollout-basic.jsonl'), '/r.jsonl');
+    const wrapped = events;
+    expect(flat.some(e => e.kind === 'prose')).toBe(true);
+    expect(wrapped.some(e => e.kind === 'prose')).toBe(true);
+  });
+});
