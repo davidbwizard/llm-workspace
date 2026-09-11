@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "rules": [
+    { "id": "clock-face", "match": "**/UI/Clock/Clock.png", "kind": "static", "frameSize": "image" },
+    { "id": "single-small-icon", "match": "**/Icons/**/*.png", "widths": [16], "heights": [16], "kind": "static", "frameSize": "image" },
+    { "id": "bug-icon-variants", "match": "**/Icons/Bugs/**/*.png", "widths": [64], "heights": [16], "kind": "variants", "cellSize": [16, 16] },
+    { "id": "seasonal-crop-strips", "match": "**/Crops/*/*.png", "exclude": "**/*Crops.png", "widths": [128, 160], "heights": [16, 32], "kind": "growth-stages", "cellSize": [16, "height"], "metadataNeeded": ["stage-roles"] },
+    { "id": "terrain-tiles", "match": "**/Tileset/*.png", "kind": "tileset", "cellSize": [16, 16] },
+    { "id": "baby-chicken-states", "match": "**/Animals/Farm/Chicken/Baby Chicken*.png", "widths": [64], "heights": [112], "kind": "mixed", "cellSize": [16, 16], "metadataNeeded": ["animation-regions"] }
+  ]
+}

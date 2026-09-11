@@ -1,0 +1,215 @@
+.farm-shell,.farm-load-error,.farm-page{font-family:"Trebuchet MS","Segoe UI",sans-serif;color:#304d3e;background:#e7eee3;font-synthesis:none;--forest:#304d3e;--muted:#657664;--line:#ced8c7;--paper:#f8faf4;--leaf:#567752;--gold:#e4ca81}
+.farm-shell *{box-sizing:border-box}
+.farm-page{margin:0}
+.farm-shell button,.farm-shell select,.farm-shell input{font:inherit}
+.farm-shell button,.farm-shell select{color:var(--forest);background:var(--paper);border:1px solid #b8c7b2;border-radius:6px;min-height:34px;padding:7px 11px;font-size:12px}
+.farm-shell button{cursor:pointer;font-weight:600}
+.farm-shell button:hover:not(:disabled){background:#e4ecd9;border-color:#7f9a73}
+.farm-shell button:disabled{opacity:.44;cursor:default}
+.farm-shell button:focus-visible,.farm-shell select:focus-visible,.farm-shell summary:focus-visible,.farm-shell input:focus-visible,.farm-shell [tabindex]:focus-visible{outline:3px solid #af8741;outline-offset:3px}
+.farm-shell button.primary{background:#426744;color:#fff9dd;border-color:#426744}
+.farm-shell button.primary:hover:not(:disabled){background:#315737}
+.farm-shell button[hidden],.farm-shell [hidden]{display:none!important}
+.farm-shell select{max-width:100%;cursor:pointer}
+.farm-shell h1,.farm-shell h2,.farm-shell h3,.farm-shell p{margin:0}
+.farm-shell h1{font-family:Georgia,"Times New Roman",serif;font-size:31px;line-height:1.13;font-weight:500;letter-spacing:-1px}
+.farm-shell h2{font-size:19px;font-weight:600;letter-spacing:-.35px}
+.farm-shell h3{font-size:14px;font-weight:600}
+.farm-shell p{line-height:1.6}
+.farm-shell small{font-size:11px}
+.farm-shell{max-width:1510px;margin:auto;padding:32px 42px 20px}
+.farm-shell .farm-header{display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:25px}
+.farm-shell .farm-brand{display:flex;gap:14px;align-items:center}
+.farm-shell .brand-sprout{display:flex;align-items:center;justify-content:center;border:1px solid #799c6e;border-radius:50% 50% 43% 43%;width:45px;height:49px;color:#527950;font-size:37px;background:#d5e3cc}
+.farm-shell .farm-brand p{font-size:12px;color:#6b7c68;margin-top:5px}
+.farm-shell .farm-totals{display:flex;gap:27px;align-items:center;font-size:12px;color:#63735d}
+.farm-shell .farm-totals b{font-size:18px;font-weight:600;color:#34503c;margin-right:3px}
+.farm-shell .demo-badge{padding:7px 10px;background:#d8e5df;border-radius:4px;color:#496f64;font-size:11px}
+.farm-shell .world-layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;background:var(--paper);border:1px solid #bdceb4;border-radius:11px;overflow:hidden;box-shadow:0 4px 15px #42613b09}
+.farm-shell .world-section{min-width:0}
+.farm-shell .world-toolbar{height:48px;padding:8px 17px;display:flex;justify-content:space-between;align-items:center;background:#f5f8ee;color:#596d53;font-size:12px}
+.farm-shell .world-toolbar>div:first-child{display:flex;align-items:center;gap:8px}
+.farm-shell .live-dot{height:6px;width:6px;border-radius:50%;background:#72a65e;box-shadow:0 0 0 3px #72a65e15}
+.farm-shell .live-dot.paused{background:#ac965b}
+.farm-shell .time-controls{display:flex;align-items:center;gap:7px}
+.farm-shell .time-controls button,.farm-shell .time-controls select{min-height:29px;padding:4px 9px;background:transparent}
+.farm-shell .world-frame{background:#92ae6e;line-height:0}
+.farm-shell .world-frame canvas{display:block;width:100%;height:auto;image-rendering:pixelated;cursor:crosshair}
+.farm-shell .world-caption{display:flex;justify-content:space-between;gap:12px;padding:12px 17px 7px;color:#68745d;font-size:11px;line-height:1.5}
+.farm-shell .world-caption span:last-child{white-space:nowrap}
+.farm-shell .plot-picker{display:flex;gap:14px;align-items:center;justify-content:space-between;padding:10px 17px 15px;font-size:11px;color:#5d7058}
+.farm-shell .plot-picker>div{display:flex;gap:4px;flex-wrap:wrap}
+.farm-shell .plot-picker button{width:29px;min-height:27px;padding:3px;font-size:11px;background:#eef3e7;border-color:#d5dfcb}
+.farm-shell .plot-picker button[aria-pressed="true"]{background:#526f46;border-color:#526f46;color:#fff6d6}
+.farm-shell .plot-picker button.ready{box-shadow:inset 0 -3px #d3b055}
+.farm-shell .plot-inspector{padding:24px 21px;background:#f5f7ee;border-left:1px solid #d7dfca}
+.farm-shell .inspector-heading{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+.farm-shell .plot-number{width:36px;height:42px;background:#dce6d0;border:1px solid #c6d5b7;color:#587044;display:grid;place-items:center;font-family:Georgia,serif;font-size:26px;border-radius:5px}
+.farm-shell .inspector-heading h2{font-size:18px}
+.farm-shell .inspector-heading p{font-size:11px;color:#7c866d;margin-top:3px}
+.farm-shell .field-label{display:grid;gap:7px;font-size:11px;color:#708064}
+.farm-shell .field-label select{width:100%;font-size:12px}
+.farm-shell .plot-meters{margin:21px 0}
+.farm-shell .meter-row{display:grid;grid-template-columns:45px 1fr 33px;gap:8px;align-items:center;margin:10px 0;font-size:10px;color:#66745d}
+.farm-shell .meter-row>span:last-child{text-align:right;font-variant-numeric:tabular-nums}
+.farm-shell meter{width:100%;height:7px;border:0;background:#e1e7d9;border-radius:8px;overflow:hidden}
+.farm-shell meter::-webkit-meter-bar{background:#e1e7d9;border:0;height:7px}
+.farm-shell meter::-webkit-meter-optimum-value{background:#89a568}
+.farm-shell meter.water::-webkit-meter-optimum-value{background:#8cb5b3}
+.farm-shell meter.weeds::-webkit-meter-optimum-value{background:#b6a56b}
+.farm-shell meter::-moz-meter-bar{background:#89a568}
+.farm-shell .inspector-actions{display:grid;gap:7px}
+.farm-shell .inspector-actions button{width:100%;font-size:11px}
+.farm-shell .quiet{font-size:11px;color:#718068;line-height:1.65;margin-top:15px}
+.farm-shell .farmer-health{border-top:1px solid #d5deca;padding-top:18px;margin-top:23px}
+.farm-shell .farmer-health button{width:100%;font-size:10px}
+.farm-shell .farmer-health p{color:#819075;font-size:10px;margin-top:8px}
+.farm-shell .management{margin-top:22px}
+.farm-shell .management-nav{display:flex;gap:27px;border-bottom:1px solid #bfceba;padding:0 2px;overflow-x:auto}
+.farm-shell .management-nav button{border:0;border-radius:0;background:none;padding:10px 0 12px;white-space:nowrap;font-size:12px;color:#71816a;position:relative}
+.farm-shell .management-nav button[aria-selected="true"]{color:#304d3e;box-shadow:inset 0 -2px #52734b}
+.farm-shell .management-nav button:hover:not(:disabled){background:none;color:#304d3e}
+.farm-shell .management-panel{padding:23px 3px 20px;min-height:210px}
+.farm-shell .panel-intro{display:flex;align-items:baseline;justify-content:space-between;gap:25px;margin-bottom:19px}
+.farm-shell .panel-intro h2{font-family:Georgia,serif;font-size:22px;font-weight:400;white-space:nowrap}
+.farm-shell .panel-intro p{color:#71806a;font-size:11px;max-width:580px}
+.farm-shell .worker-row,.farm-shell .animal-row,.farm-shell .guard-row{display:flex;align-items:center;gap:16px;border-bottom:1px solid #d2dccb;padding:12px 0;min-height:71px}
+.farm-shell .worker-row:first-child{padding-top:0}
+.farm-shell .worker-row:last-child,.farm-shell .animal-row:last-child,.farm-shell .guard-row:last-child{border-bottom:0}
+.farm-shell .worker-avatar{flex-shrink:0;display:grid;place-items:center;width:37px;height:39px;background:#c9d9b7;border-radius:40% 40% 6px 6px;font-family:Georgia,serif;color:#617d45;font-size:20px}
+.farm-shell .avatar-1{background:#d1dfd9;color:#638977}
+.farm-shell .avatar-2{background:#e0d7b9;color:#9a8659}
+.farm-shell .worker-copy{flex:1}
+.farm-shell .worker-copy h3{display:flex;align-items:center;gap:12px}
+.farm-shell .worker-copy p{font-size:11px;color:#7b856c;margin-top:4px}
+.farm-shell .activity{font-size:10px;font-weight:400;color:#9a7949}
+.farm-shell .activity.working{color:#6a8850}
+.farm-shell .worker-row label,.farm-shell .guard-row label{display:flex;gap:8px;align-items:center;font-size:10px;color:#728165}
+.farm-shell .worker-row select,.farm-shell .guard-row select{min-width:138px;font-size:11px;background:#edf3e6}
+.farm-shell .attention-button{color:#7e6436;background:#eee5c4;border-color:#d3c390}
+.farm-shell .trade-layout{display:grid;grid-template-columns:1fr 1.4fr;gap:55px}
+.farm-shell .trade-layout h3{margin-bottom:8px;color:#59714f}
+.farm-shell .trade-row{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #d1dcc9;padding:8px 0;font-size:12px;gap:16px}
+.farm-shell .trade-row b{display:inline-block;min-width:20px;margin-left:10px;color:#547c4d}
+.farm-shell .trade-row small{color:#899277;margin-left:7px}
+.farm-shell .trade-row button{font-size:11px;min-height:30px}
+.farm-shell .trade-layout>div>button{margin-top:13px}
+.farm-shell .button-row{display:flex;gap:8px;flex-wrap:wrap}
+.farm-shell .animal-row>div:first-child,.farm-shell .guard-row>div:first-child{min-width:130px}
+.farm-shell .animal-row p,.farm-shell .guard-row p{font-size:11px;color:#718166;margin-top:4px}
+.farm-shell .animal-row h3 span{color:#89967b;font-size:10px;font-weight:400;margin-left:8px}
+.farm-shell .animal-meters{max-width:260px;flex:1;margin-right:auto}
+.farm-shell .animal-meters .meter-row{margin:6px 0}
+.farm-shell .subtle-danger{color:#8a6a59;background:transparent;border-color:transparent}
+.farm-shell .guard-row label{margin-left:auto}
+.farm-shell .policy-list{display:grid;grid-template-columns:1fr 1fr;gap:20px 60px}
+.farm-shell .policy-row{display:flex;align-items:flex-start;gap:12px;cursor:pointer}
+.farm-shell .policy-row input{accent-color:#53794d;margin-top:4px;width:16px;height:16px}
+.farm-shell .policy-row strong{display:block;font-size:13px;font-weight:600}
+.farm-shell .policy-row small{display:block;margin-top:6px;color:#728369}
+.farm-shell .demo-controls,.farm-shell .farm-journal{border-top:1px solid #c4d2bd;padding:14px 3px}
+.farm-shell .demo-controls summary,.farm-shell .farm-journal summary{cursor:pointer;font-size:12px;font-weight:600}
+.farm-shell .demo-controls summary span,.farm-shell .farm-journal summary span{font-weight:400;font-size:11px;color:#809074;margin-left:13px}
+.farm-shell .demo-controls>p{font-size:11px;color:#728165;margin:14px 0}
+.farm-shell .demo-controls>.button-row{margin-bottom:13px}
+.farm-shell .demo-worker{display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid #d4decf}
+.farm-shell .demo-worker strong{font-size:12px;min-width:90px}
+.farm-shell .demo-worker button,.farm-shell .demo-worker select{font-size:11px;min-height:30px}
+.farm-shell .farm-journal ol{list-style:none;padding:0;font-size:11px;color:#687b5f;max-height:160px;overflow:auto;line-height:1.8}
+.farm-shell .farm-journal time{color:#8a947c;margin-right:10px}
+.farm-shell .farm-footer{border-top:1px solid #c4d2bd;display:flex;justify-content:space-between;align-items:center;gap:16px;padding-top:15px;margin-top:1px;font-size:10px;color:#819176}
+.farm-shell .farm-footer>div{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.farm-shell .farm-footer button{font-size:10px;background:transparent;min-height:26px;padding:3px 7px}
+.farm-shell .farm-notice{font-size:13px;background:#e5dfc1;border:1px solid #c7b981;padding:12px 16px;margin-bottom:15px;border-radius:5px}
+.farm-shell .farm-notice.error{background:#f0ddd3;border-color:#d2aea0;color:#794f3c}
+.farm-shell .art-status{font-size:11px;color:#8b7055;margin-top:12px}
+.farm-load-error{max-width:620px;margin:15vh auto;padding:30px}
+.farm-load-error p{margin-top:15px}
+.farm-load-error h1{font-size:30px}
+.farm-shell .dialog-backdrop{position:fixed;inset:0;background:#243b3269;display:flex;align-items:center;justify-content:center;padding:22px;z-index:10}
+.farm-shell .farm-dialog{width:min(480px,100%);background:#f7faee;padding:30px;border:1px solid #819776;border-radius:10px;box-shadow:0 20px 90px #19362644}
+.farm-shell .farm-dialog h2{font-family:Georgia,serif;font-size:25px;font-weight:400}
+.farm-shell .farm-dialog>p{font-size:13px;margin-top:16px}
+.farm-shell .farm-dialog .button-row{margin-top:23px}
+.farm-shell .attention-text{white-space:pre-wrap;overflow-wrap:anywhere;max-height:45vh;overflow:auto}
+.farm-shell .danger{background:#956853;color:#fff5e9;border-color:#956853}
+.farm-shell .empty-state{padding:20px 0;color:#718266;font-size:13px}
+.farm-page .loading{padding:15vh;text-align:center}
+.farm-shell .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(min-width:1450px){.farm-shell{padding-top:38px}
+.farm-shell .world-layout{grid-template-columns:minmax(0,1fr) 285px}
+.farm-shell .plot-inspector{padding:29px 25px}
+.farm-shell .inspector-heading{margin-bottom:28px}
+.farm-shell .inspector-actions{gap:9px}
+.farm-shell .inspector-actions button{min-height:38px}
+.farm-shell .plot-meters{margin:27px 0}
+.farm-shell .meter-row{margin:13px 0}
+}
+@media(max-width:1000px){.farm-shell{padding:22px}
+.farm-shell .world-layout{grid-template-columns:minmax(0,1fr) 225px}
+.farm-shell .plot-inspector{padding:18px 15px}
+.farm-shell .farm-totals{gap:15px}
+.farm-shell .world-caption{font-size:10px}
+.farm-shell .plot-picker{align-items:flex-start;flex-direction:column;gap:7px}
+.farm-shell .plot-picker button{width:26px}
+.farm-shell .panel-intro{display:block}
+.farm-shell .panel-intro p{margin-top:8px}
+.farm-shell .trade-layout{gap:30px}
+.farm-shell .world-toolbar{padding-inline:12px}
+.farm-shell .world-caption{padding-inline:12px}
+.farm-shell .farmer-health{margin-top:16px;padding-top:14px}
+.farm-shell .inspector-heading{margin-bottom:17px}
+}
+@media(max-width:740px){.farm-shell{padding:17px 12px}
+.farm-shell .farm-header{align-items:flex-start;gap:15px;margin-bottom:17px}
+.farm-shell .farm-brand{gap:9px}
+.farm-shell h1{font-size:25px}
+.farm-shell .brand-sprout{width:33px;height:39px;font-size:28px}
+.farm-shell .farm-brand p{font-size:10px}
+.farm-shell .farm-totals{display:grid;gap:5px;text-align:right;font-size:10px}
+.farm-shell .farm-totals b{font-size:14px}
+.farm-shell .demo-badge{padding:3px 5px;font-size:9px}
+.farm-shell .world-layout{display:block}
+.farm-shell .world-toolbar{height:42px;font-size:10px}
+.farm-shell .world-caption{display:block}
+.farm-shell .world-caption span:last-child{display:none}
+.farm-shell .plot-picker{flex-direction:row;align-items:center;gap:8px;padding:10px 12px 14px}
+.farm-shell .plot-picker>span{max-width:40px;font-size:10px}
+.farm-shell .plot-picker>div{gap:3px;justify-content:flex-end}
+.farm-shell .plot-picker button{width:25px}
+.farm-shell .plot-inspector{border-left:0;border-top:1px solid #d7dfca;display:grid;grid-template-columns:1fr 145px;gap:19px;padding:17px}
+.farm-shell .inspector-heading{margin-bottom:14px}
+.farm-shell .inspector-heading h2{font-size:17px}
+.farm-shell .field-label{font-size:10px}
+.farm-shell .plot-meters{margin:15px 0}
+.farm-shell .inspector-actions{grid-template-columns:1fr 1fr;gap:6px}
+.farm-shell .inspector-actions button{font-size:10px;padding:6px}
+.farm-shell .inspector-actions button:last-child{grid-column:1/-1}
+.farm-shell .plot-inspector .quiet{font-size:10px;margin-top:10px}
+.farm-shell .farmer-health{border-top:0;border-left:1px solid #d5deca;padding:6px 0 0 17px;margin:0}
+.farm-shell .farmer-health .meter-row{grid-template-columns:1fr 31px}
+.farm-shell .farmer-health .meter-row>span:first-child{display:none}
+.farm-shell .management-nav{gap:22px}
+.farm-shell .management-nav button{font-size:11px}
+.farm-shell .management-panel{padding-top:19px}
+.farm-shell .worker-row{gap:10px;flex-wrap:wrap}
+.farm-shell .worker-copy{min-width:180px}
+.farm-shell .worker-copy h3{font-size:13px}
+.farm-shell .worker-row label{margin-left:47px}
+.farm-shell .worker-row select{min-width:125px}
+.farm-shell .worker-row .attention-button{margin-left:auto}
+.farm-shell .trade-layout{grid-template-columns:1fr;gap:25px}
+.farm-shell .animal-row{flex-wrap:wrap;gap:10px}
+.farm-shell .animal-meters{min-width:145px}
+.farm-shell .animal-row .button-row{width:100%;justify-content:flex-end}
+.farm-shell .policy-list{grid-template-columns:1fr}
+.farm-shell .demo-controls summary span{display:block;margin:7px 0 0 14px}
+.farm-shell .farm-journal summary span{display:none}
+.farm-shell .farm-footer{display:block;line-height:1.7}
+.farm-shell .farm-footer>span{display:block;margin-top:10px}
+.farm-shell .farm-footer>div>span{flex-basis:100%}
+.farm-shell .dialog-backdrop{padding:15px}
+.farm-shell .farm-dialog{padding:24px}
+}
+@media(prefers-reduced-motion:reduce){.farm-shell *{scroll-behavior:auto!important}
+}

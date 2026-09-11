@@ -1,0 +1,10 @@
+# Original sprite pack and regenerable catalogs.
+/assets/
+/assets-manifest.json
+/assets-irregularities.json
+
+# Local tooling and temporary review outputs.
+/.cache/
+/.remember/
+/farm/*-review.txt
+/farm/*-report.md
