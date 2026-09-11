@@ -15,3 +15,27 @@
    it, since it is bookkeeping (and what a future close action targets),
    not the card's headline. */
 .pid { font-family:var(--f-mono); font-size:11px; color:var(--faint); }
+
+/* The kill affordance -- session:kill's UI. Its own row below .metrics
+   rather than a corner icon layered over .crow/.badge: the app's first
+   destructive action gets a real, unambiguous target to press, not
+   something a misclick over a crowded corner can trigger. */
+.killrow { margin-top:2px; }
+.kill-btn { font-family:var(--f-mono); font-size:11px; color:var(--faint);
+            background:none; border:1px solid var(--line-soft); border-radius:20px;
+            padding:4px 12px; cursor:pointer; }
+.kill-btn:hover { color:var(--critical); border-color:color-mix(in srgb,var(--critical) 40%,transparent); }
+.kill-confirm { display:flex; flex-direction:column; gap:8px; background:var(--raised);
+                border:1px solid var(--line); border-radius:var(--r-sm); padding:10px 12px; }
+.kill-confirm-text { font-size:12px; color:var(--ink-2); line-height:1.4; margin:0; }
+.kill-confirm-actions { display:flex; gap:8px; }
+.kill-confirm-actions button { font-family:var(--f-mono); font-size:11px; border-radius:20px;
+                                padding:5px 12px; cursor:pointer; flex:1; }
+.kill-cancel { background:none; border:1px solid var(--line-soft); color:var(--muted); }
+.kill-cancel:hover { color:var(--ink); border-color:var(--line); }
+.kill-confirm-btn { background:var(--critical); border:1px solid var(--critical); color:var(--ground); }
+.kill-confirm-btn:hover { background:color-mix(in srgb,var(--critical) 85%,black); }
+.kill-status { font-family:var(--f-mono); font-size:11px; color:var(--muted); margin:0; }
+.kill-status.error { color:var(--critical); }
+.kill-status button { margin-left:6px; background:none; border:none; color:inherit;
+                       text-decoration:underline; cursor:pointer; font:inherit; padding:0; }

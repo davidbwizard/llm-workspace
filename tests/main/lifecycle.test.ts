@@ -139,7 +139,11 @@ describe('deferred ingest: answer before ingesting, not after', () => {
   });
 
   it('passes startBackgroundWork into registerIpc, so fleet:list can trigger it after answering', () => {
-    expect(main).toMatch(/registerIpc\(db,\s*startBackgroundWork\)/);
+    // Not anchored on a trailing `)` -- registerIpc also takes a third
+    // argument (session:kill's post-kill refresh callback), so this only
+    // pins that db and startBackgroundWork are passed, in that order, as
+    // registerIpc's first two arguments.
+    expect(main).toMatch(/registerIpc\(db,\s*startBackgroundWork/);
   });
 
   it('falls back to starting background work once the window has actually loaded, in case fleet:list is never called', () => {

@@ -4,14 +4,18 @@
 // because ipcMain is dereferenced inside registerIpc's body, never at module
 // scope -- a test that imports and calls registerIpc directly will throw.
 import { ipcMain, type BrowserWindow } from 'electron';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { Db } from '../store/db.ts';
 import {
   openSessions, openSessionsLive, fleetStatePage, type SessionState, type OpenSession,
 } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
-import { sanitizeForTerminal } from '../config.ts';
-import { getCachedLiveProcesses } from '../discovery/live.ts';
+import { sanitizeForTerminal, parseProcessChainHop } from '../config.ts';
+import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
+
+const execFileP = promisify(execFile);
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -269,6 +273,170 @@ export function buildFleetHistoryPayload(db: Db, offset: number, limit: number):
   };
 }
 
+// ---------------------------------------------------------------------
+// session:kill -- the app's first destructive action. Everything above
+// this point only observes; this ends a real process. The renderer is
+// sandboxed and untrusted (same premise as every other channel here), so
+// main must never signal a pid merely because the renderer asked -- every
+// step below is a guard against that, not an optimisation.
+// ---------------------------------------------------------------------
+
+/** Every reason killSession can refuse to signal a pid. Deliberately a
+ *  closed set of internal codes, not a free-form string: nothing here is
+ *  ever built from provider text, process output, or anything else
+ *  attacker-reachable, so -- unlike SessionState/Blocker/OpenSession above
+ *  -- there is no SANITISED/STRUCTURAL split to maintain for this payload.
+ *  A future change that turned this into `reason: string` built from,
+ *  say, an OS error message would reintroduce exactly the class of problem
+ *  that split exists to prevent; tests/main/ipc.test.ts pins this as a
+ *  closed union so that change cannot happen silently. */
+export type KillRefusalReason =
+  | 'invalid_pid'        // not a positive integer
+  | 'own_process'        // this app's own main process
+  | 'protected_ancestor' // an ancestor of this app's own process
+  | 'not_discovered'     // not present in a just-refreshed discovery sweep
+  | 'signal_failed';     // process.kill threw something other than ESRCH
+
+/** session:kill's response. Never thrown -- a renderer awaiting
+ *  window.fleet.killSession always gets one of these three shapes back,
+ *  including for a refusal, so it can show something specific rather than
+ *  a generic error. */
+export type KillResult =
+  | { status: 'killed' }
+  | { status: 'already_gone' }
+  | { status: 'refused'; reason: KillRefusalReason };
+
+/** Sends the signal -- injectable so tests can prove SIGTERM is what gets
+ *  sent, and prove the already_gone/refused paths, without ever touching a
+ *  real process (spec: never kill a real process in development or
+ *  testing). Contract: throw on failure (Node's process.kill already does
+ *  this -- ESRCH if the pid is gone, EPERM if not permitted), never swallow
+ *  it -- killSession is what decides how each failure maps to a KillResult. */
+export type SignalFn = (pid: number, signal: NodeJS.Signals) => void;
+
+function defaultSignal(pid: number, signal: NodeJS.Signals): void {
+  process.kill(pid, signal);
+}
+
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && 'code' in err;
+}
+
+/** One hop of `ps -o ppid=,comm= -p <pid>`, real ps this time -- the same
+ *  shape discovery/live.ts's own defaultExec produces for the same command,
+ *  kept as its own small copy here rather than importing that (unexported)
+ *  helper: this module's dependency is on config.ts's parseProcessChainHop,
+ *  the actual parsing logic, not on discovery/live.ts's shelling-out
+ *  wrapper. Fail-soft to '' on any exec failure, exactly like
+ *  discovery/live.ts's defaultExec -- parseProcessChainHop already treats
+ *  that as "hop unavailable, stop the walk", which is the safe direction
+ *  for a protective walk like ownProcessAncestry below (an incomplete
+ *  result can only under-protect a pid the walk never reached, never
+ *  wrongly clear one it did). */
+async function defaultHop(pid: number): Promise<string> {
+  try {
+    const { stdout } = await execFileP('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], { encoding: 'utf8' });
+    return stdout;
+  } catch {
+    return '';
+  }
+}
+
+/** This app's own process, and every ancestor of it (parent, grandparent,
+ *  ... up to init or maxDepth), walked one hop at a time via `hop`. Exists
+ *  so killSession can refuse to signal any pid in this list: a bug that
+ *  let a kill request reach the terminal or shell the user launched the
+ *  app from -- or the app's own process -- would be the worst outcome this
+ *  feature could produce, so this is checked explicitly rather than
+ *  assumed impossible because "discovery would never find those pids
+ *  anyway" (true today, but not a guarantee this function should depend
+ *  on).
+ *
+ *  Includes process.pid itself as the walk's first element. killSession
+ *  also checks pid === process.pid directly, as its own unambiguous guard
+ *  -- this array covers that case too, as defence in depth, so a bug that
+ *  removed the explicit check would still be caught here.
+ *
+ *  `hop` is injected (defaultHop above is the real implementation), the
+ *  same DI shape discovery/live.ts's ExecFn uses, so tests can drive this
+ *  with canned `ps` output -- this walk never needs to run against the
+ *  test machine's actual process tree to prove the guard works. */
+export async function ownProcessAncestry(
+  hop: (pid: number) => Promise<string> = defaultHop, maxDepth = 12,
+): Promise<number[]> {
+  const pids: number[] = [];
+  let cur: number | null = process.pid;
+  let depth = 0;
+  while (cur !== null && depth < maxDepth) {
+    pids.push(cur);
+    const step = parseProcessChainHop(await hop(cur));
+    if (!step || step.ppid <= 1) break;
+    cur = step.ppid;
+    depth++;
+  }
+  return pids;
+}
+
+/** session:kill's handler logic. Every guard below runs before any signal
+ *  is sent, cheapest first:
+ *
+ *  1. Shape: pid must be a positive integer. Not a numeric string --
+ *     the preload's declared signature is `killSession(pid: number)`, and a
+ *     renderer sending anything else is already off-contract (spec S11.2:
+ *     validate at the boundary, don't trust the shape). Also closes off
+ *     0 and negative values, which POSIX gives special meaning to (`kill`
+ *     with pid <= 0 targets a process GROUP, not a single process --
+ *     exactly the kind of blast-radius mistake this whole feature exists
+ *     to prevent).
+ *  2. Never this app's own process.
+ *  3. Never an ancestor of this app's own process (ownProcessAncestry
+ *     above) -- covers (2) again too, as defence in depth.
+ *  4. Refreshed against LIVE truth, not the up-to-5s-stale cache:
+ *     refreshLiveProcesses runs a real sweep and only then is the pid
+ *     checked against it. A pid the app did not itself just (re)discover
+ *     is refused -- this is what stops a renderer from ever naming an
+ *     arbitrary pid; the app only ever signals a pid it found itself,
+ *     freshly, this call.
+ *  5. Only then, the signal -- SIGTERM, never SIGKILL (opts.signal
+ *     defaults to defaultSignal above, which always calls process.kill
+ *     with whatever this function passes it; this function always passes
+ *     'SIGTERM', so upgrading to SIGKILL is not something a caller can even
+ *     select, let alone something that happens automatically). A process
+ *     that ignores SIGTERM simply stays alive and its card stays on
+ *     screen -- deciding to escalate is left to the person looking at it,
+ *     not automated here.
+ *
+ *  `exec`/`hop`/`signal` are all injectable (discovery/live.ts's ExecFn
+ *  shape, and the two above) so this is fully testable -- including the
+ *  SIGTERM-not-SIGKILL and already_gone/refused paths -- without ever
+ *  touching a real process. */
+export async function killSession(rawPid: unknown, opts: {
+  exec?: ExecFn;
+  hop?: (pid: number) => Promise<string>;
+  signal?: SignalFn;
+} = {}): Promise<KillResult> {
+  if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) {
+    return { status: 'refused', reason: 'invalid_pid' };
+  }
+  const pid = rawPid;
+
+  if (pid === process.pid) return { status: 'refused', reason: 'own_process' };
+
+  const ancestors = await ownProcessAncestry(opts.hop);
+  if (ancestors.includes(pid)) return { status: 'refused', reason: 'protected_ancestor' };
+
+  const live = await refreshLiveProcesses(opts.exec);
+  if (!live.some(p => p.pid === pid)) return { status: 'refused', reason: 'not_discovered' };
+
+  try {
+    (opts.signal ?? defaultSignal)(pid, 'SIGTERM');
+  } catch (err) {
+    if (isErrnoException(err) && err.code === 'ESRCH') return { status: 'already_gone' };
+    return { status: 'refused', reason: 'signal_failed' };
+  }
+  return { status: 'killed' };
+}
+
 /** The complete set of channels main answers. Adding one means adding it to
  *  the preload's enumerated list as well; tests/main/ipc.test.ts asserts
  *  they match.
@@ -280,8 +448,18 @@ export function buildFleetHistoryPayload(db: Db, offset: number, limit: number):
  *  it, and ingestAll is a long blocking call; running it inline here would
  *  delay this very reply by the same amount this whole handler exists to
  *  avoid). Optional so tests, and any future caller with nothing to defer,
- *  can call registerIpc(db) alone. */
-export function registerIpc(db: Db, onFleetList?: () => void): void {
+ *  can call registerIpc(db) alone.
+ *
+ *  `onSessionKill`, if given, fires strictly after session:kill's own reply
+ *  is already on its way to the renderer (same setImmediate-deferral
+ *  reasoning as onFleetList above), and only when the result was actually
+ *  'killed' -- a refusal or an already-gone pid changes nothing discovery
+ *  doesn't already reflect (killSession's own pre-signal refresh already
+ *  covers those), so there is nothing for a fresh sweep to usefully catch.
+ *  Wired from src/main/index.ts to re-run discovery and push immediately,
+ *  rather than leaving the killed pid's card to go stale for up to 5s
+ *  until the next scheduled sweep. */
+export function registerIpc(db: Db, onFleetList?: () => void, onSessionKill?: () => void): void {
   ipcMain.handle('fleet:list', () => {
     const payload = buildFleetListPayload();
     if (onFleetList) setImmediate(onFleetList);
@@ -289,6 +467,11 @@ export function registerIpc(db: Db, onFleetList?: () => void): void {
   });
   ipcMain.handle('fleet:history', (_event, offset: unknown, limit: unknown) =>
     buildFleetHistoryPayload(db, clampOffset(offset), clampLimit(limit)));
+  ipcMain.handle('session:kill', async (_event, pid: unknown) => {
+    const result = await killSession(pid);
+    if (onSessionKill && result.status === 'killed') setImmediate(onSessionKill);
+    return result;
+  });
 }
 
 /** Pushed on every watcher/spool/ingest/discovery change (src/main/index.ts).

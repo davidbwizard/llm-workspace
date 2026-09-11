@@ -1,4 +1,4 @@
-import type { FleetListPayload, FleetHistoryPayload } from '../main/ipc.ts';
+import type { FleetListPayload, FleetHistoryPayload, KillResult } from '../main/ipc.ts';
 
 declare global {
   interface Window {
@@ -11,6 +11,7 @@ declare global {
     fleet?: {
       listFleet: () => Promise<FleetListPayload>;
       listHistory: (offset: number, limit: number) => Promise<FleetHistoryPayload>;
+      killSession: (pid: number) => Promise<KillResult>;
       onFleet: (cb: (payload: FleetListPayload) => void) => () => void;
     };
   }

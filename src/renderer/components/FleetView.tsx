@@ -113,6 +113,10 @@ export function FleetView() {
 
   if (payload === null) return <p className="empty">Reading the index…</p>;
 
+  // Captured once the guard above has ruled out undefined, rather than
+  // re-reading window.fleet at each use below -- same reasoning as the
+  // `fleet` locals captured inside the two effects above.
+  const fleetApi = window.fleet;
   const openSessions: OpenSession[] = payload.openSessions;
   const needing = openSessions.filter(
     o => o.activity === 'waiting_permission' || o.activity === 'waiting_input').length;
@@ -127,7 +131,9 @@ export function FleetView() {
 
       {openSessions.length > 0 ? (
         <div className="fleet">
-          {openSessions.map(o => <OpenSessionCard key={o.pid} state={o} onOpen={() => {}} />)}
+          {openSessions.map(o => (
+            <OpenSessionCard key={o.pid} state={o} onOpen={() => {}} onKill={fleetApi.killSession} />
+          ))}
         </div>
       ) : (
         <p className="empty">No open sessions right now.</p>

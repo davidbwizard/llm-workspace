@@ -8,8 +8,9 @@ import {
   sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
+  killSession, ownProcessAncestry,
 } from '../../src/main/ipc.ts';
-import { getCachedLiveProcesses, refreshLiveProcesses } from '../../src/discovery/live.ts';
+import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { Blocker } from '../../src/store/signals.ts';
 
@@ -546,6 +547,119 @@ describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
       Parameters<typeof pushFleet>[0];
     pushFleet(win);
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+// session:kill is the app's first destructive action. Every test here
+// injects hop/exec/signal (never the real process.pid's actual ancestry,
+// never a real discovery sweep, never process.kill) -- per the brief this
+// was built from, no test may ever touch a real process.
+describe('ownProcessAncestry', () => {
+  it('walks from process.pid, including itself, one hop per parent, stopping at ppid <= 1', async () => {
+    const hop = async (pid: number) => {
+      if (pid === process.pid) return '9001 zsh';
+      if (pid === 9001) return '1 launchd';
+      throw new Error(`unexpected hop(${pid})`);
+    };
+    expect(await ownProcessAncestry(hop)).toEqual([process.pid, 9001]);
+  });
+
+  // Fail-soft in the safe direction: an unparsable hop (ps failed, or a
+  // pid with no living parent) stops the walk rather than throwing --
+  // an incomplete ancestor list can only under-protect a pid this walk
+  // never reached, never wrongly clear one it did.
+  it('stops the walk, without throwing, when a hop cannot be parsed', async () => {
+    const hop = async () => ''; // ps failed / pid exited mid-lookup
+    expect(await ownProcessAncestry(hop)).toEqual([process.pid]);
+  });
+
+  it('respects maxDepth rather than walking forever', async () => {
+    const hop = async (pid: number) => `${pid + 1} something`; // never reaches ppid <= 1
+    expect(await ownProcessAncestry(hop, 3)).toHaveLength(3);
+  });
+});
+
+describe('killSession', () => {
+  // process.pid has no discoverable ancestors in these fixtures -- most
+  // tests below aren't exercising the ancestor guard, so their hop just
+  // fails soft immediately (see ownProcessAncestry's own fail-soft test
+  // above for why that is safe, not merely convenient).
+  const noAncestors = async () => '';
+
+  it('refuses a non-integer, non-positive, or wrong-typed pid -- and never refreshes discovery or signals', async () => {
+    const signal = vi.fn();
+    const exec = vi.fn(async () => '');
+    for (const bad of [1.5, NaN, Infinity, -1, 0, '4242', null, undefined, {}, [4242]]) {
+      expect(await killSession(bad, { hop: noAncestors, exec, signal }))
+        .toEqual({ status: 'refused', reason: 'invalid_pid' });
+    }
+    expect(signal).not.toHaveBeenCalled();
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("refuses this app's own process -- and never refreshes discovery or signals", async () => {
+    const signal = vi.fn();
+    const exec = vi.fn(async () => '');
+    expect(await killSession(process.pid, { hop: noAncestors, exec, signal }))
+      .toEqual({ status: 'refused', reason: 'own_process' });
+    expect(signal).not.toHaveBeenCalled();
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("refuses an ancestor of this app's own process -- and never refreshes discovery or signals", async () => {
+    const signal = vi.fn();
+    const exec = vi.fn(async () => '');
+    const hop = async (pid: number) => (pid === process.pid ? '9001 zsh' : '1 launchd');
+    expect(await killSession(9001, { hop, exec, signal }))
+      .toEqual({ status: 'refused', reason: 'protected_ancestor' });
+    expect(signal).not.toHaveBeenCalled();
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('refuses a pid absent from a freshly refreshed discovery sweep -- and never signals', async () => {
+    const signal = vi.fn();
+    const exec: ExecFn = async () => ''; // sweep finds nothing at all
+    expect(await killSession(4242, { hop: noAncestors, exec, signal }))
+      .toEqual({ status: 'refused', reason: 'not_discovered' });
+    expect(signal).not.toHaveBeenCalled();
+  });
+
+  // The one path that actually signals: pid is a positive integer, not
+  // this app or an ancestor of it, and IS present in a sweep run by this
+  // very call -- only then does a signal go out, and it is always SIGTERM.
+  it('signals a freshly discovered pid with SIGTERM, never SIGKILL', async () => {
+    const signal = vi.fn();
+    const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4242\n' : '');
+    expect(await killSession(4242, { hop: noAncestors, exec, signal })).toEqual({ status: 'killed' });
+    expect(signal).toHaveBeenCalledTimes(1);
+    expect(signal).toHaveBeenCalledWith(4242, 'SIGTERM');
+  });
+
+  // Proves the refresh in killSession is real, not a read of whatever an
+  // earlier test in this file left cached: seed the cache with an empty
+  // sweep first, then prove a pid only this call's own exec reports is
+  // still accepted -- that is only possible if killSession re-swept.
+  it('refreshes discovery itself before validating, rather than trusting an existing cache', async () => {
+    await refreshLiveProcesses(async () => '');
+    expect(getCachedLiveProcesses().some(p => p.pid === 5555)).toBe(false);
+    const signal = vi.fn();
+    const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'codex' ? '5555\n' : '');
+    expect(await killSession(5555, { hop: noAncestors, exec, signal })).toEqual({ status: 'killed' });
+  });
+
+  it('reports already_gone, not an error or a crash, when the process exits between validation and the signal', async () => {
+    const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4242\n' : '');
+    const esrch = Object.assign(new Error('No such process'), { code: 'ESRCH' });
+    const signal = vi.fn(() => { throw esrch; });
+    expect(await killSession(4242, { hop: noAncestors, exec, signal })).toEqual({ status: 'already_gone' });
+  });
+
+  it('reports refused/signal_failed, not a throw, when the OS refuses the signal for another reason', async () => {
+    const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4242\n' : '');
+    const eperm = Object.assign(new Error('Operation not permitted'), { code: 'EPERM' });
+    const signal = vi.fn(() => { throw eperm; });
+    expect(await killSession(4242, { hop: noAncestors, exec, signal }))
+      .toEqual({ status: 'refused', reason: 'signal_failed' });
   });
 });
 

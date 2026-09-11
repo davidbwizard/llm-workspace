@@ -50,6 +50,7 @@ beforeEach(() => {
       version:1, generatedAt:'t', openSessions:[o({ pid:1, project:'trellome' })],
     }),
     listHistory: pagedHistory(defaultHistory),
+    killSession: vi.fn().mockResolvedValue({ status: 'killed' }),
     onFleet: vi.fn().mockReturnValue(() => {}),
   };
 });

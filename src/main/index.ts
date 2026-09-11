@@ -125,8 +125,13 @@ app.whenReady().then(() => {
 
   // startBackgroundWork (above) is passed through so the fleet:list handler
   // can trigger it itself, strictly after answering -- the primary trigger
-  // for the ordering this change exists to guarantee.
-  registerIpc(db, startBackgroundWork);
+  // for the ordering this change exists to guarantee. The third argument
+  // is a forward reference to pushAfterDiscoverySweep, declared further
+  // down in this same function -- safe because registerIpc only stores
+  // this closure and calls it later (from session:kill, in response to a
+  // future IPC message), never during this synchronous setup, by which
+  // point pushAfterDiscoverySweep has long since been assigned.
+  registerIpc(db, startBackgroundWork, () => pushAfterDiscoverySweep());
   createWindow();
 
   // Live process discovery (pgrep/ps/lsof) has nothing to do with the
@@ -145,6 +150,11 @@ app.whenReady().then(() => {
   // about either, now that pushFleet reads a cache instead of querying).
   // db is re-checked, not narrowed from the enclosing scope, for the same
   // shutdown-race reason as the pushTimer callback above.
+  //
+  // Also reused, via the forward reference passed to registerIpc above, as
+  // session:kill's post-kill refresh: a successful kill re-runs the exact
+  // same sweep-refresh-push a scheduled tick would, just immediately
+  // rather than waiting out however much of the 5s interval is left.
   const pushAfterDiscoverySweep = () => {
     void refreshLiveProcesses().then(processes => {
       if (!db) return;
