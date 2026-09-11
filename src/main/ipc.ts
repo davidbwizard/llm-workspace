@@ -18,7 +18,15 @@ export interface FleetPayload { version: 1; generatedAt: string; sessions: Sessi
 // itself. Inert in a terminal -- sanitizeForTerminal never touches them --
 // but not in a renderer, so what the user reads can differ from what the
 // agent actually wrote. This is the Trojan Source set.
-const BIDI_CONTROL = /[‪-‮⁦-⁩]/g;
+//
+// Written as \u escapes, deliberately -- not as the literal characters. An
+// earlier version of this file used the literal characters, which made the
+// set unreviewable (nobody can tell U+200B from U+200C by looking at a
+// blank space) and, worse, made this file itself a Trojan Source vector:
+// an unterminated LRE/RLO with no matching PDF reorders how the REST of
+// the file displays in an editor, diff viewer or review tool. Do not
+// "tidy" these back into literal characters.
+const BIDI_CONTROL = /[\u202a-\u202e\u2066-\u2069]/g;
 // Zero-width, no script role: zero-width space, word joiner, and the
 // byte-order mark. Deliberately NOT included here: ZWNJ/ZWJ (U+200C/U+200D)
 // are load-bearing for Persian, Arabic and Indic scripts (ZWNJ) and for
@@ -28,7 +36,9 @@ const BIDI_CONTROL = /[‪-‮⁦-⁩]/g;
 // also excluded: unlike the override/isolate set above, they only bias
 // adjacent neutral characters, not an unbounded span, so they cannot
 // reorder arbitrary following text the way BIDI_CONTROL's set can.
-const ZERO_WIDTH_FORMATTING = /[​⁠﻿]/g;
+//
+// Written as \u escapes for the same reason as BIDI_CONTROL above.
+const ZERO_WIDTH_FORMATTING = /[\u200b\u2060\ufeff]/g;
 
 /** sanitizeForTerminal (src/config.ts) strips terminal escape sequences and
  *  control characters -- correct for the terminal it was written for. It
