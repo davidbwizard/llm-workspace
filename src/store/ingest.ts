@@ -168,17 +168,29 @@ export function resumeContextFor(db: Db, path: string): ParseResumeContext | und
  *  survive forever. Reparse therefore DELETES this file's derived events
  *  first, then parses, in one transaction.
  *
+ *  `extraSourceFiles` (F2): a session transcript's subagent-meta-derived
+ *  events (spec §6.5) carry `source_file` = their own `.meta.json` path, not
+ *  the transcript's -- there is no `ingest_files` row for those paths, so
+ *  they are otherwise unreachable by a transcript reparse. `deleteBySource`
+ *  is exact-match on source_file, so passing each meta path here clears them
+ *  too, in the same transaction, before `parse()` (whose output the caller
+ *  has already merged with the freshly re-derived agent.spawned events)
+ *  re-inserts current rows for all of them. Defaults to none, so a plain
+ *  transcript-only reparse behaves exactly as before.
+ *
  *  `signal_events` is untouched by design: hook output has no other source. */
 export function reparseFile(
   db: Db,
   path: string,
   parse: () => NormalizedEvent[],
   meta: IngestMeta,
+  extraSourceFiles: string[] = [],
 ): void {
   const { deleteBySource, insertEvent, upsertIngest } = statementsFor(db);
 
   const run = db.transaction(() => {
     deleteBySource.run(path);
+    for (const extra of extraSourceFiles) deleteBySource.run(extra);
     for (const e of parse()) {
       insertEvent.run({ ...e, payload: JSON.stringify(e.payload) });
     }

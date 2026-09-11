@@ -129,24 +129,32 @@ export function ingestFileOnce(db: Db, path: string, provider: Provider): Ingest
     bytesConsumed: tail.newOffset, parserVersion: version, providerCliVersion,
   };
 
+  // Task 8 built findSubagents/parseAgentMeta; every ingest of a Claude
+  // transcript re-derives its subagents' agent.spawned events too (there is
+  // no other trigger for them -- .meta.json files are never themselves
+  // watched). Computed up front so the reparse branch below can fold their
+  // re-derivation into the same transaction as the transcript's own (F2).
+  const agentEvents = provider === 'claude' ? subagentEvents(path) : [];
+
   let written = 0;
   if (tail.restarted || staleParser) {
-    reparseFile(db, path, () => events, meta);
-    written = events.length;
+    // F2: agent.spawned rows carry source_file = <agent>.meta.json, not this
+    // transcript's path, so a plain `reparseFile(db, path, ...)` would never
+    // reach them -- their identity is byte-stable across a parser_version
+    // bump, so the re-insert below is silently skipped as a UNIQUE conflict
+    // and the stale row survives forever. Passing their source files through
+    // as extraSourceFiles clears and re-derives them in the same transaction
+    // as the transcript itself.
+    const agentSourceFiles = [...new Set(agentEvents.map(e => e.sourceFile))];
+    reparseFile(db, path, () => [...events, ...agentEvents], meta, agentSourceFiles);
+    written = events.length + agentEvents.length;
   } else {
     written = insertEvents(db, events);
     recordIngest(db, path, meta);
+    if (agentEvents.length > 0) written += insertEvents(db, agentEvents);
   }
 
-  if (provider === 'claude') {
-    const agentEvents = subagentEvents(path);
-    if (agentEvents.length > 0) {
-      written += insertEvents(db, agentEvents);
-      events.push(...agentEvents);
-    }
-  }
-
-  return { written, unparsed, restarted: tail.restarted, events };
+  return { written, unparsed, restarted: tail.restarted, events: [...events, ...agentEvents] };
 }
 
 export interface WatchRoot { dir: string; provider: Provider; glob: RegExp }
