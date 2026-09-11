@@ -20,9 +20,21 @@ function needsAttention(s: SessionState): boolean {
     (s.activity === 'working' || s.activity === 'waiting_permission' || s.activity === 'waiting_input');
 }
 
+// Idle cards render in batches once the group is opened: against a real
+// index the idle group is in the hundreds, and mounting all of them the
+// moment the group expands just moves the "873 components on screen"
+// problem one click later. 60 is a starting point, not a tuned constant.
+const IDLE_BATCH = 60;
+
 export function FleetView() {
   const [sessions, setSessions] = useState<SessionState[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Collapsed by default: idle is the common case (one active session,
+  // hundreds of history), and rendering history as the default view is the
+  // noise this app exists to remove. See the idle-group block below for how
+  // "collapsed" also means "not mounted."
+  const [idleExpanded, setIdleExpanded] = useState(false);
+  const [idleShown, setIdleShown] = useState(IDLE_BATCH);
 
   useEffect(() => {
     // window.fleet is absent if the preload script failed to load (see the
@@ -88,10 +100,37 @@ export function FleetView() {
 
       {idle.length > 0 && (
         <>
-          <h2 className="divider">Idle <span>{idle.length}</span></h2>
-          <div className="fleet dim">
-            {idle.map(s => <SessionCard key={s.sessionId} state={s} onOpen={() => {}} />)}
+          <h2 className="divider">
+            <button
+              type="button"
+              className="btn idle-toggle"
+              aria-expanded={idleExpanded}
+              aria-controls="idle-group"
+              onClick={() => setIdleExpanded(v => !v)}
+            >
+              <span className="caret" aria-hidden="true" />
+              Idle <span>{idle.length}</span>
+            </button>
+          </h2>
+          {/* The wrapper always mounts so aria-controls resolves to a real
+              element even while collapsed. What's conditional is the cards
+              inside it: collapsed means the 873-ish idle sessions never
+              construct a component tree at all, not that one exists and is
+              hidden by CSS -- a hidden tree still re-renders on every fleet
+              push, which is the actual cost this is avoiding. */}
+          <div id="idle-group" className="fleet dim">
+            {idleExpanded && idle.slice(0, idleShown).map(s =>
+              <SessionCard key={s.sessionId} state={s} onOpen={() => {}} />)}
           </div>
+          {idleExpanded && idleShown < idle.length && (
+            <button
+              type="button"
+              className="btn show-more"
+              onClick={() => setIdleShown(n => Math.min(n + IDLE_BATCH, idle.length))}
+            >
+              Show more ({idle.length - idleShown} remaining)
+            </button>
+          )}
         </>
       )}
     </div>
