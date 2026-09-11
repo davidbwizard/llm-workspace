@@ -1,4 +1,4 @@
-import type { SessionState } from '../../fleet/state.ts';
+import type { SessionState, OpenSession } from '../../fleet/state.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import './SessionCard.css';
 
@@ -171,6 +171,109 @@ export function SessionCard({ state, onOpen, showProcessMeta }: {
           <span className="dot" aria-hidden="true" />
           {stateWord}
         </span>
+      </div>
+    </article>
+  );
+}
+
+/** One card per live process (David: "ALL OPEN SESSIONS should show. And
+ *  the source. So I can close if they are actually dead.") -- the model
+ *  correction that replaced grouping by transcript recency. Deliberately a
+ *  separate component from SessionCard rather than a second mode on it:
+ *  OpenSession has no agents/sharesWorktreeWith/stale/confidence -- the
+ *  card IS a process, not a transcript session -- so the two would share
+ *  little beyond the host/age/memory formatting helpers above, which this
+ *  reuses directly. */
+export function OpenSessionCard({ state, onOpen }: {
+  state: OpenSession; onOpen: (pid: number) => void;
+}) {
+  // Same "say nothing rather than guess" rule as SessionCard's hostLabel
+  // above -- unknown and null both mean the same thing to the user.
+  const hostLabel = state.host && state.host !== 'unknown' ? HOST_LABEL[state.host] : undefined;
+  // Unlike SessionCard's showProcessMeta-gated fields, age and memory here
+  // are NEVER gated on match quality: the card IS the process, so its own
+  // age/memory are always attributable, even when no transcript session
+  // can be matched to it at all (see src/fleet/state.ts's OpenSession doc
+  // comment on ageSeconds/rssBytes).
+  const procMeta = [
+    state.ageSeconds != null ? formatProcessAge(state.ageSeconds) : null,
+    state.rssBytes != null ? formatProcessMemory(state.rssBytes) : null,
+  ].filter((part): part is string => part !== null).join(' · ') || null;
+  // provider/activity/lastProse/events are enrichment: populated only when
+  // this process's cwd matches exactly one session (`match === 'unique'`),
+  // never on an ambiguous match -- see openSessions' doc comment in
+  // src/fleet/state.ts. `state.provider &&` below narrows it for
+  // ProviderMark, which (like SessionState's provider) takes no null.
+  const providerLabel = state.provider === 'claude' ? 'Claude'
+    : state.provider === 'codex' ? 'Codex' : null;
+  const blocked = state.activity === 'waiting_permission' || state.activity === 'waiting_input';
+  const activityWord = state.activity ? ACTIVITY_WORD[state.activity] : null;
+
+  // Same reasoning as SessionCard's label: role="button" replaces this
+  // element's content with its accessible name, so every signal rendered
+  // below has to be carried in the name too. pid is included -- it is
+  // this card's actual identity (two open sessions can share a project
+  // name), the same job the provider badge does on SessionCard.
+  const label = [
+    `Open ${state.project}${providerLabel ? ` (${providerLabel})` : ''}, pid ${state.pid}`,
+    activityWord,
+    state.lastProse,
+    hostLabel ? `Running in ${hostLabel}` : null,
+  ].filter((part): part is string => Boolean(part)).join('. ');
+
+  return (
+    <article
+      className={`card ${blocked ? 'attn' : state.activity === 'working' ? 'live' : ''}`}
+      tabIndex={0}
+      role="button"
+      aria-label={label}
+      onClick={() => onOpen(state.pid)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(state.pid); } }}
+    >
+      {blocked && <span className="badge" aria-hidden="true">1</span>}
+
+      <div className={`crow${blocked ? ' hasbadge' : ''}`}>
+        {/* Omitted entirely, not guessed, when this process could not be
+            matched to exactly one session -- the common case on a shared
+            cwd repo. A blank provider badge is honest; a wrong one is not. */}
+        {state.provider && (
+          <span className={`prov ${state.provider}`}>
+            <ProviderMark provider={state.provider} size={11} />
+            {providerLabel}
+          </span>
+        )}
+        {(hostLabel || procMeta) && (
+          <span className="crow-meta">
+            {hostLabel && <span className="host">{hostLabel}</span>}
+            {procMeta && <span className="procmeta">{procMeta}</span>}
+          </span>
+        )}
+      </div>
+
+      <div>
+        <p className="proj display">{state.project}</p>
+        <p className="path">{state.cwd ?? 'no working directory'}</p>
+      </div>
+
+      {/* No fallback text (unlike SessionCard's "No output yet"): a blank
+          last-message is honest on an ambiguous or unmatched card, where
+          there is no session to say anything came from. */}
+      {state.lastProse && (
+        <p className={`said ${blocked ? 'wait' : ''}`}>{state.lastProse}</p>
+      )}
+
+      <div className="metrics">
+        {/* Always present -- pid is what makes a future close action safe
+            (one card, one process, no guessing), so it stays visible even
+            when nothing else on the card is known. */}
+        <span className="pid">pid {state.pid}</span>
+        {state.events != null && <span>{state.events.toLocaleString()}</span>}
+        {activityWord && (
+          <span className={`state ${state.activity}`}>
+            <span className="dot" aria-hidden="true" />
+            {activityWord}
+          </span>
+        )}
       </div>
     </article>
   );

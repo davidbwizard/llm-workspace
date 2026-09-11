@@ -1,40 +1,8 @@
 import { useEffect, useState } from 'react';
-import { SessionCard } from './SessionCard.tsx';
-import type { SessionState } from '../../fleet/state.ts';
+import { SessionCard, OpenSessionCard } from './SessionCard.tsx';
+import type { SessionState, OpenSession } from '../../fleet/state.ts';
+import type { FleetPayload } from '../../main/ipc.ts';
 import './FleetView.css';
-
-// Lifecycle and activity are the two separate axes spec S9.2 draws
-// (reachable-or-not vs. what it is doing), and the fleet view's grouping
-// has to respect both rather than collapsing them into one. "Needs you
-// right now" means: it's reachable (lifecycle active) AND either working
-// or waiting on the user. Unchanged by the three-way split below --
-// everything in this group is still governed only by lifecycle/activity,
-// not by process liveness. Disconnected/ended sessions are unconditional
-// here because their `activity` is LAST KNOWN, not current (see the
-// Activity comment in src/fleet/state.ts): a disconnected session
-// reporting `working` was working before it dropped off, not now, so it
-// cannot sit in the same group as a session that is reachable and actually
-// working this second.
-function needsAttention(s: SessionState): boolean {
-  return s.lifecycle === 'active' &&
-    (s.activity === 'working' || s.activity === 'waiting_permission' || s.activity === 'waiting_input');
-}
-
-// The middle tier: reachable (lifecycle active), same as needsAttention,
-// but at a turn boundary rather than working or blocked. Deliberately keyed
-// on transcript recency (lifecycle/activity), NOT on `alive` (process
-// liveness, discovery -- spec S7.1a): `cwd` resolves to a directory, not a
-// specific session, so whenever more than one session shares a repo --
-// the common case on a real workspace -- a single live process there makes
-// EVERY session sharing that cwd report `alive: true`, which used to put
-// all of them here regardless of whether they were actually in use (see
-// src/fleet/state.ts's `alive` doc comment). Transcript recency has no such
-// ambiguity: it is measured per session, from that session's own events.
-// Checked after needsAttention, so a blocked-or-working session is never
-// double-counted here.
-function waitingForYou(s: SessionState): boolean {
-  return !needsAttention(s) && s.lifecycle === 'active';
-}
 
 // History cards render in batches once the group is opened: against a real
 // index the history group is in the hundreds, and mounting all of them the
@@ -43,9 +11,17 @@ function waitingForYou(s: SessionState): boolean {
 const HISTORY_BATCH = 60;
 
 export function FleetView() {
-  const [sessions, setSessions] = useState<SessionState[] | null>(null);
+  // The two independent enumerations, per the model correction: "ALL OPEN
+  // SESSIONS should show. And the source." Open sessions come from live
+  // PROCESSES (discovery, spec S7.1a), not from transcript recency -- a
+  // session opened nine days ago and never touched since is still open,
+  // and process discovery, not `sessions`, is the only source that knows
+  // that. `sessions` (transcripts) remains independently complete: History
+  // below is every transcript session, unfiltered, so nothing is ever
+  // lost even though most open processes will also appear there.
+  const [payload, setPayload] = useState<FleetPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Collapsed by default: history is the common case (a handful of live
+  // Collapsed by default: history is the common case (a handful of open
   // sessions, hundreds of history), and rendering history as the default
   // view is the noise this app exists to remove. See the history-group
   // block below for how "collapsed" also means "not mounted."
@@ -68,10 +44,10 @@ export function FleetView() {
     // which looks identical on screen to a slow load. Nobody investigates
     // a spinner that never resolves; a specific message says why.
     void fleet.listFleet().then(
-      p => { if (alive) { setSessions(p.sessions); setError(null); } },
+      p => { if (alive) { setPayload(p); setError(null); } },
       err => { if (alive) setError(err instanceof Error ? err.message : String(err)); },
     );
-    const unsub = fleet.onFleet(p => { if (alive) { setSessions(p.sessions); setError(null); } });
+    const unsub = fleet.onFleet(p => { if (alive) { setPayload(p); setError(null); } });
     return () => { alive = false; unsub(); };
   }, []);
 
@@ -89,48 +65,41 @@ export function FleetView() {
     return <p className="empty error">The session index could not be loaded: {error}</p>;
   }
 
-  if (sessions === null) return <p className="empty">Reading the index…</p>;
-  if (sessions.length === 0)
+  if (payload === null) return <p className="empty">Reading the index…</p>;
+  // Both empty, not just `sessions`: a process can be open before its
+  // first transcript event is ingested (a brief window, but a real one --
+  // spec S7.1a's "never lost" promise has to hold from the moment a
+  // process starts, not from its first indexed event). Checking `sessions`
+  // alone would hide a genuinely open session behind this message.
+  if (payload.sessions.length === 0 && payload.openSessions.length === 0)
     return <p className="empty">No sessions indexed yet. Run a Claude Code or Codex
       session, or run <code>npm run cli -- ingest</code> to index existing transcripts.</p>;
 
-  // Three tiers, not two: transcript recency (lifecycle/activity) is what
-  // separates a session the user can act on right now from one that is
-  // pure history, and lumping them together is exactly the complaint this
-  // split fixes. `history` is "everything not in the other two" rather
-  // than its own positive check, so no session is silently dropped -- a
-  // fleet view that does that is the failure spec S7.1a warns about.
-  const live = sessions.filter(needsAttention);
-  const waiting = sessions.filter(waitingForYou);
-  const history = sessions.filter(s => !needsAttention(s) && !waitingForYou(s));
-  const needing = live.filter(s => s.blocker).length;
+  const sessions: SessionState[] = payload.sessions;
+  const openSessions: OpenSession[] = payload.openSessions;
+  // History is every transcript session, full stop -- not filtered by
+  // lifecycle or anything else. Open sessions above already show what's
+  // live; history's job is to be the complete, un-lossy archive spec
+  // S7.1a requires, so a session whose process already exited (and so
+  // cannot appear above) is never invisible.
+  const history = sessions;
+  const needing = openSessions.filter(
+    o => o.activity === 'waiting_permission' || o.activity === 'waiting_input').length;
 
   return (
     <div className="fleetwrap">
       <header className="fleetbar">
         <h1>Fleet</h1>
-        <span className="chip">{live.length} active</span>
+        <span className="chip">{openSessions.length} open</span>
         {needing > 0 && <span className="chip attn">{needing} need you</span>}
       </header>
 
-      {live.length > 0 && (
+      {openSessions.length > 0 ? (
         <div className="fleet">
-          {live.map(s => <SessionCard key={s.sessionId} state={s} onOpen={() => {}} />)}
+          {openSessions.map(o => <OpenSessionCard key={o.pid} state={o} onOpen={() => {}} />)}
         </div>
-      )}
-
-      {waiting.length > 0 && (
-        <>
-          <h2 className="divider">Waiting for you <span>{waiting.length}</span></h2>
-          {/* No .dim: unlike history, this tier is always shown, never
-              collapsed -- its last transcript event is still within the
-              active window (spec S9.2), even though there's nothing to
-              act on right now. */}
-          <div className="fleet waiting">
-            {waiting.map(s =>
-              <SessionCard key={s.sessionId} state={s} onOpen={() => {}} showProcessMeta />)}
-          </div>
-        </>
+      ) : (
+        <p className="empty">No open sessions right now.</p>
       )}
 
       {history.length > 0 && (

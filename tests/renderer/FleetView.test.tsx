@@ -1,17 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { FleetView } from '../../src/renderer/components/FleetView.tsx';
-import type { SessionState } from '../../src/fleet/state.ts';
+import type { SessionState, OpenSession } from '../../src/fleet/state.ts';
 
-// Defaults to lifecycle:'active', activity:'idle', alive:false. Grouping is
-// keyed on lifecycle/activity (transcript recency), NOT on `alive` (process
-// liveness) -- `cwd` resolves to a directory, not a specific session, so on
-// a real workspace where several sessions share a repo, `alive` is
-// unreliable per-session (see the `alive` doc comment on SessionState in
-// src/fleet/state.ts) and plays no part in which tier a card lands in. A
-// fixture needs no override to land in the always-shown "Waiting for you"
-// tier -- that's the default (lifecycle active, activity idle). A fixture
-// needs `lifecycle:'disconnected'` (or 'ended') to be History.
+// A transcript-session fixture. Used only for History now: History is
+// every transcript session, unfiltered (see FleetView.tsx) -- none of
+// these fields decide WHERE a card lands the way lifecycle/alive used to
+// before the model correction ("ALL OPEN SESSIONS should show. And the
+// source. So I can close if they are actually dead" -- the top tier now
+// enumerates from live processes, not from transcripts).
 const s = (o: Partial<SessionState>): SessionState => ({
   sessionId:'s1', runId:'r1', provider:'claude', cwd:'/r', project:'proj',
   lifecycle:'active', activity:'idle', stale:false, confidence:'guess',
@@ -21,28 +18,42 @@ const s = (o: Partial<SessionState>): SessionState => ({
   processRssBytes:null, sharesWorktreeWith:[], ...o,
 });
 
+// An open-process fixture -- unattributed by default (no transcript
+// match), which is the common outcome on a shared-cwd repo (see
+// openSessions' doc comment in src/fleet/state.ts): most open cards in
+// practice will NOT have a uniquely-matched session.
+const o = (over: Partial<OpenSession>): OpenSession => ({
+  pid:1, host:'unknown', cwd:'/r', project:'proj', ageSeconds:60, rssBytes:null,
+  match:'unknown', sessionId:null, provider:null, lastProse:null, events:null,
+  activity:null, ...over,
+});
+
 beforeEach(() => {
   (globalThis as any).window.fleet = {
     listFleet: vi.fn().mockResolvedValue({ version:1, generatedAt:'t', sessions:[
-      s({ sessionId:'a', project:'trellome', activity:'working' }),
-      s({ sessionId:'b', project:'chocabloc', lifecycle:'disconnected', activity:'idle' }),
+      s({ sessionId:'a', project:'trellome' }),
+      s({ sessionId:'b', project:'chocabloc' }),
+    ], openSessions:[
+      o({ pid:1, project:'trellome' }),
     ]}),
     onFleet: vi.fn().mockReturnValue(() => {}),
   };
 });
 
 describe('FleetView', () => {
-  it('lists the sessions it was given', async () => {
-    // chocabloc is disconnected (its transcript went quiet beyond
-    // ACTIVE_MS), so it's History and starts inside the collapsed group
-    // rather than rendering on load -- expand the group to confirm the
-    // session is present, not dropped. trellome is active and working, so
-    // it still needs no interaction to appear.
+  it('shows open sessions immediately, and history only once expanded', async () => {
+    // trellome is open (process-enumerated) AND has transcript history;
+    // chocabloc has transcript history only (no matching open process) --
+    // the two enumerations are independent, not mutually exclusive.
     render(<FleetView />);
     await waitFor(() => expect(screen.getByText('trellome')).toBeTruthy());
     expect(screen.queryByText('chocabloc')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name:/History/i }));
     await waitFor(() => expect(screen.getByText('chocabloc')).toBeTruthy());
+    // trellome now renders twice: once as its open card (always shown),
+    // once as its history card (History is unfiltered, spec S7.1a) --
+    // intentional duplication, not a bug.
+    expect(screen.getAllByText('trellome')).toHaveLength(2);
   });
 
   it('subscribes to live updates and unsubscribes on unmount', async () => {
@@ -56,75 +67,44 @@ describe('FleetView', () => {
 
   it('shows a real empty state rather than a blank panel', async () => {
     (globalThis as any).window.fleet.listFleet =
-      vi.fn().mockResolvedValue({ version:1, generatedAt:'t', sessions:[] });
+      vi.fn().mockResolvedValue({ version:1, generatedAt:'t', sessions:[], openSessions:[] });
     render(<FleetView />);
     await waitFor(() => expect(screen.getByText(/No sessions indexed yet/i)).toBeTruthy());
   });
 
-  it('separates history sessions below a divider heading rather than hiding them', async () => {
-    // A disconnected session populates the history group through the
-    // lifecycle branch, deliberately not through "activity is idle" --
-    // that keeps this test's failure mode distinct from the two grouping
-    // tests below.
+  // A process can be open before its first transcript event is ingested --
+  // a brief window, but spec S7.1a's "never lost" promise has to hold from
+  // the moment a process starts, not from its first indexed event. Checking
+  // `sessions` alone for the empty state would hide a genuinely open
+  // session behind "No sessions indexed yet".
+  it('shows an open session even when nothing has been indexed to transcripts yet', async () => {
     (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', sessions:[
-        s({ sessionId:'a', project:'trellome', activity:'working' }),
-        s({ sessionId:'b', project:'gonesoon', lifecycle:'disconnected', activity:'idle' }),
-      ],
+      version:1, generatedAt:'t', sessions:[], openSessions:[o({ pid:9, project:'brandnew' })],
     });
     render(<FleetView />);
-    // getByText(/History/i) would also match text elsewhere on the page --
-    // getByRole targets the divider heading itself, not any text on the
-    // page that happens to contain the word.
+    await waitFor(() => expect(screen.getByText('brandnew')).toBeTruthy());
+    expect(screen.queryByText(/No sessions indexed yet/i)).toBeNull();
+  });
+
+  it('separates history below a divider heading rather than hiding it', async () => {
+    render(<FleetView />);
     await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
   });
 
-  // PREMISE CHANGE from the version of this test predating the Phase 3
-  // tier fix: it used to assert that an active-but-idle, not-alive session
-  // belonged in History (grouping was keyed on `alive`, process liveness).
-  // That was exactly the bug this fix removes -- on a real workspace,
-  // `alive` is false for almost every session (cwd matches are ambiguous
-  // whenever a repo has more than one session in it, the common case), so
-  // keying grouping on it buried genuinely-active sessions in the
-  // collapsed History group and showed "0 active". Grouping is now keyed
-  // on transcript recency alone: an active session with nothing happening
-  // (last event was a turn boundary, well within ACTIVE_MS) is precisely
-  // what "Waiting for you" means, alive or not, and belongs in the
-  // always-shown Active tier, never History.
-  it('groups an active session with nothing happening under Waiting for you, not History', async () => {
-    (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', sessions:[
-        s({ sessionId:'q', project:'quietproj', lifecycle:'active', activity:'idle', alive:false }),
-      ],
-    });
-    const { container } = render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/Waiting for you/i })).toBeTruthy());
-    // No top ("needs you") group: nothing here is working or blocked.
-    expect(container.querySelector('.fleet:not(.dim):not(.waiting)')).toBeNull();
-    // No History group at all -- there is no disconnected session in this
-    // fixture, and quietproj itself does not belong there.
-    expect(screen.queryByRole('heading', { name:/History/i })).toBeNull();
-    // Rendered immediately, in the "waiting" group -- no click needed,
-    // unlike History.
-    expect(screen.getByText('quietproj')).toBeTruthy();
-    expect(container.querySelector('.fleet.waiting')?.textContent).toMatch(/quietproj/);
-  });
-
+  // History is unfiltered: it does not matter whether a session is
+  // lifecycle 'active' or 'disconnected', last-known working or idle --
+  // every transcript session shows there once expanded.
   it('does not silently drop a disconnected session whose last known activity was working', async () => {
     (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
       version:1, generatedAt:'t', sessions:[
         s({ sessionId:'g', project:'ghostproj', lifecycle:'disconnected', activity:'working', stale:true }),
-      ],
+      ], openSessions:[],
     });
-    const { container } = render(<FleetView />);
+    render(<FleetView />);
     await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
-    expect(container.querySelector('.fleet:not(.dim):not(.waiting)')).toBeNull();
-    // Reachable-and-working and disconnected-but-last-seen-working are not
-    // the same thing: it renders once the history group is expanded, but
-    // in the history group, not the live one.
     fireEvent.click(screen.getByRole('button', { name:/History/i }));
     await waitFor(() => expect(screen.getByText('ghostproj')).toBeTruthy());
-    expect(container.querySelector('.fleet.dim')?.textContent).toMatch(/ghostproj/);
+    expect(screen.getByText('ghostproj')).toBeTruthy();
   });
 
   it('shows a specific message when the preload did not load, instead of throwing', async () => {
@@ -142,28 +122,6 @@ describe('FleetView', () => {
     await waitFor(() => expect(
       screen.getByText(/No handler registered for 'fleet:list'/)).toBeTruthy());
     expect(screen.queryByText(/Reading the index/i)).toBeNull();
-  });
-
-  it('keeps the "N active" chip in sync with what actually renders above the divider', async () => {
-    // A mix that exercises the boundary between the two grouping
-    // definitions: an active-but-quiet session and a stale-but-working
-    // (disconnected) one are both not top-tier -- if the chip and the live
-    // group ever counted different things, this fixture is where they'd
-    // disagree. quiet1 (lifecycle active) lands in the Waiting-for-you
-    // tier instead; ghost1 (lifecycle disconnected) lands in History --
-    // neither lands in the TOP tier this chip and query are about.
-    (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', sessions:[
-        s({ sessionId:'a', project:'live1', activity:'working' }),
-        s({ sessionId:'b', project:'live2', activity:'waiting_permission' }),
-        s({ sessionId:'q', project:'quiet1', lifecycle:'active', activity:'idle' }),
-        s({ sessionId:'g', project:'ghost1', lifecycle:'disconnected', activity:'working', stale:true }),
-      ],
-    });
-    const { container } = render(<FleetView />);
-    await waitFor(() => expect(screen.getByText(/2 active/)).toBeTruthy());
-    const liveCards = container.querySelectorAll('.fleet:not(.dim):not(.waiting) [role="button"]');
-    expect(liveCards.length).toBe(2);
   });
 
   it('does not mount history session cards while the group is collapsed', async () => {
@@ -184,7 +142,9 @@ describe('FleetView', () => {
     const toggle = screen.getByRole('button', { name:/History/i });
 
     fireEvent.click(toggle);
-    await waitFor(() => expect(group.querySelectorAll('[role="button"]').length).toBe(1));
+    // Both sessions (trellome and chocabloc) are in the payload's
+    // `sessions`, so both mount once expanded -- History is unfiltered.
+    await waitFor(() => expect(group.querySelectorAll('[role="button"]').length).toBe(2));
     expect(screen.getByText('chocabloc')).toBeTruthy();
 
     // Collapsing again un-mounts it rather than leaving it hidden.
@@ -195,9 +155,9 @@ describe('FleetView', () => {
 
   it('renders history cards in batches with a show-more control instead of all at once', async () => {
     const historySessions = Array.from({ length:130 }, (_, i) =>
-      s({ sessionId:`idle-${i}`, project:`idleproj${i}`, lifecycle:'disconnected', activity:'idle' }));
+      s({ sessionId:`idle-${i}`, project:`idleproj${i}` }));
     (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', sessions:historySessions,
+      version:1, generatedAt:'t', sessions:historySessions, openSessions:[],
     });
     const { container } = render(<FleetView />);
     await waitFor(() => expect(screen.getByRole('heading', { name:/History 130/i })).toBeTruthy());
@@ -244,74 +204,80 @@ describe('FleetView', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
-  // PREMISE CHANGE from the version of this describe block predating the
-  // Phase 3 tier fix: this tier used to be defined by `alive` (a session
-  // whose process is confirmed running, spec S7.1a's discovery). That key
-  // turned out to be unreliable per-session -- `cwd` resolves to a
-  // directory, not a specific session, so on a real workspace where
-  // several sessions share a repo, one live process there marks EVERY
-  // session sharing that cwd `alive: true`. The tier is now defined by
-  // transcript recency alone (lifecycle active, activity idle -- last
-  // event was a turn boundary): genuinely different from History (still
-  // reachable) and from the top tier (nothing to act on), with no
-  // dependence on `alive`. Every fixture below sets `alive:false`
-  // explicitly to prove that.
-  describe('the middle "Waiting for you" tier', () => {
-    it('shows a quiet, active session in its own group -- not the top tier, not history -- with no dependence on alive', async () => {
+  // The model correction: the top tier enumerates from live PROCESSES
+  // (discovery, spec S7.1a), not from transcript recency. "He has 15 live
+  // agent processes. Every one is a session he could switch to, and every
+  // one should get a card no matter when its transcript was last written."
+  describe('Open sessions', () => {
+    it('shows every open session immediately -- no click needed, unlike History', async () => {
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', sessions:[
-          s({ sessionId:'w', project:'waitingproj', lifecycle:'active', activity:'idle', alive:false }),
+        version:1, generatedAt:'t', sessions:[], openSessions:[
+          o({ pid:1, project:'one' }), o({ pid:2, project:'two' }), o({ pid:3, project:'three' }),
         ],
       });
       const { container } = render(<FleetView />);
-      await waitFor(() => expect(screen.getByRole('heading', { name:/Waiting for you/i })).toBeTruthy());
-      // Rendered immediately -- no click needed, unlike history.
-      expect(screen.getByText('waitingproj')).toBeTruthy();
-      // Not in the top tier.
-      expect(container.querySelector('.fleet:not(.dim):not(.waiting)')).toBeNull();
-      // Not in history: the group is collapsed by default, and no history
-      // heading renders at all since there is no disconnected session here.
-      expect(screen.queryByRole('heading', { name:/History/i })).toBeNull();
+      await waitFor(() => expect(screen.getByText('one')).toBeTruthy());
+      expect(screen.getByText('two')).toBeTruthy();
+      expect(screen.getByText('three')).toBeTruthy();
+      // Not inside the collapsed history group.
+      expect(container.querySelector('#history-group [role="button"]')).toBeNull();
     });
 
-    it('counts the middle tier in its own heading', async () => {
+    // A session opened nine days ago and never touched since is still
+    // open -- transcript recency (`sessions`) plays no part in this list.
+    it('shows an open session that has no matching transcript session at all', async () => {
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', sessions:[
-          s({ sessionId:'w1', project:'w1proj', alive:false }),
-          s({ sessionId:'w2', project:'w2proj', alive:false }),
+        version:1, generatedAt:'t', sessions:[s({ sessionId:'unrelated', project:'unrelated' })],
+        openSessions:[o({ pid:7, project:'orphaned', match:'unknown', sessionId:null })],
+      });
+      render(<FleetView />);
+      await waitFor(() => expect(screen.getByText('orphaned')).toBeTruthy());
+    });
+
+    it('counts open sessions in the "N open" chip', async () => {
+      (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
+        version:1, generatedAt:'t', sessions:[], openSessions:[
+          o({ pid:1, project:'one' }), o({ pid:2, project:'two' }),
         ],
       });
       render(<FleetView />);
-      await waitFor(() => expect(screen.getByRole('heading', { name:/Waiting for you 2/i })).toBeTruthy());
+      await waitFor(() => expect(screen.getByText(/2 open/)).toBeTruthy());
     });
 
-    it('does not double-count a working session in the middle tier', async () => {
-      // needsAttention is checked first: a working session belongs only to
-      // the top tier, regardless of `alive`.
+    it('counts only open sessions blocked on the user in the "need you" chip', async () => {
+      // Two blocked (one on each blocking activity), one merely working,
+      // one unknown state -- counts diverge under any predicate that
+      // confuses "blocked" with "working" or "known", so this pins the
+      // exact set, not just a count that could coincidentally match.
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', sessions:[
-          s({ sessionId:'a', project:'trellome', activity:'working', alive:false }),
-        ],
-      });
-      const { container } = render(<FleetView />);
-      await waitFor(() => expect(screen.getByText('trellome')).toBeTruthy());
-      expect(screen.queryByRole('heading', { name:/Waiting for you/i })).toBeNull();
-      expect(container.querySelectorAll('[role="button"]').length).toBe(1);
-    });
-
-    it('shows process age and memory on a middle-tier card, but not on a top-tier one', async () => {
-      (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', sessions:[
-          s({ sessionId:'a', project:'workingproj', activity:'working', alive:true,
-              processAgeSeconds: 9 * 86_400, processRssBytes: 206 * 1024 * 1024 }),
-          s({ sessionId:'w', project:'waitingproj', lifecycle:'active', activity:'idle', alive:true,
-              processAgeSeconds: 9 * 86_400, processRssBytes: 206 * 1024 * 1024 }),
+        version:1, generatedAt:'t', sessions:[], openSessions:[
+          o({ pid:1, project:'blocked-perm', activity:'waiting_permission' }),
+          o({ pid:2, project:'blocked-input', activity:'waiting_input' }),
+          o({ pid:3, project:'working', activity:'working' }),
+          o({ pid:4, project:'unknown-state', activity:null }),
         ],
       });
       render(<FleetView />);
-      await waitFor(() => expect(screen.getByText('waitingproj')).toBeTruthy());
-      // Exactly one card shows the process meta -- the middle-tier one.
-      expect(screen.getAllByText(/206 MB/).length).toBe(1);
+      await waitFor(() => expect(screen.getByText(/4 open/)).toBeTruthy());
+      expect(screen.getByText(/2 need you/)).toBeTruthy();
+    });
+
+    it('shows no "need you" chip when nothing is blocked', async () => {
+      (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
+        version:1, generatedAt:'t', sessions:[], openSessions:[o({ pid:1, project:'one' })],
+      });
+      render(<FleetView />);
+      await waitFor(() => expect(screen.getByText(/1 open/)).toBeTruthy());
+      expect(screen.queryByText(/need you/)).toBeNull();
+    });
+
+    it('shows a real empty message, not a blank gap, when nothing is open', async () => {
+      (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
+        version:1, generatedAt:'t', sessions:[s({ sessionId:'a', project:'trellome' })], openSessions:[],
+      });
+      render(<FleetView />);
+      await waitFor(() => expect(screen.getByText(/No open sessions right now/i)).toBeTruthy());
+      expect(screen.getByText(/0 open/)).toBeTruthy();
     });
   });
 });

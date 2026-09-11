@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { SessionCard } from '../../src/renderer/components/SessionCard.tsx';
-import type { SessionState } from '../../src/fleet/state.ts';
+import { SessionCard, OpenSessionCard } from '../../src/renderer/components/SessionCard.tsx';
+import type { SessionState, OpenSession } from '../../src/fleet/state.ts';
 
 const base: SessionState = {
   sessionId:'s1', runId:'r1', provider:'claude', cwd:'/Users/me/trellome',
@@ -218,6 +218,105 @@ describe('SessionCard', () => {
       render(<SessionCard onOpen={() => {}} showProcessMeta
         state={{ ...base, processAgeSeconds: null, processRssBytes: 206 * 1024 * 1024 }} />);
       expect(screen.getByText('206 MB')).toBeTruthy();
+    });
+  });
+});
+
+// The model correction: one card per live process, "ALL OPEN SESSIONS
+// should show. And the source." Fully unattributed by default -- most
+// tests below override only what they're testing, so the base fixture
+// pins the honest "we don't know" case (no session could be matched) that
+// is the common outcome on a shared-cwd repo.
+describe('OpenSessionCard', () => {
+  const openBase: OpenSession = {
+    pid: 4242, host: 'iterm2', cwd: '/Users/me/trellome', project: 'trellome',
+    ageSeconds: 9 * 86_400, rssBytes: 206 * 1024 * 1024, match: 'unknown',
+    sessionId: null, provider: null, lastProse: null, events: null, activity: null,
+  };
+
+  it('shows pid, project, cwd, host, age and memory even with no transcript match at all', () => {
+    render(<OpenSessionCard onOpen={() => {}} state={openBase} />);
+    expect(screen.getByText('trellome')).toBeTruthy();
+    expect(screen.getByText('/Users/me/trellome')).toBeTruthy();
+    expect(screen.getByText('iTerm2')).toBeTruthy();
+    expect(screen.getByText(/9d/)).toBeTruthy();
+    expect(screen.getByText(/206 MB/)).toBeTruthy();
+    expect(screen.getByText(/pid 4242/)).toBeTruthy();
+  });
+
+  it('is operable by keyboard and mouse, passing pid to onOpen every time', () => {
+    const onOpen = vi.fn();
+    render(<OpenSessionCard state={openBase} onOpen={onOpen} />);
+    const card = screen.getByRole('button', { name: /trellome/i });
+    fireEvent.click(card);
+    fireEvent.keyDown(card, { key: 'Enter' });
+    fireEvent.keyDown(card, { key: ' ' });
+    // Checked call by call, not with toHaveBeenCalledWith (an "any call
+    // matches" check) -- that would stay green even if only the click
+    // handler, say, passed the wrong pid while the two keyboard paths were
+    // still correct.
+    expect(onOpen.mock.calls).toEqual([[4242], [4242], [4242]]);
+  });
+
+  it('renders no provider badge when the process could not be matched to exactly one session', () => {
+    const { container } = render(<OpenSessionCard onOpen={() => {}} state={openBase} />);
+    expect(container.querySelector('.prov')).toBeNull();
+    expect(screen.queryByText('Claude')).toBeNull();
+    expect(screen.queryByText('Codex')).toBeNull();
+  });
+
+  it('renders no last-message text when unmatched -- blank is honest, not a placeholder', () => {
+    const { container } = render(<OpenSessionCard onOpen={() => {}} state={openBase} />);
+    expect(container.querySelector('.said')).toBeNull();
+  });
+
+  it('renders no working/waiting state word when unmatched', () => {
+    const { container } = render(<OpenSessionCard onOpen={() => {}} state={openBase} />);
+    expect(container.querySelector('.state')).toBeNull();
+    expect(container.querySelector('.badge')).toBeNull();
+  });
+
+  it('renders no host text when host is null or classifyHost\'s own "unknown"', () => {
+    const { container: withNull } = render(
+      <OpenSessionCard onOpen={() => {}} state={{ ...openBase, host: null as any }} />);
+    expect(withNull.querySelector('.host')).toBeNull();
+    const { container: withUnknown } = render(
+      <OpenSessionCard onOpen={() => {}} state={{ ...openBase, host: 'unknown' }} />);
+    expect(withUnknown.querySelector('.host')).toBeNull();
+  });
+
+  // Enrichment (provider/lastProse/events/activity) appears only on a
+  // unique transcript match -- src/fleet/state.ts's openSessions doc
+  // comment. This is the one fixture in this describe block that sets it.
+  describe('enrichment on a unique match', () => {
+    const enriched: OpenSession = {
+      ...openBase, match: 'unique', sessionId: 's1', provider: 'claude',
+      lastProse: 'Reused the JWT helper.', events: 9129, activity: 'working',
+    };
+
+    it('shows provider, last prose, events and the working state', () => {
+      render(<OpenSessionCard onOpen={() => {}} state={enriched} />);
+      expect(screen.getByText('Claude')).toBeTruthy();
+      expect(screen.getByText(/Reused the JWT helper/)).toBeTruthy();
+      expect(screen.getByText('9,129')).toBeTruthy();
+      expect(screen.getByText('working')).toBeTruthy();
+    });
+
+    it('shows the blocked badge and wording when the matched session is waiting on the user', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}}
+        state={{ ...enriched, activity: 'waiting_permission' }} />);
+      expect(container.querySelector('.badge')).not.toBeNull();
+      expect(screen.getByText(/waiting on you/)).toBeTruthy();
+    });
+
+    it('includes pid, project, provider, activity and last prose in the accessible name', () => {
+      render(<OpenSessionCard onOpen={() => {}} state={enriched} />);
+      const card = screen.getByRole('button', { name: /trellome/i });
+      const label = card.getAttribute('aria-label') ?? '';
+      expect(label).toMatch(/pid 4242/);
+      expect(label).toMatch(/Claude/);
+      expect(label).toMatch(/working/);
+      expect(label).toMatch(/Reused the JWT helper/);
     });
   });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { fleetState } from '../../src/fleet/state.ts';
+import { fleetState, openSessions } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
 
@@ -395,12 +395,11 @@ describe('fleetState', () => {
     });
   });
 
-  // Definition of done: activity 25 minutes ago is Active (lifecycle
-  // 'active', governed by ACTIVE_MS = 30 minutes); activity 2 days ago is
-  // History (lifecycle 'disconnected'). FleetView's Active/History split
-  // (needsAttention/waitingForYou vs. history) is keyed directly off this
-  // field -- see the tier tests in tests/renderer/FleetView.test.tsx.
-  describe('the Active/History boundary (ACTIVE_MS)', () => {
+  // `lifecycle`'s ACTIVE_MS boundary itself (still governs `stale` and the
+  // sharesWorktreeWith contention check, spec S9.5, independent of
+  // whatever a process is doing) -- 25 minutes since the last transcript
+  // event is still Active/reachable; 2 days is not.
+  describe('the lifecycle boundary (ACTIVE_MS)', () => {
     it('a session active 25 minutes ago is still Active', () => {
       const db = openDb(':memory:');
       insertEvents(db, [
@@ -411,7 +410,7 @@ describe('fleetState', () => {
       expect(s!.lifecycle).toBe('active');
     });
 
-    it('a session last active 2 days ago is History', () => {
+    it('a session last active 2 days ago is disconnected', () => {
       const db = openDb(':memory:');
       insertEvents(db, [
         ev({ kind:'session.started', ts:at(2 * 24 * 60), payload:{ cwd:'/r' }, contentHash:'a' }),
@@ -420,5 +419,115 @@ describe('fleetState', () => {
       const [s] = fleetState(db, { now: NOW });
       expect(s!.lifecycle).toBe('disconnected');
     });
+  });
+});
+
+// openSessions enumerates from live PROCESSES, not from transcripts -- the
+// model correction: "ALL OPEN SESSIONS should show. And the source. So I
+// can close if they are actually dead." A session opened nine days ago and
+// never touched since is still open; transcript recency (fleetState's
+// `lifecycle`) cannot tell that apart from one that is truly gone. This is
+// deliberately a separate exported function, tested independently of
+// fleetState, because it consumes `SessionState[]` + `LiveProcess[]` as
+// plain inputs rather than a db -- it is pure and does not query.
+describe('openSessions', () => {
+  function proc(o: Partial<LiveProcess> & { pid: number }): LiveProcess {
+    return { tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
+  }
+
+  it('lists one card per live process, regardless of transcript recency', () => {
+    const db = openDb(':memory:');
+    // A session touched nine days ago -- History under the old design,
+    // invisible under any recency filter. Its process is still open.
+    insertEvents(db, [
+      ev({ kind:'session.started', ts:at(9 * 24 * 60), payload:{ cwd:'/repo/nine-days' }, contentHash:'a' }),
+      ev({ kind:'turn.completed', ts:at(9 * 24 * 60), payload:{}, contentHash:'b', subIndex:1 }),
+    ]);
+    const sessions = fleetState(db, { now: NOW });
+    expect(sessions[0]!.lifecycle).toBe('disconnected'); // sanity: genuinely old by transcript recency
+
+    const open = openSessions(sessions, [proc({ pid:1, cwd:'/repo/nine-days', ageSeconds:9 * 86_400 })]);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.pid).toBe(1);
+    expect(open[0]!.match).toBe('unique');
+  });
+
+  it('shows pid, host, cwd, project, age and memory for a process with no transcript match at all', () => {
+    const open = openSessions([], [proc({
+      pid:42, cwd:'/Users/me/orphan', host:'iterm2', ageSeconds:120, rssBytes:50_000_000,
+    })]);
+    expect(open).toEqual([{
+      pid:42, host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
+      ageSeconds:120, rssBytes:50_000_000, match:'unknown',
+      sessionId:null, provider:null, lastProse:null, events:null, activity:null,
+    }]);
+  });
+
+  it('enriches a uniquely-matched card with provider, last prose, events and activity', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' }),
+      ev({ kind:'prose', payload:{ text:'Reused the JWT helper.' }, contentHash:'b', subIndex:1 }),
+    ]);
+    const sessions = fleetState(db, { now: NOW });
+    const open = openSessions(sessions, [proc({
+      pid:9, cwd:'/repo/live', host:'vscode', ageSeconds:600, rssBytes:100_000_000,
+    })]);
+    expect(open[0]).toMatchObject({
+      match:'unique', sessionId:'s1', provider:'claude',
+      lastProse:'Reused the JWT helper.', activity:'working',
+    });
+    expect(open[0]!.events).toBeGreaterThan(0);
+  });
+
+  // The core of the redesign's attribution discipline, applied here exactly
+  // as it already is on SessionState.alive: two sessions sharing a cwd make
+  // any process matched to it ambiguous, so none of its words, provider or
+  // turn-boundary state may be attributed to any one of them. The process's
+  // OWN facts (pid/host/cwd/project/age/memory) are unaffected -- the card
+  // IS that process, so those are always attributable.
+  it('renders an ambiguous match without borrowing another session\'s words, provider or activity', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+      ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+    ]);
+    const sessions = fleetState(db, { now: NOW });
+    const open = openSessions(sessions, [proc({
+      pid:7, cwd:'/repo/shared', host:'terminal', ageSeconds:300, rssBytes:1_000_000,
+    })]);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.match).toBe('ambiguous');
+    expect(open[0]!.sessionId).toBeNull();
+    expect(open[0]!.provider).toBeNull();
+    expect(open[0]!.lastProse).toBeNull();
+    expect(open[0]!.events).toBeNull();
+    expect(open[0]!.activity).toBeNull();
+    // Still attributable: these come from the process itself, not from a
+    // matched session.
+    expect(open[0]!.pid).toBe(7);
+    expect(open[0]!.host).toBe('terminal');
+    expect(open[0]!.ageSeconds).toBe(300);
+    expect(open[0]!.rssBytes).toBe(1_000_000);
+  });
+
+  it('does not filter open cards against sessions -- a process with a cwd no session has ever used still gets a card', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/unrelated' }, contentHash:'a' })]);
+    const sessions = fleetState(db, { now: NOW });
+    const open = openSessions(sessions, [proc({ pid:3, cwd:'/nowhere/tracked' })]);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.match).toBe('unknown');
+    expect(open[0]!.sessionId).toBeNull();
+  });
+
+  it('orders by process age ascending (newest first), unknown age last, pid breaking ties', () => {
+    const open = openSessions([], [
+      proc({ pid:3, ageSeconds:500 }),
+      proc({ pid:1, ageSeconds:null }),
+      proc({ pid:2, ageSeconds:100 }),
+      proc({ pid:4, ageSeconds:100 }),
+    ]);
+    expect(open.map(o => o.pid)).toEqual([2, 4, 3, 1]);
   });
 });

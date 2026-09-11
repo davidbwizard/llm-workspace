@@ -5,6 +5,7 @@ import { insertEvents } from '../../src/store/ingest.ts';
 import {
   buildFleetPayload, sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
+  OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
 } from '../../src/main/ipc.ts';
 import { getCachedLiveProcesses, refreshLiveProcesses } from '../../src/discovery/live.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
@@ -292,6 +293,7 @@ describe('buildFleetPayload — live process discovery wiring', () => {
     const p = buildFleetPayload(db);
     expect(p.sessions).toHaveLength(2);
     expect(p.sessions.every(s => s.host === null && s.match === 'unknown' && s.alive === false)).toBe(true);
+    expect(p.openSessions).toEqual([]); // nothing open, nothing to show -- not a filter bug, honestly zero
   });
 
   it('populates host/match/candidates for a session whose live process was discovered', async () => {
@@ -322,6 +324,86 @@ describe('buildFleetPayload — live process discovery wiring', () => {
     // real array, which would fail again if the duplicate returned.
     expect(p.sessions[0]!.candidates).toEqual([4242]);
     expect(p.sessions[0]!.alive).toBe(true);
+  });
+
+  // The model correction: openSessions enumerates from live processes, one
+  // card per pid, wired end to end through the real discovery pipeline
+  // (refreshLiveProcesses -> the process cache -> buildFleetPayload).
+  it('wires openSessions end to end, one card per live process, regardless of transcript match', async () => {
+    const db = openDb(':memory:');
+    // No session in the index shares either pid's cwd -- proves an open
+    // card does not depend on a transcript match to appear at all.
+    await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '100\n';
+      if (bin === 'pgrep' && args[1] === 'codex') return '200\n';
+      return '';
+    });
+
+    const p = buildFleetPayload(db);
+    expect(p.openSessions.map(o => o.pid).sort((a, b) => a - b)).toEqual([100, 200]);
+    expect(p.openSessions.every(o => o.match === 'unknown' && o.sessionId === null)).toBe(true);
+  });
+
+  it('enriches an open card only on a unique transcript match, leaving an ambiguous one blank', async () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, sessionId:'s1', contentHash:'c1' }),
+      ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, sessionId:'s2', contentHash:'c2' }),
+    ]);
+    await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '9\n';
+      if (bin === 'lsof') return 'p9\nfcwd\nn/repo/shared\n';
+      return '';
+    });
+
+    const p = buildFleetPayload(db);
+    expect(p.openSessions).toHaveLength(1);
+    expect(p.openSessions[0]!.match).toBe('ambiguous');
+    expect(p.openSessions[0]!.sessionId).toBeNull();
+    expect(p.openSessions[0]!.provider).toBeNull();
+    expect(p.openSessions[0]!.lastProse).toBeNull();
+    expect(p.openSessions[0]!.events).toBeNull();
+    expect(p.openSessions[0]!.activity).toBeNull();
+    // Still attributable -- these come from the process, not a session.
+    expect(p.openSessions[0]!.pid).toBe(9);
+    expect(p.openSessions[0]!.cwd).toBe('/repo/shared');
+  });
+
+  // Same gate as SessionState/Blocker above, for OpenSession.
+  it('classifies every open-session field as sanitised or structural, with none left over', async () => {
+    const db = openDb(':memory:');
+    await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      return '';
+    });
+    const open = buildFleetPayload(db).openSessions[0]!;
+    const known = new Set<string>([...OPEN_SESSION_SANITISED_FIELDS, ...OPEN_SESSION_STRUCTURAL_FIELDS]);
+    expect(new Set(Object.keys(open))).toEqual(known);
+  });
+
+  it('pins the open-session field classification exactly, not just its coverage', () => {
+    expect(OPEN_SESSION_SANITISED_FIELDS).toEqual(['cwd', 'project', 'lastProse']);
+    expect(OPEN_SESSION_STRUCTURAL_FIELDS).toEqual([
+      'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity',
+    ]);
+  });
+
+  // cwd/project on an open card come straight from `lsof`, not from any
+  // session -- they need their own sanitisation pass distinct from the one
+  // applied to `sessions`. This is the only place that pass is reachable:
+  // every other open-card test above uses a clean cwd.
+  it("sanitises an open card's cwd/project even when no session enriches it", async () => {
+    const db = openDb(':memory:');
+    const RLO = '\u202e';
+    await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '555\n';
+      if (bin === 'lsof') return `p555\nfcwd\nn/Users/me/proj${RLO}ect\n`;
+      return '';
+    });
+
+    const p = buildFleetPayload(db);
+    expect(p.openSessions[0]!.cwd).not.toContain(RLO);
+    expect(p.openSessions[0]!.project).not.toContain(RLO);
   });
 });
 

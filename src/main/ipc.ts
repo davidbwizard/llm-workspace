@@ -5,12 +5,21 @@
 // scope -- a test that imports and calls registerIpc directly will throw.
 import { ipcMain, type BrowserWindow } from 'electron';
 import type { Db } from '../store/db.ts';
-import { fleetState, type SessionState } from '../fleet/state.ts';
+import { fleetState, openSessions, type SessionState, type OpenSession } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
 import { sanitizeForTerminal } from '../config.ts';
 import { getCachedLiveProcesses } from '../discovery/live.ts';
 
-export interface FleetPayload { version: 1; generatedAt: string; sessions: SessionState[] }
+export interface FleetPayload {
+  version: 1;
+  generatedAt: string;
+  sessions: SessionState[];
+  /** One card per live process (discovery, spec §7.1a) -- enumerated
+   *  independently of `sessions`, per the model correction: ALL open
+   *  sessions must show, not just the ones transcript recency happens to
+   *  approximate. See src/fleet/state.ts's openSessions doc comment. */
+  openSessions: OpenSession[];
+}
 
 // Unicode bidirectional overrides (U+202A-U+202E: LRE, RLE, PDF, LRO, RLO)
 // and isolates (U+2066-U+2069: LRI, RLI, FSI, PDI) -- e.g. U+202E
@@ -88,6 +97,23 @@ export const BLOCKER_STRUCTURAL_FIELDS = [
   'sessionId', 'toolUseId', 'promptId', 'occurredAt',
 ] as const satisfies readonly (keyof Blocker)[];
 
+// Same gate, for OpenSession. `cwd`/`project` are read straight from the
+// process (`lsof`'s cwd, spec §7.1a discovery), not from any session, so
+// they need their own sanitisation pass here even though the parallel
+// SessionState fields are already sanitised upstream. `lastProse` is
+// enrichment copied from an already-sanitised session (buildFleetPayload
+// builds `sessions` first) -- included here anyway, as defence in depth,
+// the same reasoning already applied to blocker.kind above: display safety
+// at this boundary should not depend on staying downstream of another
+// sanitisation pass. `pid` is structural -- see the note on it below.
+export const OPEN_SESSION_SANITISED_FIELDS =
+  ['cwd', 'project', 'lastProse'] as const satisfies readonly (keyof OpenSession)[];
+// `pid` is what makes the close action (a later task) possible and safe --
+// one card, one process, no guessing -- so it has to reach the renderer.
+export const OPEN_SESSION_STRUCTURAL_FIELDS = [
+  'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity',
+] as const satisfies readonly (keyof OpenSession)[];
+
 /** Sanitises every field named in `fields` whose current value is a string
  *  (some entries, e.g. cwd/lastProse, are nullable -- null passes through
  *  unchanged). Driving sanitisation from the same list the exhaustiveness
@@ -126,14 +152,24 @@ export function buildFleetPayload(db: Db): FleetPayload {
   // builds from transcript activity, so an empty array here still returns
   // every session, just with host/match/candidates left at their unknown
   // defaults (spec 7.1a).
-  const sessions = fleetState(db, { processes: getCachedLiveProcesses() }).map(s => {
+  const processes = getCachedLiveProcesses();
+  const sessions = fleetState(db, { processes }).map(s => {
     const session = sanitizeFields(s, SANITISED_FIELDS);
     return {
       ...session,
       blocker: session.blocker ? sanitizeFields(session.blocker, BLOCKER_SANITISED_FIELDS) : null,
     };
   });
-  return { version: 1, generatedAt: new Date().toISOString(), sessions };
+  // openSessions enumerates from `processes` independently of `sessions`
+  // (the model correction: ALL open sessions must show, not just the ones
+  // transcript recency happens to approximate) -- built from the
+  // already-sanitised `sessions` above so enrichment borrowed from a
+  // uniquely-matched session (lastProse) is already clean; its own
+  // cwd/project, read straight from the process rather than any session,
+  // still get their own pass through OPEN_SESSION_SANITISED_FIELDS.
+  const open = openSessions(sessions, processes)
+    .map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
+  return { version: 1, generatedAt: new Date().toISOString(), sessions, openSessions: open };
 }
 
 /** The complete set of channels main answers. Adding one means adding it to

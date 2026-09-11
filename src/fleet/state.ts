@@ -57,6 +57,14 @@ export interface SessionState {
 const WORKING_MS = 20_000;
 const ACTIVE_MS = 30 * 60_000;
 
+/** Last path segment of a working directory, or 'unknown' with none --
+ *  shared between fleetState's session rows and openSessions' process
+ *  rows below, which each derive a project name from a cwd of their own
+ *  (a session's from its transcript, a process's from `lsof`). */
+function projectName(cwd: string | null): string {
+  return cwd ? cwd.split('/').filter(Boolean).slice(-1)[0] ?? cwd : 'unknown';
+}
+
 /** Event kinds that mean the agent handed control back and is now waiting on
  *  the user. Activity is derived from WHICH event happened last, not from how
  *  long ago it was: an agent mid-tool-call or mid-generation writes nothing for
@@ -288,7 +296,7 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
       runId: r.run_id ?? null,
       provider: r.provider as Provider,
       cwd: r.cwd ?? null,
-      project: r.cwd ? String(r.cwd).split('/').filter(Boolean).slice(-1)[0] ?? r.cwd : 'unknown',
+      project: projectName(r.cwd ? String(r.cwd) : null),
       lifecycle,
       activity,
       stale: lifecycle === 'disconnected',
@@ -309,4 +317,82 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
       sharesWorktreeWith: shared,
     };
   }).sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? ''));
+}
+
+export interface OpenSession {
+  pid: number;
+  host: LiveProcess['host'];
+  cwd: string | null;
+  project: string;
+  /** Seconds this process has been running. Unlike SessionState's
+   *  processAgeSeconds, this is never gated on match quality -- the card
+   *  IS the process, so its own age is attributable regardless of whether
+   *  any transcript session can be matched to it. */
+  ageSeconds: number | null;
+  /** Resident memory of this process, in bytes. Same "always attributable"
+   *  reasoning as ageSeconds. */
+  rssBytes: number | null;
+  match: MatchQuality;
+  /** The one session this pid's cwd matches uniquely, or null -- both when
+   *  no session shares its cwd at all, and when several do (`ambiguous`,
+   *  ordinary on a shared-cwd repo). `provider`/`lastProse`/`events`/
+   *  `activity` below are enrichment from THIS session and are null under
+   *  the exact same two conditions -- see the `alive` doc comment on
+   *  SessionState for why an ambiguous match may never be attributed to
+   *  any one of the sessions sharing it. */
+  sessionId: string | null;
+  provider: Provider | null;
+  lastProse: string | null;
+  events: number | null;
+  /** The working/waiting/idle distinction from the matched session's own
+   *  turn boundary (see the Activity doc comment above) -- null under the
+   *  same conditions as sessionId. */
+  activity: Activity | null;
+}
+
+/** One card per live process (discovery, spec §7.1a) -- "ALL OPEN
+ *  SESSIONS should show. And the source. So I can close if they are
+ *  actually dead." A session opened nine days ago and never touched since
+ *  is still open; transcript recency (which drives `sessions`/History)
+ *  cannot tell that apart from one that is truly gone, only process
+ *  discovery can. This enumerates from `processes`, independently of
+ *  `sessions` -- the two are deliberately not filtered against each
+ *  other, so History (transcripts) still loses nothing (spec §7.1a) even
+ *  though most open processes will also show up there.
+ *
+ *  Enrichment (provider/lastProse/events/activity) is attached only on a
+ *  UNIQUE match, same discipline `alive` already enforces on SessionState:
+ *  an ambiguous match (several sessions share this pid's cwd, the common
+ *  case on a real workspace) must never borrow one of those sessions'
+ *  words, provider, or turn-boundary state onto this card -- a blank
+ *  field is honest, a wrong one is not. */
+export function openSessions(sessions: SessionState[], processes: LiveProcess[]): OpenSession[] {
+  const refs = sessions.map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
+  const matches = classifyMatch(processes, refs);
+  const byId = new Map(sessions.map(s => [s.sessionId, s]));
+
+  return processes.map((p, i) => {
+    const m = matches[i]!; // classifyMatch returns one result per process, same order
+    const matched = m.quality === 'unique' ? byId.get(m.sessionId!) ?? null : null;
+    return {
+      pid: p.pid,
+      host: p.host,
+      cwd: p.cwd,
+      project: projectName(p.cwd),
+      ageSeconds: p.ageSeconds ?? null,
+      rssBytes: p.rssBytes ?? null,
+      match: m.quality,
+      sessionId: matched?.sessionId ?? null,
+      provider: matched?.provider ?? null,
+      lastProse: matched?.lastProse ?? null,
+      events: matched?.events ?? null,
+      activity: matched?.activity ?? null,
+    };
+  })
+    // Newest-started process first (ageSeconds ascending) -- the most
+    // recently opened session is the most likely one David just asked
+    // about. Unknown age (ps failed) sorts last rather than first: it
+    // cannot honestly claim to be the newest. pid breaks ties
+    // deterministically.
+    .sort((a, b) => (a.ageSeconds ?? Infinity) - (b.ageSeconds ?? Infinity) || a.pid - b.pid);
 }
