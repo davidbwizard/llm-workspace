@@ -86,16 +86,34 @@ describe('SessionCard', () => {
     expect(container.querySelector('.proj')?.classList.contains('display')).toBe(true);
   });
 
-  // HOST_LABEL is now typed Record<Host, string>, a mapped type over the
-  // same closed union `state.host` draws from -- TS itself can prove this
-  // lookup never misses. The fallback still matters at runtime: nothing
-  // stops a value that never went through classifyHost() (a stale
-  // persisted state, an `as any`, a future bug elsewhere) from reaching
-  // this lookup, so the test bypasses the type system the same way to
-  // prove the belt-and-braces fallback still holds.
-  it('falls back to a labelled placeholder instead of a blank field for an unrecognised host', () => {
-    render(<SessionCard onOpen={() => {}} state={{ ...base, host: 'ssh-remote' as any }} />);
-    expect(screen.getByText('unknown host')).toBeTruthy();
+  // A "we don't know" field shown on every single card (true of all of them
+  // today -- process discovery never runs on the app's path yet) claims we
+  // looked and failed, when the truth is we never looked. Rendering nothing
+  // says that honestly; Phase 5's process discovery is what starts putting
+  // real labels here. Covers null (no discovery), classifyHost's own
+  // 'unknown' result, and -- since HOST_LABEL is a closed Record<Host,
+  // string> that TS itself proves never misses for a real HostApp value --
+  // an out-of-union value (stale persisted state, an `as any`, a future bug
+  // elsewhere) falls through the same way: there is no real label to show,
+  // so none of these three cases is a genuinely different one.
+  it('renders no host text when host is null', () => {
+    const { container } = render(<SessionCard onOpen={() => {}} state={{ ...base, host: null }} />);
+    expect(container.querySelector('.host')).toBeNull();
+  });
+
+  it('renders no host text when host is classifyHost\'s own "unknown"', () => {
+    const { container } = render(<SessionCard onOpen={() => {}} state={{ ...base, host: 'unknown' }} />);
+    expect(container.querySelector('.host')).toBeNull();
+  });
+
+  it('renders no host text for a value that never went through classifyHost()', () => {
+    const { container } = render(<SessionCard onOpen={() => {}} state={{ ...base, host: 'ssh-remote' as any }} />);
+    expect(container.querySelector('.host')).toBeNull();
+  });
+
+  it('still shows a real host label when one is known', () => {
+    render(<SessionCard onOpen={() => {}} state={{ ...base, host: 'iterm2' }} />);
+    expect(screen.getByText('iTerm2')).toBeTruthy();
   });
 
   // Asserted on the accessible name, not on page text: the visible ".state"

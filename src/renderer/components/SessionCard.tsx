@@ -5,10 +5,10 @@ import './SessionCard.css';
 // A mapped type over the same closed union `state.host` draws from (see
 // below), not an index signature -- adding a HostApp member without adding
 // it here is now a compile error, the same protection ACTIVITY_WORD already
-// had. The `?? 'unknown host'` fallback at the call site stays anyway: TS
-// types are erased at runtime, and nothing here proves a value that never
-// went through `classifyHost()` -- a stale persisted state, a future bug
-// elsewhere in the pipeline -- can't still reach this lookup.
+// had. Kept even though nothing renders HOST_LABEL.unknown today (see
+// hostLabel below) -- Phase 5's process discovery is what starts producing
+// real values here, and this table is its target, not something to shrink
+// in the meantime.
 type Host = NonNullable<SessionState['host']>;
 
 const HOST_LABEL: Record<Host, string> = {
@@ -24,6 +24,20 @@ const ACTIVITY_WORD: Record<SessionState['activity'], string> = {
 export function SessionCard({ state, onOpen }:
   { state: SessionState; onOpen: (sessionId: string) => void }) {
   const blocked = state.activity === 'waiting_permission' || state.activity === 'waiting_input';
+  // `null` (no process discovery ran at all -- true of every card today,
+  // since buildFleetPayload calls fleetState with no `processes`, so
+  // discovery never runs on the app's path) and `'unknown'` (classifyHost's
+  // own "found a process, couldn't name its host app" case) both mean the
+  // same thing to the user: we have nothing to say here. Saying "unknown
+  // host" on every single card claims we looked and failed, when the truth
+  // is closer to never having looked -- worse than saying nothing. An
+  // out-of-union value (stale persisted state, a bug elsewhere) also falls
+  // through to `undefined` here, the same as `null` -- there is no
+  // genuinely different case: HOST_LABEL is a closed Record<Host, string>,
+  // so a value not `!== 'unknown'` that ALSO doesn't match one of its keys
+  // was never a real HostApp value to begin with. Real values (Phase 5's
+  // job to start producing) still render their label as before.
+  const hostLabel = state.host && state.host !== 'unknown' ? HOST_LABEL[state.host] : undefined;
   // The dial caps at 10 pips by design -- it's a sparkline, not a counter.
   // The exact count sits right beside it (the "2/44" label below), so above
   // ten live agents the dial and the number are meant to disagree.
@@ -82,7 +96,7 @@ export function SessionCard({ state, onOpen }:
           <ProviderMark provider={state.provider} size={11} />
           {providerLabel}
         </span>
-        <span className="host">{HOST_LABEL[state.host ?? 'unknown'] ?? 'unknown host'}</span>
+        {hostLabel && <span className="host">{hostLabel}</span>}
       </div>
 
       <div>
