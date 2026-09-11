@@ -317,6 +317,65 @@ function defaultSignal(pid: number, signal: NodeJS.Signals): void {
   process.kill(pid, signal);
 }
 
+/** A tty name as `ps -o tty=` reports it: `ttys009`, occasionally `console`.
+ *  Validated before it is ever interpolated into an AppleScript string --
+ *  the value comes from our own ps output rather than the renderer, but a
+ *  script built by string interpolation is not a place to rely on that. */
+const TTY_NAME = /^[a-z][a-z0-9]{0,15}$/;
+
+/** Selects the exact iTerm2 or Terminal session whose tty matches, rather
+ *  than merely raising the application. Both expose `tty` on a session/tab,
+ *  and `ps` gives us the agent process's tty, so the two can be matched
+ *  directly -- `ps` reports `ttys009` where the terminals report
+ *  `/dev/ttys009`.
+ *
+ *  Returns false when there is no matching session -- a window the user has
+ *  since closed, or a session running under tmux or in VS Code's integrated
+ *  terminal -- so the caller can fall back to just activating the app. */
+function selectTerminalSession(host: LiveProcess['host'], tty: string): boolean {
+  if (!TTY_NAME.test(tty)) return false;
+  const dev = `/dev/${tty}`;
+  const script =
+    host === 'iterm2'
+      ? `tell application "iTerm2"
+           repeat with w in windows
+             repeat with t in tabs of w
+               repeat with s in sessions of t
+                 if tty of s is "${dev}" then
+                   select w
+                   tell w to select t
+                   tell t to select s
+                   activate
+                   return "ok"
+                 end if
+               end repeat
+             end repeat
+           end repeat
+           return "no"
+         end tell`
+      : host === 'terminal'
+        ? `tell application "Terminal"
+             repeat with w in windows
+               repeat with t in tabs of w
+                 if tty of t is "${dev}" then
+                   set selected tab of w to t
+                   set index of w to 1
+                   activate
+                   return "ok"
+                 end if
+               end repeat
+             end repeat
+             return "no"
+           end tell`
+        : null;
+  if (!script) return false;
+  try {
+    return execFileSync('osascript', ['-e', script], { timeout: 4000 }).toString().trim() === 'ok';
+  } catch {
+    return false;
+  }
+}
+
 /** Brings a macOS application to the front. Injectable so tests never
  *  actually raise a window. The app name comes from a closed map in
  *  revealSession, never from the renderer, so this is not a place a string
@@ -475,6 +534,13 @@ export async function revealSession(rawPid: unknown, opts: {
 
   const app = APP_FOR_HOST[proc.host];
   if (!app) return { status: 'refused', reason: 'not_discovered' };
+
+  // Try for the exact window and tab first; fall back to raising the
+  // application when there is no matching session -- a closed window, tmux,
+  // or VS Code's integrated terminal, which has no scriptable tty.
+  if (!opts.open && proc.tty && selectTerminalSession(proc.host, proc.tty)) {
+    return { status: 'revealed' };
+  }
 
   try {
     (opts.open ?? defaultOpen)(app);
