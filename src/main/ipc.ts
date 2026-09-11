@@ -8,6 +8,7 @@ import type { Db } from '../store/db.ts';
 import { fleetState, type SessionState } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
 import { sanitizeForTerminal } from '../config.ts';
+import { getCachedLiveProcesses } from '../discovery/live.ts';
 
 export interface FleetPayload { version: 1; generatedAt: string; sessions: SessionState[] }
 
@@ -115,7 +116,16 @@ export function sanitizeFields<T extends object>(obj: T, fields: readonly (keyof
  *  (spec §11.2). React escapes HTML, but control and bidi/zero-width
  *  characters are a separate problem and travel fine through JSX. */
 export function buildFleetPayload(db: Db): FleetPayload {
-  const sessions = fleetState(db).map(s => {
+  // getCachedLiveProcesses reads whatever discovery/live.ts's own interval
+  // (wired in src/main/index.ts) last found -- this function never triggers
+  // a sweep itself, so building a payload (which happens on every
+  // coalesced watcher push) never waits on a subprocess. Empty before the
+  // first sweep completes, or if discovery fails outright: fleetState
+  // already treats `processes` as pure enrichment over the session list it
+  // builds from transcript activity, so an empty array here still returns
+  // every session, just with host/match/candidates left at their unknown
+  // defaults (spec 7.1a).
+  const sessions = fleetState(db, { processes: getCachedLiveProcesses() }).map(s => {
     const session = sanitizeFields(s, SANITISED_FIELDS);
     return {
       ...session,

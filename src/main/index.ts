@@ -7,10 +7,17 @@ import { ingestAll, startWatcher, type Watcher, type WatchRoot } from '../watch/
 import { ingestSpool, rotateSpool } from '../hooks/spool.ts';
 import { resolvePaths } from '../config.ts';
 import { registerIpc, pushFleet } from './ipc.ts';
+import { refreshLiveProcesses } from '../discovery/live.ts';
 
 let db: Db | null = null;
 let watcher: Watcher | null = null;
 let spoolTimer: NodeJS.Timeout | null = null;
+// Refreshes discovery/live.ts's process cache; buildFleetPayload reads that
+// cache rather than sweeping itself. Declared at module scope and cleared
+// in before-quit for the same reason spoolTimer is (see the comment on
+// pushTimer below): a timer hidden inside the setImmediate closure would be
+// unreachable from before-quit.
+let discoveryTimer: NodeJS.Timeout | null = null;
 // Coalesces watcher bursts into one push per 250ms (below). Declared here,
 // alongside spoolTimer, rather than as a local inside the setImmediate
 // closure below it used to be: a variable scoped to that closure is
@@ -101,6 +108,19 @@ app.whenReady().then(() => {
       if (ingestSpool(db, paths.spool) > 0) pushFleet(db, mainWindow);
     }, 1000);
     rotateSpool(paths.spool, { maxAgeDays: 30, maxFiles: 20000 });
+
+    // Live process discovery (pgrep/ps/lsof) is async and, measured against
+    // this machine's real process set, takes ~118ms wall clock even run
+    // concurrently -- too slow to trigger from buildFleetPayload, which
+    // runs on every coalesced push (every ~250ms, above). Refreshed here on
+    // its own interval instead, into a cache buildFleetPayload reads
+    // synchronously; 5s is frequent enough that a newly-started or
+    // newly-ended process shows up promptly without re-running ~13
+    // pgrep/ps/lsof processes several times a second. Fired once
+    // immediately too, so the cache isn't empty for the first 5s after
+    // launch.
+    void refreshLiveProcesses();
+    discoveryTimer = setInterval(() => { void refreshLiveProcesses(); }, 5000);
   });
 
   app.on('activate', () => {
@@ -112,6 +132,7 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 
 app.on('before-quit', () => {
   if (spoolTimer) clearInterval(spoolTimer);
+  if (discoveryTimer) clearInterval(discoveryTimer);
   // Cancels a coalesced push already scheduled but not yet fired. Without
   // this, a watcher event in the last 250ms before quit still fires its
   // pushFleet call after db below is closed.

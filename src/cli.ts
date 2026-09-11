@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 import { mkdirSync, existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { openDb } from './store/db.ts';
 import { ingestAll, startWatcher } from './watch/watcher.ts';
 import { ingestSpool, rotateSpool } from './hooks/spool.ts';
 import { readCodexThreads, readSpawnEdges, lastStateDbError } from './providers/codex/stateDb.ts';
-import { parsePgrep, parseTty, parseLsofCwd, classifyHost, type LiveProcess } from './discovery/parse.ts';
+import { discoverLiveProcesses } from './discovery/live.ts';
 import {
   resolvePaths, probeCapabilities, formatEventLine,
-  sessionRefs, buildProcessChain, annotateSessionsWithProcesses, formatCandidates,
+  sessionRefs, annotateSessionsWithProcesses, formatCandidates,
 } from './config.ts';
 import type { Provider } from './core/types.ts';
 
@@ -20,30 +19,6 @@ const cmd = process.argv[2] ?? 'help';
 function open() {
   mkdirSync(join(homedir(), '.llm-workspace'), { recursive: true });
   return openDb(paths.db);
-}
-
-// --- sessions: live process discovery (Task 11's discovery/parse.ts) ---
-//
-// Everything here shells out to pgrep/ps/lsof. Every argument reaches
-// execFileSync as its own argv entry, never interpolated into a shell
-// string — cwds and process names are untrusted input.
-
-function safeExec(bin: string, args: string[]): string {
-  try {
-    return execFileSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch {
-    return '';
-  }
-}
-
-function liveClaudeProcesses(): LiveProcess[] {
-  const pids = parsePgrep(safeExec('pgrep', ['-x', 'claude']));
-  return pids.map(pid => ({
-    pid,
-    tty: parseTty(safeExec('ps', ['-o', 'tty=', '-p', String(pid)])),
-    cwd: parseLsofCwd(safeExec('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'])),
-    host: classifyHost(buildProcessChain(pid, p => safeExec('ps', ['-o', 'ppid=,comm=', '-p', String(p)]))),
-  }));
 }
 
 if (cmd === 'probe') {
@@ -78,7 +53,7 @@ if (cmd === 'probe') {
   // matching process still lists, with match `unknown` -- it does not
   // disappear the way it would under a process-first enumeration.
   const db = open();
-  const procs = liveClaudeProcesses();
+  const procs = await discoverLiveProcesses();
   const sessions = sessionRefs(db);
   const annotated = annotateSessionsWithProcesses(sessions, procs);
 

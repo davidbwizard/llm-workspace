@@ -6,6 +6,7 @@ import {
   buildFleetPayload, sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
 } from '../../src/main/ipc.ts';
+import { getCachedLiveProcesses, refreshLiveProcesses } from '../../src/discovery/live.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { Blocker } from '../../src/store/signals.ts';
 
@@ -271,6 +272,54 @@ describe('buildFleetPayload', () => {
     const clean = sanitizeFields(dirty, ['kind', 'text']);
     expect(clean.kind).not.toContain(RLO);
     expect(clean.text).not.toContain(RLO);
+  });
+});
+
+// buildFleetPayload reads discovery/live.ts's process cache (populated by
+// src/main/index.ts's interval, out of reach here) rather than triggering a
+// sweep itself -- these drive that cache directly via refreshLiveProcesses,
+// with an injected exec, so no real pgrep/ps/lsof calls happen in tests.
+describe('buildFleetPayload — live process discovery wiring', () => {
+  it('lists every session even when process discovery has found nothing (spec 7.1a: enrichment only, never a filter)', async () => {
+    await refreshLiveProcesses(async () => ''); // no processes found at all
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/r1' }, sessionId:'s1', contentHash:'c1' }),
+      ev({ kind:'session.started', payload:{ cwd:'/r2' }, sessionId:'s2', contentHash:'c2' }),
+    ]);
+
+    const p = buildFleetPayload(db);
+    expect(p.sessions).toHaveLength(2);
+    expect(p.sessions.every(s => s.host === null && s.match === 'unknown')).toBe(true);
+  });
+
+  it('populates host/match/candidates for a session whose live process was discovered', async () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/live' } })]);
+
+    await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
+      return '';
+    });
+    expect(getCachedLiveProcesses()).toHaveLength(1); // sanity: the cache actually took the sweep
+
+    const p = buildFleetPayload(db);
+    expect(p.sessions[0]!.match).toBe('unique');
+    // 'unknown', not null: null means no process matched at all; 'unknown'
+    // means one did, but its ancestry chain (returned '' by the exec above)
+    // didn't classify to a recognized host app.
+    expect(p.sessions[0]!.host).toBe('unknown');
+    // Not toEqual([4242]): fleetState's bySession construction (src/fleet/
+    // state.ts, out of scope for this task) double-inserts a unique match's
+    // pid into `candidates` -- classifyMatch's own `unique` result sets
+    // BOTH m.sessionId and, redundantly, m.candidates = [that same session
+    // id], and fleetState's loop processes both, once via the `sessionId`
+    // branch and once via the `candidates` branch, for the same session.
+    // Pre-existing, latent since Task 4/11 (processes was always [] in
+    // production until this task wired it in, so nothing ever exercised
+    // this path before); reported to the team lead, not fixed here.
+    expect(new Set(p.sessions[0]!.candidates)).toEqual(new Set([4242]));
   });
 });
 

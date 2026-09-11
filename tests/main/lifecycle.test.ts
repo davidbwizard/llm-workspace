@@ -68,3 +68,26 @@ describe('shutdown gap: the coalescing timer and a closed db', () => {
     expect(nullAt).toBeGreaterThan(closeAt); // null AFTER close, not before
   });
 });
+
+// Live process discovery (src/discovery/live.ts) refreshes on its own
+// interval, the same lifecycle shape spoolTimer already has -- a timer
+// hidden inside the setImmediate closure would be unreachable from
+// before-quit, exactly the bug the shutdown-gap tests above exist to catch
+// for pushTimer. These pin the same shape for discoveryTimer.
+describe('process discovery timer', () => {
+  it('declares the discovery timer at module scope, not inside the deferred closure', () => {
+    const declarations = main.match(/\blet\s+discoveryTimer\b/g) ?? [];
+    expect(declarations).toHaveLength(1);
+    expect(main.indexOf('let discoveryTimer')).toBeLessThan(main.indexOf('whenReady('));
+  });
+
+  it('clears the discovery timer in the quit path', () => {
+    const quitBlock = main.slice(main.indexOf("on('before-quit'"));
+    expect(quitBlock).toMatch(/clearInterval\(discoveryTimer\)/);
+  });
+
+  it('refreshes the process cache on an interval via refreshLiveProcesses', () => {
+    expect(main).toMatch(/refreshLiveProcesses\(\)/);
+    expect(main).toMatch(/discoveryTimer\s*=\s*setInterval\(/);
+  });
+});
