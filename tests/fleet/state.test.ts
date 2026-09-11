@@ -128,16 +128,31 @@ describe('fleetState', () => {
     expect(s!.runId).toBe('aaa-late');
   });
 
-  it('reports liveAgents as spawned minus ended, not hardcoded to zero', () => {
+  it('reports liveAgents by recency -- only the agent with a fresh event counts', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
-      ev({ kind:'session.started', payload:{ cwd:'/r' }, contentHash:'a' }),
-      ev({ kind:'agent.spawned', agentId:'ag1', payload:{ name:'task-1' }, contentHash:'b' }),
-      ev({ kind:'agent.spawned', agentId:'ag2', payload:{ name:'task-2' }, contentHash:'c' }),
-      ev({ kind:'agent.ended', agentId:'ag1', payload:{}, contentHash:'d' }),
+      ev({ kind:'session.started', ts:at(5), payload:{ cwd:'/r' }, contentHash:'a' }),
+      ev({ kind:'agent.spawned', ts:at(5), agentId:'ag1', payload:{ name:'task-1' }, contentHash:'b' }),
+      ev({ kind:'agent.spawned', ts:at(5), agentId:'ag2', payload:{ name:'task-2' }, contentHash:'c' }),
+      // ag1 produced something recently -- still working.
+      ev({ kind:'tool.used', ts:at(0.1), agentId:'ag1', payload:{ name:'Bash' }, contentHash:'d' }),
+      // ag2's last event was its own spawn, 5 minutes ago -- stale.
     ]);
     const [s] = fleetState(db, { now: NOW });
     expect(s!.agents).toBe(2);       // ever spawned
-    expect(s!.liveAgents).toBe(1);   // ag2 only -- ag1 has ended
+    expect(s!.liveAgents).toBe(1);   // ag1 only
+  });
+
+  it('reports 0 live agents for an idle session, even with agents spawned long ago', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', ts:at(400), payload:{ cwd:'/r' }, contentHash:'a' }),
+      ev({ kind:'agent.spawned', ts:at(400), agentId:'ag1', payload:{ name:'task-1' }, contentHash:'b' }),
+      ev({ kind:'agent.spawned', ts:at(400), agentId:'ag2', payload:{ name:'task-2' }, contentHash:'c' }),
+    ]);
+    const [s] = fleetState(db, { now: NOW });
+    expect(s!.activity).toBe('idle');
+    expect(s!.agents).toBe(2);
+    expect(s!.liveAgents).toBe(0);
   });
 });

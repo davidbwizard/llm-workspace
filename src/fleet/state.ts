@@ -57,24 +57,33 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   //    same way as the brief's own `last_prose` subquery already did it
   //    correctly: order by ts (id as a tiebreaker) and take the top row.
   //
-  // 2. `agents`/`live_agents` are two separate aggregates instead of one.
-  //    The brief hardcoded `liveAgents: 0` unconditionally. Spec §8.1
-  //    requires "agent pips (`2/8` live)" and §8.2 requires distinguishing
-  //    running agents (full opacity + pulse) from finished ones (dimmed) --
-  //    a fleet card genuinely needs this number, and 0 is wrong the moment
-  //    any agent has been spawned. `agent.ended` is defined in the event
-  //    vocabulary (spec §6.4, `SubagentStop` / transcript) but has no
-  //    writer yet anywhere in this codebase, so today `live_agents` reduces
-  //    to `agents` (every spawned agent, absent any end signal, is exactly
-  //    as running as the spec's default state assumes) -- but the fold
-  //    computes it correctly rather than hardcoding today's degenerate
-  //    case, so nothing here needs to change once a writer exists.
+  // 2. `liveAgents` is a recency heuristic, not spawned-minus-ended.
+  //    The brief hardcoded `liveAgents: 0` unconditionally, which spec
+  //    §8.1's "agent pips (`2/8` live)" and §8.2's running-vs-finished
+  //    distinction both need to be a real number. The first fix here tried
+  //    spawned-minus-ended (`agent.ended`, spec §6.4) -- but no parser in
+  //    this codebase emits `agent.ended` (checked against the real index:
+  //    453 `agent.spawned`, 0 `agent.ended`), so that reduces to
+  //    `liveAgents === agents` for every session, including ones idle for
+  //    days. That is worse than the brief's hardcoded 0: 0 reads as "none
+  //    running", but asserting every ever-spawned agent is live right now
+  //    actively lies about the one thing this field exists to tell the
+  //    user. Fixed instead with a recency heuristic: an agent counts as
+  //    live only if ITS OWN most recent event (any kind, not just
+  //    agent.spawned -- prose/tool.used/etc. from within that agent's own
+  //    transcript all carry its agent_id) falls inside the same WORKING_MS
+  //    window the session itself uses to call itself `working`, reusing
+  //    that constant rather than introducing a second threshold. A stale
+  //    session's own last_ts upper-bounds every one of its agents' last
+  //    seen times, so an idle session reports 0 live agents by
+  //    construction, never a stale-but-nonzero count. Once any parser
+  //    starts emitting `agent.ended`, that is the exact signal that should
+  //    replace this heuristic.
   const rows = db.prepare(`
     SELECT session_id, provider,
       MAX(ts) last_ts,
       COUNT(*) events,
       COUNT(DISTINCT CASE WHEN kind='agent.spawned' THEN agent_id END) agents,
-      COUNT(DISTINCT CASE WHEN kind='agent.ended' THEN agent_id END) ended_agents,
       (SELECT c.run_id FROM events c
         WHERE c.session_id = e.session_id
         ORDER BY c.ts DESC, c.id DESC LIMIT 1) run_id,
@@ -85,6 +94,28 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
         WHERE p.session_id = e.session_id AND p.kind='prose'
         ORDER BY p.ts DESC, p.id DESC LIMIT 1) last_prose
     FROM events e GROUP BY session_id, provider`).all() as any[];
+
+  // Per-agent recency: the most recent event (any kind) carrying each
+  // agent_id, across the whole index -- not scoped to agent.spawned rows,
+  // since an agent's own prose/tool.used events are what show it is still
+  // doing something. Paired with the spawned-agent-ids query below to
+  // compute liveAgents per session (see the comment above).
+  const agentLastSeen = new Map<string, string>(); // key: `${sessionId}:${agentId}`
+  for (const r of db.prepare(`
+    SELECT session_id, agent_id, MAX(ts) last_ts FROM events
+    WHERE agent_id IS NOT NULL GROUP BY session_id, agent_id`).all() as any[]) {
+    agentLastSeen.set(`${r.session_id}:${r.agent_id}`, r.last_ts);
+  }
+  const liveAgentsBySession = new Map<string, number>();
+  for (const r of db.prepare(`
+    SELECT DISTINCT session_id, agent_id FROM events
+    WHERE kind='agent.spawned' AND agent_id IS NOT NULL`).all() as any[]) {
+    const lastTs = agentLastSeen.get(`${r.session_id}:${r.agent_id}`);
+    const age = lastTs ? now - Date.parse(lastTs) : Infinity;
+    if (age <= WORKING_MS) {
+      liveAgentsBySession.set(r.session_id, (liveAgentsBySession.get(r.session_id) ?? 0) + 1);
+    }
+  }
 
   // `now` is passed through explicitly (see src/store/signals.ts) so a
   // caller pinning a fake clock -- as this fold's own tests do -- gets the
@@ -132,7 +163,7 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     const m = bySession.get(r.session_id);
     const shared = (byCwd.get(r.cwd ?? '') ?? []).filter(id => id !== r.session_id);
     const agents = r.agents ?? 0;
-    const liveAgents = Math.max(0, agents - (r.ended_agents ?? 0));
+    const liveAgents = liveAgentsBySession.get(r.session_id) ?? 0;
     // Explicitly typed, like lifecycle/activity above: the brief inlined
     // these two as bare ternaries in the returned object literal, which
     // typechecks fine on its own but not once the brief's own trailing
