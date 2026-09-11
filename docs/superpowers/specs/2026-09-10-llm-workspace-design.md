@@ -838,6 +838,12 @@ knowing the directory.
 
 ## 8. Interface
 
+> **Visual direction chosen (David, 2026-09-10):** the warm-dark direction.
+> Palette, type, icon and interaction rules live in
+> `docs/superpowers/specs/2026-09-10-visual-design.md`, which binds Plan 2.
+> Two directions were built from real index data and reviewed; the cool
+> instrument-panel one was rejected as too severe.
+>
 > **Icon system (David, 2026-09-10):** use **Phosphor Icons**
 > (https://phosphoricons.com/) throughout the UI. No emoji anywhere — not in
 > the interface, not in status markers, not in copy. Phosphor's weight range
