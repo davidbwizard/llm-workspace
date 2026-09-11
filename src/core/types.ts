@@ -47,3 +47,22 @@ export interface ParseResumeContext {
   sessionStartEmitted: boolean;
   agentId?: string;
 }
+
+/** One whole line read from a transcript, with the byte offset of its first
+ *  byte. Lives in core rather than in the Claude provider because the Codex
+ *  parser consumes it too — a third provider would otherwise copy that
+ *  coupling. */
+export interface TailLine { text: string; offset: number }
+
+/** One live activation of one session (spec §6.3). A session accumulates runs
+ *  across days; a process is a transport and is modelled separately. */
+export interface RunRef {
+  runId: string;
+  sessionId: string;
+  startedAt: string;
+  endedAt: string | null;
+  /** How the run began. `compact` is deliberately absent: compaction happens
+   *  inside a live run and is never a boundary (spec §6.3). */
+  source: 'startup' | 'resume' | 'clear' | 'fork' | 'derived';
+  endReason: 'clear' | 'resume' | 'logout' | 'prompt_input_exit' | 'other' | 'exited' | 'killed' | null;
+}

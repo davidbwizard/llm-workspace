@@ -1,7 +1,8 @@
 import { openSync, readSync, fstatSync, closeSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
+import type { TailLine } from '../../core/types.ts';
 
-export interface TailLine { text: string; offset: number }
+export type { TailLine };
 
 export interface TailResult {
   lines: TailLine[];

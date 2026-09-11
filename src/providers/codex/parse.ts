@@ -1,6 +1,5 @@
 import { hashRecord } from '../../core/identity.ts';
-import type { NormalizedEvent, ParseResumeContext } from '../../core/types.ts';
-import type { TailLine } from '../claude/tail.ts';
+import type { NormalizedEvent, ParseResumeContext, TailLine } from '../../core/types.ts';
 
 export const CODEX_PARSER_VERSION = 1;
 
