@@ -10,6 +10,27 @@ export interface SubagentRef {
   metaPath: string;
 }
 
+/** Claude Code names a subagent's on-disk files with an `agent-` prefix on
+ *  the stem (`agent-<name>-<hash>.jsonl` / `.meta.json`), but the records
+ *  INSIDE that subagent's own transcript carry the same agent's id WITHOUT
+ *  the prefix -- each record's own `agentId` field is `<name>-<hash>`. If
+ *  `agent.spawned` used the prefixed filename stem as its agentId, it would
+ *  never join to that agent's own activity events (confirmed against a
+ *  real index: only 1 of 453 spawned ids appeared on any other event
+ *  before this fix -- silently breaking every per-agent join, including
+ *  the Phase 4 agent graph, which sizes nodes by that agent's tool calls).
+ *
+ *  Strips exactly one leading `agent-` occurrence, and only when something
+ *  is left afterward, so an agent whose own name happens to start with
+ *  "agent-" (a filename stem of "agent-agent-helper-abc123") loses only
+ *  the filename's own prefix, not part of its name. */
+function bareAgentId(stem: string): string {
+  const PREFIX = 'agent-';
+  return stem.startsWith(PREFIX) && stem.length > PREFIX.length
+    ? stem.slice(PREFIX.length)
+    : stem;
+}
+
 /** Spec §6.5. Subagents live at
  *  <project>/<session-id>/subagents/agent-<name>-<hash>.jsonl(+.meta.json).
  *  A meta file with no transcript is ignored: there is nothing to read. */
@@ -28,15 +49,17 @@ export function findSubagents(sessionDir: string): SubagentRef[] {
     if (err?.code === 'ENOENT') return [];
     throw err;
   }
-  const transcripts = new Set(
+  const stems = new Set(
     entries.filter(f => f.endsWith('.jsonl')).map(f => f.slice(0, -'.jsonl'.length)),
   );
 
   const out: SubagentRef[] = [];
-  for (const agentId of transcripts) {
-    const metaPath = join(dir, `${agentId}.meta.json`);
+  for (const stem of stems) {
+    const metaPath = join(dir, `${stem}.meta.json`);
     if (!existsSync(metaPath)) continue;
-    out.push({ agentId, transcriptPath: join(dir, `${agentId}.jsonl`), metaPath });
+    // File paths are built from the real on-disk stem; only the id handed
+    // back to the caller (and from there into agent.spawned) is rewritten.
+    out.push({ agentId: bareAgentId(stem), transcriptPath: join(dir, `${stem}.jsonl`), metaPath });
   }
   return out.sort((a, b) => a.agentId.localeCompare(b.agentId));
 }

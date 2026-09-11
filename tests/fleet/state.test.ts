@@ -143,6 +143,30 @@ describe('fleetState', () => {
     expect(s!.liveAgents).toBe(1);   // ag1 only
   });
 
+  it('a spawned agent and a later event carrying the same bare id resolve to one agent', () => {
+    // Pins the join that was broken end to end. findSubagents
+    // (src/providers/claude/subagents.ts) now emits the BARE agent id for
+    // agent.spawned, not the `agent-`-prefixed on-disk filename stem --
+    // specifically so this correlates. Before that fix, this agentId would
+    // have been 'agent-task-8-magiclink-abc123' while a record from that
+    // subagent's own transcript (parsed independently) would still carry
+    // the bare id below, and the two would never join: agents would count
+    // 2 mismatched ids instead of 1, and the real one would never show as
+    // live no matter how recent its activity.
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', ts:at(5), payload:{ cwd:'/r' }, contentHash:'a' }),
+      ev({ kind:'agent.spawned', ts:at(5), agentId:'task-8-magiclink-abc123',
+           payload:{ name:'task-8-magiclink' }, contentHash:'b' }),
+      // A record from that subagent's own transcript, same bare id.
+      ev({ kind:'tool.used', ts:at(0.1), agentId:'task-8-magiclink-abc123',
+           payload:{ name:'Edit' }, contentHash:'c' }),
+    ]);
+    const [s] = fleetState(db, { now: NOW });
+    expect(s!.agents).toBe(1);       // one agent, not two mismatched ids
+    expect(s!.liveAgents).toBe(1);   // its own recent event marks it live
+  });
+
   it('reports 0 live agents for an idle session, even with agents spawned long ago', () => {
     const db = openDb(':memory:');
     insertEvents(db, [

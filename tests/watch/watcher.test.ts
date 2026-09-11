@@ -104,7 +104,10 @@ describe('ingestFileOnce — subagent discovery', () => {
     ingestFileOnce(db, file, 'claude');
     const rows = db.prepare("SELECT agent_id, payload FROM events WHERE kind='agent.spawned'").all() as any[];
     expect(rows).toHaveLength(1);
-    expect(rows[0].agent_id).toBe('agent-reviewer-abc');
+    // Bare id (agent- filename prefix stripped): matches what that
+    // subagent's own transcript records carry in their agentId field, so
+    // agent.spawned joins to that agent's own activity events.
+    expect(rows[0].agent_id).toBe('reviewer-abc');
     expect(JSON.parse(rows[0].payload)).toMatchObject({ name: 'reviewer', type: 'reviewer', model: 'opus' });
   });
 
@@ -146,7 +149,7 @@ describe('ingestFileOnce — subagent discovery', () => {
     ingestFileOnce(db, subPath, 'claude');
 
     const rows = db.prepare("SELECT agent_id FROM events WHERE kind='agent.spawned'").all() as any[];
-    expect(rows.map(r => r.agent_id)).toContain('agent-late-joiner');
+    expect(rows.map(r => r.agent_id)).toContain('late-joiner'); // bare id, agent- prefix stripped
   });
 });
 
