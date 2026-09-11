@@ -22,9 +22,9 @@ describe('renderer security posture', () => {
   it('blocks navigation', () => {
     // will-navigate alone only covers main-frame, user-initiated navigation --
     // will-frame-navigate (subframes) and will-redirect (server redirects)
-    // close the other two gaps (spec §11.1). Matched on the registration form,
-    // not the bare event name, because 'will-navigate' is a substring of
-    // 'will-frame-navigate' and would let either satisfy the other.
+    // close the other two gaps (spec §11.1). Matched on the registration
+    // form -- on('event-name') -- rather than the bare event name, so each
+    // assertion confirms that specific handler is actually registered.
     expect(main).toMatch(/on\('will-navigate'/);
     expect(main).toMatch(/on\('will-frame-navigate'/);
     expect(main).toMatch(/on\('will-redirect'/);
