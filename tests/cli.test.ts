@@ -394,3 +394,39 @@ describe('annotateSessionsWithProcesses', () => {
     expect(result.every(r => r.quality === 'unknown')).toBe(true);
   });
 });
+
+// Spec §7.1a: transcript activity in the store is the source of truth for
+// which sessions exist; live process discovery only enriches. The two tests
+// above pin sessionRefs and annotateSessionsWithProcesses separately, but
+// neither pins the COMPOSITION `sessions` (cli.ts) actually relies on --
+// this was, per review, the single most expensive finding to discover
+// because nothing failed when it was only honoured by the comment above
+// sessionRefs. A later change that enumerated from live processes again
+// (rather than from the store) would pass every existing unit test while
+// silently reintroducing the exact bug §7.1a exists to prevent.
+describe('sessions — spec §7.1a end-to-end (store activity survives zero live processes)', () => {
+  it('a session with real store activity but zero live processes still appears, marked unknown', () => {
+    const db = openDb(':memory:');
+    const NOW = Date.now();
+    const ev = (kind: NormalizedEvent['kind'], offset: number, ts: string,
+                payload: Record<string, unknown> = {}): NormalizedEvent => ({
+      provider: 'claude', sessionId: 's1', runId: null, agentId: null, ts, kind, payload,
+      nativeId: null, sourceFile: '/f-s1.jsonl', sourceOffset: offset,
+      contentHash: `h${offset}`, subIndex: 0, parserVersion: 1,
+    });
+    insertEvents(db, [
+      ev('session.started', 0, new Date(NOW - 20 * 60_000).toISOString(), { cwd: '/repo/a' }),
+      ev('prose', 1, new Date(NOW - 1 * 60_000).toISOString()),
+    ]);
+
+    // Exactly the composition `sessions` (cli.ts) performs: store activity
+    // -> sessionRefs, annotated against whatever live processes were found.
+    // An empty process list stands in for "pgrep found nothing at all" --
+    // the real bug this guards against made the session vanish entirely
+    // rather than list with quality unknown.
+    const annotated = annotateSessionsWithProcesses(sessionRefs(db, NOW), []);
+
+    expect(annotated).toHaveLength(1);
+    expect(annotated[0]).toMatchObject({ sessionId: 's1', cwd: '/repo/a', quality: 'unknown', process: null });
+  });
+});
