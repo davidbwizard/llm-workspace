@@ -669,6 +669,34 @@ describe('killSession', () => {
 // tests/main/security.test.ts.
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '');
 
+// B2 (whole-branch review, 2026-09-11): defaultHop used to call execFileP
+// directly with no `timeout`, so an unresponsive `ps` hung ownProcessAncestry
+// -- and so killSession, which awaits it before validating -- forever. It
+// now shares discovery/live.ts's execFileSoft, whose own timeout+SIGKILL
+// behaviour is proven behaviourally (a real hung subprocess) in
+// tests/discovery/live.test.ts; defaultHop always shells to the real `ps`
+// binary (not swappable to a command a test can make hang), so what is left
+// to pin here is the wiring itself -- that this call site actually uses the
+// shared, tested helper rather than a separate, untimed implementation.
+describe('defaultHop (B2)', () => {
+  it('delegates to the shared, timeout-bounded execFileSoft rather than a raw execFileP call', () => {
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
+    expect(ipc).toMatch(/execFileSoft\(\s*'ps'/);
+    // The untimed local execFileP wrapper this replaced is gone entirely --
+    // not just unused at this one call site, but removed, so it can't
+    // regress back in.
+    expect(ipc).not.toMatch(/execFileP/);
+  });
+
+  it('still resolves a real ps lookup end to end against this process\'s own pid (regression check for the refactor)', async () => {
+    // No injected hop -- exercises the real defaultHop and the real `ps`
+    // binary, against this test process's own (definitely live) pid, so it
+    // cannot hang.
+    const ancestry = await ownProcessAncestry();
+    expect(ancestry[0]).toBe(process.pid);
+  });
+});
+
 describe('IPC channel parity', () => {
   it('every channel main handles is exposed by the preload, and vice versa', () => {
     const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));

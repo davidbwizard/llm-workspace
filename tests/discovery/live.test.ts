@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { discoverLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
+import { discoverLiveProcesses, execFileSoft, type ExecFn } from '../../src/discovery/live.ts';
 
 // A canned exec: keys are "bin arg1 arg2 ...", exactly how discoverLiveProcesses
 // invokes exec() -- so a test only needs to name the calls it cares about.
@@ -216,5 +216,100 @@ describe('process cache', () => {
 
     await mod.refreshLiveProcesses(async () => ''); // nothing found this time
     expect(mod.getCachedLiveProcesses()).toEqual([]);
+  });
+});
+
+// B2 (whole-branch review, 2026-09-11): defaultExec (this module) and
+// defaultHop (main/ipc.ts) both used to call execFileP with no `timeout`,
+// so one unresponsive command (e.g. lsof stuck on a stale network mount)
+// hung forever instead of failing soft -- freezing the open-sessions cache
+// permanently and, via killSession's own pre-signal refresh, session:kill
+// too. execFileSoft is the shared fix both call sites now use; proven here
+// with a real subprocess ('sleep 5', which would hang the whole test for 5s
+// with no timeout) rather than a mocked exec, since the mocked ExecFn tests
+// above never exercise the real execFileP call this bug lived in.
+describe('execFileSoft', () => {
+  it('fails soft (resolves to \'\') on a real command that outlives its timeout, rather than hanging until it exits', async () => {
+    const start = Date.now();
+    const out = await execFileSoft('sleep', ['5']);
+    const elapsedMs = Date.now() - start;
+    expect(out).toBe('');
+    // The bug this proves the absence of: no timeout meant this would have
+    // taken ~5000ms (however long the subprocess itself ran). Comfortably
+    // under that, and under the 5s discovery-sweep interval too, so a hung
+    // command can never cost more than "the next sweep is a bit late".
+    expect(elapsedMs).toBeLessThan(4000);
+  }, 8000);
+
+  it('still fails soft on a plain command failure (unaffected by adding the timeout option)', async () => {
+    await expect(execFileSoft('a-binary-that-does-not-exist-anywhere', [])).resolves.toBe('');
+  });
+});
+
+// B2: pushAfterDiscoverySweep (main/index.ts) fires every 5 seconds with no
+// regard for whether the previous sweep already finished, and killSession
+// can trigger a sweep at any moment too. Before this fix, a sweep stuck on
+// one hung exec call meant a fresh, fully concurrent sweep -- another
+// ~13 processes' worth of pgrep/ps/lsof calls -- stacked on top of it every
+// single tick, forever (and, since nothing timed out either, no sweep in
+// that pile ever finished). These prove the in-flight guard: a caller that
+// arrives while a sweep is already running joins that SAME sweep instead of
+// starting a new one, is not left hanging once it resolves, and a later
+// caller (after the in-flight one has cleared) gets a genuinely fresh sweep.
+describe('refreshLiveProcesses — in-flight sweep guard', () => {
+  it('does not start a second sweep while one is still pending, and does not accumulate hung calls', async () => {
+    vi.resetModules();
+    const mod = await import('../../src/discovery/live.ts');
+
+    let pgrepCalls = 0;
+    const resolvers: Array<(v: string) => void> = [];
+    const hangingExec: ExecFn = (bin) => {
+      if (bin !== 'pgrep') return Promise.resolve('');
+      pgrepCalls++;
+      return new Promise<string>(resolve => resolvers.push(resolve));
+    };
+
+    const first = mod.refreshLiveProcesses(hangingExec);
+    // Let the synchronous/microtask portion of the first sweep run --
+    // discoverLiveProcesses fires both providers' pgrep calls before it
+    // awaits anything else.
+    await new Promise(resolve => setImmediate(resolve));
+    const callsWhileFirstPending = pgrepCalls;
+    expect(callsWhileFirstPending).toBeGreaterThan(0);
+
+    const second = mod.refreshLiveProcesses(hangingExec); // arrives while first is still hung
+    await new Promise(resolve => setImmediate(resolve));
+    expect(pgrepCalls).toBe(callsWhileFirstPending); // no new sweep -- no new subprocess calls
+
+    resolvers.forEach(resolve => resolve('')); // let the hung sweep resolve, as a real timeout eventually would
+    await expect(first).resolves.toEqual([]);
+    await expect(second).resolves.toEqual([]); // the joiner wasn't left hanging either
+
+    // Once the in-flight sweep has cleared, the next call is a fresh one.
+    const third = await mod.refreshLiveProcesses(async () => '');
+    expect(third).toEqual([]);
+    expect(mod.getCachedLiveProcesses()).toEqual([]);
+  });
+
+  it('a joining caller gets the SAME result the in-flight sweep produces, not an empty/default one', async () => {
+    vi.resetModules();
+    const mod = await import('../../src/discovery/live.ts');
+
+    let resolvePgrep: ((v: string) => void) | undefined;
+    const exec: ExecFn = async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') {
+        return new Promise<string>(resolve => { resolvePgrep = resolve; });
+      }
+      return '';
+    };
+
+    const first = mod.refreshLiveProcesses(exec);
+    await new Promise(resolve => setImmediate(resolve));
+    const second = mod.refreshLiveProcesses(exec);
+
+    resolvePgrep!('100\n');
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult).toEqual(secondResult);
+    expect(firstResult.map(p => p.pid)).toEqual([100]);
   });
 });

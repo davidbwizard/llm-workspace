@@ -4,18 +4,16 @@
 // because ipcMain is dereferenced inside registerIpc's body, never at module
 // scope -- a test that imports and calls registerIpc directly will throw.
 import { ipcMain, type BrowserWindow } from 'electron';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import type { Db } from '../store/db.ts';
 import {
   openSessions, openSessionsLive, fleetStatePage, type SessionState, type OpenSession,
 } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
 import { sanitizeForTerminal, parseProcessChainHop } from '../config.ts';
-import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../discovery/live.ts';
+import {
+  getCachedLiveProcesses, refreshLiveProcesses, execFileSoft, type ExecFn,
+} from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
-
-const execFileP = promisify(execFile);
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -323,23 +321,21 @@ function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
 }
 
 /** One hop of `ps -o ppid=,comm= -p <pid>`, real ps this time -- the same
- *  shape discovery/live.ts's own defaultExec produces for the same command,
- *  kept as its own small copy here rather than importing that (unexported)
- *  helper: this module's dependency is on config.ts's parseProcessChainHop,
- *  the actual parsing logic, not on discovery/live.ts's shelling-out
- *  wrapper. Fail-soft to '' on any exec failure, exactly like
- *  discovery/live.ts's defaultExec -- parseProcessChainHop already treats
- *  that as "hop unavailable, stop the walk", which is the safe direction
+ *  shape discovery/live.ts produces for the same command. Shares that
+ *  module's execFileSoft (B2: bounded timeout + SIGKILL, fail-soft to '')
+ *  rather than its own separate, previously un-timed execFileP call: an
+ *  unresponsive `ps` here used to hang forever, which blocked
+ *  ownProcessAncestry -- and so killSession -- indefinitely. This module's
+ *  own dependency is still on config.ts's parseProcessChainHop, the actual
+ *  parsing logic; execFileSoft is just the shelling-out wrapper, shared so
+ *  both call sites get identical, tested timeout behaviour. Fail-soft
+ *  behaviour is unchanged: parseProcessChainHop already treats an empty
+ *  result as "hop unavailable, stop the walk", which is the safe direction
  *  for a protective walk like ownProcessAncestry below (an incomplete
  *  result can only under-protect a pid the walk never reached, never
  *  wrongly clear one it did). */
 async function defaultHop(pid: number): Promise<string> {
-  try {
-    const { stdout } = await execFileP('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], { encoding: 'utf8' });
-    return stdout;
-  } catch {
-    return '';
-  }
+  return execFileSoft('ps', ['-o', 'ppid=,comm=', '-p', String(pid)]);
 }
 
 /** This app's own process, and every ancestor of it (parent, grandparent,

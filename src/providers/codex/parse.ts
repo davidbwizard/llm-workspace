@@ -1,7 +1,21 @@
 import { hashRecord } from '../../core/identity.ts';
 import type { NormalizedEvent, ParseResumeContext, TailLine } from '../../core/types.ts';
 
-export const CODEX_PARSER_VERSION = 1;
+// B1 (whole-branch review, 2026-09-11): 3663f24 fixed subagentIdentity's
+// thread_spawn handling (it was stringifying a nested object to the literal
+// text "[object Object]") but only changed event CONTENT. An event's
+// identity key -- (source_file, source_offset, content_hash, sub_index) --
+// is unaffected by a content-only fix, so insertEvents' UNIQUE-conflict
+// skip (spec §6.1, see also store/ingest.ts:166's reparseFile doc comment)
+// left every already-indexed bad row exactly as it was: re-running the
+// fixed parser over an unchanged file reproduces the same identity keys,
+// which the index treats as already-present and ignores. Confirmed against
+// the real index after 3663f24 landed: 9 of 13 Codex agent.spawned rows
+// still read "[object Object]". Only a parser_version bump makes
+// ingestFileOnce (src/watch/watcher.ts) take the delete-then-reparse path
+// (staleParser) instead of the append-only path, which is what actually
+// re-derives and replaces those rows. Bumped 1 -> 2.
+export const CODEX_PARSER_VERSION = 2;
 
 /** Codex separates prose from tool calls explicitly, so this mapping is
  *  exact rather than heuristic — contrast the Claude parser's isHumanPrompt

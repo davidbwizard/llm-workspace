@@ -48,13 +48,32 @@ const PROVIDER_BINS = ['claude', 'codex'] as const;
  *  as defence in depth against an exec that breaks this contract. */
 export type ExecFn = (bin: string, args: string[]) => Promise<string>;
 
-async function defaultExec(bin: string, args: string[]): Promise<string> {
+// B2 (whole-branch review, 2026-09-11): this used to call execFileP with no
+// `timeout`, so one unresponsive command (e.g. lsof stuck on a stale network
+// mount) hung forever instead of failing soft. That inverts
+// refreshLiveProcesses' own documented promise that a failure costs "at
+// most one interval" -- discoverLiveProcesses awaits every inspectPid via
+// Promise.all, so a single stuck exec call freezes the entire sweep, and
+// with it the open-sessions cache, permanently. killSession (main/ipc.ts)
+// awaits refreshLiveProcesses before validating a pid, so the same hang
+// also blocks session:kill forever. `killSignal: 'SIGKILL'` because a
+// command stuck on I/O (the network-mount case above) may not respond to
+// the default SIGTERM either. Exported (not just used internally) so
+// main/ipc.ts's defaultHop can share the exact same bounded, fail-soft
+// behaviour instead of duplicating it with its own un-timed execFileP call.
+export async function execFileSoft(bin: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await execFileP(bin, args, { encoding: 'utf8' });
+    const { stdout } = await execFileP(bin, args, {
+      encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL',
+    });
     return stdout;
   } catch {
     return '';
   }
+}
+
+async function defaultExec(bin: string, args: string[]): Promise<string> {
+  return execFileSoft(bin, args);
 }
 
 /** Result of walking one pid's parent chain: `chain` and `pids` are parallel
@@ -194,6 +213,18 @@ export async function discoverLiveProcesses(exec: ExecFn = defaultExec): Promise
 
 let cache: LiveProcess[] = [];
 
+/** B2: guards against overlapping sweeps. main/index.ts's discoveryTimer
+ *  calls refreshLiveProcesses every 5 seconds with no regard for whether
+ *  the previous sweep is still running; killSession (main/ipc.ts) can also
+ *  trigger one at any moment. Without this, a sweep slow enough to still be
+ *  running at the next tick (formerly: hung forever, see execFileSoft above)
+ *  would have a fresh, fully concurrent sweep -- another ~13 processes'
+ *  worth of pgrep/ps/lsof calls -- stacked on top of it every single tick,
+ *  indefinitely. A caller that arrives while a sweep is already in flight
+ *  joins that SAME sweep instead of starting a redundant one, and gets its
+ *  real result once it settles -- it is not skipped or given stale data. */
+let inFlightSweep: Promise<LiveProcess[]> | null = null;
+
 /** The most recently completed sweep's result -- empty until
  *  refreshLiveProcesses has run at least once, or if it has only ever
  *  found nothing. buildFleetPayload reads this directly rather than
@@ -210,8 +241,21 @@ export function getCachedLiveProcesses(): LiveProcess[] {
  *  blip, keep showing the old data" would leave a closed session's host
  *  label stuck on-screen forever. A straight overwrite means a real
  *  failure costs at most one 5-second-interval's worth of stale host
- *  info, which is the honest tradeoff. */
+ *  info, which is the honest tradeoff.
+ *
+ *  See inFlightSweep above for the overlap guard: a call that arrives while
+ *  a sweep is already running returns that same in-flight promise rather
+ *  than starting a second, concurrent one. */
 export async function refreshLiveProcesses(exec: ExecFn = defaultExec): Promise<LiveProcess[]> {
-  cache = await discoverLiveProcesses(exec);
-  return cache;
+  if (inFlightSweep) return inFlightSweep;
+  const sweep = discoverLiveProcesses(exec).then(result => {
+    cache = result;
+    return result;
+  });
+  inFlightSweep = sweep;
+  try {
+    return await sweep;
+  } finally {
+    if (inFlightSweep === sweep) inFlightSweep = null;
+  }
 }
