@@ -5,3 +5,7 @@ out/
 data/
 *.log
 .DS_Store
+
+# Farm sim sprite assets for the Phase 7+ idea. Kept out of the app
+# repo so a broad `git add` cannot sweep them into a commit.
+game-viewer/
