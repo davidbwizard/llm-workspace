@@ -156,4 +156,18 @@ describe('SessionCard', () => {
     fireEvent.keyDown(card, { key: ' ' });
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
+
+  // A blocked card's badge visually overlapped a longer host label (e.g.
+  // "VS Code") in the same top-right corner -- fixed by reserving the
+  // badge's width in the row (.crow.hasbadge), not by shortening the
+  // label. jsdom does not lay out CSS, so this cannot assert the overlap
+  // is gone; it guards the fix stayed a layout fix rather than the DOM
+  // text itself getting truncated to dodge the badge.
+  it('keeps the full host label next to the badge, rather than shortening it', () => {
+    const { container } = render(<SessionCard onOpen={() => {}} state={{ ...base, host:'vscode',
+      activity:'waiting_permission', blocker:{ sessionId:'s1', kind:'PermissionRequest', toolUseId:'t1',
+        promptId:null, occurredAt:'2026-09-10T11:58:00Z', text:'Permission: Bash npm run dist:mac' } }} />);
+    expect(screen.getByText('VS Code')).toBeTruthy();
+    expect(container.querySelector('.badge')).not.toBeNull();
+  });
 });

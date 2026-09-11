@@ -73,7 +73,11 @@ export function SessionCard({ state, onOpen }:
           above already says what this session is blocked on. */}
       {blocked && <span className="badge" aria-hidden="true">1</span>}
 
-      <div className="crow">
+      {/* The badge above is absolutely positioned over this row's top-right
+          corner; "hasbadge" reserves room for it so a longer host label
+          (e.g. "VS Code") runs under its own margin-left:auto space rather
+          than under the badge. See .crow.hasbadge in SessionCard.css. */}
+      <div className={`crow${blocked ? ' hasbadge' : ''}`}>
         <span className={`prov ${state.provider}`}>
           <ProviderMark provider={state.provider} size={11} />
           {providerLabel}

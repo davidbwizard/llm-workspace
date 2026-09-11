@@ -13,6 +13,12 @@
 .card:active { transform:translateY(0); }
 
 .crow { display:flex; align-items:center; gap:9px; }
+/* The badge (.badge below) sits absolutely at top:13px; right:15px, in the
+   same corner .host's margin-left:auto pushes into. Without this, a host
+   label wide enough to reach that corner (e.g. "VS Code") renders half
+   hidden under the badge. 30px comfortably clears the badge's own width
+   (padding 2px 8px around a single mono digit, ~22px) plus a small gap. */
+.crow.hasbadge { padding-right:30px; }
 .prov { font-family:var(--f-mono); font-size:10px; padding:3px 9px 3px 7px;
         border-radius:6px; background:var(--raised); color:var(--muted);
         display:inline-flex; align-items:center; gap:5px; }

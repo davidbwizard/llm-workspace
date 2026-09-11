@@ -22,6 +22,7 @@ function needsAttention(s: SessionState): boolean {
 
 export function FleetView() {
   const [sessions, setSessions] = useState<SessionState[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     // window.fleet is absent if the preload script failed to load (see the
@@ -29,8 +30,20 @@ export function FleetView() {
     if (!window.fleet) return;
     const fleet = window.fleet;
     let alive = true;
-    void fleet.listFleet().then(p => { if (alive) setSessions(p.sessions); });
-    const unsub = fleet.onFleet(p => { if (alive) setSessions(p.sessions); });
+    // Two-arg .then, not a chained .catch: a chained .catch would also
+    // swallow a bug thrown from the fulfilled branch below, which is a
+    // different failure than "the IPC call failed" and shouldn't be
+    // reported as one. `ipcRenderer.invoke` rejects (not hangs) when main
+    // has no handler for the channel -- e.g. right now, since Task 11
+    // hasn't wired `registerIpc` into src/main/index.ts yet -- and an
+    // unhandled rejection here previously left `sessions` null forever,
+    // which looks identical on screen to a slow load. Nobody investigates
+    // a spinner that never resolves; a specific message says why.
+    void fleet.listFleet().then(
+      p => { if (alive) { setSessions(p.sessions); setError(null); } },
+      err => { if (alive) setError(err instanceof Error ? err.message : String(err)); },
+    );
+    const unsub = fleet.onFleet(p => { if (alive) { setSessions(p.sessions); setError(null); } });
     return () => { alive = false; unsub(); };
   }, []);
 
@@ -42,6 +55,10 @@ export function FleetView() {
     return <p className="empty error">The preload script did not load, so this window
       has no connection to the session index. Restart the app; if this keeps happening,
       check the main process log for a preload error.</p>;
+  }
+
+  if (error) {
+    return <p className="empty error">The session index could not be loaded: {error}</p>;
   }
 
   if (sessions === null) return <p className="empty">Reading the index…</p>;

@@ -94,4 +94,15 @@ describe('FleetView', () => {
     render(<FleetView />);
     expect(screen.getByText(/preload script did not load/i)).toBeTruthy();
   });
+
+  it('shows the error instead of loading forever when the index fails to load', async () => {
+    // The realistic case today: main has no 'fleet:list' handler registered
+    // yet (Task 11), so ipcRenderer.invoke rejects rather than hanging.
+    (globalThis as any).window.fleet.listFleet =
+      vi.fn().mockRejectedValue(new Error("No handler registered for 'fleet:list'"));
+    render(<FleetView />);
+    await waitFor(() => expect(
+      screen.getByText(/No handler registered for 'fleet:list'/)).toBeTruthy());
+    expect(screen.queryByText(/Reading the index/i)).toBeNull();
+  });
 });
