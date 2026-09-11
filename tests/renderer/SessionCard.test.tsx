@@ -86,9 +86,13 @@ describe('SessionCard', () => {
     expect(container.querySelector('.proj')?.classList.contains('display')).toBe(true);
   });
 
-  // HOST_LABEL is typed Record<string, string> -- an index signature, not a
-  // mapped type over HostApp -- so a host value the map doesn't recognise
-  // types fine and silently renders nothing without this fallback.
+  // HOST_LABEL is now typed Record<Host, string>, a mapped type over the
+  // same closed union `state.host` draws from -- TS itself can prove this
+  // lookup never misses. The fallback still matters at runtime: nothing
+  // stops a value that never went through classifyHost() (a stale
+  // persisted state, an `as any`, a future bug elsewhere) from reaching
+  // this lookup, so the test bypasses the type system the same way to
+  // prove the belt-and-braces fallback still holds.
   it('falls back to a labelled placeholder instead of a blank field for an unrecognised host', () => {
     render(<SessionCard onOpen={() => {}} state={{ ...base, host: 'ssh-remote' as any }} />);
     expect(screen.getByText('unknown host')).toBeTruthy();
@@ -112,5 +116,44 @@ describe('SessionCard', () => {
     render(<SessionCard onOpen={() => {}} state={{ ...base, sharesWorktreeWith:['s2'] }} />);
     const card = screen.getByRole('button', { name: /trellome/i });
     expect(card.getAttribute('aria-label') ?? '').toMatch(/shares this directory/i);
+  });
+
+  // This app exists because David could not tell what his agents were
+  // doing -- the card's job is surfacing the last meaningful thing an
+  // agent said. The old label was `[Open project, stateWord, blocker?.text,
+  // sharedText]`: for every non-blocked session (the common case) nothing
+  // from lastProse reached assistive tech at all. Asserted on the
+  // accessible name, not page text, for the same reason the stale and
+  // shared-directory tests above are: the visible ".said" paragraph could
+  // stay correct while the label silently dropped it.
+  it('names the last thing said in the accessible name, not just the state word', () => {
+    render(<SessionCard onOpen={() => {}} state={base} />);
+    const card = screen.getByRole('button', { name: /trellome/i });
+    expect(card.getAttribute('aria-label') ?? '').toMatch(/Reused the JWT helper/);
+  });
+
+  // SessionState carries match/candidates/sharesWorktreeWith precisely
+  // because two sessions -- from different providers -- can share a
+  // project name. Without the provider in the label, a Claude and a Codex
+  // session both named "trellome", both working, with no blocker,
+  // announce identically. Scoped to each render's own .container (rather
+  // than the global `screen`) since two cards are mounted in this test.
+  it('includes the provider in the accessible name so two same-named sessions do not announce identically', () => {
+    const claude = render(<SessionCard onOpen={() => {}} state={{ ...base, provider: 'claude' }} />);
+    const codex = render(<SessionCard onOpen={() => {}} state={{ ...base, provider: 'codex' }} />);
+    const claudeLabel = claude.container.querySelector('[role="button"]')?.getAttribute('aria-label');
+    const codexLabel = codex.container.querySelector('[role="button"]')?.getAttribute('aria-label');
+    expect(claudeLabel).not.toBe(codexLabel);
+  });
+
+  // Enter and click were already covered; Space is the one that silently
+  // scrolls the page instead of opening the card if preventDefault is ever
+  // dropped from that branch.
+  it('is operable by the space key too', () => {
+    const onOpen = vi.fn();
+    render(<SessionCard state={base} onOpen={onOpen} />);
+    const card = screen.getByRole('button', { name: /trellome/i });
+    fireEvent.keyDown(card, { key: ' ' });
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 });

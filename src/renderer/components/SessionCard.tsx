@@ -2,7 +2,16 @@ import type { SessionState } from '../../fleet/state.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import './SessionCard.css';
 
-const HOST_LABEL: Record<string, string> = {
+// A mapped type over the same closed union `state.host` draws from (see
+// below), not an index signature -- adding a HostApp member without adding
+// it here is now a compile error, the same protection ACTIVITY_WORD already
+// had. The `?? 'unknown host'` fallback at the call site stays anyway: TS
+// types are erased at runtime, and nothing here proves a value that never
+// went through `classifyHost()` -- a stale persisted state, a future bug
+// elsewhere in the pipeline -- can't still reach this lookup.
+type Host = NonNullable<SessionState['host']>;
+
+const HOST_LABEL: Record<Host, string> = {
   iterm2:'iTerm2', terminal:'Terminal', vscode:'VS Code',
   'claude-app':'Claude', 'codex-app':'Codex', unknown:'unknown host',
 };
@@ -21,6 +30,13 @@ export function SessionCard({ state, onOpen }:
   const pips = Math.min(state.agents, 10);
   const activityWord = ACTIVITY_WORD[state.activity];
   const stateWord = `${activityWord}${state.stale ? ' (stale)' : ''}`;
+  const providerLabel = state.provider === 'claude' ? 'Claude' : 'Codex';
+  // The card's whole job is surfacing the last meaningful thing an agent
+  // said -- the noise problem this app exists to fix. Unconditional: a
+  // blocker replaces it (same precedence as the visible ".said" paragraph
+  // below), but every other session -- working, idle, error, no blocker --
+  // still needs this in the accessible name, not just on screen.
+  const said = state.blocker ? state.blocker.text : (state.lastProse ?? 'No output yet');
   const sharedText = state.sharesWorktreeWith.length === 0 ? null
     : state.sharesWorktreeWith.length === 1
       ? 'Another session shares this directory'
@@ -32,11 +48,15 @@ export function SessionCard({ state, onOpen }:
   // depend on colour alone) is replaced by the accessible name, not
   // announced alongside it. So the name has to carry that state itself,
   // built from the same values rendered below rather than a second copy of
-  // the wording that could drift from it.
+  // the wording that could drift from it. The provider disambiguates two
+  // sessions that share a project name across providers (SessionState
+  // carries `match`/`candidates`/`sharesWorktreeWith` for exactly that
+  // scenario); host and counts stay out -- noise in a label meant for
+  // triage, not a full transcript of the card.
   const label = [
-    `Open ${state.project}`,
+    `Open ${state.project} (${providerLabel})`,
     stateWord,
-    state.blocker?.text,
+    said,
     sharedText,
   ].filter((part): part is string => Boolean(part)).join('. ');
 
@@ -56,7 +76,7 @@ export function SessionCard({ state, onOpen }:
       <div className="crow">
         <span className={`prov ${state.provider}`}>
           <ProviderMark provider={state.provider} size={11} />
-          {state.provider === 'claude' ? 'Claude' : 'Codex'}
+          {providerLabel}
         </span>
         <span className="host">{HOST_LABEL[state.host ?? 'unknown'] ?? 'unknown host'}</span>
       </div>
@@ -72,7 +92,7 @@ export function SessionCard({ state, onOpen }:
       {/* Provider text. React escapes it; it was also stripped of control
           characters at the IPC boundary. Never dangerouslySetInnerHTML. */}
       <p className={`said ${blocked ? 'wait' : ''}`}>
-        {state.blocker ? state.blocker.text : (state.lastProse ?? 'No output yet')}
+        {said}
       </p>
 
       {sharedText && <p className="shared">{sharedText}</p>}
