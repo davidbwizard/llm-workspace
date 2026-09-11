@@ -34,7 +34,7 @@
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `EventKind`, `NormalizedEvent`, `Provider`, `PARSER_VERSION` — used by every later task.
+- Produces: `EventKind`, `NormalizedEvent`, `Provider`, `isEventKind`, `EVENT_KINDS` — used by every later task. (Parser versions are per-provider constants defined in Tasks 7 and 9, not here.)
 
 - [ ] **Step 1: Create the project files**
 
@@ -161,6 +161,7 @@ export interface NormalizedEvent {
   sourceFile: string;
   sourceOffset: number;       // byte offset of the record's first byte
   contentHash: string;
+  subIndex: number;           // ordinal WITHIN the source record (see Task 3)
   parserVersion: number;
 }
 ```
@@ -358,10 +359,15 @@ CREATE TABLE IF NOT EXISTS events (
   source_file TEXT NOT NULL,
   source_offset INTEGER NOT NULL,
   content_hash TEXT NOT NULL,
+  sub_index INTEGER NOT NULL,
   parser_version INTEGER NOT NULL
 );
+-- sub_index discriminates the several events one source record can produce
+-- (prose + N tool.used + turn.completed all share an offset and hash).
+-- Without it they collide: insertEvents silently drops siblings and
+-- reparseFile throws and rolls back to zero rows.
 CREATE UNIQUE INDEX IF NOT EXISTS events_identity
-  ON events(source_file, source_offset, content_hash);
+  ON events(source_file, source_offset, content_hash, sub_index);
 CREATE INDEX IF NOT EXISTS events_session_ts ON events(session_id, ts);
 CREATE INDEX IF NOT EXISTS events_source ON events(source_file);
 
@@ -442,7 +448,7 @@ function ev(offset: number, hash = 'h' + offset): NormalizedEvent {
     provider: 'claude', sessionId: 's1', runId: null, agentId: null,
     ts: '2026-09-10T00:00:00Z', kind: 'prose', payload: { text: 'hi' },
     nativeId: null, sourceFile: '/f.jsonl', sourceOffset: offset,
-    contentHash: hash, parserVersion: 1,
+    contentHash: hash, subIndex: 0, parserVersion: 1,
   };
 }
 
@@ -494,13 +500,17 @@ Expected: FAIL — cannot resolve `../../src/store/ingest.ts`
 import type { Db } from './db.ts';
 import type { NormalizedEvent } from '../core/types.ts';
 
+// NOT `INSERT OR IGNORE`: that suppresses EVERY constraint failure, not just
+// the UNIQUE identity conflict. A malformed event (null session_id from a
+// parser bug) would vanish silently — exactly the failure spec §6.2 forbids.
+// Duplicates are swallowed by error code in insertEvents instead.
 const INSERT = `
-INSERT OR IGNORE INTO events
+INSERT INTO events
   (provider, session_id, run_id, agent_id, ts, kind, payload, native_id,
-   source_file, source_offset, content_hash, parser_version)
+   source_file, source_offset, content_hash, sub_index, parser_version)
 VALUES
   (@provider, @sessionId, @runId, @agentId, @ts, @kind, @payload, @nativeId,
-   @sourceFile, @sourceOffset, @contentHash, @parserVersion)`;
+   @sourceFile, @sourceOffset, @contentHash, @subIndex, @parserVersion)`;
 
 /** Insert events, skipping any whose identity triple is already present.
  *  Spec §6.1: watchers fire redundantly, so ingestion must be idempotent.
@@ -511,8 +521,15 @@ export function insertEvents(db: Db, events: NormalizedEvent[]): number {
   const run = db.transaction((batch: NormalizedEvent[]) => {
     let written = 0;
     for (const e of batch) {
-      const info = stmt.run({ ...e, payload: JSON.stringify(e.payload) });
-      written += info.changes;
+      try {
+        const info = stmt.run({ ...e, payload: JSON.stringify(e.payload) });
+        written += info.changes;
+      } catch (err) {
+        // Only a duplicate identity triple is expected and benign — that is
+        // what makes redundant watcher fires safe. Anything else (NOT NULL,
+        // type failure) is a real defect and must abort the batch.
+        if ((err as { code?: string }).code !== 'SQLITE_CONSTRAINT_UNIQUE') throw err;
+      }
     }
     return written;
   });
@@ -565,7 +582,7 @@ function ev(offset: number, kind: NormalizedEvent['kind'] = 'prose'): Normalized
     provider: 'claude', sessionId: 's1', runId: null, agentId: null,
     ts: '2026-09-10T00:00:00Z', kind, payload: {}, nativeId: null,
     sourceFile: '/f.jsonl', sourceOffset: offset, contentHash: 'h' + offset,
-    parserVersion: 1,
+    subIndex: 0, parserVersion: 1,
   };
 }
 
@@ -836,6 +853,23 @@ describe('readTail', () => {
     expect(second.lines).toHaveLength(2);
   });
 
+  it('does not corrupt a multi-byte character split across chunk boundaries', () => {
+    // Forces the emoji to straddle a chunk edge. Naive Buffer.toString('utf8')
+    // per chunk yields U+FFFD and inflates the byte count, shifting offsets.
+    writeFileSync(file, '{"a":"caf\u00e9 \ud83c\udf1f"}\n{"b":2}\n');
+    const r = readTail(file, 0, null, 13);
+    expect(r.lines.map(l => l.text)).toEqual(['{"a":"caf\u00e9 \ud83c\udf1f"}', '{"b":2}']);
+    expect(() => r.lines.map(l => JSON.parse(l.text))).not.toThrow();
+    expect(r.newOffset).toBe(statSync(file).size);
+  });
+
+  it('reports correct byte offsets after a multi-byte character', () => {
+    writeFileSync(file, '{"a":"\ud83c\udf1f"}\n{"b":2}\n');
+    const r = readTail(file, 0, null, 7);
+    const firstLen = Buffer.byteLength('{"a":"\ud83c\udf1f"}', 'utf8') + 1;
+    expect(r.lines[1]!.offset).toBe(firstLen);
+  });
+
   it('returns nothing for an empty file', () => {
     writeFileSync(file, '');
     const r = readTail(file, 0, null);
@@ -890,6 +924,7 @@ export function projectDir(cwd: string, root = path.join(os.homedir(), '.claude/
 `src/providers/claude/tail.ts`:
 ```ts
 import { openSync, readSync, fstatSync, closeSync } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 
 export interface TailLine { text: string; offset: number }
 
@@ -901,7 +936,7 @@ export interface TailResult {
   size: number;
 }
 
-const CHUNK = 1 << 20;
+const DEFAULT_CHUNK = 1 << 20;
 
 /** Incremental tail read. Spec §6.6.
  *  Two rules that matter:
@@ -909,7 +944,12 @@ const CHUNK = 1 << 20;
  *     rather than appending garbage;
  *   - a trailing partial line is NORMAL (the file is being written as we read),
  *     so buffer it and leave newOffset before it. Never count it as corrupt. */
-export function readTail(path: string, fromOffset: number, knownInode: number | null): TailResult {
+export function readTail(
+  path: string,
+  fromOffset: number,
+  knownInode: number | null,
+  chunkSize = DEFAULT_CHUNK,   // injectable so tests can force multi-chunk reads
+): TailResult {
   const fd = openSync(path, 'r');
   try {
     const st = fstatSync(fd);
@@ -928,13 +968,23 @@ export function readTail(path: string, fromOffset: number, knownInode: number | 
     let carry = '';
     let carryStart = start;
 
+    // A multi-byte character straddling a chunk boundary must NOT be decoded
+    // as two halves: `buf.toString('utf8')` would yield U+FFFD replacement
+    // chars, corrupting the line AND inflating its byte length — which shifts
+    // every subsequent offset, poisoning both the identity triple and
+    // newOffset, so the next incremental read resumes in the wrong place.
+    // StringDecoder holds the partial sequence until the next chunk supplies
+    // the rest. Verified: splitting a 4-byte emoji naively turns 19 bytes into
+    // 27. 105 transcripts on the dev machine already exceed one chunk.
+    const decoder = new StringDecoder('utf8');
+
     while (cursor < size) {
-      const want = Math.min(CHUNK, size - cursor);
+      const want = Math.min(chunkSize, size - cursor);
       const buf = Buffer.allocUnsafe(want);
       const got = readSync(fd, buf, 0, want, cursor);
       if (got <= 0) break;
 
-      const text = carry + buf.subarray(0, got).toString('utf8');
+      const text = carry + decoder.write(buf.subarray(0, got));
       let searchFrom = 0;
       let nl: number;
       while ((nl = text.indexOf('\n', searchFrom)) !== -1) {
@@ -958,7 +1008,7 @@ export function readTail(path: string, fromOffset: number, knownInode: number | 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `npx vitest run tests/providers/claude/`
-Expected: PASS (11 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 6: Commit**
 
@@ -1809,7 +1859,11 @@ export function readCodexThreads(dbPath: string): CodexThread[] | null {
   if (!existsSync(dbPath)) return null;
   let db: Database.Database | undefined;
   try {
-    db = new Database(`file:${dbPath}?mode=ro`, { readonly: true, fileMustExist: true, uri: true } as any);
+    // NOT `file:...?mode=ro` with uri:true — better-sqlite3 treats that string
+    // as a literal path and throws "directory does not exist", so the reader
+    // would return null every time and the accelerator would never engage.
+    // The failure is silent by design (null means fall back), so nobody notices.
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
     const rows = db.prepare(`
       SELECT id, rollout_path, cwd, source, cli_version, git_branch, model,
              agent_role, thread_source, tokens_used, archived
@@ -1838,7 +1892,11 @@ export function readSpawnEdges(dbPath: string): SpawnEdge[] {
   if (!existsSync(dbPath)) return [];
   let db: Database.Database | undefined;
   try {
-    db = new Database(`file:${dbPath}?mode=ro`, { readonly: true, fileMustExist: true, uri: true } as any);
+    // NOT `file:...?mode=ro` with uri:true — better-sqlite3 treats that string
+    // as a literal path and throws "directory does not exist", so the reader
+    // would return null every time and the accelerator would never engage.
+    // The failure is silent by design (null means fall back), so nobody notices.
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
     const rows = db.prepare(
       'SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges').all() as any[];
     return rows.map(r => ({
@@ -2018,7 +2076,9 @@ export function parseLsofCwd(out: string): string | null {
  *  decides which jump action is offered, and VS Code deliberately gets a
  *  weaker one because a specific tab cannot be targeted. */
 export function classifyHost(chain: string[]): HostApp {
-  const names = chain.map(n => n.toLowerCase());
+  // chain[0] is the subject process itself ("claude"), not an ancestor.
+  // Including it makes every Claude process self-match as claude-app.
+  const names = chain.slice(1).map(n => n.toLowerCase());
   if (names.some(n => n.includes('iterm'))) return 'iterm2';
   if (names.some(n => n === 'code' || n.includes('code helper'))) return 'vscode';
   if (names.some(n => n === 'terminal')) return 'terminal';
@@ -3088,6 +3148,126 @@ git commit -m "feat(cli): probe, ingest and live stream — phases 1-2 deliverab
 ```
 
 ---
+
+---
+
+### Task 16: MIT attribution for harvested code
+
+Added during execution. The spec's section 3 states the licence obligation
+("MIT requires the copyright notice travel with substantial portions. Carry a
+NOTICE crediting Chaitanya Giri; keep licence headers on harvested files") but
+no task implemented it. This closes that gap. Run it LAST, so it reflects
+everything Plan 1 actually harvested.
+
+**Files:**
+- Create: `NOTICE`
+- Test: `tests/notice.test.ts`
+
+**Interfaces:**
+- Consumes: nothing
+- Produces: nothing. This is a compliance artefact.
+
+- [ ] **Step 1: Establish what was actually harvested**
+
+Run and record the result:
+
+```bash
+grep -rn "harvested\|munder-difflin" src/ --include=*.ts
+```
+
+Every file that appears must be listed in `NOTICE`. Do not list files that were
+merely *informed by* munder-difflin — only ones carrying its code. As of this
+task that is `src/providers/claude/projectKey.ts` (the `projectKey` and
+`legacyProjectKey` bodies are verbatim); verify rather than assume, since later
+tasks may add more.
+
+- [ ] **Step 2: Write the failing test**
+
+`tests/notice.test.ts`:
+```ts
+import { describe, it, expect } from 'vitest';
+import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+
+describe('NOTICE', () => {
+  it('exists', () => {
+    expect(existsSync('NOTICE')).toBe(true);
+  });
+
+  it('carries the upstream MIT copyright line verbatim', () => {
+    const notice = readFileSync('NOTICE', 'utf8');
+    expect(notice).toContain('Copyright (c) 2026 Chaitanya Giri');
+    expect(notice).toContain('MIT');
+    expect(notice).toContain('munder-difflin');
+  });
+
+  it('lists every source file that carries harvested code', () => {
+    const notice = readFileSync('NOTICE', 'utf8');
+    const hits = execFileSync('grep', ['-rl', 'harvested', 'src'], { encoding: 'utf8' })
+      .split('\n').filter(Boolean);
+    expect(hits.length).toBeGreaterThan(0);
+    for (const file of hits) expect(notice).toContain(file);
+  });
+});
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `npx vitest run tests/notice.test.ts`
+Expected: FAIL, NOTICE does not exist.
+
+- [ ] **Step 4: Write NOTICE**
+
+Use this exact structure, substituting the real file list from Step 1:
+
+```
+llm-workspace
+
+This project incorporates code from munder-difflin
+(https://github.com/chaitanyagiri/munder-difflin), used under the MIT licence.
+
+    MIT License
+
+    Copyright (c) 2026 Chaitanya Giri
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+Files containing harvested code:
+
+  <one line per file from Step 1>
+```
+
+Copy the licence body from `../munder-difflin/LICENSE` rather than retyping it,
+so the text is exact.
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `npx vitest run tests/notice.test.ts`
+Expected: PASS, 3 tests.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add NOTICE tests/notice.test.ts
+git commit -m "docs: MIT attribution for code harvested from munder-difflin"
+```
+
 
 ## Self-Review
 

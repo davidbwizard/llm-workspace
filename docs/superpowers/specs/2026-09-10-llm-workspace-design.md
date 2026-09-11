@@ -427,6 +427,74 @@ disk:
 threads are separate rollout files linked by parent id, so the graph is built by
 walking that tree.
 
+### 5.6 Codex writes two record envelopes, and they are mutually exclusive
+
+Measured across 293 real rollouts on the development machine: **131 files use a
+flat `event_msg/agent_message` shape; 163 use `event_msg/item_completed`
+wrapping a typed `item`.** Both occur under `cli_version 0.152.1` with the same
+originator, so this is not a version cutover that can be assumed away. **No file
+mixes them**, so a parser handling both cannot double-count.
+
+A parser recognising only the flat shape leaves **47.5 percent of real records
+unparsed** — including 3,926 `AgentMessage` prose events across 40 sessions.
+That is the narration stream section 8.3's beat cards are built from, so Codex
+sessions would render essentially empty while reporting success.
+
+`item_completed` carries `item.type`:
+
+| `item.type` | normalized event |
+|---|---|
+| `AgentMessage` | `prose` |
+| `UserMessage` | `prompt.submitted` |
+| `CommandExecution` | `tool.used` (payload carries `command`) |
+| `Extension` (e.g. `web.search`) | `tool.used` (payload carries `kind`, `query`) |
+| `FileChange` | `tool.used` |
+| `ContextCompaction` | `context.compacted` |
+| `Reasoning` | known, not mapped in v1 |
+
+The flat envelope maps as follows, for files that use it:
+
+| Codex record | normalized event |
+|---|---|
+| `event_msg/user_message` | `prompt.submitted` |
+| `event_msg/agent_message` | `prose` |
+| `event_msg/task_complete` | `turn.completed` |
+| `response_item/function_call` | `tool.used` |
+| `response_item/custom_tool_call` | known, not mapped — see below |
+| `event_msg/task_started`, `token_count`, `agent_reasoning` | known, not mapped in v1 |
+
+Known top-level types that are not `session_meta`, `event_msg` or
+`response_item`: `turn_context`, `world_state`, `compacted`. Recognise them so
+they do not flood the `unparsed` channel; mapping them is deferred.
+
+**`custom_tool_call` must NOT be mapped: it is the request half of a call the
+`item_completed` envelope already reports as complete.** Measured across the
+corpus: 180 `item_completed` tool items and 158 `custom_tool_call` records, with
+all 338 confined to the same 11 files. Same file, same action:
+
+```
+item_completed/CommandExecution : ['/bin/zsh','-lc',"sed -n '1,240p' /Users/..."]
+response_item /custom_tool_call : const r = await tools.exec_command({"cmd":"sed -n '1,240p' /..."})
+```
+
+Mapping both double-counts every tool invocation in those sessions. Since
+section 8.2 sizes each graph node by tool count, that renders those agents at
+roughly twice their real size. The corpus contains zero `function_call` records,
+so that one stays mapped: it is the flat envelope's own tool record and shows no
+duplication.
+
+This was arrived at twice from the wrong direction — first by leaving
+`custom_tool_call` unmapped on the assumption it was redundant, then by mapping
+it on the assumption its absence hid half the tool activity. Only counting the
+corpus settled it. A test must pin the property directly: one file carrying both
+records for one command yields exactly one `tool.used`.
+
+**This was found only because section 6.2's fail-loudly rule was implemented.**
+The parser surfaced 47.5 percent unparsed rather than silently discarding it.
+An earlier design that skipped unrecognized records would have shipped Codex
+support that quietly displayed nothing, and the gap would have looked like an
+empty session rather than a parser defect.
+
 ---
 
 ## 6. Data model
@@ -475,9 +543,11 @@ CREATE TABLE events (
   source_file TEXT NOT NULL,
   source_offset INTEGER NOT NULL,  -- byte offset, not line number
   content_hash TEXT NOT NULL,      -- hash of the source record
+  sub_index INTEGER NOT NULL,      -- ordinal WITHIN the source record
   parser_version INTEGER NOT NULL
 );
-CREATE UNIQUE INDEX events_identity ON events(source_file, source_offset, content_hash);
+CREATE UNIQUE INDEX events_identity
+  ON events(source_file, source_offset, content_hash, sub_index);
 
 -- Ingestion bookkeeping: detects truncation, replacement, rotation.
 CREATE TABLE ingest_files (
@@ -490,9 +560,27 @@ CREATE TABLE ingest_files (
 );
 ```
 
-Identity is `(source_file, source_offset, content_hash)` plus `native_id` where a
-provider supplies one. Content hash means a rewritten record re-ingests instead
-of being silently skipped.
+Identity is `(source_file, source_offset, content_hash, sub_index)`. Content hash
+means a rewritten record re-ingests instead of being silently skipped.
+
+**`sub_index` is not optional, and revision 6 was wrong to omit it.** One source
+record routinely yields several events: an assistant turn emits `prose`, one
+`tool.used` per tool block, and `turn.completed` — all from the same line, so all
+sharing an offset and hash. Without a discriminator they collide. Measured
+against the real implementation on a five-line fixture: the parser emitted 8
+events, `insertEvents` silently stored 4 — losing a human prompt, the only tool
+call, and both `turn.completed` events — and `reparseFile` threw
+`SQLITE_CONSTRAINT_UNIQUE` and rolled back to zero rows, so any rebuild wiped
+the index entirely.
+
+`sub_index` is the event's ordinal within its source record, assigned by the
+parser in emission order. It is deterministic, so re-parsing the same bytes
+reproduces the same identities and idempotency holds exactly.
+
+**Do not use `native_id` as the discriminator.** SQLite treats NULLs as distinct
+in a UNIQUE index, so rows with a null `native_id` would never conflict — a
+re-ingest would duplicate them instead of being rejected, breaking the exact
+guarantee the index exists to provide. Verified.
 
 **Reparse is delete-then-parse, not insert.** Revision 2 said a `parser_version`
 bump "forces re-ingest," but the unique key does not contain `parser_version` —
@@ -505,7 +593,7 @@ Reparse is therefore defined explicitly, and runs in one transaction:
 ```
 BEGIN
   DELETE FROM events WHERE source_file = ?;
-  -- re-parse the whole file with the current parser
+  -- re-parse the whole file with the current parser, assigning sub_index
   INSERT ...;
   UPDATE ingest_files SET parser_version = ?, bytes_consumed = ?;
 COMMIT
@@ -646,6 +734,41 @@ count it as corrupt.
 | Answer in-app | Yes | Only via provider-native path, else jump |
 | State accuracy | Exact | Exact **with hooks**; heuristic without |
 
+### 7.1a Transcripts are the source of truth; processes are enrichment
+
+**Most live sessions have no discoverable process.** Measured on the development
+machine while the app's own index was being built: **144 sessions had events in
+the last hour, while `pgrep -x claude` found 8 processes.** Among transcripts
+active in that hour, 10 carried `entrypoint: sdk-py` and 9 `entrypoint: cli`, so
+more than half were not CLI processes at all.
+
+The session writing this very design was verified live — its transcript modified
+two seconds before the check — with **no `claude` process holding its working
+directory**.
+
+Revision 6 implied that process discovery enumerates sessions. It does not, and
+a fleet view built on it would have displayed 8 sessions out of 144 while
+appearing to work.
+
+The correct model:
+
+- **Transcript activity determines which sessions exist.** A session is present
+  in the fleet because it is writing events, not because a process was found.
+- **Process discovery is enrichment.** It supplies pid, tty and host app, which
+  in turn enable the jump-to-terminal action of section 7.3.
+- **A session with no matching process is not absent, and not broken.** It is a
+  session whose host we cannot identify. It renders fully — graph, beats, alerts
+  — and loses only the actions that need a terminal to jump to.
+
+This makes the `unknown` match quality the common case rather than the failure
+case, and section 7.2's rule stands unchanged: precision actions are enabled only
+on `unique`.
+
+Note also that `pgrep -x claude` matches 8 processes where a loose match finds 19
+and Claude.app contributes 4 helpers. Any future attempt to widen process
+discovery must widen the pattern deliberately rather than assuming the exact-name
+match is complete.
+
 ### 7.2 Process matching is ambiguous — and must be treated as such
 
 Revision 1 claimed `process → tty → cwd → transcript file` "closes the loop." **It
@@ -695,6 +818,18 @@ Gated on a `unique` match per §7.2.
 ---
 
 ## 8. Interface
+
+> **Icon system (David, 2026-09-10):** use **Phosphor Icons**
+> (https://phosphoricons.com/) throughout the UI. No emoji anywhere — not in
+> the interface, not in status markers, not in copy. Phosphor's weight range
+> (thin through fill/duotone) carries the state distinctions this app needs:
+> a running agent, a finished one, and one waiting on the user can differ by
+> weight and fill rather than by colour alone, which keeps the fleet view
+> legible for colour-vision differences and in dark mode. Verify the exact
+> React package name at install time.
+>
+> Terminal output (the Plan 1 CLI) has no icons available: use plain text
+> markers there — `PASS`, `FAIL`, `WARN`, `>` — never emoji.
 
 > **Process gate (David, 2026-09-10):** before any UI task is implemented,
 > show visual examples first and get a pick. This applies to the fleet view,

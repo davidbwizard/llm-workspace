@@ -1,0 +1,2 @@
+{"timestamp":"2026-08-27T15:11:52.218Z","type":"session_meta","payload":{"session_id":"01a043c5-f268","id":"01a043c7-0799","parent_thread_id":"01a043c5-f268","cwd":"/repo","originator":"codex_work_desktop","cli_version":"0.150.0-alpha.8","source":{"subagent":{"other":"guardian"}},"thread_source":"guardian_review"}}
+{"timestamp":"2026-08-27T15:11:53.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Judging one planned action."}}

@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"hello"},"timestamp":"2026-09-10T00:00:00.000Z","uuid":"u1","sessionId":"s1","cwd":"/repo"}
+{"type":"telemetry-v9","somethingNew":{"nested":true},"timestamp":"2026-09-10T00:00:01.000Z","sessionId":"s1"}
