@@ -348,4 +348,77 @@ describe('fleetState', () => {
       expect(s!.activity).toBe('working');
     });
   });
+
+  // Phase 3 tier fix: `cwd` resolves to a directory, not a specific
+  // session, so two sessions sharing a repo make any process matched to
+  // that cwd ambiguous -- there is no way to tell which of them it belongs
+  // to. Printing that process's age/memory (or `alive: true`) on both
+  // sessions would attribute one process's facts to a session it might not
+  // be, which is the exact bug this fix removes (see the fleet-wide report:
+  // one live process in a shared repo used to mark 111 unrelated sessions
+  // alive, all showing that one process's age and memory).
+  describe('ambiguous matches are not attributed to any one session (Phase 3 tier fix)', () => {
+    it('reports alive false with no age or memory for every session sharing an ambiguously-matched cwd', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+        ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+      ]);
+      const all = fleetState(db, {
+        now: NOW,
+        processes: [proc({ pid:9, cwd:'/repo/shared', ageSeconds:777_600, rssBytes:216_006_656 })],
+      });
+      expect(all).toHaveLength(2);
+      expect(all.every(s => s.match === 'ambiguous')).toBe(true);
+      expect(all.every(s => s.alive === false)).toBe(true);
+      expect(all.every(s => s.processAgeSeconds === null)).toBe(true);
+      expect(all.every(s => s.processRssBytes === null)).toBe(true);
+    });
+
+    // The mid-turn-kill check (see the `activity` computation's comment in
+    // src/fleet/state.ts) only needs to know A process exists at this cwd,
+    // not which session it belongs to -- requiring unique attribution here
+    // would wrongly demote a genuinely-working session to idle whenever its
+    // cwd is shared, which is the common case on a real workspace.
+    it('a mid-turn session with only an ambiguous match still reads as working', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+        ev({ kind:'tool.used', ts:at(8), payload:{ name:'Bash' }, contentHash:'b', subIndex:1 }),
+        ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'c' }),
+      ]);
+      const all = fleetState(db, { now: NOW, processes: [proc({ pid:9, cwd:'/repo/shared' })] });
+      const s1 = all.find(s => s.sessionId === 's1')!;
+      expect(s1.match).toBe('ambiguous');
+      expect(s1.alive).toBe(false);
+      expect(s1.activity).toBe('working');
+    });
+  });
+
+  // Definition of done: activity 25 minutes ago is Active (lifecycle
+  // 'active', governed by ACTIVE_MS = 30 minutes); activity 2 days ago is
+  // History (lifecycle 'disconnected'). FleetView's Active/History split
+  // (needsAttention/waitingForYou vs. history) is keyed directly off this
+  // field -- see the tier tests in tests/renderer/FleetView.test.tsx.
+  describe('the Active/History boundary (ACTIVE_MS)', () => {
+    it('a session active 25 minutes ago is still Active', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', ts:at(25), payload:{ cwd:'/r' }, contentHash:'a' }),
+        ev({ kind:'turn.completed', ts:at(25), payload:{}, contentHash:'b', subIndex:1 }),
+      ]);
+      const [s] = fleetState(db, { now: NOW });
+      expect(s!.lifecycle).toBe('active');
+    });
+
+    it('a session last active 2 days ago is History', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', ts:at(2 * 24 * 60), payload:{ cwd:'/r' }, contentHash:'a' }),
+        ev({ kind:'turn.completed', ts:at(2 * 24 * 60), payload:{}, contentHash:'b', subIndex:1 }),
+      ]);
+      const [s] = fleetState(db, { now: NOW });
+      expect(s!.lifecycle).toBe('disconnected');
+    });
+  });
 });

@@ -30,16 +30,22 @@ export interface SessionState {
   match: MatchQuality;
   candidates: number[];
   host: LiveProcess['host'] | null;
-  /** True when a live process (discovery, spec §7.1a) is currently matched
-   *  to this session -- process liveness, independent of `activity`/
-   *  `lifecycle`, both of which are derived from transcript events alone.
-   *  This is what separates a session whose process is still running and
-   *  waiting on the user from one that is pure history (see FleetView's
-   *  three-way grouping). */
+  /** True when a live process (discovery, spec §7.1a) is matched UNIQUELY
+   *  to this session -- i.e. `match === 'unique'`. `cwd` only resolves to a
+   *  project directory, not to a specific session file, so on a real
+   *  workspace where several sessions share a repo the match is usually
+   *  `ambiguous` (several sessions, one live process, no way to tell which
+   *  one it belongs to): `alive` is false for every one of them in that
+   *  case, deliberately -- a fact that cannot be attributed to a specific
+   *  session must not be printed as if it were that session's own. Process
+   *  liveness plays no part in FleetView's grouping (that is transcript
+   *  recency, `lifecycle`/`activity`); this field exists only so a card can
+   *  show attributable process detail (age/memory below) when it has it. */
   alive: boolean;
   /** Seconds the matched process has been running -- from the OLDEST
    *  matched process when more than one pid matches this session. Null
-   *  when not alive, or when `ps` couldn't report it. */
+   *  when not `alive` (including an ambiguous match -- see `alive` above),
+   *  or when `ps` couldn't report it. */
   processAgeSeconds: number | null;
   /** Resident memory of that same (oldest) matched process, in bytes. Null
    *  under the same conditions as processAgeSeconds. */
@@ -210,10 +216,9 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   // session -- is far more likely a broken pgrep/ps/lsof toolchain than a
   // machine with genuinely zero live provider processes, so it must not be
   // allowed to silently demote every currently-working session to idle.
-  // `alive` below still reports false for every session in that case (that
-  // part is honest -- discovery really did find nothing this sweep), but
-  // the WORKING determination falls back to the prior turn-boundary-only
-  // rule rather than trusting `alive` when there is no live signal at all.
+  // The WORKING determination below falls back to the prior
+  // turn-boundary-only rule rather than trusting process-match presence
+  // when there is no live signal at all.
   const hasLiveSignal = (opts.processes ?? []).length > 0;
 
   return rows.map(r => {
@@ -225,23 +230,35 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     const matchedProcs = (m?.pids ?? [])
       .map(pid => pidToProcess.get(pid))
       .filter((p): p is LiveProcess => p !== undefined);
-    const alive = matchedProcs.length > 0;
-    const oldest = oldestProcess(matchedProcs);
+    // `alive` (and the age/memory it gates below) requires a UNIQUE match:
+    // `cwd` only resolves to a directory, and on a real workspace several
+    // sessions commonly share one, so `matchedProcs.length > 0` alone is
+    // not enough to say THIS session's process is confirmed running --
+    // only that some session sharing its cwd has one. Printing age/memory
+    // (or `alive: true`) on every session in that ambiguous group would be
+    // attributing one process's facts to sessions it may not belong to.
+    const hasMatchedProcess = matchedProcs.length > 0;
+    const alive = hasMatchedProcess && m?.quality === 'unique';
+    const oldest = m?.quality === 'unique' ? oldestProcess(matchedProcs) : null;
 
     const lifecycle: Lifecycle = age <= ACTIVE_MS ? 'active' : 'disconnected';
     let activity: Activity;
     if (blocker) {
       activity = blocker.kind === 'PermissionRequest' ? 'waiting_permission' : 'waiting_input';
-    } else if (lifecycle === 'active' && !TURN_END_KINDS.has(r.last_kind) && (alive || !hasLiveSignal)) {
+    } else if (lifecycle === 'active' && !TURN_END_KINDS.has(r.last_kind) && (hasMatchedProcess || !hasLiveSignal)) {
       // A session killed mid-turn never emits a turn boundary and would
-      // otherwise look like it is thinking forever -- `alive` (spec §7.1a's
-      // discovery, layered on top of the turn-boundary rule above rather
-      // than replacing it) is what tells the two apart. `!hasLiveSignal` is
-      // the escape hatch for when discovery itself produced nothing at all
-      // this sweep (see the comment on hasLiveSignal above): a dead session
-      // can never be `working` when discovery is actually working, but a
-      // broken discovery toolchain must not be able to empty the whole
-      // working group either.
+      // otherwise look like it is thinking forever -- a matched process is
+      // what tells the two apart. This deliberately uses match PRESENCE
+      // (`hasMatchedProcess`), not `alive`: an ambiguous match still means
+      // a live process exists at this session's cwd, which is exactly what
+      // this check needs to know, and requiring unique attribution here
+      // would wrongly demote a genuinely-working session to idle merely
+      // because its cwd is shared -- the common case on a real workspace.
+      // `!hasLiveSignal` is the escape hatch for when discovery itself
+      // produced nothing at all this sweep (see the comment on
+      // hasLiveSignal above): a dead session can never be `working` when
+      // discovery is actually working, but a broken discovery toolchain
+      // must not be able to empty the whole working group either.
       activity = 'working';
     } else {
       activity = 'idle';

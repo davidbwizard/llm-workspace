@@ -3,10 +3,15 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { FleetView } from '../../src/renderer/components/FleetView.tsx';
 import type { SessionState } from '../../src/fleet/state.ts';
 
-// alive:false by default -- most fixtures in this file are about the
-// needsAttention/history split, which predates process liveness and does
-// not depend on it. Tests for the new middle ("Waiting for you") tier
-// override alive:true explicitly.
+// Defaults to lifecycle:'active', activity:'idle', alive:false. Grouping is
+// keyed on lifecycle/activity (transcript recency), NOT on `alive` (process
+// liveness) -- `cwd` resolves to a directory, not a specific session, so on
+// a real workspace where several sessions share a repo, `alive` is
+// unreliable per-session (see the `alive` doc comment on SessionState in
+// src/fleet/state.ts) and plays no part in which tier a card lands in. A
+// fixture needs no override to land in the always-shown "Waiting for you"
+// tier -- that's the default (lifecycle active, activity idle). A fixture
+// needs `lifecycle:'disconnected'` (or 'ended') to be History.
 const s = (o: Partial<SessionState>): SessionState => ({
   sessionId:'s1', runId:'r1', provider:'claude', cwd:'/r', project:'proj',
   lifecycle:'active', activity:'idle', stale:false, confidence:'guess',
@@ -20,7 +25,7 @@ beforeEach(() => {
   (globalThis as any).window.fleet = {
     listFleet: vi.fn().mockResolvedValue({ version:1, generatedAt:'t', sessions:[
       s({ sessionId:'a', project:'trellome', activity:'working' }),
-      s({ sessionId:'b', project:'chocabloc', activity:'idle' }),
+      s({ sessionId:'b', project:'chocabloc', lifecycle:'disconnected', activity:'idle' }),
     ]}),
     onFleet: vi.fn().mockReturnValue(() => {}),
   };
@@ -28,10 +33,11 @@ beforeEach(() => {
 
 describe('FleetView', () => {
   it('lists the sessions it was given', async () => {
-    // chocabloc is history (not alive), so it now starts inside the
-    // collapsed History group rather than rendering on load -- expand the
-    // group to confirm the session is present, not dropped. trellome is
-    // live and still needs no interaction to appear.
+    // chocabloc is disconnected (its transcript went quiet beyond
+    // ACTIVE_MS), so it's History and starts inside the collapsed group
+    // rather than rendering on load -- expand the group to confirm the
+    // session is present, not dropped. trellome is active and working, so
+    // it still needs no interaction to appear.
     render(<FleetView />);
     await waitFor(() => expect(screen.getByText('trellome')).toBeTruthy());
     expect(screen.queryByText('chocabloc')).toBeNull();
@@ -73,23 +79,35 @@ describe('FleetView', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
   });
 
-  it('groups an active session with nothing happening below the divider, not above', async () => {
+  // PREMISE CHANGE from the version of this test predating the Phase 3
+  // tier fix: it used to assert that an active-but-idle, not-alive session
+  // belonged in History (grouping was keyed on `alive`, process liveness).
+  // That was exactly the bug this fix removes -- on a real workspace,
+  // `alive` is false for almost every session (cwd matches are ambiguous
+  // whenever a repo has more than one session in it, the common case), so
+  // keying grouping on it buried genuinely-active sessions in the
+  // collapsed History group and showed "0 active". Grouping is now keyed
+  // on transcript recency alone: an active session with nothing happening
+  // (last event was a turn boundary, well within ACTIVE_MS) is precisely
+  // what "Waiting for you" means, alive or not, and belongs in the
+  // always-shown Active tier, never History.
+  it('groups an active session with nothing happening under Waiting for you, not History', async () => {
     (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
       version:1, generatedAt:'t', sessions:[
-        s({ sessionId:'q', project:'quietproj', lifecycle:'active', activity:'idle' }),
+        s({ sessionId:'q', project:'quietproj', lifecycle:'active', activity:'idle', alive:false }),
       ],
     });
     const { container } = render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
-    // No live group should render at all: the only session present is idle
-    // and not alive, so it belongs in history, not the top tier.
+    await waitFor(() => expect(screen.getByRole('heading', { name:/Waiting for you/i })).toBeTruthy());
+    // No top ("needs you") group: nothing here is working or blocked.
     expect(container.querySelector('.fleet:not(.dim):not(.waiting)')).toBeNull();
-    // quietproj is not alive, so it now needs the group expanded before it
-    // renders; once expanded it belongs in the dim history group, not a
-    // live one.
-    fireEvent.click(screen.getByRole('button', { name:/History/i }));
-    await waitFor(() => expect(screen.getByText('quietproj')).toBeTruthy());
-    expect(container.querySelector('.fleet.dim')?.textContent).toMatch(/quietproj/);
+    // No History group at all -- there is no disconnected session in this
+    // fixture, and quietproj itself does not belong there.
+    expect(screen.queryByRole('heading', { name:/History/i })).toBeNull();
+    // Rendered immediately, in the "waiting" group -- no click needed,
+    // unlike History.
+    expect(screen.getByText('quietproj')).toBeTruthy();
+    expect(container.querySelector('.fleet.waiting')?.textContent).toMatch(/quietproj/);
   });
 
   it('does not silently drop a disconnected session whose last known activity was working', async () => {
@@ -131,8 +149,9 @@ describe('FleetView', () => {
     // definitions: an active-but-quiet session and a stale-but-working
     // (disconnected) one are both not top-tier -- if the chip and the live
     // group ever counted different things, this fixture is where they'd
-    // disagree. Neither is alive, so neither lands in the middle tier
-    // either.
+    // disagree. quiet1 (lifecycle active) lands in the Waiting-for-you
+    // tier instead; ghost1 (lifecycle disconnected) lands in History --
+    // neither lands in the TOP tier this chip and query are about.
     (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
       version:1, generatedAt:'t', sessions:[
         s({ sessionId:'a', project:'live1', activity:'working' }),
@@ -176,7 +195,7 @@ describe('FleetView', () => {
 
   it('renders history cards in batches with a show-more control instead of all at once', async () => {
     const historySessions = Array.from({ length:130 }, (_, i) =>
-      s({ sessionId:`idle-${i}`, project:`idleproj${i}`, activity:'idle' }));
+      s({ sessionId:`idle-${i}`, project:`idleproj${i}`, lifecycle:'disconnected', activity:'idle' }));
     (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
       version:1, generatedAt:'t', sessions:historySessions,
     });
@@ -225,16 +244,23 @@ describe('FleetView', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
-  // The tier that did not exist before this task: a session whose process
-  // is confirmed alive (discovery, spec S7.1a) but at a turn boundary --
-  // not working, not blocked. It is genuinely different from history (the
-  // process is still running) and from the top tier (it needs nothing from
-  // the user right now), so it gets its own always-visible group.
+  // PREMISE CHANGE from the version of this describe block predating the
+  // Phase 3 tier fix: this tier used to be defined by `alive` (a session
+  // whose process is confirmed running, spec S7.1a's discovery). That key
+  // turned out to be unreliable per-session -- `cwd` resolves to a
+  // directory, not a specific session, so on a real workspace where
+  // several sessions share a repo, one live process there marks EVERY
+  // session sharing that cwd `alive: true`. The tier is now defined by
+  // transcript recency alone (lifecycle active, activity idle -- last
+  // event was a turn boundary): genuinely different from History (still
+  // reachable) and from the top tier (nothing to act on), with no
+  // dependence on `alive`. Every fixture below sets `alive:false`
+  // explicitly to prove that.
   describe('the middle "Waiting for you" tier', () => {
-    it('shows an alive, quiet session in its own group -- not the top tier, not history', async () => {
+    it('shows a quiet, active session in its own group -- not the top tier, not history -- with no dependence on alive', async () => {
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
         version:1, generatedAt:'t', sessions:[
-          s({ sessionId:'w', project:'waitingproj', lifecycle:'active', activity:'idle', alive:true }),
+          s({ sessionId:'w', project:'waitingproj', lifecycle:'active', activity:'idle', alive:false }),
         ],
       });
       const { container } = render(<FleetView />);
@@ -244,27 +270,27 @@ describe('FleetView', () => {
       // Not in the top tier.
       expect(container.querySelector('.fleet:not(.dim):not(.waiting)')).toBeNull();
       // Not in history: the group is collapsed by default, and no history
-      // heading renders at all since there is no non-alive session here.
+      // heading renders at all since there is no disconnected session here.
       expect(screen.queryByRole('heading', { name:/History/i })).toBeNull();
     });
 
     it('counts the middle tier in its own heading', async () => {
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
         version:1, generatedAt:'t', sessions:[
-          s({ sessionId:'w1', project:'w1proj', alive:true }),
-          s({ sessionId:'w2', project:'w2proj', alive:true }),
+          s({ sessionId:'w1', project:'w1proj', alive:false }),
+          s({ sessionId:'w2', project:'w2proj', alive:false }),
         ],
       });
       render(<FleetView />);
       await waitFor(() => expect(screen.getByRole('heading', { name:/Waiting for you 2/i })).toBeTruthy());
     });
 
-    it('does not double-count a working, alive session in the middle tier', async () => {
-      // needsAttention is checked first: a working session that also
-      // happens to be alive belongs only to the top tier.
+    it('does not double-count a working session in the middle tier', async () => {
+      // needsAttention is checked first: a working session belongs only to
+      // the top tier, regardless of `alive`.
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
         version:1, generatedAt:'t', sessions:[
-          s({ sessionId:'a', project:'trellome', activity:'working', alive:true }),
+          s({ sessionId:'a', project:'trellome', activity:'working', alive:false }),
         ],
       });
       const { container } = render(<FleetView />);

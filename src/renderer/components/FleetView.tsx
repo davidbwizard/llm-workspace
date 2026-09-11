@@ -20,16 +20,20 @@ function needsAttention(s: SessionState): boolean {
     (s.activity === 'working' || s.activity === 'waiting_permission' || s.activity === 'waiting_input');
 }
 
-// The middle tier: process liveness (`alive`, discovery -- spec S7.1a),
-// not transcript activity, is what separates this from history. A session
-// whose process is confirmed still running, just quiet right now (at a
-// turn boundary, no blocker) is fundamentally different from one whose
-// transcript simply hasn't been touched in weeks -- the user can act on
-// the first and not the second, even though both read as "idle" activity.
+// The middle tier: reachable (lifecycle active), same as needsAttention,
+// but at a turn boundary rather than working or blocked. Deliberately keyed
+// on transcript recency (lifecycle/activity), NOT on `alive` (process
+// liveness, discovery -- spec S7.1a): `cwd` resolves to a directory, not a
+// specific session, so whenever more than one session shares a repo --
+// the common case on a real workspace -- a single live process there makes
+// EVERY session sharing that cwd report `alive: true`, which used to put
+// all of them here regardless of whether they were actually in use (see
+// src/fleet/state.ts's `alive` doc comment). Transcript recency has no such
+// ambiguity: it is measured per session, from that session's own events.
 // Checked after needsAttention, so a blocked-or-working session is never
-// double-counted here even if it also happens to be alive.
+// double-counted here.
 function waitingForYou(s: SessionState): boolean {
-  return !needsAttention(s) && s.alive;
+  return !needsAttention(s) && s.lifecycle === 'active';
 }
 
 // History cards render in batches once the group is opened: against a real
@@ -90,14 +94,15 @@ export function FleetView() {
     return <p className="empty">No sessions indexed yet. Run a Claude Code or Codex
       session, or run <code>npm run cli -- ingest</code> to index existing transcripts.</p>;
 
-  // Three tiers, not two: process liveness (spec S7.1a) is what separates
-  // a session the user can act on right now from one that is pure history,
-  // and lumping them together is exactly the complaint this split fixes.
-  // No session is silently dropped -- a fleet view that does that is the
-  // failure spec S7.1a warns about.
+  // Three tiers, not two: transcript recency (lifecycle/activity) is what
+  // separates a session the user can act on right now from one that is
+  // pure history, and lumping them together is exactly the complaint this
+  // split fixes. `history` is "everything not in the other two" rather
+  // than its own positive check, so no session is silently dropped -- a
+  // fleet view that does that is the failure spec S7.1a warns about.
   const live = sessions.filter(needsAttention);
   const waiting = sessions.filter(waitingForYou);
-  const history = sessions.filter(s => !needsAttention(s) && !s.alive);
+  const history = sessions.filter(s => !needsAttention(s) && !waitingForYou(s));
   const needing = live.filter(s => s.blocker).length;
 
   return (
@@ -118,7 +123,9 @@ export function FleetView() {
         <>
           <h2 className="divider">Waiting for you <span>{waiting.length}</span></h2>
           {/* No .dim: unlike history, this tier is always shown, never
-              collapsed -- its process is actually still running. */}
+              collapsed -- its last transcript event is still within the
+              active window (spec S9.2), even though there's nothing to
+              act on right now. */}
           <div className="fleet waiting">
             {waiting.map(s =>
               <SessionCard key={s.sessionId} state={s} onOpen={() => {}} showProcessMeta />)}
