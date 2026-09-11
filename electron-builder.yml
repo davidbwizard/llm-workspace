@@ -1,0 +1,20 @@
+appId: dev.davidbrabbins.llm-workspace
+productName: Fleet
+directories:
+  output: dist
+  buildResources: resources
+files:
+  - out/**/*
+  - package.json
+  - NOTICE
+asarUnpack:
+  - "**/node_modules/better-sqlite3/**"
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+  darkModeSupport: true
+  # Unsigned local build. Signing and notarisation are a later concern; this
+  # is a personal tool and Gatekeeper will ask once on first open.
+  identity: null
