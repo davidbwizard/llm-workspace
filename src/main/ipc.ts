@@ -70,7 +70,8 @@ export const SANITISED_FIELDS =
 export const STRUCTURAL_FIELDS = [
   'sessionId', 'runId', 'provider', 'lifecycle', 'activity', 'stale',
   'confidence', 'source', 'lastActivityAt', 'agents', 'liveAgents',
-  'events', 'blocker', 'match', 'candidates', 'host', 'sharesWorktreeWith',
+  'events', 'blocker', 'match', 'candidates', 'host', 'alive',
+  'processAgeSeconds', 'processRssBytes', 'sharesWorktreeWith',
 ] as const satisfies readonly (keyof SessionState)[];
 
 // Same gate, for the nested blocker object. `kind` is populated by

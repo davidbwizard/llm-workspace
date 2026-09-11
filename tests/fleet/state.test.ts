@@ -3,6 +3,7 @@ import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
 import { fleetState } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
+import type { LiveProcess } from '../../src/discovery/parse.ts';
 
 const NOW = Date.parse('2026-09-10T12:00:00Z');
 const at = (min: number) => new Date(NOW - min * 60_000).toISOString();
@@ -108,6 +109,9 @@ describe('fleetState', () => {
     const [s] = fleetState(db, { now: NOW, processes: [] });
     expect(s).toBeDefined();
     expect(s!.match).toBe('unknown');
+    expect(s!.alive).toBe(false);
+    expect(s!.processAgeSeconds).toBeNull();
+    expect(s!.processRssBytes).toBeNull();
   });
 
   it('flags two sessions sharing one worktree', () => {
@@ -251,5 +255,97 @@ describe('fleetState', () => {
     expect(s!.activity).toBe('idle');
     expect(s!.agents).toBe(2);
     expect(s!.liveAgents).toBe(0);
+  });
+
+  function proc(o: Partial<LiveProcess> & { pid: number }): LiveProcess {
+    return { tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
+  }
+
+  describe('process liveness (Phase 3 tiers)', () => {
+    it('a unique match yields exactly one candidate, not a duplicate', () => {
+      // Regression pin: classifyMatch's `unique` result sets BOTH
+      // m.sessionId and m.candidates = [that same session id] -- a loop
+      // that processes both, once per branch, double-inserts the pid.
+      // fleetState now iterates `candidates` alone, which already covers
+      // the unique case, so this must come back as a one-element array.
+      const db = openDb(':memory:');
+      insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
+      const [s] = fleetState(db, { now: NOW, processes: [proc({ pid:555, cwd:'/repo/live' })] });
+      expect(s!.match).toBe('unique');
+      expect(s!.candidates).toEqual([555]);
+    });
+
+    it('marks a session alive, with age and memory, when a live process matches it', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
+      const [s] = fleetState(db, {
+        now: NOW,
+        processes: [proc({ pid:555, cwd:'/repo/live', ageSeconds:777_600, rssBytes:216_006_656 })],
+      });
+      expect(s!.alive).toBe(true);
+      expect(s!.processAgeSeconds).toBe(777_600);
+      expect(s!.processRssBytes).toBe(216_006_656);
+    });
+
+    it('when several processes match one session, reports age and memory from the oldest', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' })]);
+      const [s] = fleetState(db, {
+        now: NOW,
+        processes: [
+          proc({ pid:101, cwd:'/repo/shared', ageSeconds:100, rssBytes:1_000 }),
+          proc({ pid:102, cwd:'/repo/shared', ageSeconds:500, rssBytes:5_000 }),
+        ],
+      });
+      expect(new Set(s!.candidates)).toEqual(new Set([101, 102]));
+      expect(s!.processAgeSeconds).toBe(500);
+      expect(s!.processRssBytes).toBe(5_000);
+    });
+
+    // The core of Task 3: activity currently a working session had killed
+    // mid-turn (no turn boundary event) used to read as `working` forever.
+    // A session whose process discovery can positively account for but
+    // finds NOT running -- while discovery is otherwise functioning, i.e.
+    // it found a live process somewhere else -- can never be `working`.
+    it('a dead session can never be working, even mid-turn, when discovery is functioning', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', payload:{ cwd:'/repo/dead' }, contentHash:'a' }),
+        ev({ kind:'tool.used', ts:at(8), payload:{ name:'Bash' }, contentHash:'b', subIndex:1 }),
+      ]);
+      // Discovery ran and found a real process -- just not for this
+      // session's cwd, so `hasLiveSignal` is true and `alive` is false.
+      const [s] = fleetState(db, { now: NOW, processes: [proc({ pid:9, cwd:'/repo/elsewhere' })] });
+      expect(s!.lifecycle).toBe('active');
+      expect(s!.alive).toBe(false);
+      expect(s!.activity).toBe('idle');
+    });
+
+    it('a live, matched session mid-turn is working', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' }),
+        ev({ kind:'tool.used', ts:at(8), payload:{ name:'Bash' }, contentHash:'b', subIndex:1 }),
+      ]);
+      const [s] = fleetState(db, { now: NOW, processes: [proc({ pid:9, cwd:'/repo/live' })] });
+      expect(s!.alive).toBe(true);
+      expect(s!.activity).toBe('working');
+    });
+
+    // Spec 7.1a: discovery is enrichment, never a filter. A sweep that
+    // found NOTHING at all (pgrep missing, or discovery otherwise broken)
+    // must not be able to empty the working group -- that would be a worse
+    // failure than the stuck-mid-turn bug this task fixes. Falls back to
+    // the prior turn-boundary-only rule when there is no live signal at all.
+    it('an active session mid-turn stays working when discovery finds nothing at all, anywhere', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', payload:{ cwd:'/repo/whatever' }, contentHash:'a' }),
+        ev({ kind:'tool.used', ts:at(8), payload:{ name:'Bash' }, contentHash:'b', subIndex:1 }),
+      ]);
+      const [s] = fleetState(db, { now: NOW, processes: [] });
+      expect(s!.alive).toBe(false);
+      expect(s!.activity).toBe('working');
+    });
   });
 });

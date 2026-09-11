@@ -30,6 +30,20 @@ export interface SessionState {
   match: MatchQuality;
   candidates: number[];
   host: LiveProcess['host'] | null;
+  /** True when a live process (discovery, spec §7.1a) is currently matched
+   *  to this session -- process liveness, independent of `activity`/
+   *  `lifecycle`, both of which are derived from transcript events alone.
+   *  This is what separates a session whose process is still running and
+   *  waiting on the user from one that is pure history (see FleetView's
+   *  three-way grouping). */
+  alive: boolean;
+  /** Seconds the matched process has been running -- from the OLDEST
+   *  matched process when more than one pid matches this session. Null
+   *  when not alive, or when `ps` couldn't report it. */
+  processAgeSeconds: number | null;
+  /** Resident memory of that same (oldest) matched process, in bytes. Null
+   *  under the same conditions as processAgeSeconds. */
+  processRssBytes: number | null;
   /** Other session ids sharing this working directory (spec §9.5). */
   sharesWorktreeWith: string[];
 }
@@ -44,6 +58,18 @@ const ACTIVE_MS = 30 * 60_000;
  *  session working while five genuinely were. `turn.completed` covers 854 of
  *  877 sessions in the real index, so it is a reliable boundary. */
 const TURN_END_KINDS = new Set(['turn.completed', 'session.ended']);
+
+/** Picks the oldest of several processes matched to one session ("if
+ *  several processes match, use the oldest"). A missing ageSeconds (ps
+ *  couldn't report it) is modelled as -1 -- below every real elapsed time
+ *  (always >= 0) but still above "no candidate yet", so a lone
+ *  unknown-age process is still picked over picking nothing. */
+function oldestProcess(procs: LiveProcess[]): LiveProcess | null {
+  return procs.reduce<LiveProcess | null>((oldest, p) => {
+    if (!oldest) return p;
+    return (p.ageSeconds ?? -1) > (oldest.ageSeconds ?? -1) ? p : oldest;
+  }, null);
+}
 
 export interface FleetOpts { now?: number; processes?: LiveProcess[] }
 
@@ -157,8 +183,15 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   const refs = rows.map(r => ({ sessionId: r.session_id as string, cwd: (r.cwd ?? null) as string | null }));
   const matches = classifyMatch(opts.processes ?? [], refs);
   const bySession = new Map<string, { quality: MatchQuality; pids: number[]; host: LiveProcess['host'] | null }>();
+  // Iterating `m.candidates` alone covers BOTH cases: for a `unique` match,
+  // classifyMatch sets `candidates` to the single-element array
+  // `[m.sessionId]` -- the same id, not a second one -- so a separate
+  // `if (m.sessionId)` branch here would insert that pid a second time for
+  // the same session (a latent bug: `processes` was always `[]` before this
+  // task wired discovery in, so nothing ever exercised this path). For
+  // `ambiguous`, `candidates` already lists every session sharing the pid's
+  // cwd, which is exactly what should accumulate pids across matches.
   for (const m of matches) {
-    if (m.sessionId) bySession.set(m.sessionId, { quality: m.quality, pids: [m.pid], host: m.host });
     for (const c of m.candidates) {
       const prev = bySession.get(c);
       bySession.set(c, {
@@ -169,22 +202,51 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     }
   }
 
+  const pidToProcess = new Map<number, LiveProcess>();
+  for (const p of opts.processes ?? []) pidToProcess.set(p.pid, p);
+
+  // Spec §7.1a: process discovery is enrichment, never a filter. A sweep
+  // that found NO processes anywhere -- not just none for a particular
+  // session -- is far more likely a broken pgrep/ps/lsof toolchain than a
+  // machine with genuinely zero live provider processes, so it must not be
+  // allowed to silently demote every currently-working session to idle.
+  // `alive` below still reports false for every session in that case (that
+  // part is honest -- discovery really did find nothing this sweep), but
+  // the WORKING determination falls back to the prior turn-boundary-only
+  // rule rather than trusting `alive` when there is no live signal at all.
+  const hasLiveSignal = (opts.processes ?? []).length > 0;
+
   return rows.map(r => {
     const lastMs = r.last_ts ? Date.parse(r.last_ts) : 0;
     const age = now - lastMs;
     const blocker = blockers.get(r.session_id) ?? null;
 
+    const m = bySession.get(r.session_id);
+    const matchedProcs = (m?.pids ?? [])
+      .map(pid => pidToProcess.get(pid))
+      .filter((p): p is LiveProcess => p !== undefined);
+    const alive = matchedProcs.length > 0;
+    const oldest = oldestProcess(matchedProcs);
+
     const lifecycle: Lifecycle = age <= ACTIVE_MS ? 'active' : 'disconnected';
     let activity: Activity;
     if (blocker) {
       activity = blocker.kind === 'PermissionRequest' ? 'waiting_permission' : 'waiting_input';
-    } else if (lifecycle === 'active' && !TURN_END_KINDS.has(r.last_kind)) {
+    } else if (lifecycle === 'active' && !TURN_END_KINDS.has(r.last_kind) && (alive || !hasLiveSignal)) {
+      // A session killed mid-turn never emits a turn boundary and would
+      // otherwise look like it is thinking forever -- `alive` (spec §7.1a's
+      // discovery, layered on top of the turn-boundary rule above rather
+      // than replacing it) is what tells the two apart. `!hasLiveSignal` is
+      // the escape hatch for when discovery itself produced nothing at all
+      // this sweep (see the comment on hasLiveSignal above): a dead session
+      // can never be `working` when discovery is actually working, but a
+      // broken discovery toolchain must not be able to empty the whole
+      // working group either.
       activity = 'working';
     } else {
       activity = 'idle';
     }
 
-    const m = bySession.get(r.session_id);
     // Symmetric with the byCwd filter above: a disconnected session is not
     // itself a contender, so it reports no sharing even if OTHER active
     // sessions happen to share its (last-known) cwd.
@@ -224,6 +286,9 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
       match: m?.quality ?? 'unknown',
       candidates: m?.pids ?? [],
       host: m?.host ?? null,
+      alive,
+      processAgeSeconds: oldest?.ageSeconds ?? null,
+      processRssBytes: oldest?.rssBytes ?? null,
       sharesWorktreeWith: shared,
     };
   }).sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? ''));

@@ -7,11 +7,11 @@ import './FleetView.css';
 // (reachable-or-not vs. what it is doing), and the fleet view's grouping
 // has to respect both rather than collapsing them into one. "Needs you
 // right now" means: it's reachable (lifecycle active) AND either working
-// or waiting on the user. Everything else -- an active-but-quiet session,
-// and EVERY disconnected or ended session regardless of what its activity
-// says -- goes below the "Idle" divider. Disconnected/ended sessions are
-// unconditional here because their `activity` is LAST KNOWN, not current
-// (see the Activity comment in src/fleet/state.ts): a disconnected session
+// or waiting on the user. Unchanged by the three-way split below --
+// everything in this group is still governed only by lifecycle/activity,
+// not by process liveness. Disconnected/ended sessions are unconditional
+// here because their `activity` is LAST KNOWN, not current (see the
+// Activity comment in src/fleet/state.ts): a disconnected session
 // reporting `working` was working before it dropped off, not now, so it
 // cannot sit in the same group as a session that is reachable and actually
 // working this second.
@@ -20,21 +20,33 @@ function needsAttention(s: SessionState): boolean {
     (s.activity === 'working' || s.activity === 'waiting_permission' || s.activity === 'waiting_input');
 }
 
-// Idle cards render in batches once the group is opened: against a real
-// index the idle group is in the hundreds, and mounting all of them the
+// The middle tier: process liveness (`alive`, discovery -- spec S7.1a),
+// not transcript activity, is what separates this from history. A session
+// whose process is confirmed still running, just quiet right now (at a
+// turn boundary, no blocker) is fundamentally different from one whose
+// transcript simply hasn't been touched in weeks -- the user can act on
+// the first and not the second, even though both read as "idle" activity.
+// Checked after needsAttention, so a blocked-or-working session is never
+// double-counted here even if it also happens to be alive.
+function waitingForYou(s: SessionState): boolean {
+  return !needsAttention(s) && s.alive;
+}
+
+// History cards render in batches once the group is opened: against a real
+// index the history group is in the hundreds, and mounting all of them the
 // moment the group expands just moves the "873 components on screen"
 // problem one click later. 60 is a starting point, not a tuned constant.
-const IDLE_BATCH = 60;
+const HISTORY_BATCH = 60;
 
 export function FleetView() {
   const [sessions, setSessions] = useState<SessionState[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Collapsed by default: idle is the common case (one active session,
-  // hundreds of history), and rendering history as the default view is the
-  // noise this app exists to remove. See the idle-group block below for how
-  // "collapsed" also means "not mounted."
-  const [idleExpanded, setIdleExpanded] = useState(false);
-  const [idleShown, setIdleShown] = useState(IDLE_BATCH);
+  // Collapsed by default: history is the common case (a handful of live
+  // sessions, hundreds of history), and rendering history as the default
+  // view is the noise this app exists to remove. See the history-group
+  // block below for how "collapsed" also means "not mounted."
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [historyShown, setHistoryShown] = useState(HISTORY_BATCH);
 
   useEffect(() => {
     // window.fleet is absent if the preload script failed to load (see the
@@ -78,10 +90,14 @@ export function FleetView() {
     return <p className="empty">No sessions indexed yet. Run a Claude Code or Codex
       session, or run <code>npm run cli -- ingest</code> to index existing transcripts.</p>;
 
-  // Idle sessions are dimmed below a divider rather than hidden: a fleet
-  // view that silently drops sessions is the failure spec S7.1a warns about.
+  // Three tiers, not two: process liveness (spec S7.1a) is what separates
+  // a session the user can act on right now from one that is pure history,
+  // and lumping them together is exactly the complaint this split fixes.
+  // No session is silently dropped -- a fleet view that does that is the
+  // failure spec S7.1a warns about.
   const live = sessions.filter(needsAttention);
-  const idle = sessions.filter(s => !needsAttention(s));
+  const waiting = sessions.filter(waitingForYou);
+  const history = sessions.filter(s => !needsAttention(s) && !s.alive);
   const needing = live.filter(s => s.blocker).length;
 
   return (
@@ -98,37 +114,49 @@ export function FleetView() {
         </div>
       )}
 
-      {idle.length > 0 && (
+      {waiting.length > 0 && (
+        <>
+          <h2 className="divider">Waiting for you <span>{waiting.length}</span></h2>
+          {/* No .dim: unlike history, this tier is always shown, never
+              collapsed -- its process is actually still running. */}
+          <div className="fleet waiting">
+            {waiting.map(s =>
+              <SessionCard key={s.sessionId} state={s} onOpen={() => {}} showProcessMeta />)}
+          </div>
+        </>
+      )}
+
+      {history.length > 0 && (
         <>
           <h2 className="divider">
             <button
               type="button"
-              className="btn idle-toggle"
-              aria-expanded={idleExpanded}
-              aria-controls="idle-group"
-              onClick={() => setIdleExpanded(v => !v)}
+              className="btn history-toggle"
+              aria-expanded={historyExpanded}
+              aria-controls="history-group"
+              onClick={() => setHistoryExpanded(v => !v)}
             >
               <span className="caret" aria-hidden="true" />
-              Idle <span>{idle.length}</span>
+              History <span>{history.length}</span>
             </button>
           </h2>
           {/* The wrapper always mounts so aria-controls resolves to a real
               element even while collapsed. What's conditional is the cards
-              inside it: collapsed means the 873-ish idle sessions never
+              inside it: collapsed means the 873-ish history sessions never
               construct a component tree at all, not that one exists and is
               hidden by CSS -- a hidden tree still re-renders on every fleet
               push, which is the actual cost this is avoiding. */}
-          <div id="idle-group" className="fleet dim">
-            {idleExpanded && idle.slice(0, idleShown).map(s =>
+          <div id="history-group" className="fleet dim">
+            {historyExpanded && history.slice(0, historyShown).map(s =>
               <SessionCard key={s.sessionId} state={s} onOpen={() => {}} />)}
           </div>
-          {idleExpanded && idleShown < idle.length && (
+          {historyExpanded && historyShown < history.length && (
             <button
               type="button"
               className="btn show-more"
-              onClick={() => setIdleShown(n => Math.min(n + IDLE_BATCH, idle.length))}
+              onClick={() => setHistoryShown(n => Math.min(n + HISTORY_BATCH, history.length))}
             >
-              Show more ({idle.length - idleShown} remaining)
+              Show more ({history.length - historyShown} remaining)
             </button>
           )}
         </>

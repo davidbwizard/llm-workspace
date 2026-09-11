@@ -21,8 +21,35 @@ const ACTIVITY_WORD: Record<SessionState['activity'], string> = {
   waiting_input:'waiting on you', idle:'idle', error:'error',
 };
 
-export function SessionCard({ state, onOpen }:
-  { state: SessionState; onOpen: (sessionId: string) => void }) {
+/** Formats a running process's elapsed time for a human ("9d", not
+ *  "777600s"). Coarsest unit that keeps at least one significant digit --
+ *  a card is a glance, not a stopwatch. */
+function formatProcessAge(seconds: number): string {
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.floor(minutes)}m`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.floor(hours)}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/** Formats resident memory for a human ("206 MB"). rssBytes is already
+ *  normalized to bytes by src/discovery/parse.ts's parseRss. */
+function formatProcessMemory(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1000) return `${Math.round(mb)} MB`;
+  return `${(mb / 1024).toFixed(1)} GB`;
+}
+
+export function SessionCard({ state, onOpen, showProcessMeta }: {
+  state: SessionState; onOpen: (sessionId: string) => void;
+  /** Judgeable process info (age, memory) is only useful -- and only
+   *  requested -- on the "Waiting for you" tier: a session whose process
+   *  is known alive but idling. Elsewhere (working, blocked, history) it's
+   *  just noise, so FleetView opts a card in rather than this component
+   *  deciding from `state.alive` alone. */
+  showProcessMeta?: boolean;
+}) {
   const blocked = state.activity === 'waiting_permission' || state.activity === 'waiting_input';
   // `null` (no process discovery ran at all -- true of every card today,
   // since buildFleetPayload calls fleetState with no `processes`, so
@@ -38,6 +65,16 @@ export function SessionCard({ state, onOpen }:
   // was never a real HostApp value to begin with. Real values (Phase 5's
   // job to start producing) still render their label as before.
   const hostLabel = state.host && state.host !== 'unknown' ? HOST_LABEL[state.host] : undefined;
+  // Age and memory are what make an alive-but-idling process judgeable
+  // ("is this the 9-day-old 206 MB one I should kill?") -- gated on
+  // showProcessMeta (see the prop doc above), and on each value actually
+  // being known: `ps` can fail per-field even for a genuinely alive match.
+  const procMeta = showProcessMeta
+    ? [
+        state.processAgeSeconds != null ? formatProcessAge(state.processAgeSeconds) : null,
+        state.processRssBytes != null ? formatProcessMemory(state.processRssBytes) : null,
+      ].filter((part): part is string => part !== null).join(' · ') || null
+    : null;
   // The dial caps at 10 pips by design -- it's a sparkline, not a counter.
   // The exact count sits right beside it (the "2/44" label below), so above
   // ten live agents the dial and the number are meant to disagree.
@@ -96,7 +133,12 @@ export function SessionCard({ state, onOpen }:
           <ProviderMark provider={state.provider} size={11} />
           {providerLabel}
         </span>
-        {hostLabel && <span className="host">{hostLabel}</span>}
+        {(hostLabel || procMeta) && (
+          <span className="crow-meta">
+            {hostLabel && <span className="host">{hostLabel}</span>}
+            {procMeta && <span className="procmeta">{procMeta}</span>}
+          </span>
+        )}
       </div>
 
       <div>

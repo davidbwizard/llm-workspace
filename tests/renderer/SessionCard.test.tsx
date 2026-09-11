@@ -8,7 +8,8 @@ const base: SessionState = {
   project:'trellome', lifecycle:'active', activity:'working', stale:false,
   confidence:'guess', source:'transcript', lastProse:'Reused the JWT helper.',
   lastActivityAt:'2026-09-10T12:00:00Z', agents:44, liveAgents:2, events:9129,
-  blocker:null, match:'unique', candidates:[123], host:'iterm2', sharesWorktreeWith:[],
+  blocker:null, match:'unique', candidates:[123], host:'iterm2',
+  alive:true, processAgeSeconds:null, processRssBytes:null, sharesWorktreeWith:[],
 };
 
 describe('SessionCard', () => {
@@ -187,5 +188,36 @@ describe('SessionCard', () => {
         promptId:null, occurredAt:'2026-09-10T11:58:00Z', text:'Permission: Bash npm run dist:mac' } }} />);
     expect(screen.getByText('VS Code')).toBeTruthy();
     expect(container.querySelector('.badge')).not.toBeNull();
+  });
+
+  // Process age/memory is what makes a "Waiting for you" card judgeable
+  // ("is this the 9-day-old 206 MB one I should kill?") -- but it is noise
+  // on every other tier, so FleetView has to opt a card in explicitly
+  // rather than this component inferring it from state.alive alone.
+  describe('process age/memory (showProcessMeta)', () => {
+    it('shows formatted age and memory when showProcessMeta is set', () => {
+      render(<SessionCard onOpen={() => {}} showProcessMeta
+        state={{ ...base, processAgeSeconds: 9 * 86_400, processRssBytes: 206 * 1024 * 1024 }} />);
+      expect(screen.getByText(/9d/)).toBeTruthy();
+      expect(screen.getByText(/206 MB/)).toBeTruthy();
+    });
+
+    it('shows nothing for process meta when showProcessMeta is not set, even with known values', () => {
+      const { container } = render(<SessionCard onOpen={() => {}}
+        state={{ ...base, processAgeSeconds: 9 * 86_400, processRssBytes: 206 * 1024 * 1024 }} />);
+      expect(container.querySelector('.procmeta')).toBeNull();
+    });
+
+    it('shows nothing for process meta when showProcessMeta is set but the values are unknown', () => {
+      const { container } = render(<SessionCard onOpen={() => {}} showProcessMeta
+        state={{ ...base, processAgeSeconds: null, processRssBytes: null }} />);
+      expect(container.querySelector('.procmeta')).toBeNull();
+    });
+
+    it('shows only the known half when age is missing but memory is known', () => {
+      render(<SessionCard onOpen={() => {}} showProcessMeta
+        state={{ ...base, processAgeSeconds: null, processRssBytes: 206 * 1024 * 1024 }} />);
+      expect(screen.getByText('206 MB')).toBeTruthy();
+    });
   });
 });

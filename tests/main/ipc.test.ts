@@ -211,7 +211,8 @@ describe('buildFleetPayload', () => {
     expect(STRUCTURAL_FIELDS).toEqual([
       'sessionId', 'runId', 'provider', 'lifecycle', 'activity', 'stale',
       'confidence', 'source', 'lastActivityAt', 'agents', 'liveAgents',
-      'events', 'blocker', 'match', 'candidates', 'host', 'sharesWorktreeWith',
+      'events', 'blocker', 'match', 'candidates', 'host', 'alive',
+      'processAgeSeconds', 'processRssBytes', 'sharesWorktreeWith',
     ]);
   });
 
@@ -290,7 +291,7 @@ describe('buildFleetPayload — live process discovery wiring', () => {
 
     const p = buildFleetPayload(db);
     expect(p.sessions).toHaveLength(2);
-    expect(p.sessions.every(s => s.host === null && s.match === 'unknown')).toBe(true);
+    expect(p.sessions.every(s => s.host === null && s.match === 'unknown' && s.alive === false)).toBe(true);
   });
 
   it('populates host/match/candidates for a session whose live process was discovered', async () => {
@@ -310,16 +311,17 @@ describe('buildFleetPayload — live process discovery wiring', () => {
     // means one did, but its ancestry chain (returned '' by the exec above)
     // didn't classify to a recognized host app.
     expect(p.sessions[0]!.host).toBe('unknown');
-    // Not toEqual([4242]): fleetState's bySession construction (src/fleet/
-    // state.ts, out of scope for this task) double-inserts a unique match's
-    // pid into `candidates` -- classifyMatch's own `unique` result sets
-    // BOTH m.sessionId and, redundantly, m.candidates = [that same session
-    // id], and fleetState's loop processes both, once via the `sessionId`
-    // branch and once via the `candidates` branch, for the same session.
-    // Pre-existing, latent since Task 4/11 (processes was always [] in
-    // production until this task wired it in, so nothing ever exercised
-    // this path before); reported to the team lead, not fixed here.
-    expect(new Set(p.sessions[0]!.candidates)).toEqual(new Set([4242]));
+    // Was `expect(new Set(...)).toEqual(new Set([4242]))`: fleetState's
+    // bySession construction used to double-insert a unique match's pid --
+    // classifyMatch's own `unique` result sets BOTH m.sessionId and,
+    // redundantly, m.candidates = [that same session id], and the old loop
+    // processed both, once via a `sessionId` branch and once via the
+    // `candidates` branch, for the same session. The Set comparison masked
+    // the duplicate; fixed in src/fleet/state.ts (the redundant branch is
+    // gone -- only the candidates loop remains), so this now asserts the
+    // real array, which would fail again if the duplicate returned.
+    expect(p.sessions[0]!.candidates).toEqual([4242]);
+    expect(p.sessions[0]!.alive).toBe(true);
   });
 });
 
