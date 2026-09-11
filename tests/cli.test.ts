@@ -347,8 +347,11 @@ describe('buildProcessChain', () => {
 });
 
 describe('annotateSessionsWithProcesses', () => {
+  // 'claude' is arbitrary -- annotateSessionsWithProcesses reads only
+  // pid/tty/cwd/host, never provider. Required on LiveProcess purely for
+  // type completeness here, not because these tests exercise it.
   const proc = (pid: number, cwd: string | null, host: LiveProcess['host'] = 'iterm2'): LiveProcess =>
-    ({ pid, tty: `ttys${pid}`, cwd, host });
+    ({ pid, provider: 'claude', tty: `ttys${pid}`, cwd, host });
 
   it('marks a session unique when exactly one process shares its cwd, one-to-one', () => {
     const sessions = [{ sessionId: 's1', cwd: '/repo/a' }];

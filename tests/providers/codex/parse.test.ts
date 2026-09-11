@@ -64,6 +64,50 @@ describe('parseCodexLines', () => {
     });
   });
 
+  // The edge lives in the CHILD's own rollout file, but Codex's session_id
+  // field on that file's session_meta already names the shared PARENT
+  // session (spec §6.3: one session spans its subagent threads) -- the dial
+  // (COUNT(DISTINCT agent_id) grouped by session_id, src/fleet/state.ts)
+  // depends on this: an agent.spawned attributed to the child's own id
+  // instead would never join to its parent's dial.
+  it("attributes agent.spawned's sessionId to the parent session, not a new session for the child", () => {
+    const evs = parseCodexLines(linesOf('rollout-subagent.jsonl'), '/r2.jsonl');
+    const spawned = evs.find(e => e.kind === 'agent.spawned')!;
+    expect(spawned.sessionId).toBe('01a043c5-f268');
+    expect(spawned.agentId).toBe('01a043c7-0799');
+  });
+
+  // Claude's agent.spawned (src/providers/claude/subagents.ts) always carries
+  // taskKind and teamName -- Claude-specific concepts (Task-tool invocation
+  // kind, team grouping) that Codex's session_meta has no equivalent for.
+  // Left explicitly null rather than invented, so every provider's
+  // agent.spawned carries the same field set.
+  it('carries taskKind and teamName as null -- Codex has no equivalent field', () => {
+    const evs = parseCodexLines(linesOf('rollout-subagent.jsonl'), '/r2.jsonl');
+    const spawned = evs.find(e => e.kind === 'agent.spawned')!;
+    expect(spawned.payload).toMatchObject({ taskKind: null, teamName: null });
+  });
+
+  // Defect found while verifying against the real corpus (352 rollouts): the
+  // {"other": "guardian"} shape above is one of TWO real shapes for
+  // source.subagent. The other, {"thread_spawn": {agent_nickname,
+  // agent_role, depth, ...}}, is more common in the real corpus (6 of 9
+  // agent.spawned events vs. 3) and was previously mishandled --
+  // `String(Object.values(roleObj)[0])` stringified the nested thread_spawn
+  // OBJECT to the literal text "[object Object]" instead of extracting its
+  // agent_nickname, corrupting every agent.spawned event of this shape.
+  it('derives name/type from the thread_spawn shape (agent_nickname/agent_role), not "[object Object]"', () => {
+    const evs = parseCodexLines(linesOf('rollout-subagent-thread-spawn.jsonl'), '/r4.jsonl');
+    const spawned = evs.filter(e => e.kind === 'agent.spawned');
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]!.payload).toMatchObject({
+      name: 'Nietzsche', type: 'reviewer', depth: 1,
+      parentAgentId: '01b1a2b3-9000', taskKind: null, teamName: null,
+    });
+    expect(spawned[0]!.sessionId).toBe('01b1a2b3-9000');
+    expect(spawned[0]!.agentId).toBe('01b1a2b3-9001');
+  });
+
   it('stores an unknown payload type as unparsed', () => {
     const evs = parseCodexLines([{
       text: '{"timestamp":"t","type":"event_msg","payload":{"type":"brand_new_thing"}}',
@@ -111,6 +155,10 @@ describe('parseCodexLines', () => {
     expect(prose).toBeDefined();
     expect(prose!.agentId).toBe('01a043c7-0799');
     expect(prose!.sessionId).toBe('01a043c5-f268');
+  });
+
+  it('emits no agent.spawned for a rollout with no parent_thread_id', () => {
+    expect(events.filter(e => e.kind === 'agent.spawned')).toHaveLength(0);
   });
 
   it('leaves agentId null for events in a root thread file (no parent_thread_id)', () => {

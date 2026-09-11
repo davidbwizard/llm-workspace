@@ -6,6 +6,7 @@ import { parseClaudeLines, CLAUDE_PARSER_VERSION } from '../providers/claude/par
 import { findSubagents, parseAgentMeta, type SubagentRef } from '../providers/claude/subagents.ts';
 import { parseCodexLines, CODEX_PARSER_VERSION } from '../providers/codex/parse.ts';
 import { insertEvents, getIngestState, recordIngest, reparseFile, resumeContextFor } from '../store/ingest.ts';
+import { ensureRun, getRunStart } from '../store/runs.ts';
 import type { Db } from '../store/db.ts';
 import type { Provider, NormalizedEvent } from '../core/types.ts';
 
@@ -141,6 +142,33 @@ export function ingestFileOnce(db: Db, path: string, provider: Provider): Ingest
   // watched). Computed up front so the reparse branch below can fold their
   // re-derivation into the same transaction as the transcript's own (F2).
   const agentEvents = provider === 'claude' ? subagentEvents(path) : [];
+
+  // Every event belongs to a run (spec §6.3) -- including agent.spawned,
+  // whose events are the only source of the agent graph (task 8's
+  // subagentEvents(), computed above). Without SessionStart hooks the run
+  // begins at the session's first observed event, so the id is stable
+  // across incremental tails.
+  const firstTs = events.length > 0 ? events[0]!.ts : null;
+  // A full re-derive replays every event for the same handful of sessions
+  // through this loop, and getRunStart is a query per call -- on a real
+  // corpus that is ~178,000 redundant lookups for runs already resolved
+  // earlier in this same pass. Cache per session, resolved on first use:
+  // once ensureRun below has inserted (or found) the run for a session, its
+  // started_at is fixed for the rest of this pass, so the cached value is
+  // exactly what a repeat getRunStart call would return anyway.
+  const runStartCache = new Map<string, string>();
+  for (const e of [...events, ...agentEvents]) {
+    if (!e.runId && e.sessionId && e.sessionId !== 'unknown') {
+      let startedAt = runStartCache.get(e.sessionId);
+      if (startedAt === undefined) {
+        startedAt = resume?.sessionId === e.sessionId && prior
+          ? (getRunStart(db, e.sessionId) ?? firstTs ?? e.ts)
+          : (getRunStart(db, e.sessionId) ?? e.ts);
+      }
+      e.runId = ensureRun(db, e.sessionId, startedAt);
+      runStartCache.set(e.sessionId, startedAt);
+    }
+  }
 
   let written = 0;
   if (tail.restarted || staleParser) {

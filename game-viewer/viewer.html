@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Farm asset library</title>
+  <link rel="stylesheet" href="/viewer.css">
+  <script type="module" src="/viewer.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">▦</span><div><h1>Farm asset library</h1><p>Find the right sprite.</p></div></div>
+    <span class="library-count" id="library-count">Loading catalog…</span>
+  </header>
+  <div class="workspace">
+    <aside class="filters" aria-label="Asset filters">
+      <div class="filter-heading"><h2>Browse assets</h2><button id="reset" class="text-button" type="button">Reset</button></div>
+      <label for="search">Name or folder</label>
+      <input id="search" type="search" placeholder="Try Josh, fishing, or carrot" maxlength="200" autocomplete="off">
+      <h3>Asset type &amp; folders</h3>
+      <div id="types" class="type-list" aria-label="Asset type"></div>
+      <p class="field-help">Select a type, then expand its folders. Counts include subfolders.</p>
+      <label for="kind">Content</label>
+      <select id="kind"><option value="">All content</option></select>
+      <fieldset class="size-mode"><legend>Measure size by</legend><label><input type="radio" name="size-mode" value="cell" checked> Frame / cell</label><label><input type="radio" name="size-mode" value="image"> Whole image</label></fieldset>
+      <label for="size">Pixel size</label>
+      <select id="size"><option value="">All sizes</option></select>
+      <p class="field-help" id="size-help">The size of one animation frame or grid cell.</p>
+      <label for="review">Review status</label>
+      <select id="review"><option value="">All assets</option><option value="ready">No review flags</option><option value="metadata">Needs metadata</option><option value="warnings">Warnings</option><option value="empty">Fully transparent</option></select>
+      <p class="aside-note">Sprite sizes come from the catalog. Unmapped sizes stay labelled “Unknown”.</p>
+      <p class="field-help">Assets by <a href="https://emanuelledev.itch.io" target="_blank" rel="noopener noreferrer">EmanuelleDev</a>.</p>
+    </aside>
+    <main>
+      <nav id="folder-breadcrumbs" class="folder-breadcrumbs" aria-label="Selected folder" hidden></nav>
+      <div class="results-toolbar"><div><h2 id="results-title">All assets</h2><p id="result-count" role="status" aria-live="polite">Loading…</p></div><span class="preview-note">Pixel previews · select to inspect</span></div>
+      <div id="notice" class="notice" hidden><p id="notice-text"></p><button id="retry" type="button">Try again</button></div>
+      <div id="gallery" class="gallery" aria-label="Sprites" aria-busy="true"></div>
+      <nav class="pagination" aria-label="Results pages"><button id="previous" type="button" disabled>Previous</button><span id="page-status">Page 1</span><button id="next" type="button" disabled>Next</button></nav>
+    </main>
+  </div>
+  <dialog id="inspector" aria-labelledby="detail-title">
+    <div class="inspector-header"><div><p id="detail-type" class="detail-type">Sprite</p><h2 id="detail-title">Asset details</h2></div><button id="close-detail" class="close-button" type="button" aria-label="Close asset details">×</button></div>
+    <div id="detail-status" role="status"></div>
+    <div id="detail-body" hidden>
+      <div class="preview-controls"><label>View <select id="view-mode"><option value="sheet">Sprite sheet</option><option value="cell">Single cell</option></select></label><label>Zoom <select id="zoom"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label><label class="grid-toggle"><input id="show-grid" type="checkbox"> Grid</label></div>
+      <div class="sheet-viewport" id="sheet-viewport"><canvas id="detail-canvas" aria-label="Selected sprite preview"></canvas></div>
+      <div id="cell-controls" class="cell-controls" hidden><label for="cell-index">Cell</label><input id="cell-index" type="range" min="0" max="0" value="0"><output id="cell-label">1</output></div>
+      <p id="preview-help" class="field-help"></p>
+      <dl id="detail-facts" class="detail-facts"></dl>
+      <p id="detail-path" class="detail-path"></p>
+      <div class="detail-actions"><button id="copy-path" type="button">Copy asset path</button><a id="open-image" target="_blank" rel="noopener noreferrer">Open PNG</a></div>
+      <div id="detail-warnings" class="detail-warnings"></div>
+      <details><summary>Full metadata</summary><pre id="detail-json"></pre></details>
+    </div>
+  </dialog>
+</body>
+</html>

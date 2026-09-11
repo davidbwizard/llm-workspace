@@ -764,6 +764,49 @@ This makes the `unknown` match quality the common case rather than the failure
 case, and section 7.2's rule stands unchanged: precision actions are enabled only
 on `unique`.
 
+#### Amended 2026-09-11, after running the fleet view against 878 real sessions
+
+The rule above is right about what it was written to prevent, and wrong as a
+description of the whole fleet. It answers "which sessions exist" — and the app
+also has to answer "what is open right now", which is a different question with a
+different source of truth.
+
+Attempting to answer both from transcripts failed in front of the user, twice:
+
+- Grouping by process liveness matched processes to sessions by working
+  directory. 111 sessions had run in one directory, so a single live process
+  marked all 111 alive: the "waiting for you" group held **660 cards**, each
+  printing the same process's age and memory.
+- Grouping by transcript recency then answered "which sessions were recently
+  busy". That is not the same as open. A session opened nine days ago and left
+  untouched is still open, holds 206 MB, and is exactly the one worth closing —
+  and recency hides it.
+
+So the fleet enumerates from **two independent sources**, each asked the question
+it can actually answer:
+
+- **Open sessions enumerate from processes.** One card per live agent process.
+  Provider, host, cwd, age, memory and pid are attributable *by construction*,
+  because the card is the process. This does not violate the rule above: nothing
+  is lost, because history still enumerates from transcripts.
+- **History enumerates from transcripts**, unfiltered, collapsed and paginated.
+
+Transcript detail — the last thing said, event counts, the working/waiting
+distinction — enriches an open card only where the cwd match is `unique`. Where
+it is ambiguous the card renders without those fields. A blank last-message is
+honest; another session's words on this card are not.
+
+Two consequences worth stating, because both were learned the hard way:
+
+- **A process is a session only if no other discovered process is its ancestor.**
+  Codex spawns `codex sandbox` and `codex app-server` helpers under its own
+  session; without this rule one open Codex session displayed as four.
+- **Process liveness cannot identify *which* session a process belongs to.** The
+  process does not hold its transcript open (`lsof` shows no `.jsonl`), and its
+  command line is bare `claude` or `codex` with no session id. Working directory
+  is the only link, and it is one-to-many. Do not build on it as though it were
+  one-to-one.
+
 Note also that `pgrep -x claude` matches 8 processes where a loose match finds 19
 and Claude.app contributes 4 helpers. Any future attempt to widen process
 discovery must widen the pattern deliberately rather than assuming the exact-name

@@ -3,19 +3,40 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "out/main/index.js",
   "scripts": {
+    "pretest": "node --experimental-strip-types scripts/check-native-abi.ts node",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "cli": "node --experimental-strip-types src/cli.ts"
+    "cli": "node --experimental-strip-types src/cli.ts",
+    "predev": "node --experimental-strip-types scripts/check-native-abi.ts electron",
+    "dev": "electron-vite dev",
+    "build:app": "electron-vite build",
+    "preview": "electron-vite preview",
+    "dist:mac": "electron-vite build && electron-builder --mac"
   },
   "dependencies": {
+    "@fontsource-variable/fraunces": "5.3.0",
+    "@fontsource-variable/karla": "5.3.0",
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@phosphor-icons/react": "^2.1.10",
     "better-sqlite3": "^12.11.1",
     "chokidar": "^4.0.3"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "jsdom": "^30.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^5.7.0",
     "vitest": "^2.1.8"
   }

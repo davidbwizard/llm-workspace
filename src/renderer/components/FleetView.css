@@ -1,0 +1,37 @@
+.fleetwrap { display:flex; flex-direction:column; gap:14px; }
+.fleetbar { display:flex; align-items:baseline; gap:12px; }
+.fleetbar h1 { font-family:var(--f-display); font-weight:600; font-size:24px; margin:0; }
+.chip { font-family:var(--f-mono); font-size:11px; color:var(--muted);
+        background:var(--raised); border-radius:20px; padding:4px 11px; }
+.chip.attn { color:var(--critical); }
+.fleet { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
+.fleet.dim { opacity:.62; }
+.fleet.dim:hover { opacity:1; }
+.divider { font-family:var(--f-body); font-weight:600; font-size:13px;
+           color:var(--muted); margin:10px 0 0; display:flex; align-items:center; gap:8px; }
+.divider::after { content:""; flex:1; height:1px; background:var(--line-soft); }
+.divider span { font-family:var(--f-mono); font-weight:400; color:var(--faint); }
+.history-toggle { display:flex; align-items:center; gap:8px; cursor:pointer;
+               font:inherit; color:inherit; background:none; border:none; padding:0; }
+.history-toggle:hover { color:var(--ink); }
+.caret { width:0; height:0; border-style:solid; border-width:4px 0 4px 6px;
+         border-color:transparent transparent transparent var(--faint);
+         transition:transform .13s ease; }
+.history-toggle:hover .caret { border-left-color:var(--muted); }
+.history-toggle[aria-expanded="true"] .caret { transform:rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .caret { transition:none; } }
+.show-more { display:block; margin-top:2px; font-family:var(--f-mono); font-size:12px;
+             color:var(--muted); background:none; border:1px solid var(--line-soft);
+             border-radius:20px; padding:6px 14px; cursor:pointer; align-self:flex-start; }
+.show-more:hover { color:var(--ink); border-color:var(--line); background:var(--raised); }
+.empty { color:var(--muted); max-width:52ch; }
+.empty.error { color:var(--critical); }
+.empty code { font-family:var(--f-mono); font-size:.9em;
+              background:var(--raised); padding:1px 5px; border-radius:5px; }
+/* The ErrorBoundary's stack/componentStack (src/renderer/App.tsx) -- shown
+   so the fault can be located from the window itself, not only devtools.
+   pre-wrap rather than a horizontal scroll: a stack trace is meant to be
+   read top to bottom, not hunted for off the right edge of the window. */
+.crash-stack { max-width:none; margin-top:8px; font-family:var(--f-mono); font-size:11px;
+               line-height:1.5; white-space:pre-wrap; word-break:break-word;
+               max-height:40vh; overflow-y:auto; color:var(--muted); }

@@ -6,6 +6,7 @@ import { openDb } from '../../src/store/db.ts';
 import { countEvents, getIngestState } from '../../src/store/ingest.ts';
 import { ingestFileOnce, ingestAll } from '../../src/watch/watcher.ts';
 import { CLAUDE_PARSER_VERSION } from '../../src/providers/claude/parse.ts';
+import { CODEX_PARSER_VERSION } from '../../src/providers/codex/parse.ts';
 
 let dir: string, file: string;
 const REC = (u: string, text: string) => JSON.stringify({
@@ -104,7 +105,10 @@ describe('ingestFileOnce — subagent discovery', () => {
     ingestFileOnce(db, file, 'claude');
     const rows = db.prepare("SELECT agent_id, payload FROM events WHERE kind='agent.spawned'").all() as any[];
     expect(rows).toHaveLength(1);
-    expect(rows[0].agent_id).toBe('agent-reviewer-abc');
+    // Bare id (agent- filename prefix stripped): matches what that
+    // subagent's own transcript records carry in their agentId field, so
+    // agent.spawned joins to that agent's own activity events.
+    expect(rows[0].agent_id).toBe('reviewer-abc');
     expect(JSON.parse(rows[0].payload)).toMatchObject({ name: 'reviewer', type: 'reviewer', model: 'opus' });
   });
 
@@ -146,7 +150,7 @@ describe('ingestFileOnce — subagent discovery', () => {
     ingestFileOnce(db, subPath, 'claude');
 
     const rows = db.prepare("SELECT agent_id FROM events WHERE kind='agent.spawned'").all() as any[];
-    expect(rows.map(r => r.agent_id)).toContain('agent-late-joiner');
+    expect(rows.map(r => r.agent_id)).toContain('late-joiner'); // bare id, agent- prefix stripped
   });
 });
 
@@ -273,6 +277,71 @@ describe('ingestFileOnce — subagent-meta reparse (F2)', () => {
 
     const after = db.prepare("SELECT parser_version FROM events WHERE kind='agent.spawned'").get() as any;
     expect(after.parser_version).toBe(CLAUDE_PARSER_VERSION);
+    const count = db.prepare("SELECT COUNT(*) c FROM events WHERE kind='agent.spawned'").get() as any;
+    expect(count.c).toBe(1); // replaced in place, not duplicated
+  });
+});
+
+// B1 (whole-branch review, 2026-09-11): 3663f24 fixed subagentIdentity's
+// thread_spawn handling (it was stringifying the nested thread_spawn object
+// to the literal text "[object Object]" instead of reading agent_nickname)
+// but changed event CONTENT only. The identity key
+// (source_file, source_offset, content_hash, sub_index) is unaffected by a
+// content-only fix, so a plain re-ingest's insertEvents call collides with
+// the already-indexed corrupted row on the UNIQUE index and is silently
+// skipped -- the bad row survives. Only a CODEX_PARSER_VERSION bump makes
+// ingestFileOnce take the delete-then-reparse (staleParser) path that
+// actually replaces it; see src/store/ingest.ts:166's reparseFile comment.
+describe('ingestFileOnce — Codex thread_spawn identity reparse (B1)', () => {
+  function threadSpawnRollout(): string {
+    return [
+      JSON.stringify({
+        timestamp: '2026-09-11T16:41:45.181Z', type: 'session_meta',
+        payload: {
+          session_id: '01b1a2b3-9000', id: '01b1a2b3-9001',
+          parent_thread_id: '01b1a2b3-9000', cwd: '/repo',
+          source: { subagent: { thread_spawn: {
+            parent_thread_id: '01b1a2b3-9000', depth: 1,
+            agent_nickname: 'Nietzsche', agent_role: 'reviewer',
+          } } },
+          thread_source: 'subagent', agent_nickname: 'Nietzsche', agent_role: 'reviewer',
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-09-11T16:41:46.000Z', type: 'event_msg',
+        payload: { type: 'agent_message', message: 'Reading the target folder for review.' },
+      }),
+    ].join('\n') + '\n';
+  }
+
+  it('a CODEX_PARSER_VERSION bump rewrites a previously-corrupted agent.spawned row instead of leaving it stale', () => {
+    const db = openDb(':memory:');
+    const rollout = join(dir, 'rollout-subagent.jsonl');
+    writeFileSync(rollout, threadSpawnRollout());
+
+    ingestFileOnce(db, rollout, 'codex');
+    const before = db.prepare("SELECT parser_version, payload FROM events WHERE kind='agent.spawned'").get() as any;
+    expect(JSON.parse(before.payload).name).toBe('Nietzsche'); // the fixed parser gets this right today
+    expect(before.parser_version).toBe(CODEX_PARSER_VERSION);
+
+    // Simulate the pre-fix state this regression describes: a row the OLD
+    // buggy parser already wrote, at the OLD parser_version, and nothing
+    // has re-parsed this file since. (The buggy content itself was already
+    // fixed forward by 3663f24 -- this reproduces what was left BEHIND in
+    // the index by that fix, not the bug in the parser itself.)
+    db.prepare("UPDATE events SET payload = ?, parser_version = 1 WHERE kind = 'agent.spawned'").run(
+      JSON.stringify({
+        name: '[object Object]', type: 'reviewer', model: null, color: null,
+        depth: 1, taskKind: null, teamName: null, parentAgentId: '01b1a2b3-9000',
+      }),
+    );
+    db.prepare('UPDATE ingest_files SET parser_version = 1 WHERE path = ?').run(rollout);
+
+    ingestFileOnce(db, rollout, 'codex');
+
+    const after = db.prepare("SELECT parser_version, payload FROM events WHERE kind='agent.spawned'").get() as any;
+    expect(JSON.parse(after.payload).name).toBe('Nietzsche'); // repaired, not stuck as "[object Object]"
+    expect(after.parser_version).toBe(CODEX_PARSER_VERSION);
     const count = db.prepare("SELECT COUNT(*) c FROM events WHERE kind='agent.spawned'").get() as any;
     expect(count.c).toBe(1); // replaced in place, not duplicated
   });

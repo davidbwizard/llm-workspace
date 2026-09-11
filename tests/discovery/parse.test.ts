@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePgrep, parseTty, parseLsofCwd, classifyHost } from '../../src/discovery/parse.ts';
+import { parsePgrep, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost } from '../../src/discovery/parse.ts';
 
 describe('parsePgrep', () => {
   it('extracts pids, one per line', () => {
@@ -29,6 +29,35 @@ describe('parseLsofCwd', () => {
   });
   it('returns null when no cwd line is present', () => {
     expect(parseLsofCwd('p7994\nfcwd\n')).toBeNull();
+  });
+});
+
+describe('parseEtime', () => {
+  it('parses MM:SS', () => {
+    expect(parseEtime('05:23  1234')).toBe(5 * 60 + 23);
+  });
+  it('parses HH:MM:SS', () => {
+    expect(parseEtime('14:02:34  1234')).toBe((14 * 60 + 2) * 60 + 34);
+  });
+  it('parses DD-HH:MM:SS', () => {
+    expect(parseEtime('09-14:02:34  1234')).toBe(((9 * 24 + 14) * 60 + 2) * 60 + 34);
+  });
+  it('returns null for malformed input', () => {
+    expect(parseEtime('not-a-time  1234')).toBeNull();
+    expect(parseEtime('')).toBeNull();
+  });
+});
+
+describe('parseRss', () => {
+  it('converts kilobytes (ps default unit) to bytes', () => {
+    expect(parseRss('05:23  1234')).toBe(1234 * 1024);
+  });
+  it('returns null when the field is missing', () => {
+    expect(parseRss('05:23')).toBeNull();
+    expect(parseRss('')).toBeNull();
+  });
+  it('returns null for non-numeric input', () => {
+    expect(parseRss('05:23  notanumber')).toBeNull();
   });
 });
 

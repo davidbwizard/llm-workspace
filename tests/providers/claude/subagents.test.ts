@@ -20,11 +20,40 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe('findSubagents', () => {
-  it('pairs each transcript with its meta file', () => {
+  it('pairs each transcript with its meta file; agentId is the stem with its agent- prefix stripped', () => {
     const found = findSubagents(join(root, 'session-1'));
     expect(found).toHaveLength(1);
-    expect(found[0]!.agentId).toBe('agent-task-8-magiclink-abc');
+    // The bare id: matches what that subagent's own transcript records
+    // carry in their `agentId` field, not the prefixed on-disk filename.
+    expect(found[0]!.agentId).toBe('task-8-magiclink-abc');
+    // The FILE path still uses the real on-disk stem, `agent-` prefix and all.
     expect(found[0]!.metaPath).toContain('agent-task-8-magiclink-abc.meta.json');
+  });
+
+  it('strips the filename\'s leading agent- prefix from agentId, using the real observed shape', () => {
+    // Claude Code names the files with an `agent-` prefix, but records
+    // inside that subagent's own transcript carry the id without it
+    // (rec.agentId === 'task-8-magiclink-abc123'). Without this,
+    // agent.spawned never joins to that agent's own activity events --
+    // confirmed against a real index: only 1 of 453 spawned ids joined
+    // before this fix.
+    const dir = join(root, 'session-1', 'subagents');
+    writeFileSync(join(dir, 'agent-task-8-magiclink-abc123.jsonl'), '');
+    writeFileSync(join(dir, 'agent-task-8-magiclink-abc123.meta.json'), '{"name":"task-8-magiclink"}');
+
+    const found = findSubagents(join(root, 'session-1'));
+    const ref = found.find(f => f.metaPath.includes('abc123'));
+    expect(ref?.agentId).toBe('task-8-magiclink-abc123');
+  });
+
+  it('strips only the filename\'s own agent- prefix, not a name that legitimately starts with it', () => {
+    const dir = join(root, 'session-1', 'subagents');
+    writeFileSync(join(dir, 'agent-agent-helper-xyz.jsonl'), '');
+    writeFileSync(join(dir, 'agent-agent-helper-xyz.meta.json'), '{"name":"agent-helper"}');
+
+    const found = findSubagents(join(root, 'session-1'));
+    const ref = found.find(f => f.metaPath.includes('xyz'));
+    expect(ref?.agentId).toBe('agent-helper-xyz');
   });
 
   it('ignores a meta file with no matching transcript', () => {

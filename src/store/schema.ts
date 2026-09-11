@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS signal_events (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS signal_identity ON signal_events(event_id);
 CREATE INDEX IF NOT EXISTS signal_session ON signal_events(session_id, occurred_at);
+-- openBlockers scans across all sessions bounded by occurred_at alone (no
+-- session_id in its WHERE), so signal_session's leading session_id column
+-- cannot serve that query -- a plain index on occurred_at can.
+CREATE INDEX IF NOT EXISTS signal_occurred ON signal_events(occurred_at);
 
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,4 +65,14 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS runs (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  source TEXT NOT NULL,
+  end_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS runs_session ON runs(session_id, started_at);
 `;

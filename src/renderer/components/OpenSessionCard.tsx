@@ -1,0 +1,324 @@
+import { useEffect, useRef, useState } from 'react';
+import type { OpenSession } from '../../fleet/state.ts';
+import type { KillResult, KillRefusalReason } from '../../main/ipc.ts';
+import { ProviderMark } from './ProviderMark.tsx';
+import './OpenSessionCard.css';
+
+// One card per live process (David: "ALL OPEN SESSIONS should show. And
+// the source. So I can close if they are actually dead.") -- the model
+// correction that replaced grouping by transcript recency. A genuinely
+// different thing from a transcript session -- the card IS a process, not
+// a conversation -- so this is its own component rather than a second mode
+// on SessionCard: OpenSession has no agents/sharesWorktreeWith/stale/
+// confidence, and forcing it through SessionCard's prop contract would
+// produce fields with no meaning here. What's genuinely shared with
+// SessionCard is reused directly: ProviderMark, the design tokens
+// (theme.css, loaded globally) and base card classes (.card/.crow/.prov/
+// etc., defined in SessionCard.css and relied on here without a second
+// import -- see the note at the top of OpenSessionCard.css), and the same
+// interaction/accessibility standard: the accessible name carries the
+// card's state, not just its project name.
+
+// A mapped type over the closed HostApp union, not an index signature --
+// adding a HostApp member without adding it here is a compile error. Small
+// deliberate duplicate of SessionCard's own HOST_LABEL: the two components
+// are independent files by design (see the file-level comment above), and
+// this map is a handful of lines, not worth a shared module for.
+type Host = NonNullable<OpenSession['host']>;
+
+const HOST_LABEL: Record<Host, string> = {
+  iterm2:'iTerm2', terminal:'Terminal', vscode:'VS Code',
+  'claude-app':'Claude', 'codex-app':'Codex', unknown:'unknown host',
+};
+
+type Activity = NonNullable<OpenSession['activity']>;
+
+const ACTIVITY_WORD: Record<Activity, string> = {
+  working:'working', waiting_permission:'waiting on you',
+  waiting_input:'waiting on you', idle:'idle', error:'error',
+};
+
+/** Formats a running process's elapsed time for a human ("9d", not
+ *  "777600s"). Coarsest unit that keeps at least one significant digit --
+ *  a card is a glance, not a stopwatch. Duplicate of SessionCard's own
+ *  formatProcessAge -- see the file-level comment above. */
+function formatProcessAge(seconds: number): string {
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.floor(minutes)}m`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.floor(hours)}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/** Formats resident memory for a human ("206 MB"). rssBytes is already
+ *  normalized to bytes by src/discovery/parse.ts's parseRss. Duplicate of
+ *  SessionCard's own formatProcessMemory -- see the file-level comment
+ *  above. */
+function formatProcessMemory(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1000) return `${Math.round(mb)} MB`;
+  return `${(mb / 1024).toFixed(1)} GB`;
+}
+
+// One message per KillRefusalReason, so this is a compile error -- not a
+// silent `undefined` -- if main ever adds a reason and this map is not
+// updated to match. Reasons are internal safety-guard codes (see
+// src/main/ipc.ts's doc comment on KillRefusalReason), not something a
+// person should have to parse; realistically the only one reachable from
+// this button is 'not_discovered' (the process exited between the card
+// rendering and the click landing) -- own_process/protected_ancestor/
+// invalid_pid would all mean this card was showing a pid main should never
+// have handed the renderer in the first place, which is a bug elsewhere,
+// not a normal outcome of clicking Close.
+const KILL_REFUSAL_TEXT: Record<KillRefusalReason, string> = {
+  invalid_pid: 'Could not end this session.',
+  own_process: 'Could not end this session.',
+  protected_ancestor: 'Could not end this session.',
+  not_discovered: 'This session is no longer running.',
+  signal_failed: 'Could not end this session.',
+};
+
+// How long the post-kill status message ("Signal sent."/"Already gone.")
+// stays up before the card quietly returns to normal. Longer than
+// src/main/index.ts's 5s discovery interval, so a real fleet:update --
+// removing this card because the process is actually gone -- has time to
+// arrive and pre-empt this timer under ordinary conditions. If the process
+// ignored SIGTERM and is still alive, this timer is what returns the card
+// to its normal, re-closeable state rather than leaving it stuck reporting
+// a signal that did not, in the end, do anything -- "the card stays and
+// the user can decide" (the brief this button was built from).
+const KILL_SETTLE_MS = 5_500;
+
+export function OpenSessionCard({ state, onOpen, onKill }: {
+  state: OpenSession; onOpen: (pid: number) => void;
+  /** Sends session:kill for this card's pid. Always resolves to a
+   *  KillResult (src/main/ipc.ts), never throws by contract -- but this
+   *  component still handles a rejection (a dead IPC channel, say) rather
+   *  than assuming that contract holds forever. */
+  onKill: (pid: number) => Promise<KillResult>;
+}) {
+  // Same "say nothing rather than guess" rule as SessionCard's hostLabel --
+  // unknown and null both mean the same thing to the user.
+  const hostLabel = state.host && state.host !== 'unknown' ? HOST_LABEL[state.host] : undefined;
+  // Age and memory are NEVER gated on match quality here: the card IS the
+  // process, so its own age/memory are always attributable, even when no
+  // transcript session can be matched to it at all (see src/fleet/state.ts's
+  // OpenSession doc comment on ageSeconds/rssBytes).
+  const procMeta = [
+    state.ageSeconds != null ? formatProcessAge(state.ageSeconds) : null,
+    state.rssBytes != null ? formatProcessMemory(state.rssBytes) : null,
+  ].filter((part): part is string => part !== null).join(' · ') || null;
+  // provider is NOT gated on match quality either -- it comes straight
+  // from the process (discovery already knows which pgrep found it), so
+  // it is always known and never null (OpenSession.provider: Provider, no
+  // union with null). lastProse/events/activity ARE match-gated
+  // enrichment -- see openSessions' doc comment in src/fleet/state.ts.
+  const providerLabel = state.provider === 'claude' ? 'Claude' : 'Codex';
+  const blocked = state.activity === 'waiting_permission' || state.activity === 'waiting_input';
+  const activityWord = state.activity ? ACTIVITY_WORD[state.activity] : null;
+
+  // What the confirmation names -- project, source, age (David: "so I can
+  // close if they are actually dead" only works if it's obvious WHICH one
+  // is about to end). Built once and reused in both the visible confirm
+  // text and every kill-row button's aria-label, so the two never drift
+  // apart from each other.
+  const ageText = state.ageSeconds != null ? formatProcessAge(state.ageSeconds) : null;
+  const killTarget = [
+    `the ${providerLabel} session in ${state.project}`,
+    hostLabel ? `running in ${hostLabel}` : null,
+    ageText ? `open for ${ageText}` : null,
+  ].filter((part): part is string => Boolean(part)).join(', ');
+
+  // idle -> confirming -> pending -> settled (auto-reverts to idle) or
+  // error (stays until dismissed). No path from idle straight to pending:
+  // the confirming step is the whole point -- a misclick on Close alone
+  // must never send a signal (see doKill below, which is reachable only
+  // from the confirming branch's own button).
+  const [phase, setPhase] = useState<'idle' | 'confirming' | 'pending' | 'settled' | 'error'>('idle');
+  const [message, setMessage] = useState<string | null>(null);
+  // Guards the setState calls after the `await onKill` below: if this
+  // card has already unmounted by the time that resolves (its pid dropped
+  // out of a fleet:update that arrived in the meantime), there is nothing
+  // left to update.
+  //
+  // The setup function sets this back to true, not just the useRef
+  // initializer -- React 18 StrictMode (src/renderer/main.tsx wraps <App>
+  // in it) double-invokes a mount in development: setup, then immediately
+  // its own cleanup, then setup again, simulating an unmount+remount. A
+  // useRef initializer only ever runs once, on the true first mount, so an
+  // effect that ONLY assigns false in its cleanup -- as this one did --
+  // comes out of that dance permanently false, even though the component
+  // is genuinely mounted: the simulated cleanup sets it false and nothing
+  // ever sets it back to true. Every kill on every card was silently
+  // dropping its post-signal update as a result -- the card stuck
+  // forever on "Ending session...", never reaching "Signal sent.",
+  // "Already gone.", or a refusal message, in exactly the dev/StrictMode
+  // configuration this app is normally run in. Setting it in the setup
+  // function too closes that gap: StrictMode's extra setup call restores
+  // true, the same as a genuine remount would leave it.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (phase !== 'settled') return;
+    const t = setTimeout(() => setPhase('idle'), KILL_SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [phase]);
+
+  async function doKill(): Promise<void> {
+    setPhase('pending');
+    setMessage(null);
+    try {
+      const result = await onKill(state.pid);
+      if (!mountedRef.current) return;
+      if (result.status === 'killed') { setMessage('Signal sent.'); setPhase('settled'); }
+      else if (result.status === 'already_gone') { setMessage('Already gone.'); setPhase('settled'); }
+      else { setMessage(KILL_REFUSAL_TEXT[result.reason]); setPhase('error'); }
+    } catch {
+      if (!mountedRef.current) return;
+      setMessage('Could not reach the app to end this session.');
+      setPhase('error');
+    }
+  }
+
+  // Same reasoning as SessionCard's label: role="button" replaces this
+  // element's content with its accessible name, so every signal rendered
+  // below has to be carried in the name too. pid is included -- it is
+  // this card's actual identity (two open sessions can share a project
+  // name), the same job sessionId/provider do in SessionCard's label.
+  const label = [
+    `Open ${state.project} (${providerLabel}), pid ${state.pid}`,
+    activityWord,
+    state.lastProse,
+    hostLabel ? `Running in ${hostLabel}` : null,
+  ].filter((part): part is string => Boolean(part)).join('. ');
+
+  return (
+    <article
+      className={`card ${blocked ? 'attn' : state.activity === 'working' ? 'live' : ''}`}
+      tabIndex={0}
+      role="button"
+      aria-label={label}
+      onClick={() => onOpen(state.pid)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(state.pid); } }}
+    >
+      {blocked && <span className="badge" aria-hidden="true">1</span>}
+
+      <div className={`crow${blocked ? ' hasbadge' : ''}`}>
+        <span className={`prov ${state.provider}`}>
+          <ProviderMark provider={state.provider} size={11} />
+          {providerLabel}
+        </span>
+        {(hostLabel || procMeta) && (
+          <span className="crow-meta">
+            {hostLabel && <span className="host">{hostLabel}</span>}
+            {procMeta && <span className="procmeta">{procMeta}</span>}
+          </span>
+        )}
+      </div>
+
+      <div>
+        <p className="proj display">{state.project}</p>
+        <p className="path">{state.cwd ?? 'no working directory'}</p>
+      </div>
+
+      {/* No fallback text (unlike SessionCard's "No output yet"): a blank
+          last-message is honest on an ambiguous or unmatched card, where
+          there is no session to say anything came from. */}
+      {state.lastProse && (
+        <p className={`said ${blocked ? 'wait' : ''}`}>{state.lastProse}</p>
+      )}
+
+      <div className="metrics">
+        {/* Always present -- pid is what makes a future close action safe
+            (one card, one process, no guessing), so it stays visible even
+            when nothing else on the card is known. */}
+        <span className="pid">pid {state.pid}</span>
+        {state.events != null && <span>{state.events.toLocaleString()}</span>}
+        {activityWord && (
+          <span className={`state ${state.activity}`}>
+            <span className="dot" aria-hidden="true" />
+            {activityWord}
+          </span>
+        )}
+      </div>
+
+      {/* This is the first destructive action the app can take, so it gets
+          its own row rather than a corner icon: a real, visible button and
+          (once pressed) a real, visible confirmation, not something a
+          misclick over a crowded corner can trigger by accident.
+
+          Every control here is a genuine interactive element nested inside
+          this card's own role="button" wrapper above -- stopping
+          propagation on this row's click/keydown is what stops pressing
+          Close (or Cancel, or End session) from ALSO firing the card's own
+          onClick/onKeyDown and opening the session. */}
+      <div
+        className="killrow"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        {phase === 'idle' && (
+          // Deliberately NOT labelled with project/host/age (unlike the
+          // confirmation below) -- this card's own role="button" wrapper
+          // already carries all of that in ITS accessible name, and giving
+          // this button the same text would make any name-based lookup for
+          // this card (by a screen reader's rotor, or by a test) match two
+          // elements at once. pid alone still disambiguates this button
+          // from the identical "Close" button on every other open card.
+          <button type="button" className="kill-btn" aria-label={`Close, pid ${state.pid}`}
+            onClick={() => setPhase('confirming')}>
+            Close
+          </button>
+        )}
+
+        {phase === 'confirming' && (
+          // The group's accessible name IS the confirm text itself
+          // (aria-labelledby, not a separate aria-label) -- a screen reader
+          // landing on either button below announces that text as the
+          // button's description (aria-describedby, same id), so "which
+          // session" is heard regardless of whether the AT announces group
+          // entry. Button names stay short and literal ("Cancel"/"End
+          // session") rather than repeating the whole description into
+          // each one.
+          <div className="kill-confirm" role="group" aria-labelledby={`killconfirm-${state.pid}`}>
+            <p className="kill-confirm-text" id={`killconfirm-${state.pid}`}>End {killTarget}?</p>
+            <div className="kill-confirm-actions">
+              {/* Cancel takes focus by default, not End session -- so an
+                  accidental second Enter/Space after the Close click above
+                  lands on the safe choice, not the destructive one. */}
+              <button type="button" className="kill-cancel" autoFocus
+                aria-describedby={`killconfirm-${state.pid}`}
+                onClick={() => setPhase('idle')}>
+                Cancel
+              </button>
+              <button type="button" className="kill-confirm-btn"
+                aria-describedby={`killconfirm-${state.pid}`}
+                onClick={() => { void doKill(); }}>
+                End session
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* aria-live, not a focus move -- the person just clicked "End
+            session" and their focus should stay put; the status change is
+            announced to them instead. */}
+        {phase === 'pending' && (
+          <p className="kill-status" aria-live="polite">Ending session…</p>
+        )}
+
+        {(phase === 'settled' || phase === 'error') && (
+          <p className={`kill-status${phase === 'error' ? ' error' : ''}`} aria-live="polite">
+            {message}{' '}
+            <button type="button" onClick={() => setPhase('idle')}>Dismiss</button>
+          </p>
+        )}
+      </div>
+    </article>
+  );
+}

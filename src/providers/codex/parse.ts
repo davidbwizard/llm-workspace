@@ -1,8 +1,21 @@
 import { hashRecord } from '../../core/identity.ts';
-import type { NormalizedEvent, ParseResumeContext } from '../../core/types.ts';
-import type { TailLine } from '../claude/tail.ts';
+import type { NormalizedEvent, ParseResumeContext, TailLine } from '../../core/types.ts';
 
-export const CODEX_PARSER_VERSION = 1;
+// B1 (whole-branch review, 2026-09-11): 3663f24 fixed subagentIdentity's
+// thread_spawn handling (it was stringifying a nested object to the literal
+// text "[object Object]") but only changed event CONTENT. An event's
+// identity key -- (source_file, source_offset, content_hash, sub_index) --
+// is unaffected by a content-only fix, so insertEvents' UNIQUE-conflict
+// skip (spec §6.1, see also store/ingest.ts:166's reparseFile doc comment)
+// left every already-indexed bad row exactly as it was: re-running the
+// fixed parser over an unchanged file reproduces the same identity keys,
+// which the index treats as already-present and ignores. Confirmed against
+// the real index after 3663f24 landed: 9 of 13 Codex agent.spawned rows
+// still read "[object Object]". Only a parser_version bump makes
+// ingestFileOnce (src/watch/watcher.ts) take the delete-then-reparse path
+// (staleParser) instead of the append-only path, which is what actually
+// re-derives and replaces those rows. Bumped 1 -> 2.
+export const CODEX_PARSER_VERSION = 2;
 
 /** Codex separates prose from tool calls explicitly, so this mapping is
  *  exact rather than heuristic — contrast the Claude parser's isHumanPrompt
@@ -40,6 +53,48 @@ function itemText(item: any): string {
       && b.type.toLowerCase() === 'text')
     .map((b: any) => b.text)
     .join('\n');
+}
+
+/** Spec §5.5: derive a spawned subagent's display name/category/depth from
+ *  its own session_meta payload. Two shapes for `source.subagent`, and no
+ *  others, confirmed by reading every session_meta record carrying a
+ *  subagent source across the full real corpus (352 rollouts, Codex
+ *  0.150-0.154):
+ *   - {"thread_spawn": {agent_nickname, agent_role, depth, ...}} -- whose
+ *     agent_nickname/agent_role/depth are ALSO duplicated as top-level
+ *     payload fields, sibling to `source` itself (checked first, since it is
+ *     the simpler path to the same data). agent_nickname is the per-instance
+ *     display name (e.g. "Nietzsche"); agent_role is its category (e.g.
+ *     "reviewer").
+ *   - {"other": "<name>"}, e.g. {"other": "guardian"} -- a single labelled
+ *     value with no separate role: name and category are the same string.
+ *  A prior version of this function did `String(Object.values(roleObj)[0])`
+ *  unconditionally. For the thread_spawn shape that value is a nested
+ *  OBJECT, not a string, so it stringified to the literal text
+ *  "[object Object]" -- silently corrupting the name of 6 of the 9
+ *  agent.spawned events found in the real corpus (every thread_spawn-shaped
+ *  one). Fixed by handling the two shapes explicitly instead of assuming
+ *  the single-string-value shape is the only one. */
+function subagentIdentity(p: any): { name: string; type: string | null; depth: number } {
+  const threadSpawn = p.source?.subagent?.thread_spawn;
+  const nickname = typeof p.agent_nickname === 'string' ? p.agent_nickname
+    : (threadSpawn && typeof threadSpawn.agent_nickname === 'string' ? threadSpawn.agent_nickname : null);
+  const depth = typeof threadSpawn?.depth === 'number' ? threadSpawn.depth : 1;
+  if (nickname !== null) {
+    const role = typeof p.agent_role === 'string' ? p.agent_role
+      : (threadSpawn && typeof threadSpawn.agent_role === 'string' ? threadSpawn.agent_role : null);
+    return { name: nickname, type: role ?? (p.thread_source ?? null), depth };
+  }
+
+  // {"other": "<name>"} shape, or anything else unrecognised: only trust a
+  // single string value, never stringify an object.
+  const sub = p.source?.subagent;
+  const val = sub && typeof sub === 'object' ? Object.values(sub)[0] : null;
+  return {
+    name: typeof val === 'string' ? val : 'subagent',
+    type: p.thread_source ?? null,
+    depth,
+  };
 }
 
 export function parseCodexLines(
@@ -181,13 +236,15 @@ export function parseCodexLines(
       }, ts, null, threadId));
 
       if (isSubagent) {
-        const roleObj = p.source?.subagent;
-        const role = roleObj && typeof roleObj === 'object'
-          ? String(Object.values(roleObj)[0] ?? 'subagent')
-          : 'subagent';
+        const identity = subagentIdentity(p);
         out.push(base(line, 'agent.spawned', {
-          name: role, type: p.thread_source ?? null, model: p.model ?? null,
-          color: null, depth: 1, parentAgentId: p.parent_thread_id,
+          name: identity.name, type: identity.type, model: p.model ?? null,
+          color: null, depth: identity.depth,
+          // Codex's session_meta has no analogue for either field -- Claude's
+          // taskKind/teamName describe its own Task-tool/team concepts, which
+          // Codex does not record. Left null rather than invented, per spec.
+          taskKind: null, teamName: null,
+          parentAgentId: p.parent_thread_id,
         }, ts, threadAgentId, threadId));
       }
       continue;
