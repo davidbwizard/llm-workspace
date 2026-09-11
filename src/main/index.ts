@@ -65,22 +65,37 @@ app.whenReady().then(() => {
   registerIpc(db);
   createWindow();
 
-  // Catch up on anything written while the app was closed, then watch.
-  ingestAll(db, roots());
-
-  // Watcher events arrive per file and can burst; coalesce so a busy session
-  // does not push a payload per line written.
-  let pending: NodeJS.Timeout | null = null;
-  watcher = startWatcher(db, roots(), () => {
-    if (pending) return;
-    pending = setTimeout(() => { pending = null; if (db) pushFleet(db, mainWindow); }, 250);
-  });
-
-  spoolTimer = setInterval(() => {
+  // ingestAll is synchronous and, measured against the real index (~1,360
+  // files, ~194,000 events), takes ~15s cold / ~0.6s warm -- long enough to
+  // block the main process's event loop before it ever processes the
+  // 'ready-to-show' delivery from the renderer, so the window would not
+  // even paint until this finished. Deferred one tick via setImmediate so
+  // whenReady's synchronous work (opening the db, registering IPC,
+  // constructing the window) hands control back to the event loop first;
+  // the window then shows FleetView's loading state immediately, with real
+  // data replacing it once this runs. This does not make ingestAll itself
+  // non-blocking -- the main process is still unresponsive for the
+  // duration of the call -- only unblocks the window's first paint, which
+  // is what ingestAll(db, roots()) called inline here previously prevented.
+  setImmediate(() => {
     if (!db) return;
-    if (ingestSpool(db, paths.spool) > 0) pushFleet(db, mainWindow);
-  }, 1000);
-  rotateSpool(paths.spool, { maxAgeDays: 30, maxFiles: 20000 });
+    // Catch up on anything written while the app was closed, then watch.
+    ingestAll(db, roots());
+
+    // Watcher events arrive per file and can burst; coalesce so a busy
+    // session does not push a payload per line written.
+    let pending: NodeJS.Timeout | null = null;
+    watcher = startWatcher(db, roots(), () => {
+      if (pending) return;
+      pending = setTimeout(() => { pending = null; if (db) pushFleet(db, mainWindow); }, 250);
+    });
+
+    spoolTimer = setInterval(() => {
+      if (!db) return;
+      if (ingestSpool(db, paths.spool) > 0) pushFleet(db, mainWindow);
+    }, 1000);
+    rotateSpool(paths.spool, { maxAgeDays: 30, maxFiles: 20000 });
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
