@@ -5,10 +5,13 @@
 // scope -- a test that imports and calls registerIpc directly will throw.
 import { ipcMain, type BrowserWindow } from 'electron';
 import type { Db } from '../store/db.ts';
-import { fleetState, openSessions, type SessionState, type OpenSession } from '../fleet/state.ts';
+import {
+  fleetState, openSessions, sessionCount, type SessionState, type OpenSession,
+} from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
 import { sanitizeForTerminal } from '../config.ts';
 import { getCachedLiveProcesses } from '../discovery/live.ts';
+import type { LiveProcess } from '../discovery/parse.ts';
 
 export interface FleetPayload {
   version: 1;
@@ -19,6 +22,28 @@ export interface FleetPayload {
    *  sessions must show, not just the ones transcript recency happens to
    *  approximate. See src/fleet/state.ts's openSessions doc comment. */
   openSessions: OpenSession[];
+}
+
+/** fleet:list's response, and fleet:update's push payload -- open sessions
+ *  plus a count of how many transcript sessions exist, WITHOUT the
+ *  sessions themselves. History (every transcript session, potentially in
+ *  the hundreds) is collapsed by default and, until a person actually
+ *  expands it, is not worth building at all, let alone sending across the
+ *  IPC bridge on every watcher/spool push -- see buildFleetListPayload and
+ *  fleet:history below. */
+export interface FleetListPayload {
+  version: 1;
+  generatedAt: string;
+  openSessions: OpenSession[];
+  historyCount: number;
+}
+
+/** fleet:history's response -- the full session list, fetched only once
+ *  History is actually expanded (src/renderer/components/FleetView.tsx). */
+export interface FleetHistoryPayload {
+  version: 1;
+  generatedAt: string;
+  sessions: SessionState[];
 }
 
 // Unicode bidirectional overrides (U+202A-U+202E: LRE, RLE, PDF, LRO, RLO)
@@ -138,6 +163,20 @@ export function sanitizeFields<T extends object>(obj: T, fields: readonly (keyof
   return out;
 }
 
+/** openSessions (src/fleet/state.ts) enumerates from `processes`
+ *  independently of `sessions` (the model correction: ALL open sessions
+ *  must show, not just the ones transcript recency happens to
+ *  approximate) -- built from already-sanitised `sessions` so enrichment
+ *  borrowed from a uniquely-matched session (lastProse) is already clean;
+ *  its own cwd/project, read straight from the process rather than any
+ *  session, still get their own pass through OPEN_SESSION_SANITISED_FIELDS.
+ *  Factored out so every caller in this file -- the fully-enriched build
+ *  below and the deliberately-unenriched fast path further down -- shares
+ *  one sanitisation call, rather than each remembering it separately. */
+function buildOpenSessions(sessions: SessionState[], processes: LiveProcess[]): OpenSession[] {
+  return openSessions(sessions, processes).map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
+}
+
 /** Provider text crosses into the renderer here. It is sanitised at this
  *  boundary rather than in a component, so a new component cannot forget
  *  (spec §11.2). React escapes HTML, but control and bidi/zero-width
@@ -160,26 +199,84 @@ export function buildFleetPayload(db: Db): FleetPayload {
       blocker: session.blocker ? sanitizeFields(session.blocker, BLOCKER_SANITISED_FIELDS) : null,
     };
   });
-  // openSessions enumerates from `processes` independently of `sessions`
-  // (the model correction: ALL open sessions must show, not just the ones
-  // transcript recency happens to approximate) -- built from the
-  // already-sanitised `sessions` above so enrichment borrowed from a
-  // uniquely-matched session (lastProse) is already clean; its own
-  // cwd/project, read straight from the process rather than any session,
-  // still get their own pass through OPEN_SESSION_SANITISED_FIELDS.
-  const open = openSessions(sessions, processes)
-    .map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
+  const open = buildOpenSessions(sessions, processes);
   return { version: 1, generatedAt: new Date().toISOString(), sessions, openSessions: open };
+}
+
+/** fleet:list -- the renderer's one-time initial pull (FleetView.tsx calls
+ *  this exactly once, on mount). Deliberately the cheapest possible
+ *  answer: openSessions comes straight from the live-process cache with NO
+ *  transcript matching at all (`openSessions([], ...)`, the same
+ *  no-sessions-to-match-against call tests/fleet/state.test.ts already
+ *  exercises directly), and historyCount from sessionCount's dedicated
+ *  query -- neither touches fleetState, so this never pays its cost
+ *  (measured ~207ms against the real index, 878 sessions) regardless of
+ *  how much is in the index or whether this session's ingestAll has run
+ *  yet (src/main/index.ts defers ingestAll until after this first reply
+ *  specifically so it can never block it).
+ *
+ *  Trade-off: because it does not match against real sessions,
+ *  openSessions here carries no transcript enrichment -- match/sessionId/
+ *  lastProse/events/activity all come back 'unknown'/null, per
+ *  openSessions' own contract (src/fleet/state.ts). pushFleet below sends
+ *  the fully-enriched version once fleetState has actually run, which
+ *  happens shortly after launch regardless of whether the renderer ever
+ *  calls fleet:list at all (src/main/index.ts's background work), and
+ *  again on every watcher/spool push thereafter -- so the "needs you"
+ *  chip and each open card's last-known activity fill in moments after
+ *  the instant, unenriched first paint, rather than staying blank. */
+export function buildFleetListPayload(db: Db): FleetListPayload {
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    openSessions: buildOpenSessions([], getCachedLiveProcesses()),
+    historyCount: sessionCount(db),
+  };
+}
+
+/** fleet:history -- the full session list, fetched only once History is
+ *  actually expanded (src/renderer/components/FleetView.tsx). Reuses
+ *  buildFleetPayload's full computation rather than duplicating it; the
+ *  cost this whole split exists to avoid is doing that work for a list
+ *  nobody has opened, not doing it at all. */
+export function buildFleetHistoryPayload(db: Db): FleetHistoryPayload {
+  const { generatedAt, sessions } = buildFleetPayload(db);
+  return { version: 1, generatedAt, sessions };
 }
 
 /** The complete set of channels main answers. Adding one means adding it to
  *  the preload's enumerated list as well; tests/main/ipc.test.ts asserts
- *  they match. */
-export function registerIpc(db: Db): void {
-  ipcMain.handle('fleet:list', () => buildFleetPayload(db));
+ *  they match.
+ *
+ *  `onFleetList`, if given, fires once per fleet:list call, deferred via
+ *  setImmediate so it runs strictly after this handler's own return value
+ *  has already been handed back for delivery -- never before, and never
+ *  synchronously inline (src/main/index.ts hangs starting ingestAll off of
+ *  it, and ingestAll is a long blocking call; running it inline here would
+ *  delay this very reply by the same amount this whole handler exists to
+ *  avoid). Optional so tests, and any future caller with nothing to defer,
+ *  can call registerIpc(db) alone. */
+export function registerIpc(db: Db, onFleetList?: () => void): void {
+  ipcMain.handle('fleet:list', () => {
+    const payload = buildFleetListPayload(db);
+    if (onFleetList) setImmediate(onFleetList);
+    return payload;
+  });
+  ipcMain.handle('fleet:history', () => buildFleetHistoryPayload(db));
 }
 
+/** Pushed on every watcher/spool/ingest change (src/main/index.ts). Unlike
+ *  fleet:list, this is event-driven rather than a one-time pull, so it can
+ *  afford fleetState's cost -- and doing so is how openSessions'
+ *  enrichment (activity/lastProse, the "needs you" chip) ever reaches the
+ *  renderer at all, since fleet:list itself deliberately never computes
+ *  it (see buildFleetListPayload above). Sends the same FleetListPayload
+ *  shape fleet:list does -- still never the full sessions array -- so a
+ *  push does not undo the payload-size win the fleet:list/fleet:history
+ *  split exists for. */
 export function pushFleet(db: Db, win: BrowserWindow | null): void {
   if (!win || win.isDestroyed()) return;
-  win.webContents.send('fleet:update', buildFleetPayload(db));
+  const { generatedAt, sessions, openSessions: open } = buildFleetPayload(db);
+  const payload: FleetListPayload = { version: 1, generatedAt, openSessions: open, historyCount: sessions.length };
+  win.webContents.send('fleet:update', payload);
 }

@@ -1,4 +1,4 @@
-import type { FleetPayload } from '../main/ipc.ts';
+import type { FleetListPayload, FleetHistoryPayload } from '../main/ipc.ts';
 
 declare global {
   interface Window {
@@ -9,8 +9,9 @@ declare global {
     // straight through and throw at mount with no user-visible signal --
     // marking it optional forces every call site to check first.
     fleet?: {
-      listFleet: () => Promise<FleetPayload>;
-      onFleet: (cb: (payload: FleetPayload) => void) => () => void;
+      listFleet: () => Promise<FleetListPayload>;
+      listHistory: () => Promise<FleetHistoryPayload>;
+      onFleet: (cb: (payload: FleetListPayload) => void) => () => void;
     };
   }
 }

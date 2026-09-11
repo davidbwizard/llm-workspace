@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { SessionCard } from './SessionCard.tsx';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
 import type { SessionState, OpenSession } from '../../fleet/state.ts';
-import type { FleetPayload } from '../../main/ipc.ts';
+import type { FleetListPayload } from '../../main/ipc.ts';
 import './FleetView.css';
 
 // History cards render in batches once the group is opened: against a real
@@ -16,18 +16,27 @@ export function FleetView() {
   // SESSIONS should show. And the source." Open sessions come from live
   // PROCESSES (discovery, spec S7.1a), not from transcript recency -- a
   // session opened nine days ago and never touched since is still open,
-  // and process discovery, not `sessions`, is the only source that knows
-  // that. `sessions` (transcripts) remains independently complete: History
-  // below is every transcript session, unfiltered, so nothing is ever
-  // lost even though most open processes will also appear there.
-  const [payload, setPayload] = useState<FleetPayload | null>(null);
+  // and process discovery, not History, is the only source that knows
+  // that. History remains independently complete: every transcript
+  // session, unfiltered, so nothing is ever lost even though most open
+  // processes will also appear there once fetched.
+  //
+  // `payload` never carries the history array itself (FleetListPayload,
+  // src/main/ipc.ts) -- only openSessions and a count. The full session
+  // list is fetched separately, via fleet:history, only once History is
+  // actually expanded (see the effect below): that is the whole point of
+  // this split -- a list nobody has opened should cost nothing to answer.
+  const [payload, setPayload] = useState<FleetListPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Collapsed by default: history is the common case (a handful of open
   // sessions, hundreds of history), and rendering history as the default
   // view is the noise this app exists to remove. See the history-group
-  // block below for how "collapsed" also means "not mounted."
+  // block below for how "collapsed" also means "not mounted" -- and now
+  // also "not fetched".
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [historyShown, setHistoryShown] = useState(HISTORY_BATCH);
+  const [history, setHistory] = useState<SessionState[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   useEffect(() => {
     // window.fleet is absent if the preload script failed to load (see the
@@ -52,6 +61,24 @@ export function FleetView() {
     return () => { alive = false; unsub(); };
   }, []);
 
+  // History is fetched only on the false->true transition, i.e. exactly
+  // when a person actually opens the accordion -- not on every render, and
+  // not on every fleet:update push (which would reintroduce the very cost
+  // this split exists to avoid, just moved one click later). Re-fires each
+  // time the accordion is re-opened, so a re-expand after some time picks
+  // up whatever has changed since.
+  useEffect(() => {
+    if (!window.fleet || !historyExpanded) return;
+    const fleet = window.fleet;
+    let alive = true;
+    setHistoryError(null);
+    void fleet.listHistory().then(
+      p => { if (alive) { setHistory(p.sessions); setHistoryError(null); } },
+      err => { if (alive) setHistoryError(err instanceof Error ? err.message : String(err)); },
+    );
+    return () => { alive = false; };
+  }, [historyExpanded]);
+
   // A blank window with the error only in devtools is exactly the failure
   // mode Task 5 found: a failed preload still renders a normal-looking
   // window. Say the actionable thing instead of leaving this stuck on
@@ -67,28 +94,17 @@ export function FleetView() {
   }
 
   if (payload === null) return <p className="empty">Reading the index…</p>;
-  // Both empty, not just `sessions`: a process can be open before its
+  // Both empty, not just `historyCount`: a process can be open before its
   // first transcript event is ingested (a brief window, but a real one --
   // spec S7.1a's "never lost" promise has to hold from the moment a
-  // process starts, not from its first indexed event). Checking `sessions`
-  // alone would hide a genuinely open session behind this message.
-  if (payload.sessions.length === 0 && payload.openSessions.length === 0)
+  // process starts, not from its first indexed event). Checking
+  // `historyCount` alone would hide a genuinely open session behind this
+  // message.
+  if (payload.historyCount === 0 && payload.openSessions.length === 0)
     return <p className="empty">No sessions indexed yet. Run a Claude Code or Codex
       session, or run <code>npm run cli -- ingest</code> to index existing transcripts.</p>;
 
-  const sessions: SessionState[] = payload.sessions;
   const openSessions: OpenSession[] = payload.openSessions;
-  // History is every transcript session, full stop -- not filtered by
-  // lifecycle, and NOT filtered against openSessions either. The same
-  // session legitimately appears in both: an open card answers "this is
-  // running right now"; a History entry answers "this conversation
-  // exists". Confirmed intentional (David's model correction, relayed by
-  // the team lead): "the duplication you identified is intentional... The
-  // same session legitimately appears in both, and subtracting one from
-  // the other would require precisely the attribution we do not have -- so
-  // attempting it would reintroduce the cwd-matching bug that caused this
-  // whole rework." Do not attempt to de-duplicate.
-  const history = sessions;
   const needing = openSessions.filter(
     o => o.activity === 'waiting_permission' || o.activity === 'waiting_input').length;
 
@@ -108,7 +124,7 @@ export function FleetView() {
         <p className="empty">No open sessions right now.</p>
       )}
 
-      {history.length > 0 && (
+      {payload.historyCount > 0 && (
         <>
           <h2 className="divider">
             <button
@@ -119,20 +135,27 @@ export function FleetView() {
               onClick={() => setHistoryExpanded(v => !v)}
             >
               <span className="caret" aria-hidden="true" />
-              History <span>{history.length}</span>
+              History <span>{payload.historyCount}</span>
             </button>
           </h2>
           {/* The wrapper always mounts so aria-controls resolves to a real
               element even while collapsed. What's conditional is the cards
-              inside it: collapsed means the 873-ish history sessions never
-              construct a component tree at all, not that one exists and is
-              hidden by CSS -- a hidden tree still re-renders on every fleet
-              push, which is the actual cost this is avoiding. */}
+              inside it: collapsed means History is never fetched at all,
+              let alone constructing a component tree -- not that a fetched
+              tree exists and is hidden by CSS, which would still pay the
+              fetch cost and re-render on every fleet push. */}
           <div id="history-group" className="fleet dim">
-            {historyExpanded && history.slice(0, historyShown).map(s =>
-              <SessionCard key={s.sessionId} state={s} onOpen={() => {}} />)}
+            {historyExpanded && historyError && (
+              <p className="empty error">History could not be loaded: {historyError}</p>
+            )}
+            {historyExpanded && !historyError && history === null && (
+              <p className="empty">Loading history…</p>
+            )}
+            {historyExpanded && !historyError && history !== null &&
+              history.slice(0, historyShown).map(s =>
+                <SessionCard key={s.sessionId} state={s} onOpen={() => {}} />)}
           </div>
-          {historyExpanded && historyShown < history.length && (
+          {historyExpanded && history !== null && historyShown < history.length && (
             <button
               type="button"
               className="btn show-more"

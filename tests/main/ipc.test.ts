@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
 import {
-  buildFleetPayload, sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
+  buildFleetPayload, buildFleetListPayload, buildFleetHistoryPayload, pushFleet,
+  sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
 } from '../../src/main/ipc.ts';
@@ -417,6 +418,113 @@ describe('buildFleetPayload — live process discovery wiring', () => {
     const p = buildFleetPayload(db);
     expect(p.openSessions[0]!.cwd).not.toContain(RLO);
     expect(p.openSessions[0]!.project).not.toContain(RLO);
+  });
+});
+
+// fleet:list is the renderer's one-time initial pull (FleetView.tsx calls
+// it exactly once, on mount) and is built to never touch fleetState --
+// these prove that split holds: the payload shape is genuinely different
+// from buildFleetPayload's (no sessions array at all), and openSessions on
+// it carries no transcript enrichment even when a real match is available
+// via the full computation, matching buildFleetListPayload's own doc
+// comment in src/main/ipc.ts.
+describe('buildFleetListPayload — the fleet:list fast path', () => {
+  it('never includes the sessions array', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/r' } })]);
+    const p = buildFleetListPayload(db);
+    expect('sessions' in p).toBe(false);
+  });
+
+  it('reports historyCount matching buildFleetPayload(db).sessions.length', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/r1' }, sessionId:'s1', contentHash:'c1' }),
+      ev({ kind:'session.started', payload:{ cwd:'/r2' }, sessionId:'s2', contentHash:'c2' }),
+    ]);
+    expect(buildFleetListPayload(db).historyCount).toBe(buildFleetPayload(db).sessions.length);
+  });
+
+  it('never matches openSessions against transcripts, even when a real match exists', async () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/live' } })]);
+    await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
+      return '';
+    });
+    // Sanity: the full computation WOULD match this pid uniquely.
+    expect(buildFleetPayload(db).openSessions[0]!.match).toBe('unique');
+    // buildFleetListPayload deliberately does not: it never touches fleetState.
+    const p = buildFleetListPayload(db);
+    expect(p.openSessions[0]!.match).toBe('unknown');
+    expect(p.openSessions[0]!.sessionId).toBeNull();
+    expect(p.openSessions[0]!.lastProse).toBeNull();
+  });
+
+  it("sanitises an open card's cwd/project even on the fast path", async () => {
+    const RLO = '\u202e';
+    await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '555\n';
+      if (bin === 'lsof') return `p555\nfcwd\nn/Users/me/proj${RLO}ect\n`;
+      return '';
+    });
+    const db = openDb(':memory:');
+    const p = buildFleetListPayload(db);
+    expect(p.openSessions[0]!.cwd).not.toContain(RLO);
+    expect(p.openSessions[0]!.project).not.toContain(RLO);
+  });
+});
+
+describe('buildFleetHistoryPayload — fleet:history', () => {
+  it('never includes openSessions', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/r' } })]);
+    const p = buildFleetHistoryPayload(db);
+    expect('openSessions' in p).toBe(false);
+  });
+
+  it('matches buildFleetPayload(db).sessions exactly', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/r1' }, sessionId:'s1', contentHash:'c1' }),
+      ev({ kind:'session.started', payload:{ cwd:'/r2' }, sessionId:'s2', contentHash:'c2' }),
+    ]);
+    expect(buildFleetHistoryPayload(db).sessions).toEqual(buildFleetPayload(db).sessions);
+  });
+});
+
+// Unlike fleet:list (above), pushFleet is event-driven rather than the
+// renderer's one-time initial pull, so it can afford fleetState's cost --
+// and does, deliberately: this is how openSessions' transcript enrichment
+// (activity/lastProse, FleetView's "needs you" chip) ever reaches the
+// renderer at all, since fleet:list itself never computes it. Still never
+// sends the full sessions array, so a push does not undo the payload-size
+// win the fleet:list/fleet:history split exists for.
+describe('pushFleet — the fleet:update push', () => {
+  it('sends the enriched openSessions list plus historyCount, never the sessions array', async () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/live' } })]);
+    await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
+      return '';
+    });
+    const send = vi.fn();
+    const win = { isDestroyed: () => false, webContents: { send } } as unknown as
+      Parameters<typeof pushFleet>[1];
+    pushFleet(db, win);
+    expect(send).toHaveBeenCalledTimes(1);
+    const [channel, payload] = send.mock.calls[0]!;
+    expect(channel).toBe('fleet:update');
+    expect('sessions' in payload).toBe(false);
+    expect(payload.historyCount).toBe(1);
+    expect(payload.openSessions[0]!.match).toBe('unique');
+  });
+
+  it('does nothing when there is no window', () => {
+    const db = openDb(':memory:');
+    expect(() => pushFleet(db, null)).not.toThrow();
   });
 });
 

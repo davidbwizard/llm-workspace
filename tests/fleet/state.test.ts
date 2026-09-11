@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { fleetState, openSessions } from '../../src/fleet/state.ts';
+import { fleetState, openSessions, sessionCount } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
 
@@ -548,5 +548,32 @@ describe('openSessions', () => {
       proc({ pid:4, ageSeconds:100 }),
     ]);
     expect(open.map(o => o.pid)).toEqual([2, 4, 3, 1]);
+  });
+});
+
+describe('sessionCount', () => {
+  it('is 0 for an empty index', () => {
+    const db = openDb(':memory:');
+    expect(sessionCount(db)).toBe(0);
+  });
+
+  it('counts distinct sessions, not events', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s1', contentHash:'a' }),
+      ev({ sessionId:'s1', contentHash:'b', subIndex:1 }),
+      ev({ sessionId:'s2', contentHash:'c' }),
+    ]);
+    expect(sessionCount(db)).toBe(2);
+  });
+
+  it('agrees with fleetState(db).length on the same index', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s1', contentHash:'a' }),
+      ev({ sessionId:'s2', provider:'codex', contentHash:'b' }),
+      ev({ sessionId:'s3', contentHash:'c' }),
+    ]);
+    expect(sessionCount(db)).toBe(fleetState(db, { now: NOW }).length);
   });
 });

@@ -15,17 +15,20 @@ let spoolTimer: NodeJS.Timeout | null = null;
 // Refreshes discovery/live.ts's process cache; buildFleetPayload reads that
 // cache rather than sweeping itself. Declared at module scope and cleared
 // in before-quit for the same reason spoolTimer is (see the comment on
-// pushTimer below): a timer hidden inside the setImmediate closure would be
-// unreachable from before-quit.
+// pushTimer below): a timer hidden inside a closure would be unreachable
+// from before-quit.
 let discoveryTimer: NodeJS.Timeout | null = null;
 // Coalesces watcher bursts into one push per 250ms (below). Declared here,
-// alongside spoolTimer, rather than as a local inside the setImmediate
-// closure below it used to be: a variable scoped to that closure is
-// unreachable from before-quit, so nothing could ever clear it, and a
-// watcher event arriving in the last 250ms before quit would fire its
-// pushFleet call after db was already closed.
+// alongside spoolTimer, rather than as a local inside a closure: a variable
+// scoped to a closure is unreachable from before-quit, so nothing could
+// ever clear it, and a watcher event arriving in the last 250ms before quit
+// would fire its pushFleet call after db was already closed.
 let pushTimer: NodeJS.Timeout | null = null;
 let mainWindow: BrowserWindow | null = null;
+// Guards startBackgroundWork (below) so ingestAll, the watcher and
+// spoolTimer start exactly once, no matter which of its two triggers fires
+// first.
+let backgroundStarted = false;
 
 const paths = resolvePaths(homedir());
 
@@ -72,56 +75,81 @@ function createWindow(): void {
   else void win.loadFile(join(import.meta.dirname, '../renderer/index.html'));
 }
 
+/** ingestAll is synchronous and, measured against the real index (~1,390
+ *  files, ~200,000 events), takes ~523ms warm -- long enough that if it is
+ *  already running when the renderer's first fleet:list request arrives,
+ *  that request queues behind it and waits out however much is left. JS
+ *  cannot preempt a running synchronous call, so no amount of reordering
+ *  elsewhere fixes that once ingestAll has actually started -- the only
+ *  fix is to never START it until the first reply is already on its way
+ *  out. registerIpc's fleet:list handler (src/main/ipc.ts) answers from
+ *  whatever the index already holds without touching ingestAll or
+ *  fleetState (see buildFleetListPayload's doc comment there) and, only
+ *  once that reply is queued for delivery, calls this via setImmediate --
+ *  see the registerIpc call below. Also called as a fallback from
+ *  did-finish-load, in case the renderer never calls fleet:list at all
+ *  (e.g. a failed preload, Task 5): ingestAll, the watcher and spool
+ *  rotation must run regardless of whether this window's UI works.
+ *  Idempotent via backgroundStarted so whichever of the two triggers fires
+ *  first is authoritative and the other is a no-op -- this is what makes
+ *  the ordering real rather than a race either trigger could "win".
+ */
+function startBackgroundWork(): void {
+  if (backgroundStarted || !db) return;
+  backgroundStarted = true;
+
+  // Catch up on anything written while the app was closed, then watch.
+  ingestAll(db, roots());
+  // Reflects whatever ingestAll just found -- the first fleet:list reply
+  // deliberately did not wait for this; this is that promised follow-up.
+  pushFleet(db, mainWindow);
+
+  // Watcher events arrive per file and can burst; coalesce so a busy
+  // session does not push a payload per line written.
+  watcher = startWatcher(db, roots(), () => {
+    if (pushTimer) return;
+    pushTimer = setTimeout(() => { pushTimer = null; if (db) pushFleet(db, mainWindow); }, 250);
+  });
+
+  spoolTimer = setInterval(() => {
+    if (!db) return;
+    if (ingestSpool(db, paths.spool) > 0) pushFleet(db, mainWindow);
+  }, 1000);
+  rotateSpool(paths.spool, { maxAgeDays: 30, maxFiles: 20000 });
+}
+
 app.whenReady().then(() => {
   mkdirSync(join(homedir(), '.llm-workspace'), { recursive: true });
   db = openDb(paths.db);
 
-  registerIpc(db);
+  // startBackgroundWork (above) is passed through so the fleet:list handler
+  // can trigger it itself, strictly after answering -- the primary trigger
+  // for the ordering this change exists to guarantee.
+  registerIpc(db, startBackgroundWork);
   createWindow();
 
-  // ingestAll is synchronous and, measured against the real index (~1,360
-  // files, ~194,000 events), takes ~15s cold / ~0.6s warm -- long enough to
-  // block the main process's event loop before it ever processes the
-  // 'ready-to-show' delivery from the renderer, so the window would not
-  // even paint until this finished. Deferred one tick via setImmediate so
-  // whenReady's synchronous work (opening the db, registering IPC,
-  // constructing the window) hands control back to the event loop first;
-  // the window then shows FleetView's loading state immediately, with real
-  // data replacing it once this runs. This does not make ingestAll itself
-  // non-blocking -- the main process is still unresponsive for the
-  // duration of the call -- only unblocks the window's first paint, which
-  // is what ingestAll(db, roots()) called inline here previously prevented.
-  setImmediate(() => {
-    if (!db) return;
-    // Catch up on anything written while the app was closed, then watch.
-    ingestAll(db, roots());
+  // Live process discovery (pgrep/ps/lsof) has nothing to do with the
+  // sqlite index and, measured against this machine's real process set,
+  // takes ~118ms wall clock run concurrently, with the event loop
+  // confirmed still responsive throughout -- started immediately rather
+  // than gated behind startBackgroundWork/ingestAll, so open sessions
+  // (spec S7.1a) truly never wait on the index. getCachedLiveProcesses
+  // (src/discovery/live.ts) returns [] until this first sweep resolves --
+  // buildFleetListPayload's openSessions is honestly empty until then;
+  // this pushes once it lands rather than leaving the renderer to find
+  // out only when some unrelated watcher/spool/ingest event next fires.
+  // Refreshed on its own interval thereafter, into a cache
+  // buildFleetPayload/buildFleetListPayload read synchronously.
+  void refreshLiveProcesses().then(() => { if (db) pushFleet(db, mainWindow); });
+  discoveryTimer = setInterval(() => { void refreshLiveProcesses(); }, 5000);
 
-    // Watcher events arrive per file and can burst; coalesce so a busy
-    // session does not push a payload per line written.
-    watcher = startWatcher(db, roots(), () => {
-      if (pushTimer) return;
-      pushTimer = setTimeout(() => { pushTimer = null; if (db) pushFleet(db, mainWindow); }, 250);
-    });
-
-    spoolTimer = setInterval(() => {
-      if (!db) return;
-      if (ingestSpool(db, paths.spool) > 0) pushFleet(db, mainWindow);
-    }, 1000);
-    rotateSpool(paths.spool, { maxAgeDays: 30, maxFiles: 20000 });
-
-    // Live process discovery (pgrep/ps/lsof) is async and, measured against
-    // this machine's real process set, takes ~118ms wall clock even run
-    // concurrently -- too slow to trigger from buildFleetPayload, which
-    // runs on every coalesced push (every ~250ms, above). Refreshed here on
-    // its own interval instead, into a cache buildFleetPayload reads
-    // synchronously; 5s is frequent enough that a newly-started or
-    // newly-ended process shows up promptly without re-running ~13
-    // pgrep/ps/lsof processes several times a second. Fired once
-    // immediately too, so the cache isn't empty for the first 5s after
-    // launch.
-    void refreshLiveProcesses();
-    discoveryTimer = setInterval(() => { void refreshLiveProcesses(); }, 5000);
-  });
+  // Fallback trigger for startBackgroundWork -- see its doc comment.
+  // did-finish-load fires once the window has actually finished loading
+  // its page; a working renderer's mount effect calls fleet:list well
+  // before that point (its whole script has to run first), so this never
+  // wins the race against the primary, handler-triggered path above -- it
+  // only fires at all when that primary trigger never did.
+  mainWindow?.webContents.once('did-finish-load', startBackgroundWork);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -9,6 +9,28 @@ const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/
 
 const main = strip(readFileSync('src/main/index.ts', 'utf8'));
 
+// Extracts the body of a top-level `function <name>(...) { ... }`
+// declaration by counting braces from its first `{` to the matching `}` --
+// good enough for this file's straightforward structure (no strings or
+// regexes containing unbalanced braces inside the functions this is used
+// on). Lets the tests below distinguish "this call site is inside the
+// guarded function" from "this call site merely appears somewhere in the
+// file", which a plain substring/indexOf check on `main` as a whole cannot.
+function functionBody(src: string, name: string): string {
+  const start = src.indexOf(`function ${name}`);
+  if (start === -1) throw new Error(`function ${name} not found`);
+  const openAt = src.indexOf('{', start);
+  let depth = 0;
+  for (let i = openAt; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') {
+      depth--;
+      if (depth === 0) return src.slice(openAt + 1, i);
+    }
+  }
+  throw new Error(`unbalanced braces in function ${name}`);
+}
+
 describe('app lifecycle', () => {
   it('opens the index and registers IPC before creating the window', () => {
     const dbAt = main.indexOf('openDb(');
@@ -35,7 +57,7 @@ describe('app lifecycle', () => {
 
 // A watcher event arriving under 250ms before quit used to fire its
 // coalesced pushFleet call against an already-closed db: the coalescing
-// timer was declared inside the setImmediate closure, unreachable from
+// timer was declared inside a closure nested in whenReady's callback, unreachable from
 // before-quit, and before-quit closed db without nulling it, so the `if
 // (db)` guard at the timer's fire site stayed true for a stale, closed
 // handle rather than becoming falsy. Both halves matter together --
@@ -71,9 +93,9 @@ describe('shutdown gap: the coalescing timer and a closed db', () => {
 
 // Live process discovery (src/discovery/live.ts) refreshes on its own
 // interval, the same lifecycle shape spoolTimer already has -- a timer
-// hidden inside the setImmediate closure would be unreachable from
-// before-quit, exactly the bug the shutdown-gap tests above exist to catch
-// for pushTimer. These pin the same shape for discoveryTimer.
+// hidden inside a nested closure would be unreachable from before-quit,
+// exactly the bug the shutdown-gap tests above exist to catch for
+// pushTimer. These pin the same shape for discoveryTimer.
 describe('process discovery timer', () => {
   it('declares the discovery timer at module scope, not inside the deferred closure', () => {
     const declarations = main.match(/\blet\s+discoveryTimer\b/g) ?? [];
@@ -89,5 +111,57 @@ describe('process discovery timer', () => {
   it('refreshes the process cache on an interval via refreshLiveProcesses', () => {
     expect(main).toMatch(/refreshLiveProcesses\(\)/);
     expect(main).toMatch(/discoveryTimer\s*=\s*setInterval\(/);
+  });
+});
+
+// ingestAll is synchronous and, against the real index, blocks the main
+// thread for hundreds of ms -- long enough that a fleet:list request
+// arriving while it runs waits out however much is left (JS cannot preempt
+// a running synchronous call). The fix is to never START ingestAll until
+// the renderer's first fleet:list reply is already on its way out, rather
+// than hoping a setImmediate deferral wins a timing race against it. These
+// pin the mechanism that makes that ordering a real, structural guarantee:
+// ingestAll has exactly one call site, and it lives inside an idempotent
+// function that only ever runs after registerIpc's fleet:list handler has
+// triggered it (or, as a fallback, after the window has actually loaded).
+describe('deferred ingest: answer before ingesting, not after', () => {
+  it('calls ingestAll from exactly one place: inside the guarded startBackgroundWork', () => {
+    const total = (main.match(/ingestAll\(db, roots\(\)\)/g) ?? []).length;
+    const inBody = (functionBody(main, 'startBackgroundWork').match(/ingestAll\(db, roots\(\)\)/g) ?? []).length;
+    expect(total).toBe(1);
+    expect(inBody).toBe(1);
+  });
+
+  it('guards startBackgroundWork with an idempotency flag it actually sets', () => {
+    const body = functionBody(main, 'startBackgroundWork');
+    expect(body).toMatch(/if\s*\(\s*backgroundStarted/);
+    expect(body).toMatch(/backgroundStarted\s*=\s*true/);
+  });
+
+  it('passes startBackgroundWork into registerIpc, so fleet:list can trigger it after answering', () => {
+    expect(main).toMatch(/registerIpc\(db,\s*startBackgroundWork\)/);
+  });
+
+  it('falls back to starting background work once the window has actually loaded, in case fleet:list is never called', () => {
+    expect(main).toMatch(/did-finish-load['"]?\s*,\s*startBackgroundWork\)/);
+  });
+
+  it('pushes an update after ingestAll, reflecting whatever it found', () => {
+    const body = functionBody(main, 'startBackgroundWork');
+    const ingestAt = body.indexOf('ingestAll(db, roots())');
+    const pushAt = body.indexOf('pushFleet(db, mainWindow)');
+    expect(ingestAt).toBeGreaterThan(-1);
+    expect(pushAt).toBeGreaterThan(ingestAt);
+  });
+
+  it('starts process discovery eagerly, not gated behind startBackgroundWork/ingestAll', () => {
+    const body = functionBody(main, 'startBackgroundWork');
+    expect(body).not.toMatch(/refreshLiveProcesses\(/);
+    expect(main).toMatch(/refreshLiveProcesses\(\)\.then\(/);
+  });
+
+  it('pushes an update once the first discovery sweep lands', () => {
+    expect(main).toMatch(
+      /refreshLiveProcesses\(\)\.then\(\s*\(\)\s*=>\s*{\s*if\s*\(db\)\s*pushFleet\(db,\s*mainWindow\)/);
   });
 });

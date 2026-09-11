@@ -319,6 +319,27 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   }).sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? ''));
 }
 
+/** Cheap count of distinct (session_id, provider) pairs -- the exact same
+ *  grouping fleetState's own query uses (`GROUP BY session_id, provider`),
+ *  so this always agrees with `fleetState(db).length`, without paying
+ *  fleetState's cost of building a full SessionState for every one of
+ *  them: no correlated subqueries for run_id/cwd/last_prose/last_kind, no
+ *  blocker lookup, no per-agent liveAgents scan, no worktree-sharing
+ *  grouping, no sort. Split out of fleetState (rather than calling
+ *  `fleetState(db).length` and discarding the rest) so
+ *  src/main/ipc.ts's fleet:list handler -- the renderer's one-time initial
+ *  pull, per FleetView.tsx -- can report History's size without
+ *  materialising History itself, which is the entire point of the
+ *  fleet:list/fleet:history split (see buildFleetListPayload's doc
+ *  comment in src/main/ipc.ts). Measured ~0ms against the real index
+ *  (200k events, 878 sessions) where fleetState costs ~207ms. */
+export function sessionCount(db: Db): number {
+  const row = db.prepare(
+    `SELECT COUNT(*) n FROM (SELECT DISTINCT session_id, provider FROM events)`,
+  ).get() as { n: number };
+  return row.n;
+}
+
 export interface OpenSession {
   pid: number;
   /** Which provider's CLI this is. Straight from the process
