@@ -149,12 +149,24 @@ export function ingestFileOnce(db: Db, path: string, provider: Provider): Ingest
   // begins at the session's first observed event, so the id is stable
   // across incremental tails.
   const firstTs = events.length > 0 ? events[0]!.ts : null;
+  // A full re-derive replays every event for the same handful of sessions
+  // through this loop, and getRunStart is a query per call -- on a real
+  // corpus that is ~178,000 redundant lookups for runs already resolved
+  // earlier in this same pass. Cache per session, resolved on first use:
+  // once ensureRun below has inserted (or found) the run for a session, its
+  // started_at is fixed for the rest of this pass, so the cached value is
+  // exactly what a repeat getRunStart call would return anyway.
+  const runStartCache = new Map<string, string>();
   for (const e of [...events, ...agentEvents]) {
     if (!e.runId && e.sessionId && e.sessionId !== 'unknown') {
-      const startedAt = resume?.sessionId === e.sessionId && prior
-        ? (getRunStart(db, e.sessionId) ?? firstTs ?? e.ts)
-        : (getRunStart(db, e.sessionId) ?? e.ts);
+      let startedAt = runStartCache.get(e.sessionId);
+      if (startedAt === undefined) {
+        startedAt = resume?.sessionId === e.sessionId && prior
+          ? (getRunStart(db, e.sessionId) ?? firstTs ?? e.ts)
+          : (getRunStart(db, e.sessionId) ?? e.ts);
+      }
       e.runId = ensureRun(db, e.sessionId, startedAt);
+      runStartCache.set(e.sessionId, startedAt);
     }
   }
 
