@@ -5,10 +5,12 @@
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
+    "pretest": "node --experimental-strip-types scripts/check-native-abi.ts node",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "cli": "node --experimental-strip-types src/cli.ts",
+    "predev": "node --experimental-strip-types scripts/check-native-abi.ts electron",
     "dev": "electron-vite dev",
     "build:app": "electron-vite build",
     "preview": "electron-vite preview"
