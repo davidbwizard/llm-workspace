@@ -21,8 +21,8 @@
    destructive action gets a real, unambiguous target to press, not
    something a misclick over a crowded corner can trigger. */
 .killrow { margin-top:2px; }
-.kill-btn { font-family:var(--f-mono); font-size:11px; color:var(--faint);
-            background:none; border:1px solid var(--line-soft); border-radius:20px;
+.kill-btn { font-family:var(--f-mono); font-size:11px; color:var(--muted);
+            background:none; border:1px solid var(--line); border-radius:20px;
             padding:4px 12px; cursor:pointer; }
 .kill-btn:hover { color:var(--critical); border-color:color-mix(in srgb,var(--critical) 40%,transparent); }
 .kill-confirm { display:flex; flex-direction:column; gap:8px; background:var(--raised);
@@ -39,3 +39,12 @@
 .kill-status.error { color:var(--critical); }
 .kill-status button { margin-left:6px; background:none; border:none; color:inherit;
                        text-decoration:underline; cursor:pointer; font:inherit; padding:0; }
+
+/* The source label doubles as the jump-to-terminal control. Styled as the
+   text it already was, with only a hover affordance added -- it sits in a
+   dense metadata row, and a second button-shaped thing there would compete
+   with Close for attention. */
+.host-btn { font:inherit; color:inherit; background:none; border:none;
+            padding:0; cursor:pointer; text-decoration:underline;
+            text-decoration-color:transparent; text-underline-offset:3px; }
+.host-btn:hover { color:var(--accent); text-decoration-color:currentColor; }

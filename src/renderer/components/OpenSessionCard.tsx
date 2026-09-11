@@ -90,13 +90,16 @@ const KILL_REFUSAL_TEXT: Record<KillRefusalReason, string> = {
 // the user can decide" (the brief this button was built from).
 const KILL_SETTLE_MS = 5_500;
 
-export function OpenSessionCard({ state, onOpen, onKill }: {
+export function OpenSessionCard({ state, onOpen, onKill, onReveal }: {
   state: OpenSession; onOpen: (pid: number) => void;
   /** Sends session:kill for this card's pid. Always resolves to a
    *  KillResult (src/main/ipc.ts), never throws by contract -- but this
    *  component still handles a rejection (a dead IPC channel, say) rather
    *  than assuming that contract holds forever. */
   onKill: (pid: number) => Promise<KillResult>;
+  /** Absent when the host cannot be brought forward -- the label then stays
+   *  plain text rather than pretending to be a button. */
+  onReveal?: (pid: number) => Promise<unknown>;
 }) {
   // Same "say nothing rather than guess" rule as SessionCard's hostLabel --
   // unknown and null both mean the same thing to the user.
@@ -215,7 +218,13 @@ export function OpenSessionCard({ state, onOpen, onKill }: {
         </span>
         {(hostLabel || procMeta) && (
           <span className="crow-meta">
-            {hostLabel && <span className="host">{hostLabel}</span>}
+            {hostLabel && (onReveal
+              ? <button type="button" className="host host-btn"
+                  aria-label={`Show this session in ${hostLabel}`}
+                  onClick={(e) => { e.stopPropagation(); void onReveal(state.pid); }}>
+                  {hostLabel}
+                </button>
+              : <span className="host">{hostLabel}</span>)}
             {procMeta && <span className="procmeta">{procMeta}</span>}
           </span>
         )}

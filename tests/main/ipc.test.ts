@@ -8,7 +8,7 @@ import {
   sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
-  killSession, ownProcessAncestry,
+  killSession, ownProcessAncestry, revealSession,
 } from '../../src/main/ipc.ts';
 import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
@@ -704,5 +704,35 @@ describe('IPC channel parity', () => {
     const handled = [...ipc.matchAll(/ipcMain\.handle\('([^']+)'/g)].map(m => m[1]).sort();
     const exposed = [...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/g)].map(m => m[1]).sort();
     expect(handled).toEqual(exposed);
+  });
+});
+
+describe('revealSession', () => {
+  // Same validation shape as killSession, and for the same reason: the pid
+  // is the ONLY thing the renderer gets to say. Which application to bring
+  // forward is looked up in main's own discovery data, so a compromised
+  // renderer cannot name something for `open` to launch.
+  it('refuses a pid absent from a freshly refreshed discovery sweep, and opens nothing', async () => {
+    const open = vi.fn();
+    const exec: ExecFn = async () => '';
+    expect(await revealSession(4242, { exec, open }))
+      .toEqual({ status: 'refused', reason: 'not_discovered' });
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('opens the application main resolved for the host, not one the caller named', async () => {
+    const open = vi.fn();
+    const exec: ExecFn = async (bin, args) =>
+      bin === 'pgrep' && args[1] === 'claude' ? '4242\n'
+      : bin === 'ps' && args.includes('-o') ? '1 iTerm2\n' : '';
+    const result = await revealSession(4242, { exec, open });
+    if (result.status === 'revealed') {
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(typeof open.mock.calls[0]![0]).toBe('string');
+    } else {
+      // A host classifyHost could not identify has nowhere to jump to.
+      expect(result).toEqual({ status: 'refused', reason: 'not_discovered' });
+      expect(open).not.toHaveBeenCalled();
+    }
   });
 });

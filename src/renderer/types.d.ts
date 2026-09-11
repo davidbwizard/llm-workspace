@@ -12,6 +12,7 @@ declare global {
       listFleet: () => Promise<FleetListPayload>;
       listHistory: (offset: number, limit: number) => Promise<FleetHistoryPayload>;
       killSession: (pid: number) => Promise<KillResult>;
+      revealSession: (pid: number) => Promise<RevealResult>;
       onFleet: (cb: (payload: FleetListPayload) => void) => () => void;
     };
   }

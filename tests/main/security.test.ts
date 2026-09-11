@@ -37,6 +37,7 @@ describe('renderer security posture', () => {
 
   it('exposes only the enumerated channels', () => {
     const exposed = [...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/g)].map(m => m[1]);
-    expect(exposed.sort()).toEqual(['fleet:history', 'fleet:list', 'session:kill']);
+    expect(exposed.sort()).toEqual(
+      ['fleet:history', 'fleet:list', 'session:kill', 'session:reveal']);
   });
 });

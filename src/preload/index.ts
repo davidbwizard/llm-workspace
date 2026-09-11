@@ -13,6 +13,9 @@ const api = {
   // buggy renderer can call ipcRenderer.invoke directly regardless of what
   // TypeScript says here.
   killSession: (pid: number) => ipcRenderer.invoke('session:kill', pid),
+  // Brings the session's terminal app forward. main picks WHICH app from its
+  // own discovery data; the pid is the only thing the renderer gets to say.
+  revealSession: (pid: number) => ipcRenderer.invoke('session:reveal', pid),
   onFleet: (cb: (payload: unknown) => void) => {
     const handler = (_e: unknown, payload: unknown) => cb(payload);
     ipcRenderer.on('fleet:update', handler);

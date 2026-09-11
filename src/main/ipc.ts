@@ -4,6 +4,7 @@
 // because ipcMain is dereferenced inside registerIpc's body, never at module
 // scope -- a test that imports and calls registerIpc directly will throw.
 import { ipcMain, type BrowserWindow } from 'electron';
+import { execFileSync } from 'node:child_process';
 import type { Db } from '../store/db.ts';
 import {
   openSessions, openSessionsLive, fleetStatePage, type SessionState, type OpenSession,
@@ -316,6 +317,14 @@ function defaultSignal(pid: number, signal: NodeJS.Signals): void {
   process.kill(pid, signal);
 }
 
+/** Brings a macOS application to the front. Injectable so tests never
+ *  actually raise a window. The app name comes from a closed map in
+ *  revealSession, never from the renderer, so this is not a place a string
+ *  from the window can reach `open`. */
+function defaultOpen(app: string): void {
+  execFileSync('open', ['-a', app], { timeout: 2000 });
+}
+
 function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && 'code' in err;
 }
@@ -433,6 +442,48 @@ export async function killSession(rawPid: unknown, opts: {
   return { status: 'killed' };
 }
 
+/** Which macOS application to bring forward for each host. Keyed by the
+ *  HostApp values classifyHost produces. 'unknown' is absent deliberately:
+ *  a host we could not identify has nowhere to jump to, and the card
+ *  renders the label as plain text rather than a dead button. */
+const APP_FOR_HOST: Partial<Record<LiveProcess['host'], string>> = {
+  iterm2: 'iTerm',
+  terminal: 'Terminal',
+  vscode: 'Visual Studio Code',
+  'claude-app': 'Claude',
+  'codex-app': 'ChatGPT',
+};
+
+export type RevealResult = { status: 'revealed' } | { status: 'refused'; reason: KillRefusalReason };
+
+/** Brings the application hosting a session to the front. The renderer sends
+ *  only a pid -- main looks up the host in its OWN discovery data and picks
+ *  the application name from the closed map above, so a compromised renderer
+ *  cannot name something to launch. Same validation shape as killSession,
+ *  minus the self/ancestor guards: activating an application cannot end a
+ *  process, so the worst case is focusing the wrong window. */
+export async function revealSession(rawPid: unknown, opts: {
+  exec?: ExecFn;
+  open?: (app: string) => void;
+} = {}): Promise<RevealResult> {
+  if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) {
+    return { status: 'refused', reason: 'invalid_pid' };
+  }
+  const live = await refreshLiveProcesses(opts.exec);
+  const proc = live.find(p => p.pid === rawPid);
+  if (!proc) return { status: 'refused', reason: 'not_discovered' };
+
+  const app = APP_FOR_HOST[proc.host];
+  if (!app) return { status: 'refused', reason: 'not_discovered' };
+
+  try {
+    (opts.open ?? defaultOpen)(app);
+  } catch {
+    return { status: 'refused', reason: 'signal_failed' };
+  }
+  return { status: 'revealed' };
+}
+
 /** The complete set of channels main answers. Adding one means adding it to
  *  the preload's enumerated list as well; tests/main/ipc.test.ts asserts
  *  they match.
@@ -463,6 +514,7 @@ export function registerIpc(db: Db, onFleetList?: () => void, onSessionKill?: ()
   });
   ipcMain.handle('fleet:history', (_event, offset: unknown, limit: unknown) =>
     buildFleetHistoryPayload(db, clampOffset(offset), clampLimit(limit)));
+  ipcMain.handle('session:reveal', (_event, pid: unknown) => revealSession(pid));
   ipcMain.handle('session:kill', async (_event, pid: unknown) => {
     const result = await killSession(pid);
     if (onSessionKill && result.status === 'killed') setImmediate(onSessionKill);

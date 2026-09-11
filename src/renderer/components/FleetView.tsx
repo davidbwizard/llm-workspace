@@ -132,7 +132,7 @@ export function FleetView() {
       {openSessions.length > 0 ? (
         <div className="fleet">
           {openSessions.map(o => (
-            <OpenSessionCard key={o.pid} state={o} onOpen={() => {}} onKill={fleetApi.killSession} />
+            <OpenSessionCard key={o.pid} state={o} onOpen={() => {}} onKill={fleetApi.killSession} onReveal={fleetApi.revealSession} />
           ))}
         </div>
       ) : (
