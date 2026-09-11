@@ -85,9 +85,17 @@ function isBlocking(s: SignalEvent): boolean {
  *  which would clear a live permission dialog the moment an unrelated
  *  record landed. The one exception is `SessionEnd`, which clears every
  *  open blocker in its session regardless of correlation id: once the
- *  session is gone, nothing can answer a blocker attributed to it. */
-export function openBlockers(db: Db, windowMs = OPEN_BLOCKERS_WINDOW_MS): Blocker[] {
-  const since = new Date(Date.now() - windowMs).toISOString();
+ *  session is gone, nothing can answer a blocker attributed to it.
+ *
+ *  `now` is injectable (defaults to `Date.now()`), same as `sessionRefs`
+ *  (src/config.ts) -- a caller that already pins a fake clock (fleetState,
+ *  Task 4) needs the window measured from that same clock, or a fixture
+ *  timestamp that is safely inside the window by every other measure can
+ *  still fall outside it once real wall-clock time drifts away from the
+ *  fixture's fake "now" between when the test was written and when it
+ *  runs. */
+export function openBlockers(db: Db, windowMs = OPEN_BLOCKERS_WINDOW_MS, now: number = Date.now()): Blocker[] {
+  const since = new Date(now - windowMs).toISOString();
   const rows = db.prepare(
     'SELECT * FROM signal_events WHERE occurred_at >= ? ORDER BY occurred_at').all(since) as any[];
   const signals = rows.map(rowToSignal);
