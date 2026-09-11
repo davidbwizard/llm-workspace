@@ -160,11 +160,17 @@ describe('deferred ingest: answer before ingesting, not after', () => {
     expect(main).toMatch(/refreshLiveProcesses\(\)\.then\(/);
   });
 
-  // pushFleet's payload is purely process-derived (src/main/ipc.ts) --
-  // every sweep pushes now, not just the first, since a process starting
-  // or ending between sweeps is the only thing that can ever change it.
+  // A process starting or ending, or its transcript changing, between
+  // sweeps is something only this trigger can surface -- every sweep
+  // refreshes pushFleet's enrichment cache and pushes now, not just the
+  // first.
   it('pushes an update after every discovery sweep, not only the first', () => {
-    expect(main).toMatch(/refreshLiveProcesses\(\)\.then\(\s*\(\)\s*=>\s*pushFleet\(mainWindow\)\)/);
+    const sweepBody = main.slice(main.search(/refreshLiveProcesses\(\)\.then\(/), main.search(/refreshLiveProcesses\(\)\.then\(/) + 300);
+    expect(sweepBody).toMatch(/refreshLiveProcesses\(\)\.then\(\s*processes\s*=>\s*{/);
+    const refreshAt = sweepBody.search(/refreshPushEnrichment\(db,\s*processes\)/);
+    const pushAt = sweepBody.search(/pushFleet\(mainWindow\)/);
+    expect(refreshAt).toBeGreaterThan(-1);
+    expect(pushAt).toBeGreaterThan(refreshAt); // cache refreshed BEFORE the push reads it
     const declAt = main.search(/const\s+pushAfterDiscoverySweep\s*=/);
     expect(declAt).toBeGreaterThan(-1);
     // Called once immediately (the "first sweep" case) AND wired as the

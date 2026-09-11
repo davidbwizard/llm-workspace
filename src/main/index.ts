@@ -6,7 +6,7 @@ import { openDb, type Db } from '../store/db.ts';
 import { ingestAll, startWatcher, type Watcher, type WatchRoot } from '../watch/watcher.ts';
 import { ingestSpool, rotateSpool } from '../hooks/spool.ts';
 import { resolvePaths } from '../config.ts';
-import { registerIpc, pushFleet } from './ipc.ts';
+import { registerIpc, pushFleet, refreshPushEnrichment } from './ipc.ts';
 import { refreshLiveProcesses } from '../discovery/live.ts';
 
 let db: Db | null = null;
@@ -99,13 +99,9 @@ function startBackgroundWork(): void {
   backgroundStarted = true;
 
   // Catch up on anything written while the app was closed, then watch.
-  // pushFleet's payload (openSessions only, per David's correction -- see
-  // its doc comment in src/main/ipc.ts) never reflects anything ingestAll
-  // or the watcher/spool find -- both are transcript-derived, and
-  // pushFleet stopped touching the database entirely. These calls stay
-  // wired at the same moments regardless: harmless (pushFleet is pure JS
-  // over the live-process cache now, no query), and a smaller, safer
-  // change than also rewiring when a push happens.
+  // pushFleet reads whatever refreshPushEnrichment last cached (see its
+  // doc comment in src/main/ipc.ts) rather than querying itself, so it
+  // never touches the database on any of these triggers.
   ingestAll(db, roots());
   pushFleet(mainWindow);
 
@@ -141,13 +137,21 @@ app.whenReady().then(() => {
   // (spec S7.1a) truly never wait on the index. getCachedLiveProcesses
   // (src/discovery/live.ts) returns [] until this first sweep resolves --
   // buildFleetListPayload's openSessions is honestly empty until then.
-  // Every sweep pushes now, not just the first: pushFleet's payload is
-  // purely process-derived (src/main/ipc.ts), so a process starting or
-  // ending between sweeps is the ONLY thing that can ever change it --
-  // unlike before this task, a watcher/spool/ingest event happening to
-  // fire around the same time is no longer a signal of anything relevant
-  // here, so it can no longer be relied on to surface a process change.
-  const pushAfterDiscoverySweep = () => { void refreshLiveProcesses().then(() => pushFleet(mainWindow)); };
+  // Every sweep also refreshes pushFleet's enrichment cache
+  // (refreshPushEnrichment, src/main/ipc.ts) and pushes: a process
+  // starting or ending, or its transcript changing, between sweeps is
+  // something only this trigger can surface (a watcher/spool/ingest event
+  // happening to fire around the same time no longer implies anything
+  // about either, now that pushFleet reads a cache instead of querying).
+  // db is re-checked, not narrowed from the enclosing scope, for the same
+  // shutdown-race reason as the pushTimer callback above.
+  const pushAfterDiscoverySweep = () => {
+    void refreshLiveProcesses().then(processes => {
+      if (!db) return;
+      refreshPushEnrichment(db, processes);
+      pushFleet(mainWindow);
+    });
+  };
   pushAfterDiscoverySweep();
   discoveryTimer = setInterval(pushAfterDiscoverySweep, 5000);
 

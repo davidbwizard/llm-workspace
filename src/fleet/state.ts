@@ -1,7 +1,7 @@
 import type { Db } from '../store/db.ts';
 import type { Provider } from '../core/types.ts';
 import { openBlockers, type Blocker } from '../store/signals.ts';
-import { classifyMatch, type MatchQuality } from '../discovery/match.ts';
+import { classifyMatch, type MatchQuality, type MatchResult } from '../discovery/match.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
 
 /** Is this run reachable? (spec §9.2) */
@@ -72,6 +72,43 @@ function projectName(cwd: string | null): string {
  *  session working while five genuinely were. `turn.completed` covers 854 of
  *  877 sessions in the real index, so it is a reliable boundary. */
 const TURN_END_KINDS = new Set(['turn.completed', 'session.ended']);
+
+/** Turn-boundary/lifecycle derivation -- the exact rule fleetState's own
+ *  per-row map uses below, factored out so the targeted open-session
+ *  enrichment path (openSessionsLive, further down) computes activity
+ *  identically rather than a second implementation that could quietly
+ *  drift from this one. */
+function deriveActivity(opts: {
+  lastTs: string | null; lastKind: string | null; blocker: Blocker | null;
+  hasMatchedProcess: boolean; hasLiveSignal: boolean; now: number;
+}): { lifecycle: Lifecycle; activity: Activity } {
+  const lastMs = opts.lastTs ? Date.parse(opts.lastTs) : 0;
+  const age = opts.now - lastMs;
+  const lifecycle: Lifecycle = age <= ACTIVE_MS ? 'active' : 'disconnected';
+  let activity: Activity;
+  if (opts.blocker) {
+    activity = opts.blocker.kind === 'PermissionRequest' ? 'waiting_permission' : 'waiting_input';
+  } else if (lifecycle === 'active' && !TURN_END_KINDS.has(opts.lastKind ?? '') &&
+    (opts.hasMatchedProcess || !opts.hasLiveSignal)) {
+    // A session killed mid-turn never emits a turn boundary and would
+    // otherwise look like it is thinking forever -- a matched process is
+    // what tells the two apart. This deliberately uses match PRESENCE
+    // (`hasMatchedProcess`), not unique attribution: an ambiguous match
+    // still means a live process exists at this session's cwd, which is
+    // exactly what this check needs to know, and requiring unique
+    // attribution here would wrongly demote a genuinely-working session to
+    // idle merely because its cwd is shared -- the common case on a real
+    // workspace. `!hasLiveSignal` is the escape hatch for when discovery
+    // itself produced nothing at all this sweep: a dead session can never
+    // be `working` when discovery is actually working, but a broken
+    // discovery toolchain must not be able to empty the whole working
+    // group either.
+    activity = 'working';
+  } else {
+    activity = 'idle';
+  }
+  return { lifecycle, activity };
+}
 
 /** Picks the oldest of several processes matched to one session ("if
  *  several processes match, use the oldest"). A missing ageSeconds (ps
@@ -299,8 +336,6 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   const hasLiveSignal = (opts.processes ?? []).length > 0;
 
   return rows.map(r => {
-    const lastMs = r.last_ts ? Date.parse(r.last_ts) : 0;
-    const age = now - lastMs;
     const blocker = blockers.get(r.session_id) ?? null;
 
     const m = bySession.get(r.session_id);
@@ -318,28 +353,9 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     const alive = hasMatchedProcess && m?.quality === 'unique';
     const oldest = m?.quality === 'unique' ? oldestProcess(matchedProcs) : null;
 
-    const lifecycle: Lifecycle = age <= ACTIVE_MS ? 'active' : 'disconnected';
-    let activity: Activity;
-    if (blocker) {
-      activity = blocker.kind === 'PermissionRequest' ? 'waiting_permission' : 'waiting_input';
-    } else if (lifecycle === 'active' && !TURN_END_KINDS.has(r.last_kind) && (hasMatchedProcess || !hasLiveSignal)) {
-      // A session killed mid-turn never emits a turn boundary and would
-      // otherwise look like it is thinking forever -- a matched process is
-      // what tells the two apart. This deliberately uses match PRESENCE
-      // (`hasMatchedProcess`), not `alive`: an ambiguous match still means
-      // a live process exists at this session's cwd, which is exactly what
-      // this check needs to know, and requiring unique attribution here
-      // would wrongly demote a genuinely-working session to idle merely
-      // because its cwd is shared -- the common case on a real workspace.
-      // `!hasLiveSignal` is the escape hatch for when discovery itself
-      // produced nothing at all this sweep (see the comment on
-      // hasLiveSignal above): a dead session can never be `working` when
-      // discovery is actually working, but a broken discovery toolchain
-      // must not be able to empty the whole working group either.
-      activity = 'working';
-    } else {
-      activity = 'idle';
-    }
+    const { lifecycle, activity } = deriveActivity({
+      lastTs: r.last_ts, lastKind: r.last_kind, blocker, hasMatchedProcess, hasLiveSignal, now,
+    });
 
     // Symmetric with the byCwd filter above: a disconnected session is not
     // itself a contender, so it reports no sharing even if OTHER active
@@ -503,6 +519,40 @@ export interface OpenSession {
  *  -- it is the one fact discovery already knows with certainty for every
  *  process regardless of any transcript match (see LiveProcess.provider),
  *  so it is read straight from `p`, never from a matched session. */
+/** Assembles one OpenSession from a process, its match result, and
+ *  enrichment attributable to it (present only for a `unique` match, per
+ *  the doc comment on OpenSession below) -- the final step shared by
+ *  openSessions (session-array-driven, below) and openSessionsLive
+ *  (DB-targeted, further down), so the two cannot drift on what a card
+ *  actually shows. */
+function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
+  sessionId: string | null; lastProse: string | null; events: number | null; activity: Activity | null;
+} | null): OpenSession {
+  return {
+    pid: p.pid,
+    provider: p.provider,
+    host: p.host,
+    cwd: p.cwd,
+    project: projectName(p.cwd),
+    ageSeconds: p.ageSeconds ?? null,
+    rssBytes: p.rssBytes ?? null,
+    match: m.quality,
+    sessionId: enrichment?.sessionId ?? null,
+    lastProse: enrichment?.lastProse ?? null,
+    events: enrichment?.events ?? null,
+    activity: enrichment?.activity ?? null,
+  };
+}
+
+// Newest-started process first (ageSeconds ascending) -- the most recently
+// opened session is the most likely one David just asked about. Unknown
+// age (ps failed) sorts last rather than first: it cannot honestly claim
+// to be the newest. pid breaks ties deterministically. Shared by
+// openSessions and openSessionsLive so both order cards the same way.
+function byProcessAge(a: OpenSession, b: OpenSession): number {
+  return (a.ageSeconds ?? Infinity) - (b.ageSeconds ?? Infinity) || a.pid - b.pid;
+}
+
 export function openSessions(sessions: SessionState[], processes: LiveProcess[]): OpenSession[] {
   const refs = sessions.map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
   const matches = classifyMatch(processes, refs);
@@ -511,25 +561,109 @@ export function openSessions(sessions: SessionState[], processes: LiveProcess[])
   return processes.map((p, i) => {
     const m = matches[i]!; // classifyMatch returns one result per process, same order
     const matched = m.quality === 'unique' ? byId.get(m.sessionId!) ?? null : null;
-    return {
-      pid: p.pid,
-      provider: p.provider,
-      host: p.host,
-      cwd: p.cwd,
-      project: projectName(p.cwd),
-      ageSeconds: p.ageSeconds ?? null,
-      rssBytes: p.rssBytes ?? null,
-      match: m.quality,
-      sessionId: matched?.sessionId ?? null,
-      lastProse: matched?.lastProse ?? null,
-      events: matched?.events ?? null,
-      activity: matched?.activity ?? null,
-    };
-  })
-    // Newest-started process first (ageSeconds ascending) -- the most
-    // recently opened session is the most likely one David just asked
-    // about. Unknown age (ps failed) sorts last rather than first: it
-    // cannot honestly claim to be the newest. pid breaks ties
-    // deterministically.
-    .sort((a, b) => (a.ageSeconds ?? Infinity) - (b.ageSeconds ?? Infinity) || a.pid - b.pid);
+    return buildOpenSession(p, m, matched);
+  }).sort(byProcessAge);
+}
+
+/** The targeted alternative to `openSessions(fleetState(db, ...), ...)`:
+ *  same output (open cards enriched with match/lastProse/events/activity
+ *  on a unique transcript match), but bounded by the number of LIVE
+ *  PROCESSES rather than the size of the index -- the property that
+ *  matters is that this stays cheap on a machine with 10,000 sessions,
+ *  not just today's ~878. Exists because fleet:update (pushFleet,
+ *  src/main/ipc.ts) needs real enrichment -- a permanently-null "needs
+ *  you" chip is worse than the cost this avoids -- but must not pay
+ *  fleetState's per-session cost (~207ms+ against the real index, and
+ *  growing with the corpus) on every watcher/spool/discovery push.
+ *
+ *  Two SQL passes, both bounded by live-process cwds/ids, never by
+ *  session count:
+ *
+ *  1. Which sessions share ANY live process's cwd at all -- this is a
+ *     COMPLETE set for matching purposes, not just a fast one: ambiguity
+ *     for a given process depends only on OTHER sessions sharing that
+ *     SAME cwd, and any such session is, by definition, included here
+ *     (its cwd has to equal one of the ones being searched for). A session
+ *     whose cwd matches no live process cannot affect any process's match
+ *     quality, so excluding it loses nothing. Scoped to `kind =
+ *     'session.started'` rows only (roughly one per session, not per
+ *     event) -- still a scan of that kind across the whole table (no
+ *     index on `kind` here), but the row COUNT it touches no longer grows
+ *     with total events, only with total sessions, and the result set is
+ *     bounded by live-process cwds regardless of either.
+ *  2. For JUST the sessions that end up uniquely matched (bounded by
+ *     process count -- at most one per process), the same per-session
+ *     detail fleetState computes for every session: event count, last
+ *     prose, and the last event's kind (for deriveActivity). `WHERE
+ *     session_id IN (...)` on this small, known id list uses the
+ *     `events_session_ts(session_id, ts)` index directly.
+ *
+ *  Blockers reuse openBlockers(db, undefined, now) exactly as fleetState
+ *  does -- already a bounded read over signal_events, not the events
+ *  table, so there is nothing to scope further. Activity/lifecycle reuse
+ *  deriveActivity, the same function fleetState's own per-row map now
+ *  calls, so the two paths cannot compute it differently. */
+export function openSessionsLive(db: Db, processes: LiveProcess[], now: number = Date.now()): OpenSession[] {
+  const cwds = [...new Set(processes.map(p => p.cwd).filter((c): c is string => c !== null))];
+
+  const candidateRows = cwds.length === 0 ? [] : db.prepare(`
+    SELECT session_id, json_extract(payload,'$.cwd') cwd, ts, id
+    FROM events
+    WHERE kind = 'session.started' AND json_extract(payload,'$.cwd') IN (${cwds.map(() => '?').join(',')})
+  `).all(...cwds) as { session_id: string; cwd: string; ts: string; id: number }[];
+
+  // Most recent session.started per session_id -- the same "most recent
+  // wins" rule fleetState's own cwd subquery uses (a resumed session
+  // re-emits one session.started per transcript file). Sorted ascending
+  // so each later entry overwrites the map with a newer one.
+  const cwdBySession = new Map<string, string>();
+  for (const r of [...candidateRows].sort((a, b) => a.ts.localeCompare(b.ts) || a.id - b.id)) {
+    cwdBySession.set(r.session_id, r.cwd);
+  }
+
+  const refs = [...cwdBySession.entries()].map(([sessionId, cwd]) => ({ sessionId, cwd }));
+  const matches = classifyMatch(processes, refs);
+
+  // Only sessions that end up uniquely matched ever reach the renderer
+  // (buildOpenSession below blanks enrichment for anything else) -- bounded
+  // by process count, never by how many sessions share a cwd.
+  const uniqueIds = [...new Set(
+    matches.filter((m): m is MatchResult & { sessionId: string } => m.quality === 'unique').map(m => m.sessionId))];
+
+  const enrichmentById = new Map<string, {
+    sessionId: string; lastProse: string | null; events: number | null; activity: Activity;
+  }>();
+  if (uniqueIds.length > 0) {
+    const hasLiveSignal = processes.length > 0;
+    const blockers = new Map<string, Blocker>();
+    for (const b of openBlockers(db, undefined, now)) blockers.set(b.sessionId, b);
+
+    const rows = db.prepare(`
+      SELECT session_id, COUNT(*) events, MAX(ts) last_ts,
+        (SELECT json_extract(payload,'$.text') FROM events p
+          WHERE p.session_id = e.session_id AND p.kind = 'prose'
+          ORDER BY p.ts DESC, p.id DESC LIMIT 1) last_prose,
+        (SELECT k.kind FROM events k
+          WHERE k.session_id = e.session_id
+          ORDER BY k.ts DESC, k.id DESC LIMIT 1) last_kind
+      FROM events e WHERE e.session_id IN (${uniqueIds.map(() => '?').join(',')})
+      GROUP BY session_id
+    `).all(...uniqueIds) as any[];
+
+    for (const r of rows) {
+      const blocker = blockers.get(r.session_id) ?? null;
+      const { activity } = deriveActivity({
+        lastTs: r.last_ts, lastKind: r.last_kind, blocker, hasMatchedProcess: true, hasLiveSignal, now,
+      });
+      enrichmentById.set(r.session_id, {
+        sessionId: r.session_id, lastProse: r.last_prose ?? null, events: r.events ?? 0, activity,
+      });
+    }
+  }
+
+  return processes.map((p, i) => {
+    const m = matches[i]!;
+    const enrichment = m.quality === 'unique' ? enrichmentById.get(m.sessionId!) ?? null : null;
+    return buildOpenSession(p, m, enrichment);
+  }).sort(byProcessAge);
 }

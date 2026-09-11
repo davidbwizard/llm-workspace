@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
 import {
-  buildFleetListPayload, buildFleetHistoryPayload, pushFleet,
+  buildFleetListPayload, buildFleetHistoryPayload, pushFleet, refreshPushEnrichment,
   clampOffset, clampLimit, HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT,
   sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
@@ -459,16 +459,31 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
 });
 
 // pushFleet backs fleet:update, sent on every watcher/spool/ingest/
-// discovery change (src/main/index.ts). It builds the payload exactly the
-// same way buildFleetListPayload does -- process-only, never the index --
-// so these mostly prove the plumbing (channel name, the null-window guard)
-// rather than re-testing sanitisation/matching, already covered above.
-describe('pushFleet — the fleet:update push', () => {
-  it('sends buildFleetListPayload\'s exact output on the fleet:update channel', async () => {
-    await refreshLiveProcesses(async (bin, args) => {
+// discovery change (src/main/index.ts). Unlike fleet:list, it DOES enrich
+// openSessions -- via openSessionsLive (src/fleet/state.ts), the targeted
+// alternative to fleetState -- since a permanently-null "needs you" chip
+// is not an acceptable trade for taking the index off the critical path.
+// Still never sends historyCount or the sessions array.
+// pushFleet itself never touches the database -- refreshPushEnrichment
+// does, on the discovery interval (src/main/index.ts), not on every push
+// (see its doc comment: openSessionsLive's candidate-cwd query measured
+// 30-60ms warm against the real index, which scales with total events,
+// not live-process count, so it does not belong on a path that can fire
+// every ~250ms during a watcher burst).
+describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
+  it('sends whatever refreshPushEnrichment last cached, never a sessions array', async () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' }),
+      ev({ kind:'prose', payload:{ text:'Reused the JWT helper.' }, contentHash:'b', subIndex:1 }),
+    ]);
+    const processes = await refreshLiveProcesses(async (bin, args) => {
       if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
       return '';
     });
+    refreshPushEnrichment(db, processes);
+
     const send = vi.fn();
     const win = { isDestroyed: () => false, webContents: { send } } as unknown as
       Parameters<typeof pushFleet>[0];
@@ -477,7 +492,48 @@ describe('pushFleet — the fleet:update push', () => {
     const [channel, payload] = send.mock.calls[0]!;
     expect(channel).toBe('fleet:update');
     expect('sessions' in payload).toBe(false);
-    expect(payload.openSessions).toEqual(buildFleetListPayload().openSessions);
+    expect(payload.openSessions[0]!.match).toBe('unique');
+    expect(payload.openSessions[0]!.lastProse).toBe('Reused the JWT helper.');
+  });
+
+  it('pushFleet itself never queries the database', async () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
+    const processes = await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
+      return '';
+    });
+    refreshPushEnrichment(db, processes);
+
+    const prepareSpy = vi.spyOn(db, 'prepare');
+    const send = vi.fn();
+    const win = { isDestroyed: () => false, webContents: { send } } as unknown as
+      Parameters<typeof pushFleet>[0];
+    pushFleet(win);
+    expect(prepareSpy).not.toHaveBeenCalled();
+  });
+
+  it('sanitises an enriched open card the same way buildFleetHistoryPayload does', async () => {
+    const db = openDb(':memory:');
+    const RLO = '‮';
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' }),
+      ev({ kind:'prose', payload:{ text:`bad ${RLO} text` }, contentHash:'b', subIndex:1 }),
+    ]);
+    const processes = await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
+      return '';
+    });
+    refreshPushEnrichment(db, processes);
+
+    const send = vi.fn();
+    const win = { isDestroyed: () => false, webContents: { send } } as unknown as
+      Parameters<typeof pushFleet>[0];
+    pushFleet(win);
+    const payload = send.mock.calls[0]![1];
+    expect(payload.openSessions[0]!.lastProse).not.toContain(RLO);
   });
 
   it('does nothing when there is no window', () => {

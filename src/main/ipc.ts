@@ -6,7 +6,7 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 import type { Db } from '../store/db.ts';
 import {
-  openSessions, fleetStatePage, type SessionState, type OpenSession,
+  openSessions, openSessionsLive, fleetStatePage, type SessionState, type OpenSession,
 } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
 import { sanitizeForTerminal } from '../config.ts';
@@ -169,31 +169,59 @@ function sanitizeSession(s: SessionState): SessionState {
 }
 
 /** openSessions (src/fleet/state.ts) enumerates from live processes alone
- *  -- called here with an EMPTY session list, always, on both fleet:list
- *  and fleet:update (pushFleet below): David's correction goes further
- *  than the original brief's "defer history" -- "I wouldn't even defer.
- *  Let's just not load it unless I request it." A session being open is
- *  knowable from process discovery alone (spec S7.1a); attributing any
- *  transcript-derived fact to that card (match/sessionId/lastProse/events/
- *  activity) requires fleetState, which is exactly the index-dependent
- *  work that must never run before a person asks for History. Those five
- *  fields therefore always come back 'unknown'/null on an open card now --
- *  including the "needs you" chip, which reads `activity` -- a real,
- *  deliberate trade-off, not an oversight; flagged in the task report. */
+ *  -- called here with an EMPTY session list: fleet:list must stay
+ *  structurally incapable of touching the index (David's correction --
+ *  "I wouldn't even defer. Let's just not load it unless I request it").
+ *  match/sessionId/lastProse/events/activity therefore always come back
+ *  'unknown'/null in THIS payload. That is no longer the whole story for
+ *  an open card, though -- see pushFleet below, which sends the enriched
+ *  version once fleet:update actually fires; the gap is only ever the
+ *  moment between the window opening and the first push. */
 function buildOpenSessions(processes: LiveProcess[]): OpenSession[] {
   return openSessions([], processes).map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
 }
 
+/** pushFleet reads this rather than calling openSessionsLive itself --
+ *  see refreshPushEnrichment's doc comment for why. Starts empty, exactly
+ *  like discovery/live.ts's own process cache, until the first discovery
+ *  sweep has actually run. */
+let cachedPushOpenSessions: OpenSession[] = [];
+
+/** Refreshes the cache pushFleet (below) reads, from a real
+ *  openSessionsLive query -- called from src/main/index.ts's discovery
+ *  interval (every 5s), not from pushFleet itself, and not on every
+ *  watcher/spool/ingest trigger. Measured against the real index:
+ *  openSessionsLive's candidate-cwd query costs 30-60ms warm (its first,
+ *  cold-cache call measured 656ms) -- a scan of `kind = 'session.started'`
+ *  rows, since there is no index on `kind` in this schema, so the cost
+ *  scales with TOTAL EVENTS, not with how many processes are live. That
+ *  fails "bounded by live-process count, so it stays cheap on a machine
+ *  with 10,000 sessions" on its own -- the property that matters, per the
+ *  team lead's own standard -- so this is not run on the push path at
+ *  all. Reusing discovery/live.ts's own 5s cadence, the same cadence its
+ *  process cache already refreshes on, means every other push trigger
+ *  (watcher/spool/ingest, which can fire every ~250ms during a burst)
+ *  reads a cache instead of paying that scan: a "needs you" chip up to 5
+ *  seconds late, never a query on the push path itself -- exactly the
+ *  fallback the team lead pre-authorized if the push-path cost did not
+ *  hold up under measurement, which it did not. */
+export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: number = Date.now()): void {
+  cachedPushOpenSessions = openSessionsLive(db, processes, now);
+}
+
 /** fleet:list -- the renderer's one-time initial pull (FleetView.tsx calls
- *  this exactly once, on mount) -- and fleet:update's push payload
- *  (pushFleet below): open sessions straight from the live-process cache,
- *  nothing else. Never touches the database at all -- getCachedLiveProcesses
- *  (src/discovery/live.ts) reads a cache discovery's own interval
- *  maintains, never triggering a sweep itself, so this is pure JS over an
- *  already-small array (measured ~0ms against the real index's live-process
- *  count) regardless of how many sessions are in the index or whether
- *  ingestAll has run yet this session (src/main/index.ts defers ingestAll
- *  until after this first reply specifically so it can never block it). */
+ *  this exactly once, on mount): open sessions straight from the
+ *  live-process cache, nothing else. Never touches the database at all --
+ *  getCachedLiveProcesses (src/discovery/live.ts) reads a cache
+ *  discovery's own interval maintains, never triggering a sweep itself,
+ *  so this is pure JS over an already-small array (measured ~0ms against
+ *  the real index's live-process count) regardless of how many sessions
+ *  are in the index or whether ingestAll has run yet this session
+ *  (src/main/index.ts defers ingestAll until after this first reply
+ *  specifically so it can never block it). Unlike pushFleet below, this
+ *  never enriches -- see buildOpenSessions' doc comment for why that is
+ *  still an acceptable trade for a one-time pull that runs before
+ *  anything else has had a chance to. */
 export function buildFleetListPayload(): FleetListPayload {
   return {
     version: 1,
@@ -264,16 +292,19 @@ export function registerIpc(db: Db, onFleetList?: () => void): void {
 }
 
 /** Pushed on every watcher/spool/ingest/discovery change (src/main/index.ts).
- *  Sends the exact same FleetListPayload fleet:list does, built the same
- *  way (buildFleetListPayload, process-only) -- pushFleet never needed to
- *  build "anything beyond open sessions": the only reason it used to call
- *  fleetState was to compute historyCount and enrichment, both gone now.
- *  So this stopped touching the database at all, on every one of those
- *  triggers, not just the first -- see src/main/index.ts's discoveryTimer,
- *  which now pushes on every sweep rather than only the first, since a
- *  process starting or ending is the only thing this payload can ever
- *  reflect. */
+ *  Still never sends historyCount or the sessions array -- same
+ *  FleetListPayload shape fleet:list uses -- but, unlike fleet:list, DOES
+ *  enrich openSessions, reading cachedPushOpenSessions (refreshed by
+ *  refreshPushEnrichment above, not by this function) rather than
+ *  querying: a permanently-null "needs you" chip is worse than the
+ *  staleness this trades for (it actively tells David nothing needs him,
+ *  which is the one thing it must never do wrongly), but the query behind
+ *  it is not cheap enough to run on every push -- see
+ *  refreshPushEnrichment's doc comment. Never touches the database
+ *  itself, same as buildFleetListPayload. */
 export function pushFleet(win: BrowserWindow | null): void {
   if (!win || win.isDestroyed()) return;
-  win.webContents.send('fleet:update', buildFleetListPayload());
+  const openSessions = cachedPushOpenSessions.map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
+  const payload: FleetListPayload = { version: 1, generatedAt: new Date().toISOString(), openSessions };
+  win.webContents.send('fleet:update', payload);
 }

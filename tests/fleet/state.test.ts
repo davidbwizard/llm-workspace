@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { fleetState, openSessions, fleetStatePage } from '../../src/fleet/state.ts';
+import { fleetState, openSessions, openSessionsLive, fleetStatePage } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
 
@@ -548,6 +548,236 @@ describe('openSessions', () => {
       proc({ pid:4, ageSeconds:100 }),
     ]);
     expect(open.map(o => o.pid)).toEqual([2, 4, 3, 1]);
+  });
+});
+
+// The targeted alternative to openSessions(fleetState(db, ...), ...):
+// same output contract (same fixtures, same expectations as the
+// openSessions block above, largely mirrored test for test), but built
+// from two SQL passes bounded by live-process cwds/ids rather than by
+// fleetState's full per-session computation -- see openSessionsLive's own
+// doc comment in src/fleet/state.ts for why that bound is the point. This
+// is what pushFleet (src/main/ipc.ts) calls now instead of fleetState.
+describe('openSessionsLive', () => {
+  function proc(o: Partial<LiveProcess> & { pid: number }): LiveProcess {
+    return { provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
+  }
+
+  it('lists one card per live process, regardless of transcript recency', () => {
+    const db = openDb(':memory:');
+    // A session touched nine days ago -- History under the old design,
+    // invisible under any recency filter. Its process is still open.
+    insertEvents(db, [
+      ev({ kind:'session.started', ts:at(9 * 24 * 60), payload:{ cwd:'/repo/nine-days' }, contentHash:'a' }),
+      ev({ kind:'turn.completed', ts:at(9 * 24 * 60), payload:{}, contentHash:'b', subIndex:1 }),
+    ]);
+    const open = openSessionsLive(db, [proc({ pid:1, cwd:'/repo/nine-days', ageSeconds:9 * 86_400 })], NOW);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.pid).toBe(1);
+    expect(open[0]!.match).toBe('unique');
+  });
+
+  it('shows pid, provider, host, cwd, project, age and memory for a process with no transcript match at all', () => {
+    const db = openDb(':memory:');
+    const open = openSessionsLive(db, [proc({
+      pid:42, provider:'codex', cwd:'/Users/me/orphan', host:'iterm2', ageSeconds:120, rssBytes:50_000_000,
+    })], NOW);
+    expect(open).toEqual([{
+      pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
+      ageSeconds:120, rssBytes:50_000_000, match:'unknown',
+      sessionId:null, lastProse:null, events:null, activity:null,
+    }]);
+  });
+
+  it("reports provider from the process's own discovery, not from a matched session of a different provider", () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', provider:'claude', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
+    const open = openSessionsLive(db, [proc({ pid:9, provider:'codex', cwd:'/repo/live' })], NOW);
+    expect(open[0]!.match).toBe('unique');
+    expect(open[0]!.sessionId).toBe('s1');
+    expect(open[0]!.provider).toBe('codex');
+  });
+
+  it('enriches a uniquely-matched card with last prose, events and activity', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' }),
+      ev({ kind:'prose', payload:{ text:'Reused the JWT helper.' }, contentHash:'b', subIndex:1 }),
+    ]);
+    const open = openSessionsLive(db, [proc({
+      pid:9, cwd:'/repo/live', host:'vscode', ageSeconds:600, rssBytes:100_000_000,
+    })], NOW);
+    expect(open[0]).toMatchObject({
+      match:'unique', sessionId:'s1',
+      lastProse:'Reused the JWT helper.', activity:'working',
+    });
+    expect(open[0]!.events).toBeGreaterThan(0);
+  });
+
+  // The feature this whole path exists for: a card whose session has an
+  // open permission request must show 'waiting_permission', the exact
+  // signal FleetView's "needs you" chip counts. Proves deriveActivity's
+  // blocker branch reaches this path identically to fleetState's own.
+  it('reports waiting_permission for a uniquely-matched session with an open blocker', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/blocked' }, contentHash:'a' })]);
+    db.prepare(`INSERT INTO signal_events
+      (event_id, occurred_at, ingested_at, provider, session_id, tool_use_id, kind, payload)
+      VALUES (?,?,?,?,?,?,?,?)`).run('e1', at(3), at(3), 'claude', 's1', 't1',
+        'PermissionRequest', JSON.stringify({ tool_name:'Bash', tool_input:{ command:'rm -rf /tmp/x' } }));
+    const open = openSessionsLive(db, [proc({ pid:9, cwd:'/repo/blocked' })], NOW);
+    expect(open[0]!.match).toBe('unique');
+    expect(open[0]!.activity).toBe('waiting_permission');
+  });
+
+  it('renders an ambiguous match without borrowing another session\'s words or activity, while provider stays attributable', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+      ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+    ]);
+    const open = openSessionsLive(db, [proc({
+      pid:7, provider:'codex', cwd:'/repo/shared', host:'terminal', ageSeconds:300, rssBytes:1_000_000,
+    })], NOW);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.match).toBe('ambiguous');
+    expect(open[0]!.sessionId).toBeNull();
+    expect(open[0]!.lastProse).toBeNull();
+    expect(open[0]!.events).toBeNull();
+    expect(open[0]!.activity).toBeNull();
+    expect(open[0]!.pid).toBe(7);
+    expect(open[0]!.provider).toBe('codex');
+    expect(open[0]!.host).toBe('terminal');
+    expect(open[0]!.ageSeconds).toBe(300);
+    expect(open[0]!.rssBytes).toBe(1_000_000);
+  });
+
+  it('does not filter open cards against sessions -- a process with a cwd no session has ever used still gets a card', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/unrelated' }, contentHash:'a' })]);
+    const open = openSessionsLive(db, [proc({ pid:3, cwd:'/nowhere/tracked' })], NOW);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.match).toBe('unknown');
+    expect(open[0]!.sessionId).toBeNull();
+  });
+
+  it('orders by process age ascending (newest first), unknown age last, pid breaking ties', () => {
+    const db = openDb(':memory:');
+    const open = openSessionsLive(db, [
+      proc({ pid:3, ageSeconds:500 }),
+      proc({ pid:1, ageSeconds:null }),
+      proc({ pid:2, ageSeconds:100 }),
+      proc({ pid:4, ageSeconds:100 }),
+    ], NOW);
+    expect(open.map(o => o.pid)).toEqual([2, 4, 3, 1]);
+  });
+
+  it('returns an empty array, without querying, when there are no live processes', () => {
+    const db = openDb(':memory:');
+    const prepareSpy = vi.spyOn(db, 'prepare');
+    expect(openSessionsLive(db, [], NOW)).toEqual([]);
+    expect(prepareSpy).not.toHaveBeenCalled();
+  });
+
+  // The property that actually matters (per the team lead's mandate): cost
+  // is bounded by the number of LIVE PROCESSES, not by how many sessions
+  // are in the index. Proven the same way as fleetStatePage's own
+  // single-query proof above: spy on db.prepare and count how many times
+  // the candidate-cwd query and the per-session enrichment query each run
+  // -- exactly once apiece, never once per session and never once per
+  // candidate.
+  it('runs exactly one candidate-cwd query and one enrichment query, regardless of matched session count', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s1', kind:'session.started', payload:{ cwd:'/repo/a' }, contentHash:'a' }),
+      ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/b' }, contentHash:'b' }),
+      ev({ sessionId:'s3', kind:'session.started', payload:{ cwd:'/repo/c' }, contentHash:'c' }),
+    ]);
+    const prepareSpy = vi.spyOn(db, 'prepare');
+    openSessionsLive(db, [
+      proc({ pid:1, cwd:'/repo/a' }), proc({ pid:2, cwd:'/repo/b' }), proc({ pid:3, cwd:'/repo/c' }),
+    ], NOW);
+    const candidateQueries = prepareSpy.mock.calls.filter(([sql]) =>
+      typeof sql === 'string' && sql.includes("kind = 'session.started'") && sql.includes('IN ('));
+    const enrichmentQueries = prepareSpy.mock.calls.filter(([sql]) =>
+      typeof sql === 'string' && sql.includes('COUNT(*) events'));
+    expect(candidateQueries).toHaveLength(1);
+    expect(enrichmentQueries).toHaveLength(1);
+  });
+
+  // The enrichment query must be scoped to ONLY the uniquely-matched
+  // session(s) -- bounded by live-process count -- not to every session
+  // sharing a live cwd, which an ambiguous match (deliberately) never
+  // gets attribution from anyway (see the ambiguous-match test above), but
+  // COULD still leak into the enrichment query's own scope/cost on a
+  // plausible copy-paste bug (passing the full candidate set instead of
+  // just the unique ids). Two candidates share one cwd (ambiguous, no
+  // enrichment target); a third session is uniquely matched elsewhere.
+  it("scopes the enrichment query to exactly the uniquely-matched session, excluding an ambiguous candidate's id", () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'amb1', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+      ev({ sessionId:'amb2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+      ev({ sessionId:'solo', kind:'session.started', payload:{ cwd:'/repo/solo' }, contentHash:'c' }),
+    ]);
+    const prepareSpy = vi.spyOn(db, 'prepare');
+    openSessionsLive(db, [
+      proc({ pid:1, cwd:'/repo/shared' }), proc({ pid:2, cwd:'/repo/solo' }),
+    ], NOW);
+    const enrichmentCall = prepareSpy.mock.calls.find(([sql]) =>
+      typeof sql === 'string' && sql.includes('COUNT(*) events'));
+    expect(enrichmentCall).toBeDefined();
+    const idCount = (enrichmentCall![0] as string).match(/\?/g)?.length ?? 0;
+    expect(idCount).toBe(1); // only 'solo' -- not amb1/amb2, which never resolve to a single id
+  });
+
+  // Multiple live processes, each uniquely matched to a DIFFERENT session
+  // -- proves the enrichment query's IN-list handles more than one id
+  // correctly, not just the single-match case every test above exercises.
+  it('enriches every uniquely-matched process independently when there is more than one', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s1', kind:'session.started', payload:{ cwd:'/repo/a' }, contentHash:'a' }),
+      ev({ sessionId:'s1', kind:'prose', payload:{ text:'working on a' }, contentHash:'a2', subIndex:1 }),
+      ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/b' }, contentHash:'b' }),
+      ev({ sessionId:'s2', kind:'prose', payload:{ text:'working on b' }, contentHash:'b2', subIndex:1 }),
+    ]);
+    const open = openSessionsLive(db, [
+      proc({ pid:1, cwd:'/repo/a' }), proc({ pid:2, cwd:'/repo/b' }),
+    ], NOW);
+    const byPid = new Map(open.map(o => [o.pid, o]));
+    expect(byPid.get(1)!.sessionId).toBe('s1');
+    expect(byPid.get(1)!.lastProse).toBe('working on a');
+    expect(byPid.get(2)!.sessionId).toBe('s2');
+    expect(byPid.get(2)!.lastProse).toBe('working on b');
+  });
+
+  // Same "most recent session.started wins" rule fleetState's own cwd
+  // subquery uses -- a resumed session that moved directories should match
+  // on its CURRENT cwd, not a stale one from an earlier transcript file.
+  // Both cwds are live-process cwds here (unlike a single-process version
+  // of this test, which the candidate query's own WHERE clause would
+  // reduce to only ever returning the live cwd's row, never exercising
+  // the dedup/ordering at all): s1 moved from /repo/old-path to
+  // /repo/new-path, and a DIFFERENT live process now sits at old-path.
+  // Getting the "most recent wins" rule wrong would match s1 to the WRONG
+  // process (old-path) instead of the right one (new-path).
+  it('matches on the most recent cwd when a session has moved directories', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s1', kind:'session.started', payload:{ cwd:'/repo/old-path' }, contentHash:'a', ts:at(20) }),
+      ev({ sessionId:'s1', kind:'session.started', payload:{ cwd:'/repo/new-path' }, contentHash:'b', ts:at(5) }),
+    ]);
+    const open = openSessionsLive(db, [
+      proc({ pid:1, cwd:'/repo/new-path' }),
+      proc({ pid:2, cwd:'/repo/old-path' }),
+    ], NOW);
+    const byPid = new Map(open.map(o => [o.pid, o]));
+    expect(byPid.get(1)!.match).toBe('unique');
+    expect(byPid.get(1)!.sessionId).toBe('s1');
+    // old-path is s1's STALE cwd -- no session currently claims it.
+    expect(byPid.get(2)!.match).toBe('unknown');
+    expect(byPid.get(2)!.sessionId).toBeNull();
   });
 });
 
