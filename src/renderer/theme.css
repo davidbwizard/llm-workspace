@@ -1,2 +1,111 @@
-body { background: #1a1918; color: #ece9e6; margin: 0; }
-.shell { padding: 24px; }
+/* Local font faces. Referenced straight out of node_modules (not vendored
+   into this tree) so the file that Vite bundles is the one the pinned
+   package installs -- uninstalling @fontsource-variable/fraunces,
+   @fontsource-variable/karla or @fontsource/ibm-plex-mono breaks these
+   src paths instead of leaving a stale copy behind. CSP is
+   `default-src 'self'`, so these ship as local assets, never a CDN.
+
+   Fraunces uses the "full" build, the one file that carries every axis
+   (opsz, wght, SOFT, WONK) as variable rather than baking one in -- SOFT
+   and WONK both need to be set at once, which only that build allows.
+   IBM Plex Mono has no variable build, so its weight is fixed at 400: it
+   carries counts, ids, paths and timestamps, and one weight is enough. */
+@font-face {
+  font-family: "Fraunces";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("../../node_modules/@fontsource-variable/fraunces/files/fraunces-latin-full-normal.woff2") format("woff2-variations");
+}
+@font-face {
+  font-family: "Karla";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url("../../node_modules/@fontsource-variable/karla/files/karla-latin-wght-normal.woff2") format("woff2-variations");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("../../node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+}
+
+/* Warm dark. The neutrals sit close to neutral with only a trace of warmth:
+   warming the ground, the text AND the accent together is what reads as sepia.
+   The accent carries the warmth alone. See the visual design doc §1. */
+:root {
+  --ground:#1a1918; --surface:#232120; --raised:#2e2b29;
+  --line:#3b3735; --line-soft:#282523;
+  --ink:#ece9e6; --ink-2:#c3bdb8; --muted:#938c86; --faint:#635d58;
+  --accent:#d9a95f; --accent-soft:#33261440;
+  --signal:#dd9a6a; --signal-soft:#33221740;
+  --critical:#c97a6d; --critical-soft:#331d1a40;
+  --ok:#9fb083;
+  /* Claude Code's own per-agent colours, nudged a few degrees warm. An agent
+     recognised by colour in the CLI is the same colour here. */
+  --ag-blue:#78a6d4; --ag-green:#8fb884; --ag-yellow:#d9a95f; --ag-purple:#ab93d1;
+  --ag-orange:#d99568; --ag-cyan:#71bcb4; --ag-pink:#d18ba8; --ag-red:#d0776a;
+  --f-display:"Fraunces",Georgia,"Times New Roman",serif;
+  --f-body:"Karla",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --r-lg:16px; --r-md:12px; --r-sm:9px;
+}
+/* The light palette below is declared twice, verbatim: once here, guarded so
+   an explicit dark choice wins over the OS setting, and again under
+   :root[data-theme="light"] so an explicit light choice wins too. This is
+   forced by the platform, not a copy-paste defect -- a media query cannot
+   join a selector list, and there is no preprocessor in this stack, so the
+   only way to express "OS says light, and no explicit theme is set" is a
+   `@media` block, and the only way to express "user chose light" is an
+   attribute selector. tests/renderer/theme.test.ts pins the two blocks to
+   an identical token set so they cannot drift apart unnoticed. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ground:#f6f5f3; --surface:#ffffff; --raised:#ecebe8;
+    --line:#d9d5d0; --line-soft:#e8e5e1;
+    --ink:#1c1a18; --ink-2:#48443f; --muted:#736d67; --faint:#a29b94;
+    --accent:#9a6a1c; --accent-soft:#f3e6cf80;
+    --signal:#9c5f2c; --signal-soft:#f5e4d580;
+    --critical:#a04437; --critical-soft:#f6dfda80;
+    --ok:#5d7342;
+    --ag-blue:#3a6a94; --ag-green:#5d7342; --ag-yellow:#9a6a1c; --ag-purple:#71548f;
+    --ag-orange:#9c5f2c; --ag-cyan:#3d7a70; --ag-pink:#93506a; --ag-red:#a04437;
+  }
+}
+:root[data-theme="light"] {
+  --ground:#f6f5f3; --surface:#ffffff; --raised:#ecebe8;
+  --line:#d9d5d0; --line-soft:#e8e5e1;
+  --ink:#1c1a18; --ink-2:#48443f; --muted:#736d67; --faint:#a29b94;
+  --accent:#9a6a1c; --accent-soft:#f3e6cf80;
+  --signal:#9c5f2c; --signal-soft:#f5e4d580;
+  --critical:#a04437; --critical-soft:#f6dfda80;
+  --ok:#5d7342;
+  --ag-blue:#3a6a94; --ag-green:#5d7342; --ag-yellow:#9a6a1c; --ag-purple:#71548f;
+  --ag-orange:#9c5f2c; --ag-cyan:#3d7a70; --ag-pink:#93506a; --ag-red:#a04437;
+}
+
+* { box-sizing:border-box; }
+body {
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:var(--f-body); font-size:15px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+.shell { padding:20px; }
+
+/* Display face: soft serif with SOFT and WONK both pushed to their maximum,
+   per the visual design doc §4. Headings, project names, panel names. */
+h1, h2, h3 {
+  font-family:var(--f-display);
+  font-variation-settings:"SOFT" 100, "WONK" 1;
+}
+
+/* Interaction: 130ms, and none at all for anyone who asked for none. */
+.card, .btn { transition:background-color .13s ease, border-color .13s ease,
+              box-shadow .13s ease, transform .13s ease, color .13s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .card, .btn { transition:none; }
+  * { animation:none !important; }
+}
+:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
