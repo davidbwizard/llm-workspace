@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { openDb } from './store/db.ts';
-import { ingestFileOnce, startWatcher } from './watch/watcher.ts';
+import { ingestAll, startWatcher } from './watch/watcher.ts';
 import { ingestSpool, rotateSpool } from './hooks/spool.ts';
 import { readCodexThreads, readSpawnEdges, lastStateDbError } from './providers/codex/stateDb.ts';
 import { parsePgrep, parseTty, parseLsofCwd, classifyHost, type LiveProcess } from './discovery/parse.ts';
@@ -16,18 +16,6 @@ import type { Provider } from './core/types.ts';
 
 const paths = resolvePaths(homedir());
 const cmd = process.argv[2] ?? 'help';
-
-function walk(dir: string, match: RegExp, out: string[] = [], depth = 0): string[] {
-  if (depth > 5 || !existsSync(dir)) return out;
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name);
-    let st;
-    try { st = statSync(p); } catch { continue; }
-    if (st.isDirectory()) walk(p, match, out, depth + 1);
-    else if (match.test(p)) out.push(p);
-  }
-  return out;
-}
 
 function open() {
   mkdirSync(join(homedir(), '.llm-workspace'), { recursive: true });
@@ -110,18 +98,30 @@ if (cmd === 'probe') {
   }
 } else if (cmd === 'ingest') {
   const db = open();
-  let files = 0, written = 0, unparsed = 0;
-  for (const f of walk(paths.claudeProjects, /\.jsonl$/)) {
-    const r = ingestFileOnce(db, f, 'claude'); files++; written += r.written; unparsed += r.unparsed;
-  }
-  for (const f of walk(paths.codexSessions, /rollout-.*\.jsonl$/)) {
-    const r = ingestFileOnce(db, f, 'codex'); files++; written += r.written; unparsed += r.unparsed;
-  }
-  written += ingestSpool(db, paths.spool);
+  const roots = [
+    { dir: paths.claudeProjects, provider: 'claude' as Provider, glob: /\.jsonl$/ },
+    { dir: paths.codexSessions, provider: 'codex' as Provider, glob: /rollout-.*\.jsonl$/ },
+  ];
+  // ingestAll catches per-file, the same way startWatcher's handler does --
+  // one unreadable file, or one D1 correctly refuses to silently drift past
+  // (malformed UTF-8), must not abort the whole corpus and leave the spool
+  // ingest/rotation below never run, and every later `ingest` dying on that
+  // same file forever.
+  const { files, written: filesWritten, unparsed, skipped } = ingestAll(db, roots);
+  const written = filesWritten + ingestSpool(db, paths.spool);
   rotateSpool(paths.spool, { maxAgeDays: 30, maxFiles: 20000 });
-  console.log(`ingested ${files} files, ${written} events, ${unparsed} unparsed`);
+  console.log(`ingested ${files} files, ${written} events, ${unparsed} unparsed, ${skipped} skipped`);
+  // Deliberately two separate warnings, not one merged count: unparsed
+  // records mean a transcript format changed (still fully read, just an
+  // unrecognized record shape); skipped files mean a file could not be
+  // read/parsed at all. Different causes, different responses -- collapsing
+  // them would hide the more serious one (data simply missing from the
+  // index, not just an unrecognized record inside it).
   if (unparsed > 0) {
     console.error(`\nWARN  ${unparsed} records were not recognized -- transcript format may have changed.`);
+  }
+  if (skipped > 0) {
+    console.error(`\nWARN  ${skipped} file(s) could not be ingested at all -- see errors above for which, and why.`);
   }
 } else if (cmd === 'stream') {
   const db = open();

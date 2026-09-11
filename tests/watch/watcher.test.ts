@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../../src/store/db.ts';
 import { countEvents, getIngestState } from '../../src/store/ingest.ts';
-import { ingestFileOnce } from '../../src/watch/watcher.ts';
+import { ingestFileOnce, ingestAll } from '../../src/watch/watcher.ts';
 import { CLAUDE_PARSER_VERSION } from '../../src/providers/claude/parse.ts';
 
 let dir: string, file: string;
@@ -275,5 +275,57 @@ describe('ingestFileOnce — subagent-meta reparse (F2)', () => {
     expect(after.parser_version).toBe(CLAUDE_PARSER_VERSION);
     const count = db.prepare("SELECT COUNT(*) c FROM events WHERE kind='agent.spawned'").get() as any;
     expect(count.c).toBe(1); // replaced in place, not duplicated
+  });
+});
+
+// Re-review finding: D1's new throw (readTail rejecting malformed-UTF-8
+// offset drift) propagated out of ingestFileOnce with nothing to catch it in
+// cli.ts's `ingest` command, so one bad transcript aborted the ENTIRE
+// corpus -- the spool ingest, rotation, and summary never ran, and every
+// later `ingest` died on that same file again, forever. startWatcher already
+// gets this right (a per-file try/catch); ingestAll (extracted from cli.ts's
+// inline loop so it is testable without importing the whole argv-dispatching
+// script) now uses the same shape.
+describe('ingestAll — one bad file does not abort the corpus', () => {
+  it('skips a file that throws and still ingests the others, reporting the skip', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ingest-all-'));
+    const good1 = join(root, 'good1.jsonl');
+    const good2 = join(root, 'good2.jsonl');
+    const bad = join(root, 'bad.jsonl');
+
+    writeFileSync(good1, REC('u1', 'one'));
+    writeFileSync(good2, REC('u2', 'two'));
+    // {"a":<0xFF>}\n -- 0xFF is not valid UTF-8 anywhere; this is exactly
+    // D1's offset-drift guard in readTail, which throws rather than
+    // silently drifting the offset.
+    writeFileSync(bad, Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0xff, 0x7d, 0x0a]));
+
+    const db = openDb(':memory:');
+    const outcome = ingestAll(db, [{ dir: root, provider: 'claude', glob: /\.jsonl$/ }]);
+
+    expect(outcome.files).toBe(3);
+    expect(outcome.skipped).toBe(1);
+    expect(outcome.written).toBeGreaterThan(0);
+
+    // The bad file's throw did not prevent the good ones from being
+    // ingested -- proof this is "skip and continue", not "abort the batch".
+    expect(countEvents(db, good1)).toBeGreaterThan(0);
+    expect(countEvents(db, good2)).toBeGreaterThan(0);
+    expect(countEvents(db, bad)).toBe(0);
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reports zero skipped when every file ingests cleanly', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ingest-all-'));
+    writeFileSync(join(root, 'good.jsonl'), REC('u1', 'one'));
+
+    const db = openDb(':memory:');
+    const outcome = ingestAll(db, [{ dir: root, provider: 'claude', glob: /\.jsonl$/ }]);
+
+    expect(outcome.files).toBe(1);
+    expect(outcome.skipped).toBe(0);
+
+    rmSync(root, { recursive: true, force: true });
   });
 });

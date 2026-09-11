@@ -1,6 +1,6 @@
 import chokidar, { type FSWatcher } from 'chokidar';
-import { readFileSync, statSync } from 'node:fs';
-import { basename, dirname } from 'node:path';
+import { readFileSync, statSync, readdirSync, existsSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { readTail } from '../providers/claude/tail.ts';
 import { parseClaudeLines, CLAUDE_PARSER_VERSION } from '../providers/claude/parse.ts';
 import { findSubagents, parseAgentMeta, type SubagentRef } from '../providers/claude/subagents.ts';
@@ -164,6 +164,52 @@ export function ingestFileOnce(db: Db, path: string, provider: Provider): Ingest
 }
 
 export interface WatchRoot { dir: string; provider: Provider; glob: RegExp }
+
+/** Recursive directory walk collecting every path matching `match`.
+ *  A missing root (never ingested yet, or a provider simply absent on this
+ *  machine) is not an error -- returns whatever was found, empty if nothing
+ *  was. Depth-capped defensively; real transcript trees are a handful of
+ *  levels deep. */
+function walk(dir: string, match: RegExp, out: string[] = [], depth = 0): string[] {
+  if (depth > 5 || !existsSync(dir)) return out;
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    let st;
+    try { st = statSync(p); } catch { continue; }
+    if (st.isDirectory()) walk(p, match, out, depth + 1);
+    else if (match.test(p)) out.push(p);
+  }
+  return out;
+}
+
+export interface IngestAllOutcome { files: number; written: number; unparsed: number; skipped: number }
+
+/** The one-shot `ingest` command's corpus walk: every transcript under each
+ *  root, ingestFileOnce'd one at a time. Mirrors startWatcher's handle()
+ *  below -- a single file that cannot be read at all, or that D1 correctly
+ *  refuses to silently drift past (malformed UTF-8), must not abort the
+ *  whole run. Without this, `ingest` would die on the first bad file and
+ *  never run rotateSpool/ingestSpool for the rest of the corpus, and every
+ *  later run would die on that same file again -- permanently broken
+ *  ingestion from one bad transcript. `skipped` is counted and each failure
+ *  logged so this degrades to visible and recoverable, not silent. */
+export function ingestAll(db: Db, roots: WatchRoot[]): IngestAllOutcome {
+  let files = 0, written = 0, unparsed = 0, skipped = 0;
+  for (const root of roots) {
+    for (const f of walk(root.dir, root.glob)) {
+      files++;
+      try {
+        const r = ingestFileOnce(db, f, root.provider);
+        written += r.written;
+        unparsed += r.unparsed;
+      } catch (err) {
+        skipped++;
+        console.error(`[ingest] ${f}: ${(err as Error).message}`);
+      }
+    }
+  }
+  return { files, written, unparsed, skipped };
+}
 
 export interface Watcher { close(): Promise<void> }
 
