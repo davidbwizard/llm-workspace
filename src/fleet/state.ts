@@ -385,7 +385,21 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
       processRssBytes: oldest?.rssBytes ?? null,
       sharesWorktreeWith: shared,
     };
-  }).sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? ''));
+  // sessionId as a tiebreaker (not just recency) so this order is a TOTAL
+  // order, not merely a stable one: two sessions can share the exact same
+  // lastActivityAt (provider timestamps aren't guaranteed unique to the
+  // millisecond), and Array.sort's stability alone only guarantees ties
+  // keep THIS call's own input order -- it says nothing about whether
+  // fleetStatePage's separate sessionSummaries call, made moments earlier
+  // to decide which ids belong on this page, produced rows in that same
+  // order. Without a tiebreaker here matching fleetStatePage's own (below),
+  // a tied pair could sort one way when ranking pages and a different way
+  // when this function orders a page's own contents -- never a dropped or
+  // duplicated row (that's decided by fleetStatePage's ranking sort alone,
+  // now the same tiebreaker), but a page whose internal order disagreed
+  // with the ranking that selected it.
+  }).sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? '') ||
+    a.sessionId.localeCompare(b.sessionId));
 }
 
 export interface FleetPage { sessions: SessionState[]; total: number }
@@ -409,9 +423,20 @@ export function fleetStatePage(
   db: Db, offset: number, limit: number, opts: Omit<FleetOpts, 'sessionIds' | 'precomputedSummaries'> = {},
 ): FleetPage {
   const summaries = sessionSummaries(db);
+  // session_id as a tiebreaker: without it, two sessions sharing the exact
+  // same last_ts (provider timestamps aren't guaranteed unique to the
+  // millisecond) have no defined relative order across SEPARATE calls to
+  // this function -- SQL makes no ordering guarantee absent an ORDER BY,
+  // so nothing stops the row order sessionSummaries happens to return from
+  // differing between the call that ranks page N and the call that ranks
+  // page N+1, which would either drop or duplicate a tied row at the page
+  // boundary. session_id is unique per session, so this makes the order a
+  // TOTAL order -- identical, deterministically, on every call against the
+  // same data -- not merely a stable one.
   const sorted = summaries
     .slice()
-    .sort((a, b) => (b.last_ts ?? '').localeCompare(a.last_ts ?? ''));
+    .sort((a, b) => (b.last_ts ?? '').localeCompare(a.last_ts ?? '') ||
+      a.session_id.localeCompare(b.session_id));
   const pageIds = sorted.slice(offset, offset + limit).map(r => r.session_id);
   // precomputedSummaries: reuses the query just above rather than making
   // fleetState fetch the same ~130ms result a second time purely for its

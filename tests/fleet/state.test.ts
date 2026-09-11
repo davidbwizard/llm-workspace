@@ -671,4 +671,86 @@ describe('fleetStatePage', () => {
     expect(page.sessions[0]!.sharesWorktreeWith).toEqual(['older']);
     expect(page.total).toBe(2);
   });
+
+  // The assertion that actually catches an unstable sort: with an ORDER BY
+  // that isn't a total order (recency alone, with no tiebreaker), two
+  // sessions sharing the exact same timestamp -- provider timestamps are
+  // not guaranteed unique to the millisecond -- have no defined relative
+  // order across the SEPARATE calls to sessionSummaries that page N and
+  // page N+1 each make; whichever way that tie happens to fall can drop a
+  // row (missing from both pages) or duplicate one (present in both).
+  // Five sessions, all sharing one timestamp, split across three pages of
+  // two: the union of every page must be exactly the five ids, no more, no
+  // fewer, each exactly once.
+  it('the union of consecutive pages has no duplicate and no gap, even when every timestamp ties', () => {
+    const db = openDb(':memory:');
+    const tied = at(1); // identical for every session below
+    insertEvents(db, ['a', 'b', 'c', 'd', 'e'].map(id =>
+      ev({ sessionId: id, contentHash: id, ts: tied })));
+
+    const page1 = fleetStatePage(db, 0, 2, { now: NOW });
+    const page2 = fleetStatePage(db, 2, 2, { now: NOW });
+    const page3 = fleetStatePage(db, 4, 2, { now: NOW });
+    expect(page1.total).toBe(5);
+    expect(page2.total).toBe(5);
+    expect(page3.total).toBe(5);
+
+    const seen = [...page1.sessions, ...page2.sessions, ...page3.sessions].map(s => s.sessionId);
+    expect(seen.sort()).toEqual(['a', 'b', 'c', 'd', 'e']);
+    // Not just the right set -- each exactly once (a set comparison alone
+    // would not catch 'a' appearing on two pages while 'e' appears on none).
+    expect(seen).toHaveLength(5);
+
+    // Same ranking, called twice independently, agrees with itself --
+    // the direct proof that the ordering is deterministic, not merely
+    // "happened to work" for this particular set of three page calls.
+    const rePage1 = fleetStatePage(db, 0, 2, { now: NOW });
+    expect(rePage1.sessions.map(s => s.sessionId)).toEqual(page1.sessions.map(s => s.sessionId));
+  });
+
+  // The test above proves pagination is correct AGAINST THIS SQLite
+  // engine, which -- checked empirically while building this -- happens to
+  // return the exact same row order on repeated, unchanged queries against
+  // unchanged :memory: data, tiebreaker or not. SQL makes no such
+  // guarantee absent an ORDER BY, so that is an implementation detail, not
+  // something this codebase controls or should rely on. This test forces
+  // the actual failure mode directly: it makes the underlying query return
+  // the tied pair in one order for the first page call and the reverse
+  // order for the second, exactly what a real engine would be free to do,
+  // and checks the tiebreaker (session_id) still resolves both calls to
+  // the same total order.
+  it('resolves ties to the same order even if the underlying query returns them differently between calls', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'a', contentHash:'a', ts: at(1) }),
+      ev({ sessionId:'b', contentHash:'b', ts: at(1) }), // tied with 'a'
+    ]);
+
+    const isSummaryQuery = (sql: string) =>
+      sql.includes('MAX(ts) last_ts') && sql.includes("kind='session.started'") && !sql.includes('COUNT(*)');
+    const realPrepare = db.prepare.bind(db);
+    let summaryCalls = 0;
+    vi.spyOn(db, 'prepare').mockImplementation(((sql: string) => {
+      const stmt = realPrepare(sql);
+      if (!isSummaryQuery(sql)) return stmt;
+      summaryCalls++;
+      const callNumber = summaryCalls;
+      return { ...stmt, all: (...args: unknown[]) => {
+        const rows = stmt.all(...args) as unknown[];
+        // Second call sees the tied pair in the opposite order from the
+        // first -- simulating exactly what "no ORDER BY guarantee" allows.
+        return callNumber === 2 ? [...rows].reverse() : rows;
+      } } as unknown as ReturnType<typeof db.prepare>;
+    }) as typeof db.prepare);
+
+    const page1 = fleetStatePage(db, 0, 1, { now: NOW }); // first summary call: natural order
+    const page2 = fleetStatePage(db, 1, 1, { now: NOW }); // second summary call: reversed
+    vi.restoreAllMocks();
+
+    // Without the tiebreaker, the reversed second call would rank 'b'
+    // ahead of 'a', making page2 return 'a' again (a duplicate) instead
+    // of the id page1 didn't already return.
+    const ids = [page1.sessions[0]!.sessionId, page2.sessions[0]!.sessionId];
+    expect(ids.sort()).toEqual(['a', 'b']);
+  });
 });
