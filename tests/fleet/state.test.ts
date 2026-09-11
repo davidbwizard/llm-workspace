@@ -95,6 +95,53 @@ describe('fleetState', () => {
     expect(all.every(s => s.sharesWorktreeWith.length === 1)).toBe(true);
   });
 
+  // Spec §9.5 is about worktree CONTENTION -- two sessions that could
+  // actually clobber each other's work right now -- not "N sessions have
+  // ever run in this directory" trivia. sharesWorktreeWith is restricted to
+  // reachable (lifecycle 'active') sessions on both sides so it warns only
+  // when contention is real.
+  it('two concurrently-active sessions in one directory DO warn', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', ts:at(1), payload:{ cwd:'/Users/me/live' }, contentHash:'a' }),
+      ev({ sessionId:'s2', kind:'session.started', ts:at(2), payload:{ cwd:'/Users/me/live' }, contentHash:'b' }),
+    ]);
+    const all = fleetState(db, { now: NOW });
+    const byId = new Map(all.map(s => [s.sessionId, s]));
+    expect(byId.get('s1')!.lifecycle).toBe('active');
+    expect(byId.get('s2')!.lifecycle).toBe('active');
+    expect(byId.get('s1')!.sharesWorktreeWith).toEqual(['s2']);
+    expect(byId.get('s2')!.sharesWorktreeWith).toEqual(['s1']);
+  });
+
+  it('a hundred historical sessions in the same directory do NOT warn', () => {
+    const db = openDb(':memory:');
+    const historical = Array.from({ length: 100 }, (_, i) =>
+      ev({
+        sessionId: `old-${i}`, kind: 'session.started', ts: at(60 * 24 * 30),
+        payload: { cwd: '/Users/me/graveyard' }, contentHash: `h${i}`,
+      }));
+    insertEvents(db, historical);
+    const all = fleetState(db, { now: NOW });
+    expect(all).toHaveLength(100);
+    expect(all.every(s => s.lifecycle === 'disconnected')).toBe(true);
+    expect(all.every(s => s.sharesWorktreeWith.length === 0)).toBe(true);
+  });
+
+  it('an active session does not warn about disconnected sessions sharing its directory, and vice versa', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', ts:at(1), payload:{ cwd:'/Users/me/mixed' }, contentHash:'a' }),
+      ev({ sessionId:'s2', kind:'session.started', ts:at(60 * 24), payload:{ cwd:'/Users/me/mixed' }, contentHash:'b' }),
+    ]);
+    const all = fleetState(db, { now: NOW });
+    const byId = new Map(all.map(s => [s.sessionId, s]));
+    expect(byId.get('s1')!.lifecycle).toBe('active');
+    expect(byId.get('s2')!.lifecycle).toBe('disconnected');
+    expect(byId.get('s1')!.sharesWorktreeWith).toEqual([]);
+    expect(byId.get('s2')!.sharesWorktreeWith).toEqual([]);
+  });
+
   // The next three tests pin down defects found while implementing this
   // fold; see task-4-report.md for the full write-up of each.
 

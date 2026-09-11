@@ -127,9 +127,19 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   for (const b of openBlockers(db, undefined, now)) blockers.set(b.sessionId, b);
 
   // Worktree sharing: group by cwd before building states (spec §9.5).
+  // Restricted to REACHABLE sessions (lifecycle 'active', the same
+  // reachability test the lifecycle field itself uses below) -- spec §9.5
+  // is about contention, two sessions that could actually clobber each
+  // other's work right now, not "N sessions have ever run in this
+  // directory" trivia. A disconnected session cannot be mid-edit, so it is
+  // neither a contender nor worth warning about; a card for one reports no
+  // sharing even if the same directory has plenty of history. Sessions with
+  // no cwd (never saw a session.started) cannot be matched to a directory
+  // at all.
+  const isReachable = (r: any) => (now - (r.last_ts ? Date.parse(r.last_ts) : 0)) <= ACTIVE_MS;
   const byCwd = new Map<string, string[]>();
   for (const r of rows) {
-    if (!r.cwd) continue;
+    if (!r.cwd || !isReachable(r)) continue;
     byCwd.set(r.cwd, [...(byCwd.get(r.cwd) ?? []), r.session_id]);
   }
 
@@ -164,7 +174,12 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     }
 
     const m = bySession.get(r.session_id);
-    const shared = (byCwd.get(r.cwd ?? '') ?? []).filter(id => id !== r.session_id);
+    // Symmetric with the byCwd filter above: a disconnected session is not
+    // itself a contender, so it reports no sharing even if OTHER active
+    // sessions happen to share its (last-known) cwd.
+    const shared = lifecycle === 'active'
+      ? (byCwd.get(r.cwd ?? '') ?? []).filter(id => id !== r.session_id)
+      : [];
     const agents = r.agents ?? 0;
     const liveAgents = liveAgentsBySession.get(r.session_id) ?? 0;
     // Explicitly typed, like lifecycle/activity above: the brief inlined
