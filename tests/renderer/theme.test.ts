@@ -3,8 +3,16 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 const THEME_PATH = 'src/renderer/theme.css';
-const css = readFileSync(THEME_PATH, 'utf8');
 const themeDir = dirname(THEME_PATH);
+
+// Comments in this file quote selectors and family names to explain them
+// (e.g. the duplicated-light-palette comment names ':root[data-theme="light"]'
+// verbatim). Left in place, an assertion below could match the comment
+// instead of the rule it describes -- passing even if the real rule were
+// broken or removed. Strip them so every assertion here matches only text
+// that actually takes effect, the same defect and the same fix as
+// tests/main/security.test.ts.
+const css = readFileSync(THEME_PATH, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 
 /** Pulls every `@font-face { ... }` block whose font-family matches `family`
  *  exactly (not merely a substring of some other declaration). */
