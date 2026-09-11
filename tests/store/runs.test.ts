@@ -52,7 +52,7 @@ describe('ensureRun', () => {
   });
 });
 
-import { mkdtempSync, writeFileSync, appendFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ingestFileOnce } from '../../src/watch/watcher.ts';
@@ -85,5 +85,35 @@ describe('run_id through ingestion', () => {
   it('leaves run_id null for events with no resolvable session', () => {
     const db = openDb(':memory:');
     expect(runsForSession(db, 'unknown')).toHaveLength(0);
+  });
+
+  it('stamps an agent.spawned event with the same run as its parent session', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'runs-'));
+    const file = join(dir, 'sess-agent.jsonl');
+    const subDir = join(dir, 'sess-agent', 'subagents');
+    const db = openDb(':memory:');
+    try {
+      mkdirSync(subDir, { recursive: true });
+      writeFileSync(join(subDir, 'agent-reviewer.jsonl'), '');
+      writeFileSync(join(subDir, 'agent-reviewer.meta.json'), JSON.stringify({
+        name: 'reviewer', agentType: 'reviewer', spawnDepth: 0,
+      }));
+      writeFileSync(file, JSON.stringify({
+        type: 'assistant', uuid: 'u1', sessionId: 'sess-agent', cwd: '/repo',
+        timestamp: '2026-09-10T00:00:00.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'one' }], usage: {} },
+      }) + '\n');
+
+      ingestFileOnce(db, file, 'claude');
+
+      const [run] = runsForSession(db, 'sess-agent');
+      const spawned = db.prepare(
+        "SELECT run_id FROM events WHERE kind = 'agent.spawned' AND session_id = 'sess-agent'"
+      ).get() as { run_id: string | null } | undefined;
+
+      expect(run).toBeDefined();
+      expect(spawned).toBeDefined();
+      expect(spawned!.run_id).toBe(run!.runId);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

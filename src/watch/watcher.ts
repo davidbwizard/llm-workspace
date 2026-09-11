@@ -143,11 +143,13 @@ export function ingestFileOnce(db: Db, path: string, provider: Provider): Ingest
   // re-derivation into the same transaction as the transcript's own (F2).
   const agentEvents = provider === 'claude' ? subagentEvents(path) : [];
 
-  // Every event belongs to a run (spec §6.3). Without SessionStart hooks the
-  // run begins at the session's first observed event, so the id is stable
+  // Every event belongs to a run (spec §6.3) -- including agent.spawned,
+  // whose events are the only source of the agent graph (task 8's
+  // subagentEvents(), computed above). Without SessionStart hooks the run
+  // begins at the session's first observed event, so the id is stable
   // across incremental tails.
   const firstTs = events.length > 0 ? events[0]!.ts : null;
-  for (const e of events) {
+  for (const e of [...events, ...agentEvents]) {
     if (!e.runId && e.sessionId && e.sessionId !== 'unknown') {
       const startedAt = resume?.sessionId === e.sessionId && prior
         ? (getRunStart(db, e.sessionId) ?? firstTs ?? e.ts)
