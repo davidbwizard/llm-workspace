@@ -93,4 +93,24 @@ describe('SessionCard', () => {
     render(<SessionCard onOpen={() => {}} state={{ ...base, host: 'ssh-remote' as any }} />);
     expect(screen.getByText('unknown host')).toBeTruthy();
   });
+
+  // Asserted on the accessible name, not on page text: the visible ".state"
+  // span reads from the same `stateWord` value, so a regression that
+  // dropped the stale marker from the label alone -- leaving the visible
+  // span correct -- would still pass a getByText(/stale/i) assertion. Only
+  // a screen reader user would lose it.
+  it('names the stale condition in the accessible name, not just the visible state word', () => {
+    render(<SessionCard onOpen={() => {}} state={{ ...base, lifecycle:'disconnected', stale:true }} />);
+    const card = screen.getByRole('button', { name: /trellome/i });
+    expect(card.getAttribute('aria-label') ?? '').toMatch(/stale/i);
+  });
+
+  // Same reasoning as the stale case above, for the shared-directory
+  // warning: asserted on the accessible name so a label regression can't
+  // hide behind the visible ".shared" paragraph still being correct.
+  it('names the shared-directory warning in the accessible name, not just the visible paragraph', () => {
+    render(<SessionCard onOpen={() => {}} state={{ ...base, sharesWorktreeWith:['s2'] }} />);
+    const card = screen.getByRole('button', { name: /trellome/i });
+    expect(card.getAttribute('aria-label') ?? '').toMatch(/shares this directory/i);
+  });
 });
