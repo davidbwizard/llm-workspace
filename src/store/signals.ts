@@ -28,8 +28,17 @@ const BLOCKING_NOTIFICATIONS = new Set(['permission_prompt', 'agent_needs_input'
 const BLOCKING_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
 /** Kinds that resolve a blocker, matched on the SAME tool_use_id or prompt_id.
- *  "A later signal arrived" is not a resolution (spec §9.4). */
+ *  "A later signal arrived" is not a resolution (spec §9.4). `SessionEnd` is
+ *  handled separately below: it is session-scoped, not correlated, because
+ *  the thing that could have answered a blocker is gone once its session
+ *  has ended. */
 const RESOLVING = new Set(['PostToolUse', 'PermissionDenied', 'ElicitationResult']);
+
+/** How far back `openBlockers` looks. A blocker open for longer than this is
+ *  not actionable, and the table is durable by design (never pruned, per
+ *  the schema comment) so an unbounded scan grows for the life of the
+ *  install — unacceptable when Task 11 polls this on a 250ms debounce. */
+export const OPEN_BLOCKERS_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function rowToSignal(r: any): SignalEvent {
   let payload: Record<string, unknown> = {};
@@ -70,16 +79,23 @@ function isBlocking(s: SignalEvent): boolean {
   return false;
 }
 
-/** Blockers with no correlated resolution. Correlation is by tool_use_id, else
- *  prompt_id — never by "something happened afterwards", which would clear a
- *  live permission dialog the moment an unrelated record landed. */
-export function openBlockers(db: Db): Blocker[] {
+/** Blockers with no correlated resolution, among signals from the last
+ *  `windowMs` (default `OPEN_BLOCKERS_WINDOW_MS`). Correlation is by
+ *  tool_use_id, else prompt_id — never by "something happened afterwards",
+ *  which would clear a live permission dialog the moment an unrelated
+ *  record landed. The one exception is `SessionEnd`, which clears every
+ *  open blocker in its session regardless of correlation id: once the
+ *  session is gone, nothing can answer a blocker attributed to it. */
+export function openBlockers(db: Db, windowMs = OPEN_BLOCKERS_WINDOW_MS): Blocker[] {
+  const since = new Date(Date.now() - windowMs).toISOString();
   const rows = db.prepare(
-    'SELECT * FROM signal_events ORDER BY occurred_at').all() as any[];
+    'SELECT * FROM signal_events WHERE occurred_at >= ? ORDER BY occurred_at').all(since) as any[];
   const signals = rows.map(rowToSignal);
 
   const resolved = new Set<string>();
+  const endedSessions = new Set<string>();
   for (const s of signals) {
+    if (s.kind === 'SessionEnd' && s.sessionId) endedSessions.add(s.sessionId);
     if (!RESOLVING.has(s.kind)) continue;
     if (s.toolUseId) resolved.add(`t:${s.toolUseId}`);
     if (s.promptId) resolved.add(`p:${s.promptId}`);
@@ -88,6 +104,7 @@ export function openBlockers(db: Db): Blocker[] {
   const open = new Map<string, Blocker>();
   for (const s of signals) {
     if (!isBlocking(s) || !s.sessionId) continue;
+    if (endedSessions.has(s.sessionId)) continue;
     const key = s.toolUseId ? `t:${s.toolUseId}` : s.promptId ? `p:${s.promptId}` : `e:${s.eventId}`;
     if (resolved.has(key)) continue;
     open.set(key, {
