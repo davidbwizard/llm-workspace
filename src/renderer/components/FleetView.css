@@ -1,5 +1,12 @@
 .fleetwrap { display:flex; flex-direction:column; gap:14px; }
-.fleetbar { display:flex; align-items:baseline; gap:12px; }
+/* titleBarStyle is 'hiddenInset', so the window has no title bar chrome to
+   grab -- without an explicit drag region it cannot be moved at all. The
+   header doubles as the handle. Anything interactive placed in here later
+   must opt out with -webkit-app-region:no-drag, or it stops being
+   clickable. */
+.fleetbar { display:flex; align-items:baseline; gap:12px;
+            -webkit-app-region:drag; }
+.fleetbar button, .fleetbar a, .fleetbar input { -webkit-app-region:no-drag; }
 .fleetbar h1 { font-family:var(--f-display); font-weight:600; font-size:24px; margin:0; }
 .chip { font-family:var(--f-mono); font-size:11px; color:var(--muted);
         background:var(--raised); border-radius:20px; padding:4px 11px; }

@@ -323,6 +323,14 @@ function defaultSignal(pid: number, signal: NodeJS.Signals): void {
  *  script built by string interpolation is not a place to rely on that. */
 const TTY_NAME = /^[a-z][a-z0-9]{0,15}$/;
 
+/** A cwd from `lsof` is our own data, not the renderer's, but it is passed
+ *  as an argument to a CLI -- so it is checked for the one property that
+ *  matters here: an absolute path, not a flag. execFile takes an argument
+ *  array rather than a shell string, so there is no quoting to get wrong. */
+function isAbsolutePath(p: string): boolean {
+  return p.startsWith('/');
+}
+
 /** Selects the exact iTerm2 or Terminal session whose tty matches, rather
  *  than merely raising the application. Both expose `tty` on a session/tab,
  *  and `ps` gives us the agent process's tty, so the two can be matched
@@ -540,6 +548,18 @@ export async function revealSession(rawPid: unknown, opts: {
   // or VS Code's integrated terminal, which has no scriptable tty.
   if (!opts.open && proc.tty && selectTerminalSession(proc.host, proc.tty)) {
     return { status: 'revealed' };
+  }
+
+  // VS Code's integrated terminal exposes no tty to AppleScript, so the tab
+  // itself cannot be selected. Its CLI can at least focus the window for
+  // that project, which is the useful half (spec 7.3's VS Code tier).
+  if (!opts.open && proc.host === 'vscode' && proc.cwd && isAbsolutePath(proc.cwd)) {
+    try {
+      execFileSync('code', ['-r', proc.cwd], { timeout: 4000 });
+      return { status: 'revealed' };
+    } catch {
+      // code CLI absent or failed -- fall through to raising the app.
+    }
   }
 
   try {
