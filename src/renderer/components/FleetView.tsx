@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { SessionCard, OpenSessionCard } from './SessionCard.tsx';
+import { SessionCard } from './SessionCard.tsx';
+import { OpenSessionCard } from './OpenSessionCard.tsx';
 import type { SessionState, OpenSession } from '../../fleet/state.ts';
 import type { FleetPayload } from '../../main/ipc.ts';
 import './FleetView.css';
@@ -78,10 +79,15 @@ export function FleetView() {
   const sessions: SessionState[] = payload.sessions;
   const openSessions: OpenSession[] = payload.openSessions;
   // History is every transcript session, full stop -- not filtered by
-  // lifecycle or anything else. Open sessions above already show what's
-  // live; history's job is to be the complete, un-lossy archive spec
-  // S7.1a requires, so a session whose process already exited (and so
-  // cannot appear above) is never invisible.
+  // lifecycle, and NOT filtered against openSessions either. The same
+  // session legitimately appears in both: an open card answers "this is
+  // running right now"; a History entry answers "this conversation
+  // exists". Confirmed intentional (David's model correction, relayed by
+  // the team lead): "the duplication you identified is intentional... The
+  // same session legitimately appears in both, and subtracting one from
+  // the other would require precisely the attribution we do not have -- so
+  // attempting it would reintroduce the cwd-matching bug that caused this
+  // whole rework." Do not attempt to de-duplicate.
   const history = sessions;
   const needing = openSessions.filter(
     o => o.activity === 'waiting_permission' || o.activity === 'waiting_input').length;

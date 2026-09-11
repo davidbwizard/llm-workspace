@@ -342,9 +342,22 @@ describe('buildFleetPayload — live process discovery wiring', () => {
     const p = buildFleetPayload(db);
     expect(p.openSessions.map(o => o.pid).sort((a, b) => a - b)).toEqual([100, 200]);
     expect(p.openSessions.every(o => o.match === 'unknown' && o.sessionId === null)).toBe(true);
+    // provider comes from WHICH pgrep found each pid, wired all the way
+    // through the real discovery pipeline -- not from any transcript
+    // match, of which there is none here.
+    const byPid = new Map(p.openSessions.map(o => [o.pid, o]));
+    expect(byPid.get(100)!.provider).toBe('claude');
+    expect(byPid.get(200)!.provider).toBe('codex');
   });
 
-  it('enriches an open card only on a unique transcript match, leaving an ambiguous one blank', async () => {
+  // PREMISE CHANGE from the version of this test predating the provider
+  // fix: it used to assert `provider` was null on an ambiguous match. That
+  // was correct when provider was session-derived enrichment; it is not
+  // anymore -- provider now comes straight from the process (which pgrep
+  // found it), so it stays populated regardless of match quality, same as
+  // pid/host. Only what is genuinely session-derived (sessionId/lastProse/
+  // events/activity) stays blank here.
+  it('enriches an open card only on a unique transcript match, leaving session-derived fields blank on an ambiguous one', async () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, sessionId:'s1', contentHash:'c1' }),
@@ -360,11 +373,11 @@ describe('buildFleetPayload — live process discovery wiring', () => {
     expect(p.openSessions).toHaveLength(1);
     expect(p.openSessions[0]!.match).toBe('ambiguous');
     expect(p.openSessions[0]!.sessionId).toBeNull();
-    expect(p.openSessions[0]!.provider).toBeNull();
     expect(p.openSessions[0]!.lastProse).toBeNull();
     expect(p.openSessions[0]!.events).toBeNull();
     expect(p.openSessions[0]!.activity).toBeNull();
     // Still attributable -- these come from the process, not a session.
+    expect(p.openSessions[0]!.provider).toBe('claude');
     expect(p.openSessions[0]!.pid).toBe(9);
     expect(p.openSessions[0]!.cwd).toBe('/repo/shared');
   });

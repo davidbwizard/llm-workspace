@@ -10,7 +10,7 @@ function fakeExec(responses: Record<string, string>): ExecFn {
 }
 
 describe('discoverLiveProcesses', () => {
-  it('finds processes for both providers concurrently and reports pid/tty/cwd/host/age/memory', async () => {
+  it('finds processes for both providers concurrently and reports pid/provider/tty/cwd/host/age/memory', async () => {
     const exec = fakeExec({
       'pgrep -x claude': '100\n',
       'pgrep -x codex': '200\n',
@@ -29,12 +29,16 @@ describe('discoverLiveProcesses', () => {
     expect(procs).toHaveLength(2);
     const byPid = new Map(procs.map(p => [p.pid, p]));
 
+    // provider comes from WHICH pgrep found the pid (100 from 'pgrep -x
+    // claude' above, 200 from 'pgrep -x codex'), not from any per-pid
+    // lookup -- it is known before any of the other fields are, and
+    // unlike them is never subject to a ps/lsof call failing soft.
     expect(byPid.get(100)).toEqual({
-      pid: 100, tty: 'ttys001', cwd: '/repo/a', host: 'iterm2',
+      pid: 100, provider: 'claude', tty: 'ttys001', cwd: '/repo/a', host: 'iterm2',
       ageSeconds: 5 * 60 + 23, rssBytes: 1234 * 1024,
     });
     expect(byPid.get(200)).toEqual({
-      pid: 200, tty: 'ttys002', cwd: '/repo/b', host: 'unknown',
+      pid: 200, provider: 'codex', tty: 'ttys002', cwd: '/repo/b', host: 'unknown',
       ageSeconds: ((9 * 24 + 14) * 60 + 2) * 60 + 34, rssBytes: 654321 * 1024,
     });
   });
@@ -59,7 +63,7 @@ describe('discoverLiveProcesses', () => {
         bin === 'pgrep' && args[1] === 'claude' ? '100\n' : '';
       const procs = await discoverLiveProcesses(exec);
       expect(procs).toEqual([
-        { pid: 100, tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null },
+        { pid: 100, provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null },
       ]);
     });
 
@@ -105,7 +109,9 @@ describe('process cache', () => {
       bin === 'pgrep' && args[1] === 'claude' ? '100\n' : '';
 
     const result = await mod.refreshLiveProcesses(exec);
-    const expected = [{ pid: 100, tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null }];
+    const expected = [
+      { pid: 100, provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null },
+    ];
     expect(result).toEqual(expected);
     expect(mod.getCachedLiveProcesses()).toEqual(expected);
   });

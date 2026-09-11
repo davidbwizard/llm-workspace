@@ -258,7 +258,7 @@ describe('fleetState', () => {
   });
 
   function proc(o: Partial<LiveProcess> & { pid: number }): LiveProcess {
-    return { tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
+    return { provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
   }
 
   describe('process liveness (Phase 3 tiers)', () => {
@@ -432,7 +432,7 @@ describe('fleetState', () => {
 // plain inputs rather than a db -- it is pure and does not query.
 describe('openSessions', () => {
   function proc(o: Partial<LiveProcess> & { pid: number }): LiveProcess {
-    return { tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
+    return { provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
   }
 
   it('lists one card per live process, regardless of transcript recency', () => {
@@ -452,18 +452,34 @@ describe('openSessions', () => {
     expect(open[0]!.match).toBe('unique');
   });
 
-  it('shows pid, host, cwd, project, age and memory for a process with no transcript match at all', () => {
+  it('shows pid, provider, host, cwd, project, age and memory for a process with no transcript match at all', () => {
     const open = openSessions([], [proc({
-      pid:42, cwd:'/Users/me/orphan', host:'iterm2', ageSeconds:120, rssBytes:50_000_000,
+      pid:42, provider:'codex', cwd:'/Users/me/orphan', host:'iterm2', ageSeconds:120, rssBytes:50_000_000,
     })]);
     expect(open).toEqual([{
-      pid:42, host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
+      pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, provider:null, lastProse:null, events:null, activity:null,
+      sessionId:null, lastProse:null, events:null, activity:null,
     }]);
   });
 
-  it('enriches a uniquely-matched card with provider, last prose, events and activity', () => {
+  // provider is not enrichment: it is the one field discovery already knows
+  // with certainty for every process (which `pgrep -x <bin>` found it),
+  // independent of any transcript match -- see the openSessions doc
+  // comment. A process discovered as 'codex' reports 'codex' even when it
+  // matches a 'claude' session's cwd, because provider answers "which CLI
+  // is this process", not "which session does this belong to".
+  it("reports provider from the process's own discovery, not from a matched session of a different provider", () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', provider:'claude', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
+    const sessions = fleetState(db, { now: NOW });
+    const open = openSessions(sessions, [proc({ pid:9, provider:'codex', cwd:'/repo/live' })]);
+    expect(open[0]!.match).toBe('unique');
+    expect(open[0]!.sessionId).toBe('s1');
+    expect(open[0]!.provider).toBe('codex');
+  });
+
+  it('enriches a uniquely-matched card with last prose, events and activity', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' }),
@@ -474,19 +490,22 @@ describe('openSessions', () => {
       pid:9, cwd:'/repo/live', host:'vscode', ageSeconds:600, rssBytes:100_000_000,
     })]);
     expect(open[0]).toMatchObject({
-      match:'unique', sessionId:'s1', provider:'claude',
+      match:'unique', sessionId:'s1',
       lastProse:'Reused the JWT helper.', activity:'working',
     });
     expect(open[0]!.events).toBeGreaterThan(0);
   });
 
-  // The core of the redesign's attribution discipline, applied here exactly
-  // as it already is on SessionState.alive: two sessions sharing a cwd make
-  // any process matched to it ambiguous, so none of its words, provider or
-  // turn-boundary state may be attributed to any one of them. The process's
-  // OWN facts (pid/host/cwd/project/age/memory) are unaffected -- the card
-  // IS that process, so those are always attributable.
-  it('renders an ambiguous match without borrowing another session\'s words, provider or activity', () => {
+  // PREMISE CHANGE from the version of this test predating the provider
+  // fix: it used to assert `provider` was null on an ambiguous match,
+  // grouped with the other borrowed-from-a-session fields. That was
+  // correct under the old design, where provider WAS session-derived
+  // enrichment -- it is no longer: provider now comes straight from the
+  // process (LiveProcess.provider, known at discovery time), so it stays
+  // populated regardless of match quality, same as pid/host/age/memory.
+  // The redesign's attribution discipline still applies to everything that
+  // genuinely IS session-derived: sessionId/lastProse/events/activity.
+  it('renders an ambiguous match without borrowing another session\'s words or activity, while provider stays attributable', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
@@ -494,18 +513,18 @@ describe('openSessions', () => {
     ]);
     const sessions = fleetState(db, { now: NOW });
     const open = openSessions(sessions, [proc({
-      pid:7, cwd:'/repo/shared', host:'terminal', ageSeconds:300, rssBytes:1_000_000,
+      pid:7, provider:'codex', cwd:'/repo/shared', host:'terminal', ageSeconds:300, rssBytes:1_000_000,
     })]);
     expect(open).toHaveLength(1);
     expect(open[0]!.match).toBe('ambiguous');
     expect(open[0]!.sessionId).toBeNull();
-    expect(open[0]!.provider).toBeNull();
     expect(open[0]!.lastProse).toBeNull();
     expect(open[0]!.events).toBeNull();
     expect(open[0]!.activity).toBeNull();
     // Still attributable: these come from the process itself, not from a
     // matched session.
     expect(open[0]!.pid).toBe(7);
+    expect(open[0]!.provider).toBe('codex');
     expect(open[0]!.host).toBe('terminal');
     expect(open[0]!.ageSeconds).toBe(300);
     expect(open[0]!.rssBytes).toBe(1_000_000);

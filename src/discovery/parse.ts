@@ -1,7 +1,16 @@
+import type { Provider } from '../core/types.ts';
+
 export type HostApp = 'iterm2' | 'terminal' | 'vscode' | 'claude-app' | 'codex-app' | 'unknown';
 
 export interface LiveProcess {
   pid: number;
+  /** Which provider's CLI this is -- known with certainty at discovery
+   *  time, from the `pgrep -x <bin>` that found this pid (spec §7.1a),
+   *  independent of any transcript match. Not nullable and not optional:
+   *  every LiveProcess src/discovery/live.ts produces comes from grepping
+   *  for exactly one of PROVIDER_BINS, so there is no code path that
+   *  discovers a pid without also knowing which binary found it. */
+  provider: Provider;
   tty: string | null;
   cwd: string | null;
   host: HostApp;

@@ -1,0 +1,17 @@
+/* OpenSessionCard reuses SessionCard's base card classes (.card, .crow,
+   .crow.hasbadge, .prov, .prov.claude/.codex, .crow-meta, .host, .procmeta,
+   .proj, .path, .said, .said.wait, .metrics, .state and its dot/working/
+   waiting/error variants, .badge) rather than redefining them here. This is
+   deliberate, not an oversight: this codebase's CSS is global (plain
+   imports, not modules -- theme.css itself is imported once, at
+   src/renderer/main.tsx, and used by every component without a
+   per-component re-import, e.g. SessionCard's own ".display" rule).
+   SessionCard.css is guaranteed loaded wherever this component is, since
+   FleetView imports SessionCard (for History) alongside OpenSessionCard
+   (for the open-sessions tier). Only what is genuinely new to this card
+   lives here. */
+
+/* pid, shown in .metrics -- same quiet mono treatment as the counts beside
+   it, since it is bookkeeping (and what a future close action targets),
+   not the card's headline. */
+.pid { font-family:var(--f-mono); font-size:11px; color:var(--faint); }

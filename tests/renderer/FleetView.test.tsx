@@ -18,13 +18,15 @@ const s = (o: Partial<SessionState>): SessionState => ({
   processRssBytes:null, sharesWorktreeWith:[], ...o,
 });
 
-// An open-process fixture -- unattributed by default (no transcript
-// match), which is the common outcome on a shared-cwd repo (see
+// An open-process fixture -- unmatched to any transcript session by
+// default, which is the common outcome on a shared-cwd repo (see
 // openSessions' doc comment in src/fleet/state.ts): most open cards in
-// practice will NOT have a uniquely-matched session.
+// practice will NOT have a uniquely-matched session. `provider` is set
+// regardless -- unlike sessionId/lastProse/events/activity, it comes
+// straight from the process, never from a match, so it is never null.
 const o = (over: Partial<OpenSession>): OpenSession => ({
-  pid:1, host:'unknown', cwd:'/r', project:'proj', ageSeconds:60, rssBytes:null,
-  match:'unknown', sessionId:null, provider:null, lastProse:null, events:null,
+  pid:1, provider:'claude', host:'unknown', cwd:'/r', project:'proj', ageSeconds:60, rssBytes:null,
+  match:'unknown', sessionId:null, lastProse:null, events:null,
   activity:null, ...over,
 });
 

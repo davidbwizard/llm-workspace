@@ -321,6 +321,13 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
 
 export interface OpenSession {
   pid: number;
+  /** Which provider's CLI this is. Straight from the process
+   *  (LiveProcess.provider) -- known with certainty from the `pgrep -x
+   *  <bin>` that found this pid (src/discovery/live.ts), never from a
+   *  matched session. Always attributable, same reasoning as ageSeconds/
+   *  rssBytes below: the card IS the process, so this is a fact about the
+   *  process itself, not enrichment borrowed from a transcript match. */
+  provider: Provider;
   host: LiveProcess['host'];
   cwd: string | null;
   project: string;
@@ -335,13 +342,12 @@ export interface OpenSession {
   match: MatchQuality;
   /** The one session this pid's cwd matches uniquely, or null -- both when
    *  no session shares its cwd at all, and when several do (`ambiguous`,
-   *  ordinary on a shared-cwd repo). `provider`/`lastProse`/`events`/
-   *  `activity` below are enrichment from THIS session and are null under
-   *  the exact same two conditions -- see the `alive` doc comment on
-   *  SessionState for why an ambiguous match may never be attributed to
-   *  any one of the sessions sharing it. */
+   *  ordinary on a shared-cwd repo). `lastProse`/`events`/`activity` below
+   *  are enrichment from THIS session and are null under the exact same
+   *  two conditions -- see the `alive` doc comment on SessionState for why
+   *  an ambiguous match may never be attributed to any one of the sessions
+   *  sharing it. */
   sessionId: string | null;
-  provider: Provider | null;
   lastProse: string | null;
   events: number | null;
   /** The working/waiting/idle distinction from the matched session's own
@@ -360,12 +366,15 @@ export interface OpenSession {
  *  other, so History (transcripts) still loses nothing (spec §7.1a) even
  *  though most open processes will also show up there.
  *
- *  Enrichment (provider/lastProse/events/activity) is attached only on a
- *  UNIQUE match, same discipline `alive` already enforces on SessionState:
- *  an ambiguous match (several sessions share this pid's cwd, the common
+ *  Enrichment (lastProse/events/activity) is attached only on a UNIQUE
+ *  match, same discipline `alive` already enforces on SessionState: an
+ *  ambiguous match (several sessions share this pid's cwd, the common
  *  case on a real workspace) must never borrow one of those sessions'
- *  words, provider, or turn-boundary state onto this card -- a blank
- *  field is honest, a wrong one is not. */
+ *  words or turn-boundary state onto this card -- a blank field is
+ *  honest, a wrong one is not. `provider` is NOT in that enrichment list
+ *  -- it is the one fact discovery already knows with certainty for every
+ *  process regardless of any transcript match (see LiveProcess.provider),
+ *  so it is read straight from `p`, never from a matched session. */
 export function openSessions(sessions: SessionState[], processes: LiveProcess[]): OpenSession[] {
   const refs = sessions.map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
   const matches = classifyMatch(processes, refs);
@@ -376,6 +385,7 @@ export function openSessions(sessions: SessionState[], processes: LiveProcess[])
     const matched = m.quality === 'unique' ? byId.get(m.sessionId!) ?? null : null;
     return {
       pid: p.pid,
+      provider: p.provider,
       host: p.host,
       cwd: p.cwd,
       project: projectName(p.cwd),
@@ -383,7 +393,6 @@ export function openSessions(sessions: SessionState[], processes: LiveProcess[])
       rssBytes: p.rssBytes ?? null,
       match: m.quality,
       sessionId: matched?.sessionId ?? null,
-      provider: matched?.provider ?? null,
       lastProse: matched?.lastProse ?? null,
       events: matched?.events ?? null,
       activity: matched?.activity ?? null,

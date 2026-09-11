@@ -26,12 +26,16 @@ import {
   parsePgrep, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost, type LiveProcess,
 } from './parse.ts';
 import { parseProcessChainHop } from '../config.ts';
+import type { Provider } from '../core/types.ts';
 
 const execFileP = promisify(execFile);
 
 /** The two provider CLIs discovery greps for -- the same 'claude' | 'codex'
- *  vocabulary the rest of the app uses for Provider, spelled out here as
- *  literal pgrep arguments rather than imported as a type. */
+ *  vocabulary Provider (core/types.ts) uses. `as const` gives this array's
+ *  elements the literal type `'claude' | 'codex'`, identical to Provider,
+ *  so each `bin` below is already assignable to inspectPid's `provider`
+ *  parameter with no cast -- this IS which provider found the pid, not a
+ *  lookalike string that happens to match. */
 const PROVIDER_BINS = ['claude', 'codex'] as const;
 
 /** One shell-out, injectable so tests can drive discovery deterministically
@@ -74,14 +78,17 @@ async function walkProcessChain(pid: number, exec: ExecFn, maxDepth = 12): Promi
   return chain;
 }
 
-/** Inspect one pid, already known-live from pgrep. The four lookups (tty,
- *  cwd, age+memory, ancestry chain) are independent of one another, so they
- *  run concurrently rather than one after another. Each is individually
+/** Inspect one pid, already known-live from pgrep for the given `provider`
+ *  -- the ONE fact about this pid discovery already had before any of the
+ *  four lookups below ran, so it is passed in rather than derived, and is
+ *  never subject to their fail-soft behaviour. The four lookups (tty, cwd,
+ *  age+memory, ancestry chain) are independent of one another, so they run
+ *  concurrently rather than one after another. Each is individually
  *  fail-soft (exec's contract, see above) -- a pid whose ps/lsof calls all
  *  come back empty (e.g. it exited between pgrep and this call) still
  *  produces a LiveProcess, just with every derived field null/'unknown'
- *  rather than the pid disappearing. */
-async function inspectPid(pid: number, exec: ExecFn): Promise<LiveProcess> {
+ *  (provider excepted) rather than the pid disappearing. */
+async function inspectPid(pid: number, provider: Provider, exec: ExecFn): Promise<LiveProcess> {
   const [ttyOut, cwdOut, statOut, chain] = await Promise.all([
     exec('ps', ['-o', 'tty=', '-p', String(pid)]),
     exec('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']),
@@ -90,6 +97,7 @@ async function inspectPid(pid: number, exec: ExecFn): Promise<LiveProcess> {
   ]);
   return {
     pid,
+    provider,
     tty: parseTty(ttyOut),
     cwd: parseLsofCwd(cwdOut),
     host: classifyHost(chain),
@@ -108,7 +116,7 @@ export async function discoverLiveProcesses(exec: ExecFn = defaultExec): Promise
   try {
     const byProvider = await Promise.all(PROVIDER_BINS.map(async bin => {
       const pids = parsePgrep(await exec('pgrep', ['-x', bin]));
-      return Promise.all(pids.map(pid => inspectPid(pid, exec)));
+      return Promise.all(pids.map(pid => inspectPid(pid, bin, exec)));
     }));
     return byProvider.flat();
   } catch {
