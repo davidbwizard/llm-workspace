@@ -95,23 +95,26 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
         ORDER BY p.ts DESC, p.id DESC LIMIT 1) last_prose
     FROM events e GROUP BY session_id, provider`).all() as any[];
 
-  // Per-agent recency: the most recent event (any kind) carrying each
-  // agent_id, across the whole index -- not scoped to agent.spawned rows,
-  // since an agent's own prose/tool.used events are what show it is still
-  // doing something. Paired with the spawned-agent-ids query below to
-  // compute liveAgents per session (see the comment above).
-  const agentLastSeen = new Map<string, string>(); // key: `${sessionId}:${agentId}`
-  for (const r of db.prepare(`
-    SELECT session_id, agent_id, MAX(ts) last_ts FROM events
-    WHERE agent_id IS NOT NULL GROUP BY session_id, agent_id`).all() as any[]) {
-    agentLastSeen.set(`${r.session_id}:${r.agent_id}`, r.last_ts);
-  }
+  // Per-agent recency + spawn membership, merged into one scan (review:
+  // the two separate unindexed full scans over `events` -- one for
+  // MAX(ts) per (session, agent), one for which ids were ever spawned --
+  // both did the same GROUP BY session_id, agent_id, just on two separate
+  // passes. `agent_id` and `kind` are both unindexed, so each pass cost a
+  // full table scan of the whole events table; merging drops the
+  // render-loop path from three scans to two. `MAX(kind = 'agent.spawned')`
+  // is a boolean-as-integer aggregate: 1 if this (session, agent) pair
+  // ever had an agent.spawned row, else 0 -- the same "ever spawned" test
+  // the separate query made, now folded into the same GROUP BY as the
+  // recency MAX(ts). liveAgents semantics are unchanged: an agent counts
+  // as live only if it was ever spawned AND its own most recent event
+  // (any kind, not just agent.spawned) falls inside WORKING_MS of `now`.
   const liveAgentsBySession = new Map<string, number>();
   for (const r of db.prepare(`
-    SELECT DISTINCT session_id, agent_id FROM events
-    WHERE kind='agent.spawned' AND agent_id IS NOT NULL`).all() as any[]) {
-    const lastTs = agentLastSeen.get(`${r.session_id}:${r.agent_id}`);
-    const age = lastTs ? now - Date.parse(lastTs) : Infinity;
+    SELECT session_id, agent_id, MAX(ts) last_ts, MAX(kind = 'agent.spawned') spawned
+    FROM events WHERE agent_id IS NOT NULL
+    GROUP BY session_id, agent_id`).all() as any[]) {
+    if (!r.spawned) continue; // never had an agent.spawned row -- not a countable agent
+    const age = r.last_ts ? now - Date.parse(r.last_ts) : Infinity;
     if (age <= WORKING_MS) {
       liveAgentsBySession.set(r.session_id, (liveAgentsBySession.get(r.session_id) ?? 0) + 1);
     }
