@@ -806,14 +806,33 @@ ps -o ppid= …                → parent chain → host app
 Verified: `osascript -e 'tell application "Terminal" to get tty of every tab of
 every window'` returns `/dev/ttys013`. iTerm2 exposes `tty` per session.
 
-| Host | Jump-to-session |
-|---|---|
-| iTerm2 | Match tty → raise that window/tab |
-| Terminal.app | Match tty → raise that window/tab |
-| VS Code | **Not possible** for a specific tab. Focus the window, and say so |
-| Claude.app / Codex Desktop | Focus the app |
+| Host | Jump-to-session | Precision reached |
+|---|---|---|
+| iTerm2 | Match tty, raise that window/tab | exact tab |
+| Terminal.app | Match tty, raise that window/tab | exact tab |
+| VS Code | `code -r <cwd>` raises an existing window already open on that folder | **project window**, not the tab |
+| Claude.app / Codex Desktop | Focus the app | app |
 
-Gated on a `unique` match per §7.2.
+Verified: `code` 1.135.0 at `/usr/local/bin/code`, with `-r/--reuse-window` and
+`-g/--goto <file:line[:character]>`. `open -a "Visual Studio Code" <path>` is the
+fallback when the CLI is absent.
+
+**Revision 6 overstated this.** It said a specific tab was "not possible" and to
+"focus the window", which conflated two different precisions. Reaching the right
+*project window* is a real action worth offering; only the terminal tab inside it
+is out of reach.
+
+**Two independent limits, which the UI must not merge.** Terminal-host precision
+(above) is about which window a jump lands in. Match quality (§7.2) is about
+which *session* is asking. A VS Code session with an `ambiguous` match still gets
+an "Open in VS Code" button, because the working directory is known and shared by
+the candidates — what cannot be stated is which of them is waiting. Collapsing
+the two produces a UI that withholds a working action because of an unrelated
+uncertainty.
+
+Jump actions are gated on a `unique` match only where the action needs the
+specific process: raising a matched tty. A directory-scoped action is gated on
+knowing the directory.
 
 ---
 
