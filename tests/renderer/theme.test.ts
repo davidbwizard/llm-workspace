@@ -52,11 +52,17 @@ function blockAfter(selector: string): string {
  *  prevents it. */
 describe('theme tokens', () => {
   it('declares every token in the bare :root before any override', () => {
+    // Matched on the parsed token name, not a substring of the raw text:
+    // '--accent' is a substring of '--accent-soft', so a plain toContain(t)
+    // here would still pass with --accent deleted as long as --accent-soft
+    // (the decoy) is still declared. Same collision for --signal, --critical,
+    // --ink and --line against their own '-soft'/'-2' siblings.
     const bare = css.slice(0, css.search(/@media|:root\[data-theme/));
+    const bareTokens = Object.keys(parseTokens(bare));
     for (const t of ['--ground','--surface','--raised','--line','--line-soft',
                      '--ink','--ink-2','--muted','--faint','--accent','--signal',
                      '--critical','--ok','--ag-blue','--ag-red'])
-      expect(bare, `${t} must exist in bare :root`).toContain(t);
+      expect(bareTokens, `${t} must exist in bare :root`).toContain(t);
   });
 
   it('guards the light media query so an explicit dark choice wins', () => {
@@ -105,8 +111,16 @@ describe('theme tokens', () => {
     }
   });
 
-  it('pushes Fraunces to its SOFT and WONK axes for headings', () => {
-    expect(css).toMatch(/h1[^{]*\{[^}]*font-variation-settings:\s*"SOFT"\s*100,\s*"WONK"\s*1/);
+  it('pushes Fraunces to its SOFT and WONK axes via a token, not a literal', () => {
+    const bare = css.slice(0, css.search(/@media|:root\[data-theme/));
+    const bareTokens = parseTokens(bare);
+    expect(bareTokens['--f-display-fx'], '--f-display-fx must exist in bare :root')
+      .toBe('"SOFT" 100, "WONK" 1');
+    // .display, not just h1/h2/h3, so a non-heading element (a project name,
+    // say) can opt in without being a heading tag. Consumes the token via
+    // var() -- a rule that repeated the literal here would still pass this
+    // test's first half while drifting from --f-display-fx unnoticed.
+    expect(css).toMatch(/\.display[^{]*\{[^}]*font-variation-settings:\s*var\(--f-display-fx\)/);
   });
 
   it('disables transitions under reduced motion', () => {

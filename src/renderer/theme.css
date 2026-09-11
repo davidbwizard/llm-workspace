@@ -50,6 +50,9 @@
   --f-display:"Fraunces",Georgia,"Times New Roman",serif;
   --f-body:"Karla",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  /* Fraunces's SOFT and WONK axes, both pushed up (visual design doc §4).
+     Theme-independent, so declared once here and nowhere else. */
+  --f-display-fx:"SOFT" 100, "WONK" 1;
   --r-lg:16px; --r-md:12px; --r-sm:9px;
 }
 /* The light palette below is declared twice, verbatim: once here, guarded so
@@ -95,10 +98,11 @@ body {
 .shell { padding:20px; }
 
 /* Display face: soft serif with SOFT and WONK both pushed to their maximum,
-   per the visual design doc §4. Headings, project names, panel names. */
-h1, h2, h3 {
+   per the visual design doc §4. Headings, project names, panel names --
+   .display lets a non-heading element (e.g. a project name) opt in too. */
+h1, h2, h3, .display {
   font-family:var(--f-display);
-  font-variation-settings:"SOFT" 100, "WONK" 1;
+  font-variation-settings:var(--f-display-fx);
 }
 
 /* Interaction: 130ms, and none at all for anyone who asked for none. */
