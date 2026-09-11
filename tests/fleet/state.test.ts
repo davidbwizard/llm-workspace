@@ -41,6 +41,32 @@ describe('fleetState', () => {
     expect(s!.activity).toBe('working');
   });
 
+  // Activity is decided by WHICH event happened last, not how long ago. An
+  // agent mid-tool-call or mid-generation writes nothing for minutes; the old
+  // rule (any event within 20s) reported one session working while five were.
+  it('stays working while quiet, when the last event is not a turn boundary', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/r' }, contentHash:'a' }),
+      ev({ kind:'tool.used', ts:at(8), payload:{ name:'Bash' }, contentHash:'b', subIndex:1 }),
+    ]);
+    const [s] = fleetState(db, { now: NOW });
+    expect(s!.lifecycle).toBe('active');
+    expect(s!.activity).toBe('working');
+  });
+
+  it('is idle the moment the turn completes, however recent that was', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/r' }, contentHash:'a' }),
+      ev({ kind:'tool.used', ts:at(1), payload:{ name:'Bash' }, contentHash:'b', subIndex:1 }),
+      ev({ kind:'turn.completed', ts:at(0), payload:{}, contentHash:'c', subIndex:2 }),
+    ]);
+    const [s] = fleetState(db, { now: NOW });
+    expect(s!.lifecycle).toBe('active');
+    expect(s!.activity).toBe('idle');
+  });
+
   it('goes idle when nothing has happened for a while', () => {
     const db = openDb(':memory:');
     insertEvents(db, [

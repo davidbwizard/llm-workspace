@@ -37,6 +37,14 @@ export interface SessionState {
 const WORKING_MS = 20_000;
 const ACTIVE_MS = 30 * 60_000;
 
+/** Event kinds that mean the agent handed control back and is now waiting on
+ *  the user. Activity is derived from WHICH event happened last, not from how
+ *  long ago it was: an agent mid-tool-call or mid-generation writes nothing for
+ *  minutes, and the previous age-based rule (any event within 20s) reported one
+ *  session working while five genuinely were. `turn.completed` covers 854 of
+ *  877 sessions in the real index, so it is a reliable boundary. */
+const TURN_END_KINDS = new Set(['turn.completed', 'session.ended']);
+
 export interface FleetOpts { now?: number; processes?: LiveProcess[] }
 
 export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
@@ -92,7 +100,10 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
         ORDER BY c.ts DESC, c.id DESC LIMIT 1) cwd,
       (SELECT json_extract(payload,'$.text') FROM events p
         WHERE p.session_id = e.session_id AND p.kind='prose'
-        ORDER BY p.ts DESC, p.id DESC LIMIT 1) last_prose
+        ORDER BY p.ts DESC, p.id DESC LIMIT 1) last_prose,
+      (SELECT k.kind FROM events k
+        WHERE k.session_id = e.session_id
+        ORDER BY k.ts DESC, k.id DESC LIMIT 1) last_kind
     FROM events e GROUP BY session_id, provider`).all() as any[];
 
   // Per-agent recency + spawn membership, merged into one scan (review:
@@ -167,7 +178,7 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     let activity: Activity;
     if (blocker) {
       activity = blocker.kind === 'PermissionRequest' ? 'waiting_permission' : 'waiting_input';
-    } else if (age <= WORKING_MS) {
+    } else if (lifecycle === 'active' && !TURN_END_KINDS.has(r.last_kind)) {
       activity = 'working';
     } else {
       activity = 'idle';
