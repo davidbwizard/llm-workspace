@@ -103,13 +103,19 @@ export function ingestFileOnce(db: Db, path: string, provider: Provider): Ingest
   const knownInode = staleParser ? null : (prior?.inode ?? null);
   const tail = readTail(path, from, knownInode);
 
-  // B2/B3: resuming (a prior, non-stale ingest of this exact file exists,
-  // and this pass is a plain tail, not a forced from-zero re-read) means the
-  // parser is about to see a chunk with no session_meta (Codex) or no
-  // cwd-bearing first record (Claude) -- so its session/agent identity must
+  // B2/B3: resuming -- a genuinely continued read, picking up past byte 0 --
+  // means the parser is about to see a chunk with no session_meta (Codex) or
+  // no cwd-bearing first record (Claude), so its session/agent identity must
   // be seeded from what the store already recorded for this file, not
-  // re-derived from scratch.
-  const resuming = prior !== undefined && !staleParser && !tail.restarted;
+  // re-derived from scratch. `from > 0` (rather than merely `prior !==
+  // undefined`) matters: a reparse re-derives the WHOLE file from byte zero,
+  // about to delete those same rows, so seeding from them would be both
+  // unnecessary and wrong -- staleParser already forces `from` to 0 in that
+  // case, and `tail.restarted` catches a truncation/replacement discovered
+  // only after the read. A first-ever read of a file is `from === 0` too, so
+  // this condition also covers "nothing to resume from yet" without needing
+  // to check `prior` separately.
+  const resuming = from > 0 && !staleParser && !tail.restarted;
   const resume = resuming ? resumeContextFor(db, path) : undefined;
 
   const events = parse(tail.lines, path, resume);
