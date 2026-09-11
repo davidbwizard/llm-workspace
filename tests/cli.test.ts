@@ -121,8 +121,8 @@ describe('formatEventLine', () => {
 
 // formatEventLine runs sanitizeForTerminal over every provider-sourced field
 // it prints: prose text, prompt.submitted text, tool.used name and target,
-// unparsed reason and recordType, agent.spawned name, and agentId. The test
-// above only exercises the prose branch -- a regression that dropped
+// unparsed reason and recordType, agent.spawned name and depth, and agentId.
+// The test above only exercises the prose branch -- a regression that dropped
 // sanitizeForTerminal from any of the other fields would pass the rest of
 // this suite untouched, since sanitizeForTerminal's own tests (below) never
 // go through formatEventLine. This table drives a hostile payload through
@@ -173,6 +173,10 @@ describe('formatEventLine sanitizes every provider-sourced field', () => {
     { field: 'agent.spawned name', event: text => ({
       ts: '2026-09-10T14:31:22Z', kind: 'agent.spawned', agentId: null,
       payload: { name: text, depth: 1 },
+    }) },
+    { field: 'agent.spawned depth', event: text => ({
+      ts: '2026-09-10T14:31:22Z', kind: 'agent.spawned', agentId: null,
+      payload: { name: 'reviewer', depth: text },
     }) },
     { field: 'agentId', event: text => ({
       ts: '2026-09-10T14:31:22Z', kind: 'prose', agentId: text,

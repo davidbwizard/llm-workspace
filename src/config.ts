@@ -131,7 +131,7 @@ export function formatEventLine(e: Pick<NormalizedEvent, 'ts' | 'kind' | 'agentI
     const target = p.target != null ? text(p.target).slice(0, 60) : '';
     return `${time}${agent}    * ${text(p.name)}${target ? ' ' + target : ''}`;
   }
-  if (e.kind === 'agent.spawned') return `${time}  + spawned ${text(p.name)} (depth ${p.depth})`;
+  if (e.kind === 'agent.spawned') return `${time}  + spawned ${text(p.name)} (depth ${text(p.depth)})`;
   if (e.kind === 'unparsed') return `${time}  ! unparsed: ${text(p.reason)} ${text(p.recordType ?? '')}`;
   if (NOISY.has(e.kind)) return `${time}    * ${e.kind}`;
   return `${time}  ${e.kind}`;
