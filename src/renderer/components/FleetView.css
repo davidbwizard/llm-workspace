@@ -28,3 +28,10 @@
 .empty.error { color:var(--critical); }
 .empty code { font-family:var(--f-mono); font-size:.9em;
               background:var(--raised); padding:1px 5px; border-radius:5px; }
+/* The ErrorBoundary's stack/componentStack (src/renderer/App.tsx) -- shown
+   so the fault can be located from the window itself, not only devtools.
+   pre-wrap rather than a horizontal scroll: a stack trace is meant to be
+   read top to bottom, not hunted for off the right edge of the window. */
+.crash-stack { max-width:none; margin-top:8px; font-family:var(--f-mono); font-size:11px;
+               line-height:1.5; white-space:pre-wrap; word-break:break-word;
+               max-height:40vh; overflow-y:auto; color:var(--muted); }

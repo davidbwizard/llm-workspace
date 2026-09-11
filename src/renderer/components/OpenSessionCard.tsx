@@ -141,8 +141,27 @@ export function OpenSessionCard({ state, onOpen, onKill }: {
   // card has already unmounted by the time that resolves (its pid dropped
   // out of a fleet:update that arrived in the meantime), there is nothing
   // left to update.
+  //
+  // The setup function sets this back to true, not just the useRef
+  // initializer -- React 18 StrictMode (src/renderer/main.tsx wraps <App>
+  // in it) double-invokes a mount in development: setup, then immediately
+  // its own cleanup, then setup again, simulating an unmount+remount. A
+  // useRef initializer only ever runs once, on the true first mount, so an
+  // effect that ONLY assigns false in its cleanup -- as this one did --
+  // comes out of that dance permanently false, even though the component
+  // is genuinely mounted: the simulated cleanup sets it false and nothing
+  // ever sets it back to true. Every kill on every card was silently
+  // dropping its post-signal update as a result -- the card stuck
+  // forever on "Ending session...", never reaching "Signal sent.",
+  // "Already gone.", or a refusal message, in exactly the dev/StrictMode
+  // configuration this app is normally run in. Setting it in the setup
+  // function too closes that gap: StrictMode's extra setup call restores
+  // true, the same as a genuine remount would leave it.
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     if (phase !== 'settled') return;

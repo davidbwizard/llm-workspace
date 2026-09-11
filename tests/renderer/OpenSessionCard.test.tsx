@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { OpenSessionCard } from '../../src/renderer/components/OpenSessionCard.tsx';
 import type { OpenSession } from '../../src/fleet/state.ts';
@@ -270,6 +271,33 @@ describe('OpenSessionCard', () => {
       const closeBtn = screen.getByRole('button', { name: /^Close/ });
       fireEvent.keyDown(closeBtn, { key: 'Enter' });
       expect(onOpen).not.toHaveBeenCalled();
+    });
+
+    // Regression: src/renderer/main.tsx wraps <App> in <React.StrictMode>,
+    // which is what the app actually runs under (electron-vite dev serves
+    // the development React build, where StrictMode's extra mount/unmount/
+    // remount simulation is active; it is a no-op in a production build).
+    // mountedRef's guarding effect used to assign `false` only in its
+    // cleanup, never resetting it in its own setup -- StrictMode's
+    // simulated cleanup-then-remount left it permanently false on every
+    // card, so doKill's post-`await onKill` update was silently dropped by
+    // its own `if (!mountedRef.current) return` guard. The card never
+    // reached "Signal sent."/"Already gone."/a refusal message; it stayed
+    // on "Ending session..." forever, indistinguishable from the call
+    // still being in flight. Not wrapped in an isolated test file: this is
+    // the exact rendering configuration production actually uses, so the
+    // regression test needs to match it, not a bare `render()`.
+    it('settles to a real outcome after a successful kill even under React.StrictMode', async () => {
+      const onKill = vi.fn<(pid: number) => Promise<KillResult>>().mockResolvedValue({ status: 'killed' });
+      render(
+        <React.StrictMode>
+          <OpenSessionCard onOpen={() => {}} onKill={onKill} state={withProcMeta} />
+        </React.StrictMode>,
+      );
+      fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
+      fireEvent.click(screen.getByRole('button', { name: /^End session/ }));
+      await waitFor(() => expect(onKill).toHaveBeenCalled());
+      expect(await screen.findByText(/Signal sent/)).toBeTruthy();
     });
   });
 });
