@@ -10,7 +10,7 @@ declare global {
     // marking it optional forces every call site to check first.
     fleet?: {
       listFleet: () => Promise<FleetListPayload>;
-      listHistory: () => Promise<FleetHistoryPayload>;
+      listHistory: (offset: number, limit: number) => Promise<FleetHistoryPayload>;
       onFleet: (cb: (payload: FleetListPayload) => void) => () => void;
     };
   }

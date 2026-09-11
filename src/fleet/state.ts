@@ -85,10 +85,68 @@ function oldestProcess(procs: LiveProcess[]): LiveProcess | null {
   }, null);
 }
 
-export interface FleetOpts { now?: number; processes?: LiveProcess[] }
+/** sessionSummaries' row shape -- named so FleetOpts.precomputedSummaries
+ *  below can reference it without exporting sessionSummaries itself. */
+interface SessionSummaryRow { session_id: string; provider: string; last_ts: string | null; cwd: string | null }
+
+export interface FleetOpts {
+  now?: number;
+  processes?: LiveProcess[];
+  /** Restricts the expensive per-row work below (the four correlated
+   *  subqueries, and the liveAgents scan) to exactly these session ids --
+   *  everything else about the call (matching against `processes`,
+   *  worktree-sharing) still sees every session, via sessionSummaries
+   *  below, because both of those are inherently global: a session NOT in
+   *  this list can still be the thing that makes another session's match
+   *  'ambiguous' or its sharesWorktreeWith non-empty. Omitted (the
+   *  default): every session gets full treatment, unchanged from before
+   *  this option existed -- see fleetStatePage for the paginated caller
+   *  this exists for. */
+  sessionIds?: string[];
+  /** Internal -- set only by fleetStatePage, which already ran
+   *  sessionSummaries once to rank the page it is requesting. Without
+   *  this, fleetState would run that same ~130ms query a SECOND time
+   *  (measured against the real index) purely for the global matching/
+   *  worktree-sharing context sessionIds triggers below, doubling
+   *  fleetStatePage's cost for no new information -- caught by timing
+   *  fleetStatePage directly, not by guesswork. Not meant for any other
+   *  caller: passing a summary set that does not match what `db` actually
+   *  holds right now would silently corrupt matching/sharing for this
+   *  call, so ordinary callers should always omit it and let fleetState
+   *  fetch its own. */
+  precomputedSummaries?: SessionSummaryRow[];
+}
+
+/** Cheap per-session summary -- session_id, provider, last activity, and
+ *  cwd -- WITHOUT the three other correlated subqueries fleetState's own
+ *  main query also runs (run_id, last_prose, last_kind) or its liveAgents/
+ *  blocker/events-count work. Exists for two things that are inherently
+ *  global regardless of how many sessions a caller actually wants full
+ *  detail for: ranking sessions by recency (fleetStatePage's pagination)
+ *  and giving fleetState's matching/worktree-sharing logic every session's
+ *  cwd even when `opts.sessionIds` restricts the expensive part to a page.
+ *  Measured against the real index (878 sessions): ~130ms -- real cost,
+ *  not free, but paid once per on-demand fleet:history request, never on
+ *  the fleet:list/fleet:update path (see buildFleetListPayload's and
+ *  pushFleet's doc comments in src/main/ipc.ts). */
+function sessionSummaries(db: Db): SessionSummaryRow[] {
+  return db.prepare(`
+    SELECT session_id, provider, MAX(ts) last_ts,
+      (SELECT json_extract(payload,'$.cwd') FROM events c
+        WHERE c.session_id = e.session_id AND c.kind='session.started'
+        ORDER BY c.ts DESC, c.id DESC LIMIT 1) cwd
+    FROM events e GROUP BY session_id, provider`).all() as any[];
+}
 
 export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   const now = opts.now ?? Date.now();
+  // An explicit empty list means "no sessions requested" -- short-circuit
+  // rather than run `WHERE session_id IN ()` (matches nothing anyway, but
+  // pointlessly) or, worse, an unfiltered query if the placeholder list
+  // below were built wrong for zero elements.
+  if (opts.sessionIds && opts.sessionIds.length === 0) return [];
+  const idFilter = opts.sessionIds ? `WHERE e.session_id IN (${opts.sessionIds.map(() => '?').join(',')})` : '';
+  const idParams = opts.sessionIds ?? [];
 
   // DEVIATION from the brief's SQL (see task-4-report.md for the write-up):
   //
@@ -144,7 +202,7 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
       (SELECT k.kind FROM events k
         WHERE k.session_id = e.session_id
         ORDER BY k.ts DESC, k.id DESC LIMIT 1) last_kind
-    FROM events e GROUP BY session_id, provider`).all() as any[];
+    FROM events e ${idFilter} GROUP BY session_id, provider`).all(...idParams) as any[];
 
   // Per-agent recency + spawn membership, merged into one scan (review:
   // the two separate unindexed full scans over `events` -- one for
@@ -160,10 +218,11 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   // as live only if it was ever spawned AND its own most recent event
   // (any kind, not just agent.spawned) falls inside WORKING_MS of `now`.
   const liveAgentsBySession = new Map<string, number>();
+  const agentIdFilter = opts.sessionIds ? `AND session_id IN (${opts.sessionIds.map(() => '?').join(',')})` : '';
   for (const r of db.prepare(`
     SELECT session_id, agent_id, MAX(ts) last_ts, MAX(kind = 'agent.spawned') spawned
-    FROM events WHERE agent_id IS NOT NULL
-    GROUP BY session_id, agent_id`).all() as any[]) {
+    FROM events WHERE agent_id IS NOT NULL ${agentIdFilter}
+    GROUP BY session_id, agent_id`).all(...idParams) as any[]) {
     if (!r.spawned) continue; // never had an agent.spawned row -- not a countable agent
     const age = r.last_ts ? now - Date.parse(r.last_ts) : Infinity;
     if (age <= WORKING_MS) {
@@ -187,14 +246,24 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   // sharing even if the same directory has plenty of history. Sessions with
   // no cwd (never saw a session.started) cannot be matched to a directory
   // at all.
+  // Both worktree-sharing and process matching are inherently global: a
+  // session excluded from `rows` by opts.sessionIds can still be the
+  // reason another (included) session's sharesWorktreeWith is non-empty or
+  // its match is 'ambiguous' rather than 'unique'. So when sessionIds
+  // restricted `rows` above, these two are built from sessionSummaries'
+  // full, unfiltered set instead -- the one extra query fleetStatePage's
+  // paginated callers pay, not something the default (unfiltered) call
+  // pays twice for.
+  const globalRows = opts.sessionIds ? (opts.precomputedSummaries ?? sessionSummaries(db)) : rows;
+
   const isReachable = (r: any) => (now - (r.last_ts ? Date.parse(r.last_ts) : 0)) <= ACTIVE_MS;
   const byCwd = new Map<string, string[]>();
-  for (const r of rows) {
+  for (const r of globalRows) {
     if (!r.cwd || !isReachable(r)) continue;
     byCwd.set(r.cwd, [...(byCwd.get(r.cwd) ?? []), r.session_id]);
   }
 
-  const refs = rows.map(r => ({ sessionId: r.session_id as string, cwd: (r.cwd ?? null) as string | null }));
+  const refs = globalRows.map(r => ({ sessionId: r.session_id as string, cwd: (r.cwd ?? null) as string | null }));
   const matches = classifyMatch(opts.processes ?? [], refs);
   const bySession = new Map<string, { quality: MatchQuality; pids: number[]; host: LiveProcess['host'] | null }>();
   // Iterating `m.candidates` alone covers BOTH cases: for a `unique` match,
@@ -319,25 +388,38 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   }).sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? ''));
 }
 
-/** Cheap count of distinct (session_id, provider) pairs -- the exact same
- *  grouping fleetState's own query uses (`GROUP BY session_id, provider`),
- *  so this always agrees with `fleetState(db).length`, without paying
- *  fleetState's cost of building a full SessionState for every one of
- *  them: no correlated subqueries for run_id/cwd/last_prose/last_kind, no
- *  blocker lookup, no per-agent liveAgents scan, no worktree-sharing
- *  grouping, no sort. Split out of fleetState (rather than calling
- *  `fleetState(db).length` and discarding the rest) so
- *  src/main/ipc.ts's fleet:list handler -- the renderer's one-time initial
- *  pull, per FleetView.tsx -- can report History's size without
- *  materialising History itself, which is the entire point of the
- *  fleet:list/fleet:history split (see buildFleetListPayload's doc
- *  comment in src/main/ipc.ts). Measured ~0ms against the real index
- *  (200k events, 878 sessions) where fleetState costs ~207ms. */
-export function sessionCount(db: Db): number {
-  const row = db.prepare(
-    `SELECT COUNT(*) n FROM (SELECT DISTINCT session_id, provider FROM events)`,
-  ).get() as { n: number };
-  return row.n;
+export interface FleetPage { sessions: SessionState[]; total: number }
+
+/** fleet:history's query: one page of History, newest-first, WITHOUT ever
+ *  materialising any other page. Ranks every session by recency via
+ *  sessionSummaries (the cheap query above -- measured ~130ms against the
+ *  real index, 878 sessions, vs fleetState's own ~207ms+ for full detail
+ *  on all of them), slices for the requested page, then asks fleetState
+ *  for full detail on JUST those ids (`sessionIds`) -- the four
+ *  correlated subqueries, blocker lookup, liveAgents and worktree-sharing/
+ *  matching all still run with full, global correctness (see fleetState's
+ *  own doc comment on why those two stay global), but the expensive
+ *  per-row work is bounded to the page, not the whole index. `total`
+ *  comes free from the same ranking pass, so a caller never needs a
+ *  separate count query on top of this one -- which is also why there is
+ *  no standalone "count of sessions" export here any more: fleet:list
+ *  (src/main/ipc.ts) does not want one at all (nothing history-related
+ *  before the user asks), and fleet:history gets it for free from this. */
+export function fleetStatePage(
+  db: Db, offset: number, limit: number, opts: Omit<FleetOpts, 'sessionIds' | 'precomputedSummaries'> = {},
+): FleetPage {
+  const summaries = sessionSummaries(db);
+  const sorted = summaries
+    .slice()
+    .sort((a, b) => (b.last_ts ?? '').localeCompare(a.last_ts ?? ''));
+  const pageIds = sorted.slice(offset, offset + limit).map(r => r.session_id);
+  // precomputedSummaries: reuses the query just above rather than making
+  // fleetState fetch the same ~130ms result a second time purely for its
+  // global matching/worktree-sharing context (opts.sessionIds triggers
+  // that) -- measured, not assumed: this call was paying for
+  // sessionSummaries twice before precomputedSummaries existed.
+  const sessions = fleetState(db, { ...opts, sessionIds: pageIds, precomputedSummaries: summaries });
+  return { sessions, total: sorted.length };
 }
 
 export interface OpenSession {

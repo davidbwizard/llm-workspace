@@ -5,7 +5,7 @@ import { contextBridge, ipcRenderer } from 'electron';
  *  would let any renderer bug call any handler (spec §11.1). */
 const api = {
   listFleet: () => ipcRenderer.invoke('fleet:list'),
-  listHistory: () => ipcRenderer.invoke('fleet:history'),
+  listHistory: (offset: number, limit: number) => ipcRenderer.invoke('fleet:history', offset, limit),
   onFleet: (cb: (payload: unknown) => void) => {
     const handler = (_e: unknown, payload: unknown) => cb(payload);
     ipcRenderer.on('fleet:update', handler);

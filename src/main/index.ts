@@ -99,21 +99,26 @@ function startBackgroundWork(): void {
   backgroundStarted = true;
 
   // Catch up on anything written while the app was closed, then watch.
+  // pushFleet's payload (openSessions only, per David's correction -- see
+  // its doc comment in src/main/ipc.ts) never reflects anything ingestAll
+  // or the watcher/spool find -- both are transcript-derived, and
+  // pushFleet stopped touching the database entirely. These calls stay
+  // wired at the same moments regardless: harmless (pushFleet is pure JS
+  // over the live-process cache now, no query), and a smaller, safer
+  // change than also rewiring when a push happens.
   ingestAll(db, roots());
-  // Reflects whatever ingestAll just found -- the first fleet:list reply
-  // deliberately did not wait for this; this is that promised follow-up.
-  pushFleet(db, mainWindow);
+  pushFleet(mainWindow);
 
   // Watcher events arrive per file and can burst; coalesce so a busy
   // session does not push a payload per line written.
   watcher = startWatcher(db, roots(), () => {
     if (pushTimer) return;
-    pushTimer = setTimeout(() => { pushTimer = null; if (db) pushFleet(db, mainWindow); }, 250);
+    pushTimer = setTimeout(() => { pushTimer = null; pushFleet(mainWindow); }, 250);
   });
 
   spoolTimer = setInterval(() => {
     if (!db) return;
-    if (ingestSpool(db, paths.spool) > 0) pushFleet(db, mainWindow);
+    if (ingestSpool(db, paths.spool) > 0) pushFleet(mainWindow);
   }, 1000);
   rotateSpool(paths.spool, { maxAgeDays: 30, maxFiles: 20000 });
 }
@@ -135,13 +140,16 @@ app.whenReady().then(() => {
   // than gated behind startBackgroundWork/ingestAll, so open sessions
   // (spec S7.1a) truly never wait on the index. getCachedLiveProcesses
   // (src/discovery/live.ts) returns [] until this first sweep resolves --
-  // buildFleetListPayload's openSessions is honestly empty until then;
-  // this pushes once it lands rather than leaving the renderer to find
-  // out only when some unrelated watcher/spool/ingest event next fires.
-  // Refreshed on its own interval thereafter, into a cache
-  // buildFleetPayload/buildFleetListPayload read synchronously.
-  void refreshLiveProcesses().then(() => { if (db) pushFleet(db, mainWindow); });
-  discoveryTimer = setInterval(() => { void refreshLiveProcesses(); }, 5000);
+  // buildFleetListPayload's openSessions is honestly empty until then.
+  // Every sweep pushes now, not just the first: pushFleet's payload is
+  // purely process-derived (src/main/ipc.ts), so a process starting or
+  // ending between sweeps is the ONLY thing that can ever change it --
+  // unlike before this task, a watcher/spool/ingest event happening to
+  // fire around the same time is no longer a signal of anything relevant
+  // here, so it can no longer be relied on to surface a process change.
+  const pushAfterDiscoverySweep = () => { void refreshLiveProcesses().then(() => pushFleet(mainWindow)); };
+  pushAfterDiscoverySweep();
+  discoveryTimer = setInterval(pushAfterDiscoverySweep, 5000);
 
   // Fallback trigger for startBackgroundWork -- see its doc comment.
   // did-finish-load fires once the window has actually finished loading

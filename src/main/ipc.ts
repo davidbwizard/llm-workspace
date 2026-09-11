@@ -6,44 +6,37 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 import type { Db } from '../store/db.ts';
 import {
-  fleetState, openSessions, sessionCount, type SessionState, type OpenSession,
+  openSessions, fleetStatePage, type SessionState, type OpenSession,
 } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
 import { sanitizeForTerminal } from '../config.ts';
 import { getCachedLiveProcesses } from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
 
-export interface FleetPayload {
-  version: 1;
-  generatedAt: string;
-  sessions: SessionState[];
-  /** One card per live process (discovery, spec §7.1a) -- enumerated
-   *  independently of `sessions`, per the model correction: ALL open
-   *  sessions must show, not just the ones transcript recency happens to
-   *  approximate. See src/fleet/state.ts's openSessions doc comment. */
-  openSessions: OpenSession[];
-}
-
-/** fleet:list's response, and fleet:update's push payload -- open sessions
- *  plus a count of how many transcript sessions exist, WITHOUT the
- *  sessions themselves. History (every transcript session, potentially in
- *  the hundreds) is collapsed by default and, until a person actually
- *  expands it, is not worth building at all, let alone sending across the
- *  IPC bridge on every watcher/spool push -- see buildFleetListPayload and
- *  fleet:history below. */
+/** fleet:list's response, and fleet:update's push payload. David's
+ *  correction to the original brief: nothing history-related -- not a
+ *  count, not the sessions themselves, not even a precomputed-and-held
+ *  value -- crosses this boundary until a person actually expands History
+ *  and fleet:history (below) is called. openSessions is unaffected by
+ *  that: it was never history-derived to begin with (see
+ *  buildFleetListPayload's doc comment). */
 export interface FleetListPayload {
   version: 1;
   generatedAt: string;
   openSessions: OpenSession[];
-  historyCount: number;
 }
 
-/** fleet:history's response -- the full session list, fetched only once
- *  History is actually expanded (src/renderer/components/FleetView.tsx). */
+/** fleet:history's response -- ONE PAGE of History, newest-first, plus the
+ *  total session count (which fleetStatePage computes for free as part of
+ *  ranking the page, so this never costs a separate query). Fetched only
+ *  when History is expanded, and again for each "Show more" click
+ *  (src/renderer/components/FleetView.tsx) -- never the whole array in one
+ *  shot. */
 export interface FleetHistoryPayload {
   version: 1;
   generatedAt: string;
   sessions: SessionState[];
+  total: number;
 }
 
 // Unicode bidirectional overrides (U+202A-U+202E: LRE, RLE, PDF, LRO, RLO)
@@ -126,11 +119,11 @@ export const BLOCKER_STRUCTURAL_FIELDS = [
 // process (`lsof`'s cwd, spec §7.1a discovery), not from any session, so
 // they need their own sanitisation pass here even though the parallel
 // SessionState fields are already sanitised upstream. `lastProse` is
-// enrichment copied from an already-sanitised session (buildFleetPayload
-// builds `sessions` first) -- included here anyway, as defence in depth,
-// the same reasoning already applied to blocker.kind above: display safety
-// at this boundary should not depend on staying downstream of another
-// sanitisation pass. `pid` is structural -- see the note on it below.
+// listed for the same defence-in-depth reason as blocker.kind below: even
+// though nothing reachable populates it any more (buildOpenSessions never
+// matches against a transcript -- see its doc comment), display safety at
+// this boundary should not depend on that staying true. `pid` is
+// structural -- see the note on it below.
 export const OPEN_SESSION_SANITISED_FIELDS =
   ['cwd', 'project', 'lastProse'] as const satisfies readonly (keyof OpenSession)[];
 // `pid` is what makes the close action (a later task) possible and safe --
@@ -149,11 +142,11 @@ export const OPEN_SESSION_STRUCTURAL_FIELDS = [
  *  blocker.kind: that field can never carry dirty content through the
  *  real signal_events -> openBlockers pipeline (src/store/signals.ts's
  *  isBlocking() only admits a row whose kind exactly equals one of a
- *  fixed clean set), so "does buildFleetPayload's output ever show a
- *  dirty kind" is unobservable by construction -- sanitised or not, the
- *  output is identical for every reachable input. Calling this function
- *  directly, with a hand-built Blocker, is the only way to observe
- *  whether the mechanism itself still processes that field. */
+ *  fixed clean set), so "does the built payload ever show a dirty kind" is
+ *  unobservable by construction -- sanitised or not, the output is
+ *  identical for every reachable input. Calling this function directly,
+ *  with a hand-built Blocker, is the only way to observe whether the
+ *  mechanism itself still processes that field. */
 export function sanitizeFields<T extends object>(obj: T, fields: readonly (keyof T)[]): T {
   const out = { ...obj };
   for (const f of fields) {
@@ -163,85 +156,89 @@ export function sanitizeFields<T extends object>(obj: T, fields: readonly (keyof
   return out;
 }
 
-/** openSessions (src/fleet/state.ts) enumerates from `processes`
- *  independently of `sessions` (the model correction: ALL open sessions
- *  must show, not just the ones transcript recency happens to
- *  approximate) -- built from already-sanitised `sessions` so enrichment
- *  borrowed from a uniquely-matched session (lastProse) is already clean;
- *  its own cwd/project, read straight from the process rather than any
- *  session, still get their own pass through OPEN_SESSION_SANITISED_FIELDS.
- *  Factored out so every caller in this file -- the fully-enriched build
- *  below and the deliberately-unenriched fast path further down -- shares
- *  one sanitisation call, rather than each remembering it separately. */
-function buildOpenSessions(sessions: SessionState[], processes: LiveProcess[]): OpenSession[] {
-  return openSessions(sessions, processes).map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
-}
-
-/** Provider text crosses into the renderer here. It is sanitised at this
+/** Provider text crosses into the renderer here. Sanitised at this
  *  boundary rather than in a component, so a new component cannot forget
  *  (spec §11.2). React escapes HTML, but control and bidi/zero-width
  *  characters are a separate problem and travel fine through JSX. */
-export function buildFleetPayload(db: Db): FleetPayload {
-  // getCachedLiveProcesses reads whatever discovery/live.ts's own interval
-  // (wired in src/main/index.ts) last found -- this function never triggers
-  // a sweep itself, so building a payload (which happens on every
-  // coalesced watcher push) never waits on a subprocess. Empty before the
-  // first sweep completes, or if discovery fails outright: fleetState
-  // already treats `processes` as pure enrichment over the session list it
-  // builds from transcript activity, so an empty array here still returns
-  // every session, just with host/match/candidates left at their unknown
-  // defaults (spec 7.1a).
-  const processes = getCachedLiveProcesses();
-  const sessions = fleetState(db, { processes }).map(s => {
-    const session = sanitizeFields(s, SANITISED_FIELDS);
-    return {
-      ...session,
-      blocker: session.blocker ? sanitizeFields(session.blocker, BLOCKER_SANITISED_FIELDS) : null,
-    };
-  });
-  const open = buildOpenSessions(sessions, processes);
-  return { version: 1, generatedAt: new Date().toISOString(), sessions, openSessions: open };
-}
-
-/** fleet:list -- the renderer's one-time initial pull (FleetView.tsx calls
- *  this exactly once, on mount). Deliberately the cheapest possible
- *  answer: openSessions comes straight from the live-process cache with NO
- *  transcript matching at all (`openSessions([], ...)`, the same
- *  no-sessions-to-match-against call tests/fleet/state.test.ts already
- *  exercises directly), and historyCount from sessionCount's dedicated
- *  query -- neither touches fleetState, so this never pays its cost
- *  (measured ~207ms against the real index, 878 sessions) regardless of
- *  how much is in the index or whether this session's ingestAll has run
- *  yet (src/main/index.ts defers ingestAll until after this first reply
- *  specifically so it can never block it).
- *
- *  Trade-off: because it does not match against real sessions,
- *  openSessions here carries no transcript enrichment -- match/sessionId/
- *  lastProse/events/activity all come back 'unknown'/null, per
- *  openSessions' own contract (src/fleet/state.ts). pushFleet below sends
- *  the fully-enriched version once fleetState has actually run, which
- *  happens shortly after launch regardless of whether the renderer ever
- *  calls fleet:list at all (src/main/index.ts's background work), and
- *  again on every watcher/spool push thereafter -- so the "needs you"
- *  chip and each open card's last-known activity fill in moments after
- *  the instant, unenriched first paint, rather than staying blank. */
-export function buildFleetListPayload(db: Db): FleetListPayload {
+function sanitizeSession(s: SessionState): SessionState {
+  const session = sanitizeFields(s, SANITISED_FIELDS);
   return {
-    version: 1,
-    generatedAt: new Date().toISOString(),
-    openSessions: buildOpenSessions([], getCachedLiveProcesses()),
-    historyCount: sessionCount(db),
+    ...session,
+    blocker: session.blocker ? sanitizeFields(session.blocker, BLOCKER_SANITISED_FIELDS) : null,
   };
 }
 
-/** fleet:history -- the full session list, fetched only once History is
- *  actually expanded (src/renderer/components/FleetView.tsx). Reuses
- *  buildFleetPayload's full computation rather than duplicating it; the
- *  cost this whole split exists to avoid is doing that work for a list
- *  nobody has opened, not doing it at all. */
-export function buildFleetHistoryPayload(db: Db): FleetHistoryPayload {
-  const { generatedAt, sessions } = buildFleetPayload(db);
-  return { version: 1, generatedAt, sessions };
+/** openSessions (src/fleet/state.ts) enumerates from live processes alone
+ *  -- called here with an EMPTY session list, always, on both fleet:list
+ *  and fleet:update (pushFleet below): David's correction goes further
+ *  than the original brief's "defer history" -- "I wouldn't even defer.
+ *  Let's just not load it unless I request it." A session being open is
+ *  knowable from process discovery alone (spec S7.1a); attributing any
+ *  transcript-derived fact to that card (match/sessionId/lastProse/events/
+ *  activity) requires fleetState, which is exactly the index-dependent
+ *  work that must never run before a person asks for History. Those five
+ *  fields therefore always come back 'unknown'/null on an open card now --
+ *  including the "needs you" chip, which reads `activity` -- a real,
+ *  deliberate trade-off, not an oversight; flagged in the task report. */
+function buildOpenSessions(processes: LiveProcess[]): OpenSession[] {
+  return openSessions([], processes).map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
+}
+
+/** fleet:list -- the renderer's one-time initial pull (FleetView.tsx calls
+ *  this exactly once, on mount) -- and fleet:update's push payload
+ *  (pushFleet below): open sessions straight from the live-process cache,
+ *  nothing else. Never touches the database at all -- getCachedLiveProcesses
+ *  (src/discovery/live.ts) reads a cache discovery's own interval
+ *  maintains, never triggering a sweep itself, so this is pure JS over an
+ *  already-small array (measured ~0ms against the real index's live-process
+ *  count) regardless of how many sessions are in the index or whether
+ *  ingestAll has run yet this session (src/main/index.ts defers ingestAll
+ *  until after this first reply specifically so it can never block it). */
+export function buildFleetListPayload(): FleetListPayload {
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    openSessions: buildOpenSessions(getCachedLiveProcesses()),
+  };
+}
+
+/** fleet:history is paged, not pulled whole -- one page at a time, per
+ *  David's correction ("paginate it... main should never build 878
+ *  session objects"). These bound the untrusted offset/limit crossing the
+ *  IPC boundary from the renderer (spec S11.2: validate at the boundary,
+ *  not trust the shape): a non-finite or negative offset becomes 0; a
+ *  non-positive, non-numeric, or absurdly large limit becomes
+ *  HISTORY_DEFAULT_LIMIT, capped at HISTORY_MAX_LIMIT so a buggy or
+ *  compromised renderer cannot request the whole corpus through the back
+ *  door this split exists to close. */
+export const HISTORY_DEFAULT_LIMIT = 60;
+export const HISTORY_MAX_LIMIT = 200;
+
+export function clampOffset(v: unknown): number {
+  const n = typeof v === 'number' ? Math.trunc(v) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+export function clampLimit(v: unknown): number {
+  const n = typeof v === 'number' ? Math.trunc(v) : NaN;
+  if (!Number.isFinite(n) || n <= 0) return HISTORY_DEFAULT_LIMIT;
+  return Math.min(n, HISTORY_MAX_LIMIT);
+}
+
+/** fleet:history -- one page of History, fetched only once History is
+ *  actually expanded, and again (at the next offset) for each "Show more"
+ *  click (src/renderer/components/FleetView.tsx). fleetStatePage
+ *  (src/fleet/state.ts) bounds the expensive per-session work to this
+ *  page; `total` comes free from the same call, so there is no separate
+ *  count query to keep in sync. */
+export function buildFleetHistoryPayload(db: Db, offset: number, limit: number): FleetHistoryPayload {
+  const { sessions, total } = fleetStatePage(db, offset, limit, { processes: getCachedLiveProcesses() });
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    sessions: sessions.map(sanitizeSession),
+    total,
+  };
 }
 
 /** The complete set of channels main answers. Adding one means adding it to
@@ -258,25 +255,25 @@ export function buildFleetHistoryPayload(db: Db): FleetHistoryPayload {
  *  can call registerIpc(db) alone. */
 export function registerIpc(db: Db, onFleetList?: () => void): void {
   ipcMain.handle('fleet:list', () => {
-    const payload = buildFleetListPayload(db);
+    const payload = buildFleetListPayload();
     if (onFleetList) setImmediate(onFleetList);
     return payload;
   });
-  ipcMain.handle('fleet:history', () => buildFleetHistoryPayload(db));
+  ipcMain.handle('fleet:history', (_event, offset: unknown, limit: unknown) =>
+    buildFleetHistoryPayload(db, clampOffset(offset), clampLimit(limit)));
 }
 
-/** Pushed on every watcher/spool/ingest change (src/main/index.ts). Unlike
- *  fleet:list, this is event-driven rather than a one-time pull, so it can
- *  afford fleetState's cost -- and doing so is how openSessions'
- *  enrichment (activity/lastProse, the "needs you" chip) ever reaches the
- *  renderer at all, since fleet:list itself deliberately never computes
- *  it (see buildFleetListPayload above). Sends the same FleetListPayload
- *  shape fleet:list does -- still never the full sessions array -- so a
- *  push does not undo the payload-size win the fleet:list/fleet:history
- *  split exists for. */
-export function pushFleet(db: Db, win: BrowserWindow | null): void {
+/** Pushed on every watcher/spool/ingest/discovery change (src/main/index.ts).
+ *  Sends the exact same FleetListPayload fleet:list does, built the same
+ *  way (buildFleetListPayload, process-only) -- pushFleet never needed to
+ *  build "anything beyond open sessions": the only reason it used to call
+ *  fleetState was to compute historyCount and enrichment, both gone now.
+ *  So this stopped touching the database at all, on every one of those
+ *  triggers, not just the first -- see src/main/index.ts's discoveryTimer,
+ *  which now pushes on every sweep rather than only the first, since a
+ *  process starting or ending is the only thing this payload can ever
+ *  reflect. */
+export function pushFleet(win: BrowserWindow | null): void {
   if (!win || win.isDestroyed()) return;
-  const { generatedAt, sessions, openSessions: open } = buildFleetPayload(db);
-  const payload: FleetListPayload = { version: 1, generatedAt, openSessions: open, historyCount: sessions.length };
-  win.webContents.send('fleet:update', payload);
+  win.webContents.send('fleet:update', buildFleetListPayload());
 }

@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { fleetState, openSessions, sessionCount } from '../../src/fleet/state.ts';
+import { fleetState, openSessions, fleetStatePage } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
 
@@ -551,29 +551,124 @@ describe('openSessions', () => {
   });
 });
 
-describe('sessionCount', () => {
-  it('is 0 for an empty index', () => {
-    const db = openDb(':memory:');
-    expect(sessionCount(db)).toBe(0);
-  });
-
-  it('counts distinct sessions, not events', () => {
+describe('fleetState — sessionIds filter', () => {
+  it('returns only the requested sessions when sessionIds is given', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       ev({ sessionId:'s1', contentHash:'a' }),
-      ev({ sessionId:'s1', contentHash:'b', subIndex:1 }),
-      ev({ sessionId:'s2', contentHash:'c' }),
-    ]);
-    expect(sessionCount(db)).toBe(2);
-  });
-
-  it('agrees with fleetState(db).length on the same index', () => {
-    const db = openDb(':memory:');
-    insertEvents(db, [
-      ev({ sessionId:'s1', contentHash:'a' }),
-      ev({ sessionId:'s2', provider:'codex', contentHash:'b' }),
+      ev({ sessionId:'s2', contentHash:'b' }),
       ev({ sessionId:'s3', contentHash:'c' }),
     ]);
-    expect(sessionCount(db)).toBe(fleetState(db, { now: NOW }).length);
+    const ids = fleetState(db, { now: NOW, sessionIds:['s1', 's3'] }).map(s => s.sessionId).sort();
+    expect(ids).toEqual(['s1', 's3']);
+  });
+
+  it('returns nothing for an empty sessionIds array, without erroring', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ sessionId:'s1', contentHash:'a' })]);
+    expect(fleetState(db, { now: NOW, sessionIds:[] })).toEqual([]);
+  });
+
+  // The property this whole option exists to preserve: worktree-sharing is
+  // global (spec S9.5 is about real contention, which does not care
+  // whether the OTHER session sharing a directory happens to be on this
+  // page), so restricting the expensive per-row work to one session must
+  // not blind that session to a sharer that got excluded.
+  it('still reports sharesWorktreeWith from a session excluded by sessionIds', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s1', kind:'session.started', payload:{ cwd:'/shared' }, contentHash:'a', ts:at(1) }),
+      ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/shared' }, contentHash:'b', ts:at(1) }),
+    ]);
+    // Only s1 requested -- s2 (the sharer) is deliberately excluded.
+    const [s1] = fleetState(db, { now: NOW, sessionIds:['s1'] });
+    expect(s1!.sharesWorktreeWith).toEqual(['s2']);
+  });
+
+  // Same property, for process matching: a live process's cwd is shared by
+  // two sessions, only one of which is requested -- the match must still
+  // come back 'ambiguous', not a false 'unique', because the excluded
+  // sibling still exists and classifyMatch has to know about it.
+  it('still reports an ambiguous match caused by a session excluded by sessionIds', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s1', kind:'session.started', payload:{ cwd:'/shared' }, contentHash:'a' }),
+      ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/shared' }, contentHash:'b' }),
+    ]);
+    const proc = { pid:9, provider:'claude' as const, tty:null, cwd:'/shared', host:'unknown' as const, ageSeconds:null, rssBytes:null };
+    const [s1] = fleetState(db, { now: NOW, sessionIds:['s1'], processes:[proc] });
+    expect(s1!.match).toBe('ambiguous');
+    expect(s1!.alive).toBe(false);
+  });
+});
+
+describe('fleetStatePage', () => {
+  // Measured against the real index: sessionSummaries costs ~130ms.
+  // fleetStatePage needs it once to rank the page; fleetState (called
+  // internally with sessionIds set) needs the same global context again
+  // for matching/worktree-sharing -- without precomputedSummaries
+  // threading the first result through, that is the same ~130ms query run
+  // TWICE per page fetch for no new information. This spies on db.prepare
+  // to prove it runs exactly once, not by guessing from timing (which is
+  // too noisy on :memory: to assert on directly).
+  it('runs the sessionSummaries query exactly once per page, not twice', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ sessionId:'s1', contentHash:'a' })]);
+    const prepareSpy = vi.spyOn(db, 'prepare');
+    fleetStatePage(db, 0, 10, { now: NOW });
+    const summaryQueries = prepareSpy.mock.calls.filter(([sql]) =>
+      typeof sql === 'string' && sql.includes('MAX(ts) last_ts') && sql.includes("kind='session.started'")
+      && !sql.includes('COUNT(*)'));
+    expect(summaryQueries).toHaveLength(1);
+    prepareSpy.mockRestore();
+  });
+
+  it('returns a page ordered newest-first, with the total session count', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'old', contentHash:'a', ts:at(30) }),
+      ev({ sessionId:'mid', contentHash:'b', ts:at(20) }),
+      ev({ sessionId:'new', contentHash:'c', ts:at(10) }),
+    ]);
+    const page = fleetStatePage(db, 0, 2, { now: NOW });
+    expect(page.sessions.map(s => s.sessionId)).toEqual(['new', 'mid']);
+    expect(page.total).toBe(3);
+  });
+
+  it('the next page picks up where the previous one left off, not from the start', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'old', contentHash:'a', ts:at(30) }),
+      ev({ sessionId:'mid', contentHash:'b', ts:at(20) }),
+      ev({ sessionId:'new', contentHash:'c', ts:at(10) }),
+    ]);
+    const page2 = fleetStatePage(db, 2, 2, { now: NOW });
+    expect(page2.sessions.map(s => s.sessionId)).toEqual(['old']);
+    expect(page2.total).toBe(3);
+  });
+
+  it('returns an empty page (not an error) once offset is past the end, with the real total', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ sessionId:'s1', contentHash:'a' })]);
+    const page = fleetStatePage(db, 10, 5, { now: NOW });
+    expect(page.sessions).toEqual([]);
+    expect(page.total).toBe(1);
+  });
+
+  // The global-context property (see the fleetState describe block above),
+  // proven end to end through the pagination entry point: two sessions
+  // share a directory but a page of size 1 can only ever return one of
+  // them -- the one it does return must still know about its sharer.
+  it('a session on one page still reports sharing a directory with a session on another page', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'newer', kind:'session.started', payload:{ cwd:'/shared' }, contentHash:'a', ts:at(5) }),
+      ev({ sessionId:'older', kind:'session.started', payload:{ cwd:'/shared' }, contentHash:'b', ts:at(10) }),
+    ]);
+    const page = fleetStatePage(db, 0, 1, { now: NOW });
+    expect(page.sessions).toHaveLength(1);
+    expect(page.sessions[0]!.sessionId).toBe('newer');
+    expect(page.sessions[0]!.sharesWorktreeWith).toEqual(['older']);
+    expect(page.total).toBe(2);
   });
 });

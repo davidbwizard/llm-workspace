@@ -19,36 +19,37 @@ const s = (o: Partial<SessionState>): SessionState => ({
 });
 
 // An open-process fixture -- unmatched to any transcript session by
-// default, which is the common outcome on a shared-cwd repo (see
-// openSessions' doc comment in src/fleet/state.ts), and also the ONLY
-// outcome fleet:list's payload ever carries now: buildFleetListPayload
-// (src/main/ipc.ts) deliberately never matches against transcripts, so
-// match/sessionId/lastProse/events/activity on a real open card start out
-// exactly like this fixture's defaults regardless of what History holds,
-// until a fleet:update push (not exercised by these fixtures) enriches it.
-// `provider` is set regardless -- unlike sessionId/lastProse/events/
-// activity, it comes straight from the process, never from a match, so it
-// is never null.
+// default, which is the ONLY outcome fleet:list's payload ever carries
+// now (buildFleetListPayload, src/main/ipc.ts, never matches against a
+// transcript at all): match/sessionId/lastProse/events/activity stay at
+// these defaults on every real open card, not only as a common case.
+// `provider` is set regardless -- it comes straight from the process,
+// never from a match, so it is never null.
 const o = (over: Partial<OpenSession>): OpenSession => ({
   pid:1, provider:'claude', host:'unknown', cwd:'/r', project:'proj', ageSeconds:60, rssBytes:null,
   match:'unknown', sessionId:null, lastProse:null, events:null,
   activity:null, ...over,
 });
 
-// The default fixture pair used by most tests below: one open session
-// (trellome) plus two transcript sessions in History (trellome, whose
-// process is also open, and chocabloc, history-only) -- covering the
-// "the same session can legitimately appear in both lists" case without
-// every test needing to restate it.
+// A small fixed "corpus" History pagination tests slice against, so the
+// mock's behaviour (return the requested offset/limit window, plus the
+// true total) mirrors what src/main/ipc.ts's buildFleetHistoryPayload
+// actually does, rather than just returning a canned response regardless
+// of arguments.
 const defaultHistory = [s({ sessionId:'a', project:'trellome' }), s({ sessionId:'b', project:'chocabloc' })];
+
+function pagedHistory(all: SessionState[]) {
+  return vi.fn(async (offset: number, limit: number) => ({
+    version:1 as const, generatedAt:'t', sessions: all.slice(offset, offset + limit), total: all.length,
+  }));
+}
 
 beforeEach(() => {
   (globalThis as any).window.fleet = {
     listFleet: vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', historyCount: defaultHistory.length,
-      openSessions:[o({ pid:1, project:'trellome' })],
+      version:1, generatedAt:'t', openSessions:[o({ pid:1, project:'trellome' })],
     }),
-    listHistory: vi.fn().mockResolvedValue({ version:1, generatedAt:'t', sessions: defaultHistory }),
+    listHistory: pagedHistory(defaultHistory),
     onFleet: vi.fn().mockReturnValue(() => {}),
   };
 });
@@ -78,25 +79,39 @@ describe('FleetView', () => {
     expect(unsub).toHaveBeenCalled();
   });
 
-  it('shows a real empty state rather than a blank panel', async () => {
+  it('shows a real empty message, not a blank panel, when nothing is open', async () => {
     (globalThis as any).window.fleet.listFleet =
-      vi.fn().mockResolvedValue({ version:1, generatedAt:'t', historyCount:0, openSessions:[] });
+      vi.fn().mockResolvedValue({ version:1, generatedAt:'t', openSessions:[] });
     render(<FleetView />);
-    await waitFor(() => expect(screen.getByText(/No sessions indexed yet/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/No open sessions right now/i)).toBeTruthy());
+    expect(screen.getByText(/0 open/)).toBeTruthy();
+  });
+
+  // Whether History has anything at all is itself something the app only
+  // learns by asking (David's correction: nothing history-related is
+  // computed before that) -- so, unlike before this task, there is no
+  // top-level "nothing indexed yet" message that can be shown without
+  // fetching. Expanding an empty History shows this INSIDE the section
+  // instead.
+  it('shows "No history yet" inside the expanded section when History is genuinely empty', async () => {
+    (globalThis as any).window.fleet.listFleet =
+      vi.fn().mockResolvedValue({ version:1, generatedAt:'t', openSessions:[] });
+    (globalThis as any).window.fleet.listHistory = pagedHistory([]);
+    render(<FleetView />);
+    await waitFor(() => expect(screen.getByText(/No open sessions right now/i)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name:/History/i }));
+    await waitFor(() => expect(screen.getByText(/No history yet/i)).toBeTruthy());
   });
 
   // A process can be open before its first transcript event is ingested --
   // a brief window, but spec S7.1a's "never lost" promise has to hold from
-  // the moment a process starts, not from its first indexed event. Checking
-  // `historyCount` alone for the empty state would hide a genuinely open
-  // session behind this message.
+  // the moment a process starts, not from its first indexed event.
   it('shows an open session even when nothing has been indexed to transcripts yet', async () => {
     (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', historyCount:0, openSessions:[o({ pid:9, project:'brandnew' })],
+      version:1, generatedAt:'t', openSessions:[o({ pid:9, project:'brandnew' })],
     });
     render(<FleetView />);
     await waitFor(() => expect(screen.getByText('brandnew')).toBeTruthy());
-    expect(screen.queryByText(/No sessions indexed yet/i)).toBeNull();
   });
 
   it('separates history below a divider heading rather than hiding it', async () => {
@@ -104,22 +119,38 @@ describe('FleetView', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
   });
 
+  // David's correction goes further than the original brief: nothing
+  // history-related is computed or sent until History is actually
+  // expanded -- not even a count. The heading shows no number until then.
+  it('shows no history count until History has actually been expanded and fetched', async () => {
+    render(<FleetView />);
+    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
+    const heading = screen.getByRole('heading', { name:/History/i });
+    expect(heading.textContent?.trim()).toBe('History');
+    expect((globalThis as any).window.fleet.listHistory).not.toHaveBeenCalled();
+  });
+
+  it('fetches history only once, with offset 0, the instant History is expanded', async () => {
+    render(<FleetView />);
+    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name:/History/i }));
+    await waitFor(() => expect((globalThis as any).window.fleet.listHistory).toHaveBeenCalledTimes(1));
+    expect((globalThis as any).window.fleet.listHistory).toHaveBeenCalledWith(0, 60);
+  });
+
   // History is unfiltered: it does not matter whether a session is
   // lifecycle 'active' or 'disconnected', last-known working or idle --
   // every transcript session shows there once expanded and fetched.
   it('does not silently drop a disconnected session whose last known activity was working', async () => {
     (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', historyCount:1, openSessions:[],
+      version:1, generatedAt:'t', openSessions:[],
     });
-    (globalThis as any).window.fleet.listHistory = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t',
-      sessions:[s({ sessionId:'g', project:'ghostproj', lifecycle:'disconnected', activity:'working', stale:true })],
-    });
+    (globalThis as any).window.fleet.listHistory = pagedHistory(
+      [s({ sessionId:'g', project:'ghostproj', lifecycle:'disconnected', activity:'working', stale:true })]);
     render(<FleetView />);
     await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name:/History/i }));
     await waitFor(() => expect(screen.getByText('ghostproj')).toBeTruthy());
-    expect(screen.getByText('ghostproj')).toBeTruthy();
   });
 
   it('shows a specific message when the preload did not load, instead of throwing', async () => {
@@ -141,9 +172,10 @@ describe('FleetView', () => {
 
   // fleet:history gets the exact same discipline fleet:list already has
   // (see the test above): a rejected fetch must surface a specific,
-  // visible message, not leave the accordion open on an endless
+  // visible message -- never an empty list that could be mistaken for a
+  // genuine "no history" ("No history yet", above), and never an endless
   // "Loading history..." with the real cause only in devtools.
-  it('shows the error instead of loading history forever when the fetch fails', async () => {
+  it('shows an error, not an empty-looking list, when the history fetch fails', async () => {
     (globalThis as any).window.fleet.listHistory =
       vi.fn().mockRejectedValue(new Error("No handler registered for 'fleet:history'"));
     render(<FleetView />);
@@ -152,6 +184,7 @@ describe('FleetView', () => {
     await waitFor(() => expect(
       screen.getByText(/No handler registered for 'fleet:history'/)).toBeTruthy());
     expect(screen.queryByText(/Loading history/i)).toBeNull();
+    expect(screen.queryByText(/No history yet/i)).toBeNull();
   });
 
   it('does not mount history session cards while the group is collapsed', async () => {
@@ -165,6 +198,7 @@ describe('FleetView', () => {
     expect(group).toBeTruthy();
     expect(group.querySelectorAll('[role="button"]').length).toBe(0);
     expect(screen.queryByText('chocabloc')).toBeNull();
+    expect((globalThis as any).window.fleet.listHistory).not.toHaveBeenCalled();
 
     // Grab the toggle once, before any card is mounted: a card's own
     // accessible label includes its activity word ("idle"), which would
@@ -183,31 +217,44 @@ describe('FleetView', () => {
     expect(screen.queryByText('chocabloc')).toBeNull();
   });
 
-  it('renders history cards in batches with a show-more control instead of all at once', async () => {
-    const historySessions = Array.from({ length:130 }, (_, i) =>
-      s({ sessionId:`idle-${i}`, project:`idleproj${i}` }));
+  // The property the original brief got wrong: batching used to be a
+  // client-side .slice() over an already-fully-built array. Now each
+  // "page" is a real, separate fleet:history call -- proven here by a
+  // corpus of 130 that the mock only ever returns in 60-item windows, the
+  // same way main's SQL LIMIT/OFFSET would, plus the exact call sequence
+  // (offset 0, then 60, then 120 -- never re-fetching offset 0).
+  it('fetches history a page at a time, via "Show more", with the right offset each time', async () => {
+    const corpus = Array.from({ length:130 }, (_, i) => s({ sessionId:`idle-${i}`, project:`idleproj${i}` }));
     (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', historyCount:130, openSessions:[],
+      version:1, generatedAt:'t', openSessions:[],
     });
-    (globalThis as any).window.fleet.listHistory = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', sessions: historySessions,
-    });
+    const listHistory = pagedHistory(corpus);
+    (globalThis as any).window.fleet.listHistory = listHistory;
     const { container } = render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/History 130/i })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
     const group = container.querySelector('#history-group')!;
 
-    fireEvent.click(screen.getByRole('button', { name:/History 130/i }));
+    fireEvent.click(screen.getByRole('button', { name:/History/i }));
     await waitFor(() => expect(group.querySelectorAll('[role="button"]').length).toBe(60));
+    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i }).textContent).toMatch(/130/));
     expect(screen.getByText(/70 remaining/)).toBeTruthy();
+    expect(listHistory).toHaveBeenCalledTimes(1);
+    expect(listHistory).toHaveBeenNthCalledWith(1, 0, 60);
 
     fireEvent.click(screen.getByText(/70 remaining/));
     await waitFor(() => expect(group.querySelectorAll('[role="button"]').length).toBe(120));
     expect(screen.getByText(/10 remaining/)).toBeTruthy();
+    expect(listHistory).toHaveBeenCalledTimes(2);
+    expect(listHistory).toHaveBeenNthCalledWith(2, 60, 60);
 
     fireEvent.click(screen.getByText(/10 remaining/));
     await waitFor(() => expect(group.querySelectorAll('[role="button"]').length).toBe(130));
     // Every history session is now shown, so the control has nothing left to add.
     expect(screen.queryByText(/remaining/)).toBeNull();
+    expect(listHistory).toHaveBeenCalledTimes(3);
+    expect(listHistory).toHaveBeenNthCalledWith(3, 120, 60);
+    // Never re-fetched page one.
+    expect(listHistory).not.toHaveBeenNthCalledWith(2, 0, 60);
   });
 
   it('exposes the history group as a keyboard-operable disclosure that announces its state', async () => {
@@ -244,7 +291,7 @@ describe('FleetView', () => {
   describe('Open sessions', () => {
     it('shows every open session immediately -- no click needed, unlike History', async () => {
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', historyCount:0, openSessions:[
+        version:1, generatedAt:'t', openSessions:[
           o({ pid:1, project:'one' }), o({ pid:2, project:'two' }), o({ pid:3, project:'three' }),
         ],
       });
@@ -260,7 +307,7 @@ describe('FleetView', () => {
     // open -- transcript recency (History) plays no part in this list.
     it('shows an open session that has no matching transcript session at all', async () => {
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', historyCount:1,
+        version:1, generatedAt:'t',
         openSessions:[o({ pid:7, project:'orphaned', match:'unknown', sessionId:null })],
       });
       render(<FleetView />);
@@ -269,7 +316,7 @@ describe('FleetView', () => {
 
     it('counts open sessions in the "N open" chip', async () => {
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', historyCount:0, openSessions:[
+        version:1, generatedAt:'t', openSessions:[
           o({ pid:1, project:'one' }), o({ pid:2, project:'two' }),
         ],
       });
@@ -283,7 +330,7 @@ describe('FleetView', () => {
       // confuses "blocked" with "working" or "known", so this pins the
       // exact set, not just a count that could coincidentally match.
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', historyCount:0, openSessions:[
+        version:1, generatedAt:'t', openSessions:[
           o({ pid:1, project:'blocked-perm', activity:'waiting_permission' }),
           o({ pid:2, project:'blocked-input', activity:'waiting_input' }),
           o({ pid:3, project:'working', activity:'working' }),
@@ -297,20 +344,11 @@ describe('FleetView', () => {
 
     it('shows no "need you" chip when nothing is blocked', async () => {
       (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', historyCount:0, openSessions:[o({ pid:1, project:'one' })],
+        version:1, generatedAt:'t', openSessions:[o({ pid:1, project:'one' })],
       });
       render(<FleetView />);
       await waitFor(() => expect(screen.getByText(/1 open/)).toBeTruthy());
       expect(screen.queryByText(/need you/)).toBeNull();
-    });
-
-    it('shows a real empty message, not a blank gap, when nothing is open', async () => {
-      (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', historyCount:1, openSessions:[],
-      });
-      render(<FleetView />);
-      await waitFor(() => expect(screen.getByText(/No open sessions right now/i)).toBeTruthy());
-      expect(screen.getByText(/0 open/)).toBeTruthy();
     });
   });
 });

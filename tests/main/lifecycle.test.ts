@@ -149,7 +149,7 @@ describe('deferred ingest: answer before ingesting, not after', () => {
   it('pushes an update after ingestAll, reflecting whatever it found', () => {
     const body = functionBody(main, 'startBackgroundWork');
     const ingestAt = body.indexOf('ingestAll(db, roots())');
-    const pushAt = body.indexOf('pushFleet(db, mainWindow)');
+    const pushAt = body.indexOf('pushFleet(mainWindow)');
     expect(ingestAt).toBeGreaterThan(-1);
     expect(pushAt).toBeGreaterThan(ingestAt);
   });
@@ -160,8 +160,17 @@ describe('deferred ingest: answer before ingesting, not after', () => {
     expect(main).toMatch(/refreshLiveProcesses\(\)\.then\(/);
   });
 
-  it('pushes an update once the first discovery sweep lands', () => {
-    expect(main).toMatch(
-      /refreshLiveProcesses\(\)\.then\(\s*\(\)\s*=>\s*{\s*if\s*\(db\)\s*pushFleet\(db,\s*mainWindow\)/);
+  // pushFleet's payload is purely process-derived (src/main/ipc.ts) --
+  // every sweep pushes now, not just the first, since a process starting
+  // or ending between sweeps is the only thing that can ever change it.
+  it('pushes an update after every discovery sweep, not only the first', () => {
+    expect(main).toMatch(/refreshLiveProcesses\(\)\.then\(\s*\(\)\s*=>\s*pushFleet\(mainWindow\)\)/);
+    const declAt = main.search(/const\s+pushAfterDiscoverySweep\s*=/);
+    expect(declAt).toBeGreaterThan(-1);
+    // Called once immediately (the "first sweep" case) AND wired as the
+    // interval's own callback (every subsequent sweep) -- not just handed
+    // to setInterval, which would skip the first tick for 5s.
+    expect(main).toMatch(/pushAfterDiscoverySweep\(\);/);
+    expect(main).toMatch(/discoveryTimer\s*=\s*setInterval\(pushAfterDiscoverySweep,\s*5000\)/);
   });
 });
