@@ -1,0 +1,17 @@
+.fleetwrap { display:flex; flex-direction:column; gap:14px; }
+.fleetbar { display:flex; align-items:baseline; gap:12px; }
+.fleetbar h1 { font-family:var(--f-display); font-weight:600; font-size:24px; margin:0; }
+.chip { font-family:var(--f-mono); font-size:11px; color:var(--muted);
+        background:var(--raised); border-radius:20px; padding:4px 11px; }
+.chip.attn { color:var(--critical); }
+.fleet { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
+.fleet.dim { opacity:.62; }
+.fleet.dim:hover { opacity:1; }
+.divider { font-family:var(--f-body); font-weight:600; font-size:13px;
+           color:var(--muted); margin:10px 0 0; display:flex; align-items:center; gap:8px; }
+.divider::after { content:""; flex:1; height:1px; background:var(--line-soft); }
+.divider span { font-family:var(--f-mono); font-weight:400; color:var(--faint); }
+.empty { color:var(--muted); max-width:52ch; }
+.empty.error { color:var(--critical); }
+.empty code { font-family:var(--f-mono); font-size:.9em;
+              background:var(--raised); padding:1px 5px; border-radius:5px; }
