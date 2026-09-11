@@ -74,6 +74,25 @@ export function readTail(
       cursor += got;
     }
 
+    // D1: newOffset is computed from Buffer.byteLength of DECODED text, not
+    // from bytes actually read. Chunk-split multi-byte characters are
+    // handled correctly above via StringDecoder, but genuinely malformed
+    // UTF-8 (not merely split -- an invalid byte the source file actually
+    // contains) decodes to one or more U+FFFD replacement characters, whose
+    // re-encoded length can differ from the bytes they replaced (one invalid
+    // byte becomes a 3-byte U+FFFD). That silently drifts newOffset past
+    // where the file's bytes actually end -- the next call sees a
+    // "truncated" file (size < fromOffset), latches `restarted`, and
+    // reparses the whole file every single pass, forever, with no visible
+    // error. Fail loudly instead: newOffset can never legitimately exceed
+    // the bytes read this call.
+    if (carryStart > size) {
+      throw new Error(
+        `readTail: computed offset ${carryStart} exceeds file size ${size} read from ${path} -- ` +
+        'likely malformed (not merely chunk-split) UTF-8 drifting the byte offset',
+      );
+    }
+
     return { lines, newOffset: carryStart, restarted, inode, size };
   } finally {
     closeSync(fd);

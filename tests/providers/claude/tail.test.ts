@@ -113,4 +113,18 @@ describe('readTail', () => {
     expect(r.lines).toEqual([]);
     expect(r.newOffset).toBe(0);
   });
+
+  // D1: genuinely malformed UTF-8 -- not merely a valid character split
+  // across a chunk boundary, but a byte sequence the file actually contains
+  // that is invalid -- decodes to a U+FFFD replacement character whose
+  // re-encoded length (3 bytes) differs from the single raw byte it
+  // replaced. That drifts newOffset past the bytes actually read. Left
+  // unchecked, the next call would see size < fromOffset, treat it as a
+  // truncation, and silently reparse the whole file forever. This must fail
+  // loudly instead.
+  it('fails loudly rather than silently drifting the offset past the file size on malformed UTF-8', () => {
+    // {"a":<0xFF>}\n -- 0xFF is not a valid UTF-8 byte anywhere.
+    writeFileSync(file, Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0xff, 0x7d, 0x0a]));
+    expect(() => readTail(file, 0, null)).toThrow(/exceeds file size/);
+  });
 });
