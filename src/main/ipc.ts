@@ -90,8 +90,18 @@ export const BLOCKER_STRUCTURAL_FIELDS = [
  *  (some entries, e.g. cwd/lastProse, are nullable -- null passes through
  *  unchanged). Driving sanitisation from the same list the exhaustiveness
  *  test checks means there is one place to update when a field's
- *  classification changes, not two that can quietly drift apart. */
-function sanitizeFields<T extends object>(obj: T, fields: readonly (keyof T)[]): T {
+ *  classification changes, not two that can quietly drift apart.
+ *
+ *  Exported so tests/main/ipc.test.ts can call it directly for
+ *  blocker.kind: that field can never carry dirty content through the
+ *  real signal_events -> openBlockers pipeline (src/store/signals.ts's
+ *  isBlocking() only admits a row whose kind exactly equals one of a
+ *  fixed clean set), so "does buildFleetPayload's output ever show a
+ *  dirty kind" is unobservable by construction -- sanitised or not, the
+ *  output is identical for every reachable input. Calling this function
+ *  directly, with a hand-built Blocker, is the only way to observe
+ *  whether the mechanism itself still processes that field. */
+export function sanitizeFields<T extends object>(obj: T, fields: readonly (keyof T)[]): T {
   const out = { ...obj };
   for (const f of fields) {
     const v = out[f];

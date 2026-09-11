@@ -3,10 +3,11 @@ import { readFileSync } from 'node:fs';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
 import {
-  buildFleetPayload, SANITISED_FIELDS, STRUCTURAL_FIELDS,
+  buildFleetPayload, sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
 } from '../../src/main/ipc.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
+import type { Blocker } from '../../src/store/signals.ts';
 
 function ev(o: Partial<NormalizedEvent>): NormalizedEvent {
   return { provider:'claude', sessionId:'s1', runId:'r1', agentId:null,
@@ -177,8 +178,9 @@ describe('buildFleetPayload', () => {
   // could change. This test proves the classification, which is the part
   // this fix actually changes; the mechanism itself (sanitizeFields applies
   // identically to every field named in BLOCKER_SANITISED_FIELDS, with no
-  // per-field special-casing) is proven end to end by the next test, on
-  // `text`, which -- via tool_input.command -- genuinely is reachable.
+  // per-field special-casing) is proven directly, below, by calling
+  // sanitizeFields on a hand-built dirty Blocker -- the only way to
+  // observe it, since no real Blocker can ever carry a dirty kind.
   it('classifies blocker.kind as sanitised, not structural', () => {
     expect(BLOCKER_SANITISED_FIELDS).toContain('kind');
   });
@@ -190,6 +192,85 @@ describe('buildFleetPayload', () => {
     insertBlocker(db, `rm -rf ${ESC}]52;c;aGk= /tmp`);
     const p = buildFleetPayload(db);
     expect(p.sessions[0]!.blocker!.text).not.toContain(ESC);
+  });
+
+  // The two exhaustiveness tests above only prove COVERAGE: every field
+  // belongs to SOME list. They are blind to which one -- moving 'project'
+  // from SANITISED_FIELDS to STRUCTURAL_FIELDS keeps both of those tests
+  // green, since project is still classified, just wrongly, and it is
+  // attacker-reachable (the last path segment of cwd). `toEqual` here
+  // checks content AND order against a hardcoded expectation, not just
+  // presence, so reclassifying a field -- moving it between these two
+  // arrays, in either direction -- fails this test. That is deliberate:
+  // reclassification is a real, security-relevant decision, and it should
+  // require editing and justifying THIS test, not fall out silently from
+  // some other change.
+  it('pins the session field classification exactly, not just its coverage', () => {
+    expect(SANITISED_FIELDS).toEqual(['lastProse', 'project', 'cwd']);
+    expect(STRUCTURAL_FIELDS).toEqual([
+      'sessionId', 'runId', 'provider', 'lifecycle', 'activity', 'stale',
+      'confidence', 'source', 'lastActivityAt', 'agents', 'liveAgents',
+      'events', 'blocker', 'match', 'candidates', 'host', 'sharesWorktreeWith',
+    ]);
+  });
+
+  it('pins the blocker field classification exactly, not just its coverage', () => {
+    expect(BLOCKER_SANITISED_FIELDS).toEqual(['text', 'kind']);
+    expect(BLOCKER_STRUCTURAL_FIELDS).toEqual(['sessionId', 'toolUseId', 'promptId', 'occurredAt']);
+  });
+
+  // Pinning the DECLARATION (above) still only proves the lists say the
+  // right thing, not that buildFleetPayload's actual output obeys them --
+  // a mutation that makes sanitizeFields silently skip a field at runtime,
+  // leaving the exported lists untouched, passes every test so far. This
+  // list is deliberately NOT imported from src/main/ipc.ts: it is this
+  // test's own, independent claim about which session-level fields must
+  // come out clean. Importing SANITISED_FIELDS here would make the test
+  // circular -- removing a field from that constant would silently remove
+  // it from this test's expectations too, so a misclassification could
+  // never make it fail (this is exactly how the reviewer's `project`
+  // mutation slipped past the union check in the exhaustiveness test).
+  //
+  // blocker.kind is not included: see the comment on `classifies
+  // blocker.kind as sanitised, not structural` above and the direct
+  // sanitizeFields test below -- there is no reachable way to get dirty
+  // content into a real blocker.kind, so testing it here would only prove
+  // that a field with nothing dirty in it has nothing dirty in it.
+  const REACHABLE_SESSION_SANITISED_FIELDS = ['lastProse', 'project', 'cwd'] as const;
+
+  it('actually strips a bidi override from every reachable sanitised session field', () => {
+    const db = openDb(':memory:');
+    const RLO = '\u202e';
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:`/Users/me/proj${RLO}ect` }, contentHash:'a' }),
+      ev({ kind:'prose', payload:{ text:`hi ${RLO} there` }, contentHash:'b', subIndex:1 }),
+    ]);
+    const session = buildFleetPayload(db).sessions[0]!;
+    for (const field of REACHABLE_SESSION_SANITISED_FIELDS) {
+      expect(session[field], `session.${field}`).not.toContain(RLO);
+    }
+  });
+
+  it('actually strips a bidi override from blocker.text', () => {
+    const db = openDb(':memory:');
+    const RLO = '\u202e';
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/r' } })]);
+    insertBlocker(db, `rm -rf ${RLO} /tmp`);
+    const blocker = buildFleetPayload(db).sessions[0]!.blocker!;
+    expect(blocker.text).not.toContain(RLO);
+  });
+
+  it('sanitizeFields itself cleans blocker.kind and blocker.text when told to, independent of the exported lists', () => {
+    const RLO = '\u202e';
+    const dirty: Blocker = {
+      sessionId: 's1', kind: `Permission${RLO}Request`, toolUseId: null,
+      promptId: null, occurredAt: '2026-01-01T00:00:00Z', text: `bad ${RLO} text`,
+    };
+    // Field list passed here is hand-written, not BLOCKER_SANITISED_FIELDS
+    // -- same reason as REACHABLE_SESSION_SANITISED_FIELDS above.
+    const clean = sanitizeFields(dirty, ['kind', 'text']);
+    expect(clean.kind).not.toContain(RLO);
+    expect(clean.text).not.toContain(RLO);
   });
 });
 
