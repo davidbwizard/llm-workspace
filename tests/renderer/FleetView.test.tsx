@@ -105,4 +105,24 @@ describe('FleetView', () => {
       screen.getByText(/No handler registered for 'fleet:list'/)).toBeTruthy());
     expect(screen.queryByText(/Reading the index/i)).toBeNull();
   });
+
+  it('keeps the "N active" chip in sync with what actually renders above the divider', async () => {
+    // A mix that exercises the boundary between the two grouping
+    // definitions: an active-but-quiet session and a stale-but-working
+    // (disconnected) one are both idle, not live -- if the chip and the
+    // live group ever counted different things, this fixture is where
+    // they'd disagree.
+    (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
+      version:1, generatedAt:'t', sessions:[
+        s({ sessionId:'a', project:'live1', activity:'working' }),
+        s({ sessionId:'b', project:'live2', activity:'waiting_permission' }),
+        s({ sessionId:'q', project:'quiet1', lifecycle:'active', activity:'idle' }),
+        s({ sessionId:'g', project:'ghost1', lifecycle:'disconnected', activity:'working', stale:true }),
+      ],
+    });
+    const { container } = render(<FleetView />);
+    await waitFor(() => expect(screen.getByText(/2 active/)).toBeTruthy());
+    const liveCards = container.querySelectorAll('.fleet:not(.dim) [role="button"]');
+    expect(liveCards.length).toBe(2);
+  });
 });
