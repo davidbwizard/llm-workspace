@@ -11,6 +11,13 @@ import { registerIpc, pushFleet } from './ipc.ts';
 let db: Db | null = null;
 let watcher: Watcher | null = null;
 let spoolTimer: NodeJS.Timeout | null = null;
+// Coalesces watcher bursts into one push per 250ms (below). Declared here,
+// alongside spoolTimer, rather than as a local inside the setImmediate
+// closure below it used to be: a variable scoped to that closure is
+// unreachable from before-quit, so nothing could ever clear it, and a
+// watcher event arriving in the last 250ms before quit would fire its
+// pushFleet call after db was already closed.
+let pushTimer: NodeJS.Timeout | null = null;
 let mainWindow: BrowserWindow | null = null;
 
 const paths = resolvePaths(homedir());
@@ -84,10 +91,9 @@ app.whenReady().then(() => {
 
     // Watcher events arrive per file and can burst; coalesce so a busy
     // session does not push a payload per line written.
-    let pending: NodeJS.Timeout | null = null;
     watcher = startWatcher(db, roots(), () => {
-      if (pending) return;
-      pending = setTimeout(() => { pending = null; if (db) pushFleet(db, mainWindow); }, 250);
+      if (pushTimer) return;
+      pushTimer = setTimeout(() => { pushTimer = null; if (db) pushFleet(db, mainWindow); }, 250);
     });
 
     spoolTimer = setInterval(() => {
@@ -106,6 +112,18 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 
 app.on('before-quit', () => {
   if (spoolTimer) clearInterval(spoolTimer);
+  // Cancels a coalesced push already scheduled but not yet fired. Without
+  // this, a watcher event in the last 250ms before quit still fires its
+  // pushFleet call after db below is closed.
+  if (pushTimer) clearTimeout(pushTimer);
   void watcher?.close();
   db?.close();
+  // watcher.close() above is fire-and-forget (not awaited), so a watcher
+  // event already in flight can still call startWatcher's onOutcome after
+  // this point and schedule a NEW pushTimer this handler never sees. Every
+  // site that later checks `if (db)` before using it (the pushTimer
+  // callback above, the spoolTimer callback below) needs db to actually
+  // read as closed once it is -- not stay a truthy reference to a closed
+  // handle, which throws TypeError on use rather than being falsy.
+  db = null;
 });
