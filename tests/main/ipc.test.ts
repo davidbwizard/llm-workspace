@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { buildFleetPayload } from '../../src/main/ipc.ts';
+import {
+  buildFleetPayload, SANITISED_FIELDS, STRUCTURAL_FIELDS,
+  BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
+} from '../../src/main/ipc.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 
 function ev(o: Partial<NormalizedEvent>): NormalizedEvent {
@@ -10,6 +13,35 @@ function ev(o: Partial<NormalizedEvent>): NormalizedEvent {
     ts:'2026-09-10T12:00:00Z', kind:'prose', payload:{}, nativeId:null,
     sourceFile:'/f', sourceOffset:0, contentHash:'h', subIndex:0,
     parserVersion:1, ...o } as NormalizedEvent;
+}
+
+// signal_events has no FK to events, and openBlockers windows on occurred_at
+// against the real Date.now() (buildFleetPayload calls fleetState(db) with
+// no `now` override) -- so a blocker fixture needs a real, current
+// timestamp, unlike the fixed 2026 timestamps the events above use.
+function insertBlocker(db: ReturnType<typeof openDb>, command: string): void {
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO signal_events
+    (event_id, occurred_at, ingested_at, provider, session_id, tool_use_id, kind, payload)
+    VALUES (?,?,?,?,?,?,?,?)`).run('e1', now, now, 'claude', 's1', 't1',
+      'PermissionRequest', JSON.stringify({ tool_name:'Bash', tool_input:{ command } }));
+}
+
+// A function or a Date anywhere in the payload crosses the bridge silently
+// changed: JSON.stringify turns a Date into a string and drops a function
+// entirely, so a naive "did JSON.stringify throw" check (the brief's
+// original version of this test) never sees either problem. This walks the
+// actual payload object graph before serialisation and names every
+// offending path, so the assertion is on the real values, not on whether
+// JSON.stringify tolerated them.
+function findFunctionsAndDates(value: unknown, path = '$'): string[] {
+  if (value instanceof Date) return [`${path} is a Date`];
+  if (typeof value === 'function') return [`${path} is a function`];
+  if (Array.isArray(value)) return value.flatMap((v, i) => findFunctionsAndDates(v, `${path}[${i}]`));
+  if (value !== null && typeof value === 'object') {
+    return Object.entries(value).flatMap(([k, v]) => findFunctionsAndDates(v, `${path}.${k}`));
+  }
+  return [];
 }
 
 describe('buildFleetPayload', () => {
@@ -24,8 +56,8 @@ describe('buildFleetPayload', () => {
   it('carries no function or Date values across the bridge', () => {
     const db = openDb(':memory:');
     insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/r' } })]);
-    const json = JSON.stringify(buildFleetPayload(db));
-    expect(JSON.parse(json).sessions[0].sessionId).toBe('s1');
+    const payload = buildFleetPayload(db);
+    expect(findFunctionsAndDates(payload)).toEqual([]);
   });
 
   it('strips control characters from provider text', () => {
@@ -104,6 +136,60 @@ describe('buildFleetPayload', () => {
     const p = buildFleetPayload(db);
     expect(p.sessions[0]!.lastProse).toBe(family);
     expect([...p.sessions[0]!.lastProse!]).toHaveLength(7); // 4 emoji + 3 ZWJ
+  });
+
+  // This is the gate described above SANITISED_FIELDS/STRUCTURAL_FIELDS in
+  // src/main/ipc.ts: every key buildFleetPayload actually puts on a session
+  // must be accounted for by exactly one of those two lists. If someone
+  // adds a field to SessionState (src/fleet/state.ts) and forgets to
+  // classify it here, this fails -- the built session carries a key
+  // neither list names, so the sets cannot be equal.
+  it('classifies every session field as sanitised or structural, with none left over', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/r' } })]);
+    const session = buildFleetPayload(db).sessions[0]!;
+    const known = new Set<string>([...SANITISED_FIELDS, ...STRUCTURAL_FIELDS]);
+    expect(new Set(Object.keys(session))).toEqual(known);
+  });
+
+  // Same gate, for the nested blocker object -- needs a real blocker, so
+  // this is the first test in this file to actually populate one.
+  it('classifies every blocker field as sanitised or structural, with none left over', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/r' } })]);
+    insertBlocker(db, 'npm run dist:mac');
+    const blocker = buildFleetPayload(db).sessions[0]!.blocker!;
+    const known = new Set<string>([...BLOCKER_SANITISED_FIELDS, ...BLOCKER_STRUCTURAL_FIELDS]);
+    expect(new Set(Object.keys(blocker))).toEqual(known);
+  });
+
+  // blocker.kind is populated by String(p.hook_event_name ?? 'unknown')
+  // in src/hooks/spool.ts with no enum check at write time -- freeform
+  // text next to the already-sanitised blocker.text. It cannot actually be
+  // dirtied through the real signal_events -> openBlockers pipeline today:
+  // src/store/signals.ts's isBlocking() only admits a signal whose `kind`
+  // exactly equals one of a fixed clean set ('PermissionRequest',
+  // 'Elicitation', 'Notification', 'PreToolUse') before it ever becomes
+  // part of a Blocker, so every reachable blocker.kind is clean by
+  // construction of that gate. Sanitising it here anyway is deliberate
+  // defence in depth -- display safety at this boundary should not depend
+  // on a classification gate that exists for an unrelated purpose and
+  // could change. This test proves the classification, which is the part
+  // this fix actually changes; the mechanism itself (sanitizeFields applies
+  // identically to every field named in BLOCKER_SANITISED_FIELDS, with no
+  // per-field special-casing) is proven end to end by the next test, on
+  // `text`, which -- via tool_input.command -- genuinely is reachable.
+  it('classifies blocker.kind as sanitised, not structural', () => {
+    expect(BLOCKER_SANITISED_FIELDS).toContain('kind');
+  });
+
+  it('sanitises blocker.text end to end, from a real hook payload', () => {
+    const db = openDb(':memory:');
+    const ESC = String.fromCharCode(27);
+    insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/r' } })]);
+    insertBlocker(db, `rm -rf ${ESC}]52;c;aGk= /tmp`);
+    const p = buildFleetPayload(db);
+    expect(p.sessions[0]!.blocker!.text).not.toContain(ESC);
   });
 });
 

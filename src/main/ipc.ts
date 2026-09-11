@@ -6,6 +6,7 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 import type { Db } from '../store/db.ts';
 import { fleetState, type SessionState } from '../fleet/state.ts';
+import type { Blocker } from '../store/signals.ts';
 import { sanitizeForTerminal } from '../config.ts';
 
 export interface FleetPayload { version: 1; generatedAt: string; sessions: SessionState[] }
@@ -51,18 +52,66 @@ function sanitizeForDisplay(s: string): string {
   return sanitizeForTerminal(s).replace(BIDI_CONTROL, '').replace(ZERO_WIDTH_FORMATTING, '');
 }
 
+// Every SessionState field, classified into exactly one of these two lists:
+// text that can carry provider-authored prose (sanitised through
+// sanitizeForDisplay) or structural bookkeeping that cannot (an id, a
+// timestamp, an enum, a count -- there is nothing for a bidi override or a
+// zero-width character to hide inside a number or a known-value string).
+//
+// This is a gate, not documentation. tests/main/ipc.test.ts builds a real
+// payload and asserts every key on a session is accounted for by one list
+// or the other, with none left over. Add a field to SessionState and
+// forget to put it in one of these two lists, and that test fails -- it
+// has to, because the failure mode this defends against is exactly
+// "nobody remembered," which a comment cannot prevent and a test can.
+export const SANITISED_FIELDS =
+  ['lastProse', 'project', 'cwd'] as const satisfies readonly (keyof SessionState)[];
+export const STRUCTURAL_FIELDS = [
+  'sessionId', 'runId', 'provider', 'lifecycle', 'activity', 'stale',
+  'confidence', 'source', 'lastActivityAt', 'agents', 'liveAgents',
+  'events', 'blocker', 'match', 'candidates', 'host', 'sharesWorktreeWith',
+] as const satisfies readonly (keyof SessionState)[];
+
+// Same gate, for the nested blocker object. `kind` is populated by
+// `String(p.hook_event_name ?? 'unknown')` in src/hooks/spool.ts with no
+// enum check at write time, so it is freeform text sitting right next to
+// the already-sanitised `text` -- sanitised here too, as defence in depth:
+// display safety at this boundary should not depend on
+// src/store/signals.ts's isBlocking() gate (which happens to constrain
+// `kind` to a fixed clean set today, for classification reasons unrelated
+// to display) continuing to do so.
+export const BLOCKER_SANITISED_FIELDS =
+  ['text', 'kind'] as const satisfies readonly (keyof Blocker)[];
+export const BLOCKER_STRUCTURAL_FIELDS = [
+  'sessionId', 'toolUseId', 'promptId', 'occurredAt',
+] as const satisfies readonly (keyof Blocker)[];
+
+/** Sanitises every field named in `fields` whose current value is a string
+ *  (some entries, e.g. cwd/lastProse, are nullable -- null passes through
+ *  unchanged). Driving sanitisation from the same list the exhaustiveness
+ *  test checks means there is one place to update when a field's
+ *  classification changes, not two that can quietly drift apart. */
+function sanitizeFields<T extends object>(obj: T, fields: readonly (keyof T)[]): T {
+  const out = { ...obj };
+  for (const f of fields) {
+    const v = out[f];
+    if (typeof v === 'string') out[f] = sanitizeForDisplay(v) as unknown as T[typeof f];
+  }
+  return out;
+}
+
 /** Provider text crosses into the renderer here. It is sanitised at this
  *  boundary rather than in a component, so a new component cannot forget
  *  (spec §11.2). React escapes HTML, but control and bidi/zero-width
  *  characters are a separate problem and travel fine through JSX. */
 export function buildFleetPayload(db: Db): FleetPayload {
-  const sessions = fleetState(db).map(s => ({
-    ...s,
-    lastProse: s.lastProse === null ? null : sanitizeForDisplay(s.lastProse),
-    project: sanitizeForDisplay(s.project),
-    cwd: s.cwd === null ? null : sanitizeForDisplay(s.cwd),
-    blocker: s.blocker ? { ...s.blocker, text: sanitizeForDisplay(s.blocker.text) } : null,
-  }));
+  const sessions = fleetState(db).map(s => {
+    const session = sanitizeFields(s, SANITISED_FIELDS);
+    return {
+      ...session,
+      blocker: session.blocker ? sanitizeFields(session.blocker, BLOCKER_SANITISED_FIELDS) : null,
+    };
+  });
   return { version: 1, generatedAt: new Date().toISOString(), sessions };
 }
 
