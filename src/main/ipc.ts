@@ -1,3 +1,8 @@
+// Under plain-Node vitest (no electron-rebuild here), node_modules/electron
+// is a stub whose default export is a path string, so this named import
+// binds ipcMain to undefined rather than throwing. That stays harmless only
+// because ipcMain is dereferenced inside registerIpc's body, never at module
+// scope -- a test that imports and calls registerIpc directly will throw.
 import { ipcMain, type BrowserWindow } from 'electron';
 import type { Db } from '../store/db.ts';
 import { fleetState, type SessionState } from '../fleet/state.ts';
@@ -7,18 +12,23 @@ export interface FleetPayload { version: 1; generatedAt: string; sessions: Sessi
 
 // Unicode bidirectional overrides (U+202A-U+202E: LRE, RLE, PDF, LRO, RLO)
 // and isolates (U+2066-U+2069: LRI, RLI, FSI, PDI) -- e.g. U+202E
-// RIGHT-TO-LEFT OVERRIDE, the classic filename-spoofing trick. Invisible
-// characters that re-order how the text around them is DISPLAYED, without
-// changing the text itself. Inert in a terminal -- sanitizeForTerminal never
-// touches them -- but not in a renderer, so what the user reads can differ
-// from what the agent actually wrote.
+// RIGHT-TO-LEFT OVERRIDE, the classic filename-spoofing trick. Their effect
+// is UNBOUNDED -- each re-orders how every character after it is DISPLAYED,
+// until a matching pop or the end of the string, without changing the text
+// itself. Inert in a terminal -- sanitizeForTerminal never touches them --
+// but not in a renderer, so what the user reads can differ from what the
+// agent actually wrote. This is the Trojan Source set.
 const BIDI_CONTROL = /[‪-‮⁦-⁩]/g;
-// Zero-width formatting characters: invisible in any renderer, used the same
-// way -- to hide characters inside what looks like a shorter or different
-// string. Zero width space/non-joiner/joiner and the left/right-to-left
-// marks (U+200B-U+200F), word joiner (U+2060), and the byte-order mark
-// (U+FEFF).
-const ZERO_WIDTH_FORMATTING = /[​-‏⁠﻿]/g;
+// Zero-width, no script role: zero-width space, word joiner, and the
+// byte-order mark. Deliberately NOT included here: ZWNJ/ZWJ (U+200C/U+200D)
+// are load-bearing for Persian, Arabic and Indic scripts (ZWNJ) and for
+// emoji sequences (ZWJ) -- stripping them silently corrupts correct text,
+// which is worse than leaving them, since it happens on honest content
+// every day rather than only under attack. LRM/RLM (U+200E/U+200F) are
+// also excluded: unlike the override/isolate set above, they only bias
+// adjacent neutral characters, not an unbounded span, so they cannot
+// reorder arbitrary following text the way BIDI_CONTROL's set can.
+const ZERO_WIDTH_FORMATTING = /[​⁠﻿]/g;
 
 /** sanitizeForTerminal (src/config.ts) strips terminal escape sequences and
  *  control characters -- correct for the terminal it was written for. It

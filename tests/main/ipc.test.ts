@@ -70,6 +70,41 @@ describe('buildFleetPayload', () => {
     const p = buildFleetPayload(db);
     expect(p.sessions[0]!.lastProse).toBe('paypal.com');
   });
+
+  // ZWNJ (U+200C) is not decorative -- Persian, Arabic and several Indic
+  // scripts require it to render correctly. U+06A9 U+062A U+0627 U+0628
+  // ("ketab", book) + ZWNJ + U+0647 U+0627 (the plural suffix "-ha") is the
+  // textbook example: without the ZWNJ the two halves visually join into a
+  // single, wrong word. A sanitiser that strips it silently corrupts
+  // correct text, which is worse than leaving it in -- it happens on
+  // honest content every day, not only under attack.
+  it('keeps ZWNJ in real Persian text unchanged', () => {
+    const db = openDb(':memory:');
+    const persian = '\u06a9\u062a\u0627\u0628\u200c\u0647\u0627';
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/r' }, contentHash:'a' }),
+      ev({ kind:'prose', payload:{ text: persian }, contentHash:'b', subIndex:1 }),
+    ]);
+    const p = buildFleetPayload(db);
+    expect(p.sessions[0]!.lastProse).toBe(persian);
+  });
+
+  // ZWJ (U+200D) joins emoji into a single glyph -- strip it and a family
+  // emoji becomes four separate people. Asserted on code points (spread
+  // iterates a string by code point, not UTF-16 code unit), not on how it
+  // renders.
+  it('keeps ZWJ emoji sequences intact', () => {
+    const db = openDb(':memory:');
+    // man, ZWJ, woman, ZWJ, girl, ZWJ, boy -- the "family" ZWJ sequence
+    const family = '\u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d\u{1f466}';
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/r' }, contentHash:'a' }),
+      ev({ kind:'prose', payload:{ text: family }, contentHash:'b', subIndex:1 }),
+    ]);
+    const p = buildFleetPayload(db);
+    expect(p.sessions[0]!.lastProse).toBe(family);
+    expect([...p.sessions[0]!.lastProse!]).toHaveLength(7); // 4 emoji + 3 ZWJ
+  });
 });
 
 // Comments can contain the same channel names the assertion below looks for
