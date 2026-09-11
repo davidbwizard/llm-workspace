@@ -6,6 +6,7 @@ import { parseClaudeLines, CLAUDE_PARSER_VERSION } from '../providers/claude/par
 import { findSubagents, parseAgentMeta, type SubagentRef } from '../providers/claude/subagents.ts';
 import { parseCodexLines, CODEX_PARSER_VERSION } from '../providers/codex/parse.ts';
 import { insertEvents, getIngestState, recordIngest, reparseFile, resumeContextFor } from '../store/ingest.ts';
+import { ensureRun, getRunStart } from '../store/runs.ts';
 import type { Db } from '../store/db.ts';
 import type { Provider, NormalizedEvent } from '../core/types.ts';
 
@@ -141,6 +142,19 @@ export function ingestFileOnce(db: Db, path: string, provider: Provider): Ingest
   // watched). Computed up front so the reparse branch below can fold their
   // re-derivation into the same transaction as the transcript's own (F2).
   const agentEvents = provider === 'claude' ? subagentEvents(path) : [];
+
+  // Every event belongs to a run (spec §6.3). Without SessionStart hooks the
+  // run begins at the session's first observed event, so the id is stable
+  // across incremental tails.
+  const firstTs = events.length > 0 ? events[0]!.ts : null;
+  for (const e of events) {
+    if (!e.runId && e.sessionId && e.sessionId !== 'unknown') {
+      const startedAt = resume?.sessionId === e.sessionId && prior
+        ? (getRunStart(db, e.sessionId) ?? firstTs ?? e.ts)
+        : (getRunStart(db, e.sessionId) ?? e.ts);
+      e.runId = ensureRun(db, e.sessionId, startedAt);
+    }
+  }
 
   let written = 0;
   if (tail.restarted || staleParser) {

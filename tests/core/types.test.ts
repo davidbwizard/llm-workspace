@@ -18,11 +18,9 @@ describe('event kinds', () => {
 });
 
 describe('shared types', () => {
-  it('exposes TailLine from core, not from a provider module', async () => {
-    const core = await import('../../src/core/types.ts');
-    expect('TailLine' in core || true).toBe(true); // type-only; compile is the real assertion
+  it('exposes TailLine from core, not from a provider module', () => {
     const line: TailLine = { text: '{}', offset: 0 };
-    expect(line.offset).toBe(0);
+    expect(line).toEqual({ text: '{}', offset: 0 });
   });
 
   it('models a run as its own identity', () => {

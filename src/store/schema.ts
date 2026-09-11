@@ -61,4 +61,14 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS runs (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  source TEXT NOT NULL,
+  end_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS runs_session ON runs(session_id, started_at);
 `;
