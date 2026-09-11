@@ -13,7 +13,14 @@ describe('renderer security posture', () => {
   it('disables node integration', () => expect(main).toMatch(/nodeIntegration:\s*false/));
   it('enables the sandbox', () => expect(main).toMatch(/sandbox:\s*true/));
   it('denies new windows', () => expect(main).toMatch(/setWindowOpenHandler/));
-  it('blocks navigation', () => expect(main).toMatch(/will-navigate/));
+  it('blocks navigation', () => {
+    // will-navigate alone only covers main-frame, user-initiated navigation --
+    // will-frame-navigate (subframes) and will-redirect (server redirects)
+    // close the other two gaps (spec §11.1).
+    expect(main).toMatch(/will-navigate/);
+    expect(main).toMatch(/will-frame-navigate/);
+    expect(main).toMatch(/will-redirect/);
+  });
 
   it('exposes no generic invoke from the preload', () => {
     expect(preload).not.toMatch(/ipcRenderer\.invoke\(\s*channel/);

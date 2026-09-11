@@ -19,12 +19,16 @@ function createWindow(): void {
 
   win.once('ready-to-show', () => win.show());
 
-  // Nothing in this app should ever open a window or navigate.
+  // Nothing in this app should ever open a window or navigate. will-navigate
+  // alone only covers main-frame, user-initiated navigation; will-frame-navigate
+  // and will-redirect close the subframe and redirect gaps (spec §11.1).
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) void shell.openExternal(url);
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.on('will-frame-navigate', (e) => e.preventDefault());
+  win.webContents.on('will-redirect', (e) => e.preventDefault());
 
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void win.loadFile(join(import.meta.dirname, '../renderer/index.html'));
