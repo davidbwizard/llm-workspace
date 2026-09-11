@@ -57,25 +57,55 @@ async function defaultExec(bin: string, args: string[]): Promise<string> {
   }
 }
 
-/** Walk the parent chain for classifyHost, one hop per call to exec(). The
- *  async twin of src/config.ts's buildProcessChain -- kept as its own,
- *  smaller copy here rather than changing that function's signature to
- *  async, since config.ts is out of scope for this change and its existing
- *  synchronous callers must not be disturbed. Reuses parseProcessChainHop,
- *  the actual line-parsing logic, unchanged. */
-async function walkProcessChain(pid: number, exec: ExecFn, maxDepth = 12): Promise<string[]> {
+/** Result of walking one pid's parent chain: `chain` and `pids` are parallel
+ *  arrays, self first (`chain[0]`/`pids[0]` describe `pid` itself, not an
+ *  ancestor -- same convention classifyHost already documents for `chain`).
+ *  `pids` is the ancestry-filtering follow-up (see filterToSessions below)
+ *  riding along on the walk classifyHost already needed, rather than a
+ *  second walker over the same processes. */
+interface ProcessChainWalk {
+  chain: string[];
+  pids: number[];
+}
+
+/** Walk the parent chain for classifyHost (and, via `pids`, for
+ *  filterToSessions), one hop per call to exec(). The async twin of
+ *  src/config.ts's buildProcessChain -- kept as its own, smaller copy here
+ *  rather than changing that function's signature to async, since config.ts
+ *  is out of scope for this change and its existing synchronous callers
+ *  must not be disturbed. Reuses parseProcessChainHop, the actual
+ *  line-parsing logic, unchanged.
+ *
+ *  Fail-soft: if the very first hop can't be parsed (bad/missing `ps`
+ *  output, e.g. the pid exited between pgrep and this call), both arrays
+ *  come back empty. filterToSessions treats an empty `pids` as "no ancestor
+ *  found in the matched set" -- i.e. keep the process -- which is
+ *  deliberate: losing a real session because `ps` hiccuped is worse than
+ *  showing one helper. */
+async function walkProcessChain(pid: number, exec: ExecFn, maxDepth = 12): Promise<ProcessChainWalk> {
   const chain: string[] = [];
+  const pids: number[] = [];
   let cur: number | null = pid;
   let depth = 0;
   while (cur !== null && depth < maxDepth) {
     const step = parseProcessChainHop(await exec('ps', ['-o', 'ppid=,comm=', '-p', String(cur)]));
     if (!step) break;
     chain.push(basename(step.comm));
+    pids.push(cur);
     if (step.ppid <= 1) break;
     cur = step.ppid;
     depth++;
   }
-  return chain;
+  return { chain, pids };
+}
+
+/** One inspected pid, plus the ancestor pids its chain walk turned up (self
+ *  excluded) -- filterToSessions' input. Kept separate from LiveProcess
+ *  itself since ancestry is only needed transiently, to decide whether this
+ *  pid survives filtering; it is not part of the public shape. */
+interface InspectedPid {
+  process: LiveProcess;
+  ancestorPids: number[];
 }
 
 /** Inspect one pid, already known-live from pgrep for the given `provider`
@@ -88,22 +118,53 @@ async function walkProcessChain(pid: number, exec: ExecFn, maxDepth = 12): Promi
  *  come back empty (e.g. it exited between pgrep and this call) still
  *  produces a LiveProcess, just with every derived field null/'unknown'
  *  (provider excepted) rather than the pid disappearing. */
-async function inspectPid(pid: number, provider: Provider, exec: ExecFn): Promise<LiveProcess> {
-  const [ttyOut, cwdOut, statOut, chain] = await Promise.all([
+async function inspectPid(pid: number, provider: Provider, exec: ExecFn): Promise<InspectedPid> {
+  const [ttyOut, cwdOut, statOut, walk] = await Promise.all([
     exec('ps', ['-o', 'tty=', '-p', String(pid)]),
     exec('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']),
     exec('ps', ['-o', 'etime=,rss=', '-p', String(pid)]),
     walkProcessChain(pid, exec),
   ]);
   return {
-    pid,
-    provider,
-    tty: parseTty(ttyOut),
-    cwd: parseLsofCwd(cwdOut),
-    host: classifyHost(chain),
-    ageSeconds: parseEtime(statOut),
-    rssBytes: parseRss(statOut),
+    process: {
+      pid,
+      provider,
+      tty: parseTty(ttyOut),
+      cwd: parseLsofCwd(cwdOut),
+      host: classifyHost(walk.chain),
+      ageSeconds: parseEtime(statOut),
+      rssBytes: parseRss(statOut),
+    },
+    ancestorPids: walk.pids.slice(1), // walk.pids[0] is pid itself, not an ancestor
   };
+}
+
+/** A matched pid (found by `pgrep -x <bin>` for either provider) is a
+ *  session only if no OTHER matched pid is its ancestor -- a helper process
+ *  a session spawned (a sandbox wrapper, an app-server, ...) still matches
+ *  `pgrep -x codex`/`pgrep -x claude` by binary name, but reaches the real
+ *  session through its own parent chain, however many non-matching
+ *  processes (a shell, a REPL) sit in between. `matchedPids` is every pid
+ *  pgrep found this sweep, across both providers -- checked as a flat set
+ *  rather than per-provider, since a helper's ancestor is always the same
+ *  provider's session in practice, and nothing about the rule requires
+ *  assuming that.
+ *
+ *  Deliberately NOT filtering on tty, args, or parent name: those are
+ *  version- and platform-specific and will rot. Ancestry within the
+ *  matched set is the property that actually distinguishes a helper from a
+ *  session -- e.g. it keeps a pid parented directly by ChatGPT.app with no
+ *  tty at all, exactly as it should, since nothing else matched found in
+ *  its chain.
+ *
+ *  Fail-soft: an `ancestorPids` of `[]` (walkProcessChain's own fail-soft
+ *  result when its first hop can't be parsed) trivially satisfies "no
+ *  ancestor is in the matched set", so a pid discovery couldn't get
+ *  ancestry for is kept, not dropped. */
+function filterToSessions(inspected: InspectedPid[], matchedPids: ReadonlySet<number>): LiveProcess[] {
+  return inspected
+    .filter(({ ancestorPids }) => !ancestorPids.some(a => matchedPids.has(a)))
+    .map(({ process }) => process);
 }
 
 /** One full discovery sweep across both providers, run concurrently. Never
@@ -111,14 +172,21 @@ async function inspectPid(pid: number, provider: Provider, exec: ExecFn): Promis
  *  rejection (a bug, or an exec that breaks its own no-throw contract) is
  *  caught here too. Spec 7.1a: process discovery is enrichment only, over a
  *  session list built independently from transcripts -- a discovery
- *  failure must never be able to reach, let alone reduce, that list. */
+ *  failure must never be able to reach, let alone reduce, that list.
+ *
+ *  Matches every PROVIDER_BINS pid first (both providers, so the matched
+ *  set filterToSessions checks ancestry against is complete before any pid
+ *  is inspected), then inspects them all concurrently, then drops helper
+ *  processes -- a session's own subprocesses that also happen to match
+ *  `pgrep -x codex`/`pgrep -x claude` by binary name (see filterToSessions). */
 export async function discoverLiveProcesses(exec: ExecFn = defaultExec): Promise<LiveProcess[]> {
   try {
-    const byProvider = await Promise.all(PROVIDER_BINS.map(async bin => {
-      const pids = parsePgrep(await exec('pgrep', ['-x', bin]));
-      return Promise.all(pids.map(pid => inspectPid(pid, bin, exec)));
-    }));
-    return byProvider.flat();
+    const matched = (await Promise.all(PROVIDER_BINS.map(async bin =>
+      parsePgrep(await exec('pgrep', ['-x', bin])).map(pid => ({ pid, provider: bin }))))).flat();
+    const matchedPids = new Set(matched.map(m => m.pid));
+
+    const inspected = await Promise.all(matched.map(({ pid, provider }) => inspectPid(pid, provider, exec)));
+    return filterToSessions(inspected, matchedPids);
   } catch {
     return [];
   }

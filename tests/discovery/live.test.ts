@@ -92,6 +92,97 @@ describe('discoverLiveProcesses', () => {
   });
 });
 
+// A matched pid (pgrep -x claude/codex found it) is a session only if no
+// OTHER matched pid is its ancestor -- a session's own helper subprocesses
+// (a sandbox permission wrapper, an app-server) still match `pgrep -x
+// codex` by binary name, but are reachable from the real session through
+// their own parent chain. These fixtures mirror one real machine's actual
+// process tree that motivated the fix:
+//
+//   iTerm2 -> zsh(20133) -> codex(85962)      <- the real session
+//                             node_repl(86022)  <- unmatched (not "codex")
+//                               codex(56549)    <- helper (permission wrapper)
+//                               codex(56550)    <- helper
+//                               codex(56553)    <- helper (app-server)
+//   ChatGPT.app -> codex(30651), no tty         <- a second, real session
+describe('ancestry filtering (session vs. helper subprocess)', () => {
+  it('drops a matched pid descended from another matched pid through a non-matching intermediate (grandchild)', async () => {
+    const exec = fakeExec({
+      'pgrep -x codex': '85962\n56549\n',
+      'ps -o ppid=,comm= -p 85962': '20133 codex\n', // 85962's own ppid/comm
+      'ps -o ppid=,comm= -p 20133': '1 zsh\n',
+      // 56549's parent is 86022 (node_repl) -- unmatched, not "codex" --
+      // and 86022's parent is 85962, itself a matched pid.
+      'ps -o ppid=,comm= -p 56549': '86022 codex\n',
+      'ps -o ppid=,comm= -p 86022': '85962 node_repl\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec);
+    expect(procs.map(p => p.pid)).toEqual([85962]);
+  });
+
+  it('keeps a matched pid whose parent chain contains no other matched pid', async () => {
+    const exec = fakeExec({
+      'pgrep -x codex': '85962\n',
+      'ps -o ppid=,comm= -p 85962': '20133 codex\n',
+      'ps -o ppid=,comm= -p 20133': '1 zsh\n', // zsh's own pid never appears in pgrep's matched set
+    });
+
+    const procs = await discoverLiveProcesses(exec);
+    expect(procs.map(p => p.pid)).toEqual([85962]);
+  });
+
+  it('keeps a matched pid with no tty and no matched ancestor, parented directly by an unmatched app process', async () => {
+    // Pins the ChatGPT-desktop-app case explicitly: no tty, and its only
+    // parent is an app process that never matched pgrep -x codex -- the
+    // rule must keep it, not treat "no tty" as a signal to drop.
+    const exec = fakeExec({
+      'pgrep -x codex': '30651\n',
+      'ps -o tty= -p 30651': '??\n',
+      'ps -o ppid=,comm= -p 30651': '412 codex\n',
+      'ps -o ppid=,comm= -p 412': '1 ChatGPT\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec);
+    expect(procs).toHaveLength(1);
+    expect(procs[0]).toMatchObject({ pid: 30651, tty: null, host: 'codex-app' });
+  });
+
+  it('keeps a matched pid rather than dropping it when its ancestry walk cannot be parsed', async () => {
+    // pid 2's ancestry call returns output walkProcessChain's first hop
+    // can't parse (indistinguishable from ps failing outright, or the pid
+    // having exited mid-lookup) -- so its ancestry is simply unknown. Fail
+    // soft means unknown must resolve to "no known matched ancestor" (kept),
+    // never to "looks suspicious, drop it".
+    const exec = fakeExec({
+      'pgrep -x codex': '1\n2\n',
+      'ps -o ppid=,comm= -p 1': '999 codex\n',
+      'ps -o ppid=,comm= -p 2': 'not a valid ppid/comm line\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec);
+    expect(procs.map(p => p.pid).sort((a, b) => a - b)).toEqual([1, 2]);
+  });
+
+  it('the real-machine tree: drops all three codex helpers, keeps the real session and the ChatGPT-app session', async () => {
+    const exec = fakeExec({
+      'pgrep -x codex': '85962\n56549\n56550\n56553\n30651\n',
+      'ps -o ppid=,comm= -p 85962': '20133 codex\n',
+      'ps -o ppid=,comm= -p 20133': '1 zsh\n',
+      'ps -o ppid=,comm= -p 56549': '86022 codex\n',
+      'ps -o ppid=,comm= -p 56550': '86022 codex\n',
+      'ps -o ppid=,comm= -p 56553': '86022 codex\n',
+      'ps -o ppid=,comm= -p 86022': '85962 node_repl\n',
+      'ps -o tty= -p 30651': '??\n',
+      'ps -o ppid=,comm= -p 30651': '412 codex\n',
+      'ps -o ppid=,comm= -p 412': '1 ChatGPT\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec);
+    expect(procs.map(p => p.pid).sort((a, b) => a - b)).toEqual([85962, 30651].sort((a, b) => a - b));
+  });
+});
+
 // The module-scope cache (getCachedLiveProcesses/refreshLiveProcesses) is
 // reset between these tests via vi.resetModules() + a fresh dynamic import,
 // since it is shared, mutable state across the whole test file otherwise.
