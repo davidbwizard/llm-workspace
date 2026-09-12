@@ -128,19 +128,28 @@ describe('theme tokens', () => {
   });
 
   // Fix-wave item 4: ReplyPopover.css and SessionCard.css each hardcoded
-  // their own raw shadow hex against the "existing tokens only" constraint
-  // -- one shared token, declared once (shadows read correctly against
-  // either palette, same as --r-lg/--r-md/--r-sm), used in both places.
-  it('gives elevation its own token, used by both the popover and the card hover lift instead of a hardcoded shadow', () => {
+  // their own raw shadow hex against the "existing tokens only" constraint.
+  //
+  // Fix-wave item 2 (whole-branch review), correcting item 4's own fix:
+  // ReplyPopover and SessionCard's hover never rendered the SAME shadow
+  // (0 8px 20px #0009 vs 0 3px 16px rgba(0,0,0,.22) -- different blur, and
+  // about a third the alpha) -- one shared token collapsed onto
+  // ReplyPopover's value made the card hover materially darker than it had
+  // ever been, regressing the most-looked-at surface in the app. Two
+  // tokens now, each pinned to the value ITS OWN rule already rendered.
+  it('gives the popover and the card hover lift their own elevation tokens, pinned to what each already rendered -- not one shared value', () => {
     const bare = css.slice(0, css.search(/@media|:root\[data-theme/));
-    expect(parseTokens(bare)).toHaveProperty('--shadow-pop');
+    const bareTokens = parseTokens(bare);
+    expect(bareTokens['--shadow-pop']).toBe('0 8px 20px rgba(0,0,0,.6)');
+    expect(bareTokens['--shadow-card-hover']).toBe('0 3px 16px rgba(0,0,0,.22)');
 
     const popover = readFileSync('src/renderer/components/ReplyPopover.css', 'utf8');
     const card = readFileSync('src/renderer/components/SessionCard.css', 'utf8');
     expect(popover).toMatch(/box-shadow:\s*var\(--shadow-pop\)/);
-    expect(card).toMatch(/box-shadow:\s*var\(--shadow-pop\)/);
-    // Not just present somewhere alongside the old value -- the raw
-    // hardcoded shadow each file used to carry must actually be gone.
+    expect(card).toMatch(/box-shadow:\s*var\(--shadow-card-hover\)/);
+    // Neither the wrong token nor the raw hardcoded value it replaced.
+    expect(popover).not.toMatch(/box-shadow:\s*var\(--shadow-card-hover\)/);
+    expect(card).not.toMatch(/box-shadow:\s*var\(--shadow-pop\)/);
     expect(popover).not.toContain('#0009');
     expect(card).not.toContain('rgba(0,0,0,.22)');
   });

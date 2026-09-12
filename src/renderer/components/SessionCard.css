@@ -6,7 +6,7 @@
 .card.live { border-color:color-mix(in srgb,var(--accent) 30%,transparent); }
 .card:hover { border-color:color-mix(in srgb,var(--accent) 46%,transparent);
               background:var(--surface); transform:translateY(-1px);
-              box-shadow:var(--shadow-pop); }
+              box-shadow:var(--shadow-card-hover); }
 .card.attn:hover { border-color:color-mix(in srgb,var(--critical) 60%,transparent); }
 .card:hover .proj { color:var(--accent); }
 .card.attn:hover .proj { color:var(--critical); }

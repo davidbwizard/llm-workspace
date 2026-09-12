@@ -57,11 +57,20 @@
   /* Elevation for anything that floats above the surface it sits on --
      a flat black shadow reads correctly against either palette (same as
      --r-lg/--r-md/--r-sm above, theme-independent by nature, not merely
-     by omission). Value matches ReplyPopover.css's own pre-existing
-     `box-shadow:0 8px 20px #0009` exactly (0x99 = 60% alpha) -- not a new
-     depth, the one both SessionCard.css's hover lift and ReplyPopover's
-     own shadow already rendered before either had a token to share. */
+     by omission). --shadow-pop matches ReplyPopover.css's own pre-existing
+     `box-shadow:0 8px 20px #0009` exactly (0x99 = 60% alpha).
+
+     Whole-branch review, item 2: this used to be the ONE token both
+     ReplyPopover and SessionCard's hover lift shared -- wrong, because the
+     two never rendered the same shadow. SessionCard's hover was
+     `0 3px 16px rgba(0,0,0,.22)`, smaller blur and about a third the
+     alpha -- sharing --shadow-pop made the most-looked-at hover surface in
+     the app materially darker than it had ever been, which is exactly the
+     "preserve existing styles" constraint this token exists to satisfy,
+     not violate. Two tokens now, each pinned to the value its own rule
+     already rendered -- neither averaged nor replaced with the other. */
   --shadow-pop:0 8px 20px rgba(0,0,0,.6);
+  --shadow-card-hover:0 3px 16px rgba(0,0,0,.22);
 }
 /* The light palette below is declared twice, verbatim: once here, guarded so
    an explicit dark choice wins over the OS setting, and again under
