@@ -1,6 +1,7 @@
 import type { OpenSession } from '../../fleet/state.ts';
 import type { PaneView, Selection } from '../state/useFleet.ts';
 import type { KillResult } from '../../main/ipc.ts';
+import type { LaunchResult } from '../../main/launch.ts';
 import { FleetView } from './FleetView.tsx';
 import { SessionRail } from './SessionRail.tsx';
 import { ConversationView } from './ConversationView.tsx';
@@ -16,6 +17,17 @@ import './MainPane.css';
  *  is not something to assume can't happen. */
 function killSession(pid: number): Promise<KillResult> {
   return window.fleet?.killSession(pid) ?? Promise.resolve({ status: 'refused', reason: 'signal_failed' });
+}
+
+// Same "bridge might be gone" reasoning as killSession above, for the two
+// reattach channels OpenSessionCard (via SessionRail) needs.
+function reattachSession(pid: number, cols: number, rows: number): Promise<LaunchResult> {
+  return window.fleet?.reattach(pid, cols, rows)
+    ?? Promise.resolve({ status: 'failed', reason: 'Could not reach the app.' });
+}
+function resumeSession(sessionId: string, cwd: string, cols: number, rows: number): Promise<LaunchResult> {
+  return window.fleet?.resume(sessionId, cwd, cols, rows)
+    ?? Promise.resolve({ status: 'failed', reason: 'Could not reach the app.' });
 }
 
 /** The pluggable pane. Fleet and the session views today; Graph (Phase 4) and
@@ -53,7 +65,8 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
 
   return (
     <div className="mainpane split">
-      <SessionRail sessions={sessions} selectedPid={selection.pid} onSelect={onSelect} onKill={killSession} side={railSide} />
+      <SessionRail sessions={sessions} selectedPid={selection.pid} onSelect={onSelect} onKill={killSession}
+        onReattach={reattachSession} onResume={resumeSession} side={railSide} />
       <section className="pane">
         <header className="panehead">
           <button type="button" className="paneback" onClick={onClear}>All sessions</button>

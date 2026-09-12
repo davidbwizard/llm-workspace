@@ -498,6 +498,19 @@ export interface OpenSession {
    *  turn boundary (see the Activity doc comment above) -- null under the
    *  same conditions as sessionId. */
   activity: Activity | null;
+  /** True when this pid is a live tmux-backed session (registered by
+   *  launchSession/reattachSession, src/main/launch.ts -- src/main/
+   *  sessions.ts's own registry, checked live via resolveLiveTmux). Always
+   *  `false` from openSessions/openSessionsLive themselves -- neither has,
+   *  or should have, a dependency on that main-process-only registry (it is
+   *  a mutable singleton, not something this otherwise-pure module should
+   *  need to import to stay testable). The `isTmux` dependency below is how
+   *  a caller with real access to it (src/main/ipc.ts) corrects the value
+   *  before it ever reaches the renderer. Drives whether a card offers
+   *  "Reattach in app" -- offering it on an already-interactive session
+   *  would be pointless, not wrong, but the renderer has no other way to
+   *  tell the two apart. */
+  tmux: boolean;
 }
 
 /** One card per live process (discovery, spec §7.1a) -- "ALL OPEN
@@ -527,7 +540,7 @@ export interface OpenSession {
  *  actually shows. */
 function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
   sessionId: string | null; lastProse: string | null; events: number | null; activity: Activity | null;
-} | null): OpenSession {
+} | null, isTmux: (pid: number) => boolean): OpenSession {
   return {
     pid: p.pid,
     provider: p.provider,
@@ -541,6 +554,7 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
     lastProse: enrichment?.lastProse ?? null,
     events: enrichment?.events ?? null,
     activity: enrichment?.activity ?? null,
+    tmux: isTmux(p.pid),
   };
 }
 
@@ -553,7 +567,10 @@ function byProcessAge(a: OpenSession, b: OpenSession): number {
   return (a.ageSeconds ?? Infinity) - (b.ageSeconds ?? Infinity) || a.pid - b.pid;
 }
 
-export function openSessions(sessions: SessionState[], processes: LiveProcess[]): OpenSession[] {
+export function openSessions(
+  sessions: SessionState[], processes: LiveProcess[], deps: { isTmux?: (pid: number) => boolean } = {},
+): OpenSession[] {
+  const isTmux = deps.isTmux ?? (() => false);
   const refs = sessions.map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
   const matches = classifyMatch(processes, refs);
   const byId = new Map(sessions.map(s => [s.sessionId, s]));
@@ -561,7 +578,7 @@ export function openSessions(sessions: SessionState[], processes: LiveProcess[])
   return processes.map((p, i) => {
     const m = matches[i]!; // classifyMatch returns one result per process, same order
     const matched = m.quality === 'unique' ? byId.get(m.sessionId!) ?? null : null;
-    return buildOpenSession(p, m, matched);
+    return buildOpenSession(p, m, matched, isTmux);
   }).sort(byProcessAge);
 }
 
@@ -603,7 +620,10 @@ export function openSessions(sessions: SessionState[], processes: LiveProcess[])
  *  table, so there is nothing to scope further. Activity/lifecycle reuse
  *  deriveActivity, the same function fleetState's own per-row map now
  *  calls, so the two paths cannot compute it differently. */
-export function openSessionsLive(db: Db, processes: LiveProcess[], now: number = Date.now()): OpenSession[] {
+export function openSessionsLive(
+  db: Db, processes: LiveProcess[], now: number = Date.now(), deps: { isTmux?: (pid: number) => boolean } = {},
+): OpenSession[] {
+  const isTmux = deps.isTmux ?? (() => false);
   const cwds = [...new Set(processes.map(p => p.cwd).filter((c): c is string => c !== null))];
 
   const candidateRows = cwds.length === 0 ? [] : db.prepare(`
@@ -664,6 +684,6 @@ export function openSessionsLive(db: Db, processes: LiveProcess[], now: number =
   return processes.map((p, i) => {
     const m = matches[i]!;
     const enrichment = m.quality === 'unique' ? enrichmentById.get(m.sessionId!) ?? null : null;
-    return buildOpenSession(p, m, enrichment);
+    return buildOpenSession(p, m, enrichment, isTmux);
   }).sort(byProcessAge);
 }

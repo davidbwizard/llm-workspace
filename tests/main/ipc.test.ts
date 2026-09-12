@@ -439,8 +439,28 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
   it('pins the open-session field classification exactly, not just its coverage', () => {
     expect(OPEN_SESSION_SANITISED_FIELDS).toEqual(['cwd', 'project', 'lastProse']);
     expect(OPEN_SESSION_STRUCTURAL_FIELDS).toEqual([
-      'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity',
+      'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity', 'tmux',
     ]);
+  });
+
+  // Fix-wave item 1's eligibility gate ("Reattach in app" offered only for a
+  // non-tmux-backed session) is only honest if the real registry, not a
+  // stand-in, decides `tmux` here -- proven end to end through
+  // buildFleetListPayload itself, not by calling openSessions directly.
+  it('reports tmux true for a pid this app itself registered, false for one it never did', async () => {
+    clearRegistry();
+    try {
+      registerSession(4242, 'llmws-claude-abc');
+      await refreshLiveProcesses(async (bin, args) => {
+        if (bin === 'pgrep' && args[1] === 'claude') return '4242\n5555\n';
+        return '';
+      });
+      const byPid = new Map(buildFleetListPayload().openSessions.map(o => [o.pid, o]));
+      expect(byPid.get(4242)!.tmux).toBe(true);
+      expect(byPid.get(5555)!.tmux).toBe(false);
+    } finally {
+      clearRegistry();
+    }
   });
 
   // cwd/project on an open card come straight from `lsof`, not from any

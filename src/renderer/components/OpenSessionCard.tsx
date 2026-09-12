@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { OpenSession } from '../../fleet/state.ts';
 import type { KillResult, KillRefusalReason } from '../../main/ipc.ts';
+import type { LaunchResult } from '../../main/launch.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import './OpenSessionCard.css';
 
@@ -90,7 +91,14 @@ const KILL_REFUSAL_TEXT: Record<KillRefusalReason, string> = {
 // the user can decide" (the brief this button was built from).
 const KILL_SETTLE_MS = 5_500;
 
-export function OpenSessionCard({ state, onOpen, onKill, onReveal }: {
+// A live terminal only exists once TerminalView actually mounts, and it
+// resizes tmux for real the moment it does (TerminalView's own onResize) --
+// same reasoning, and the same numbers, as LaunchBar's own defaults. This
+// only has to be a reasonable starting size, not an exact one.
+const REATTACH_COLS = 120;
+const REATTACH_ROWS = 40;
+
+export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume }: {
   state: OpenSession; onOpen: (pid: number) => void;
   /** Sends session:kill for this card's pid. Always resolves to a
    *  KillResult (src/main/ipc.ts), never throws by contract -- but this
@@ -100,6 +108,15 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal }: {
   /** Absent when the host cannot be brought forward -- the label then stays
    *  plain text rather than pretending to be a button. */
   onReveal?: (pid: number) => Promise<unknown>;
+  /** Ends this pid and relaunches it under `claude --resume`, as one call
+   *  (src/main/launch.ts's reattachSession). Only ever offered for a Claude
+   *  session that is not already tmux-backed (`!state.tmux`) -- see the
+   *  eligibility check below. */
+  onReattach: (pid: number, cols: number, rows: number) => Promise<LaunchResult>;
+  /** The recovery path for a 'killed_not_relaunched' result: relaunches
+   *  from a session id and cwd alone, no pid. Only ever reachable from the
+   *  'stranded' phase below, which is what supplies those two values. */
+  onResume: (sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
 }) {
   // Same "say nothing rather than guess" rule as SessionCard's hostLabel --
   // unknown and null both mean the same thing to the user.
@@ -185,6 +202,77 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal }: {
       if (!mountedRef.current) return;
       setMessage('Could not reach the app to end this session.');
       setPhase('error');
+    }
+  }
+
+  // Only ever offered for a Claude session not already tmux-backed
+  // (fix-wave item 1): a Codex card gets a plain explanation instead of the
+  // button ("say why in the UI rather than hiding it silently or failing
+  // obscurely" -- attempting an unprobed Codex resume would be exactly that
+  // obscure failure); an already-interactive session gets neither, since
+  // there is nothing wrong with it to explain.
+  const reattachEligible = state.provider === 'claude' && !state.tmux;
+
+  // idle -> confirming -> pending -> (launched, handled by navigating away
+  // and resetting) | 'failed' (dismissable, retryable from idle) |
+  // 'stranded' (the old process is confirmed gone and the new one did not
+  // start -- distinct from 'failed' on purpose, per LaunchResult's own
+  // 'killed_not_relaunched': "nothing happened" would be false here).
+  // strandedRetry carries exactly what a retry needs (resumeSession takes
+  // no pid), captured once, at the moment reattach itself reports it --
+  // never re-derived, since the pid this card was showing is already gone.
+  const [reattachPhase, setReattachPhase] =
+    useState<'idle' | 'confirming' | 'pending' | 'failed' | 'stranded'>('idle');
+  const [reattachMessage, setReattachMessage] = useState<string | null>(null);
+  const [strandedRetry, setStrandedRetry] = useState<{ sessionId: string; cwd: string } | null>(null);
+
+  async function doReattach(): Promise<void> {
+    setReattachPhase('pending');
+    setReattachMessage(null);
+    try {
+      const result = await onReattach(state.pid, REATTACH_COLS, REATTACH_ROWS);
+      if (!mountedRef.current) return;
+      if (result.status === 'launched') { setReattachPhase('idle'); onOpen(result.pid); return; }
+      if (result.status === 'killed_not_relaunched') {
+        setStrandedRetry({ sessionId: result.sessionId, cwd: result.cwd });
+        setReattachMessage(result.reason);
+        setReattachPhase('stranded');
+        return;
+      }
+      setReattachMessage(result.reason);
+      setReattachPhase('failed');
+    } catch {
+      if (!mountedRef.current) return;
+      setReattachMessage('Could not reach the app to reattach this session.');
+      setReattachPhase('failed');
+    }
+  }
+
+  // The recovery path: relaunches from the sessionId/cwd a PRIOR reattach
+  // already resolved (strandedRetry), never from this card's own pid --
+  // that pid is confirmed gone by the time 'stranded' is reachable at all.
+  // A retry that itself fails stays in 'stranded' with the retry info
+  // intact, rather than degrading to a dead-end 'failed': the whole point
+  // of this state is that it must remain recoverable.
+  async function doResume(retry: { sessionId: string; cwd: string }): Promise<void> {
+    setReattachPhase('pending');
+    try {
+      const result = await onResume(retry.sessionId, retry.cwd, REATTACH_COLS, REATTACH_ROWS);
+      if (!mountedRef.current) return;
+      if (result.status === 'launched') { setReattachPhase('idle'); onOpen(result.pid); return; }
+      // resumeSession never actually returns 'killed_not_relaunched' (no
+      // kill step to have partly succeeded), but LaunchResult's type
+      // allows it -- `reason` is present on both non-launched variants, so
+      // this handles either uniformly, and staying in 'stranded' either
+      // way is the correct, recoverable answer.
+      setStrandedRetry(retry);
+      setReattachMessage(result.reason);
+      setReattachPhase('stranded');
+    } catch {
+      if (!mountedRef.current) return;
+      setStrandedRetry(retry);
+      setReattachMessage('Could not reach the app to try again.');
+      setReattachPhase('stranded');
     }
   }
 
@@ -328,6 +416,80 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal }: {
           </p>
         )}
       </div>
+
+      {/* The reattach affordance -- the payoff of removing AppleScript
+          keystroke injection (spec §5): this, not a typed reply, is how the
+          twelve sessions already running in plain iTerm become answerable
+          at all. Same nested-interactive-row treatment as killrow above. */}
+      {reattachEligible && (
+        <div
+          className="reattachrow"
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          {reattachPhase === 'idle' && (
+            <button type="button" className="reattach-btn" aria-label={`Reattach in app, pid ${state.pid}`}
+              onClick={() => setReattachPhase('confirming')}>
+              Reattach in app
+            </button>
+          )}
+
+          {reattachPhase === 'confirming' && (
+            <div className="reattach-confirm" role="group" aria-labelledby={`reattachconfirm-${state.pid}`}>
+              <p className="reattach-confirm-text" id={`reattachconfirm-${state.pid}`}>
+                Reattach {killTarget}? The conversation is kept -- anything in flight is lost, and the
+                current process ends.
+              </p>
+              <div className="reattach-confirm-actions">
+                <button type="button" className="reattach-cancel" autoFocus
+                  aria-describedby={`reattachconfirm-${state.pid}`}
+                  onClick={() => setReattachPhase('idle')}>
+                  Cancel
+                </button>
+                <button type="button" className="reattach-confirm-btn"
+                  aria-describedby={`reattachconfirm-${state.pid}`}
+                  onClick={() => { void doReattach(); }}>
+                  Reattach
+                </button>
+              </div>
+            </div>
+          )}
+
+          {reattachPhase === 'pending' && (
+            <p className="reattach-status" aria-live="polite">Reattaching…</p>
+          )}
+
+          {reattachPhase === 'failed' && (
+            <p className="reattach-status error" aria-live="polite">
+              {reattachMessage}{' '}
+              <button type="button" onClick={() => setReattachPhase('idle')}>Dismiss</button>
+            </p>
+          )}
+
+          {/* role="alert" (not aria-live="polite" like the states above):
+              this is the one state where the old process is confirmed gone
+              and nothing has replaced it yet -- worth interrupting for,
+              not just announcing at the next pause. */}
+          {reattachPhase === 'stranded' && strandedRetry && (
+            <div className="reattach-stranded" role="alert">
+              <p className="reattach-stranded-text">
+                The old session ended, but the new one did not start: {reattachMessage}
+              </p>
+              <button type="button" className="reattach-retry"
+                onClick={() => { void doResume(strandedRetry); }}>
+                Try again
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Say why rather than hiding the whole affordance silently or, worse,
+          offering the same button and failing obscurely once pressed --
+          Codex resume is unprobed on this machine (spec §3). */}
+      {state.provider === 'codex' && (
+        <p className="reattach-na">Reattach in app isn't available for Codex sessions yet.</p>
+      )}
     </article>
   );
 }

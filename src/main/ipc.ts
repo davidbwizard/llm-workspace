@@ -144,7 +144,7 @@ export const OPEN_SESSION_SANITISED_FIELDS =
 // `pid` is what makes the close action (a later task) possible and safe --
 // one card, one process, no guessing -- so it has to reach the renderer.
 export const OPEN_SESSION_STRUCTURAL_FIELDS = [
-  'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity',
+  'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity', 'tmux',
 ] as const satisfies readonly (keyof OpenSession)[];
 
 /** Sanitises every field named in `fields` whose current value is a string
@@ -193,7 +193,17 @@ function sanitizeSession(s: SessionState): SessionState {
  *  version once fleet:update actually fires; the gap is only ever the
  *  moment between the window opening and the first push. */
 function buildOpenSessions(processes: LiveProcess[]): OpenSession[] {
-  return openSessions([], processes).map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
+  return openSessions([], processes, { isTmux: pidIsTmux }).map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
+}
+
+/** The one place that answers "is this pid tmux-backed" -- src/fleet/
+ *  state.ts's openSessions/openSessionsLive deliberately have no dependency
+ *  of their own on the tmux registry (src/main/sessions.ts's byPid map is a
+ *  main-process-only mutable singleton; importing it there would make an
+ *  otherwise-pure, easily-fixture-tested module depend on global state).
+ *  This is the seam where the real answer is supplied. */
+function pidIsTmux(pid: number): boolean {
+  return tmuxNameForPid(pid) !== null;
 }
 
 /** pushFleet reads this rather than calling openSessionsLive itself --
@@ -221,7 +231,7 @@ let cachedPushOpenSessions: OpenSession[] = [];
  *  fallback the team lead pre-authorized if the push-path cost did not
  *  hold up under measurement, which it did not. */
 export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: number = Date.now()): void {
-  cachedPushOpenSessions = openSessionsLive(db, processes, now);
+  cachedPushOpenSessions = openSessionsLive(db, processes, now, { isTmux: pidIsTmux });
 }
 
 /** session:reattach's session lookup: which session (id, provider, cwd) a

@@ -25,25 +25,25 @@ beforeEach(() => {
 
 describe('SessionRail', () => {
   it('renders one card per session, keeping its content', () => {
-    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} side="left" />);
+    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     expect(screen.getByText('llm-workspace')).toBeTruthy();
     expect(screen.getByText('Overwrite?')).toBeTruthy();
   });
 
   it('still flags a session that needs you, so the rail stays readable while you work', () => {
-    const { container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} side="left" />);
+    const { container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     expect(container.querySelectorAll('.attn')).toHaveLength(1);
   });
 
   it('reports the pid when a card is chosen', () => {
     const onSelect = vi.fn();
-    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={onSelect} onKill={async () => ({ status: 'already_gone' })} side="left" />);
+    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={onSelect} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     fireEvent.click(screen.getByText('game-viewer'));
     expect(onSelect).toHaveBeenCalledWith(2);
   });
 
   it('carries the side as a class so the toggle is CSS, not a second tree', () => {
-    const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} side="right" />);
+    const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="right" />);
     expect(container.querySelector('.rail.right')).toBeTruthy();
   });
 
@@ -56,7 +56,7 @@ describe('SessionRail', () => {
   // calls, with the pid of the card it was pressed on, not some other one.
   it('reaches the real onKill it was given, with the pid of the card that was closed', async () => {
     const onKill = vi.fn(async () => ({ status: 'killed' as const }));
-    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={onKill} side="left" />);
+    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={onKill} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     fireEvent.click(screen.getByRole('button', { name: /close, pid 2/i }));
     fireEvent.click(screen.getByRole('button', { name: /end session/i }));
     await waitFor(() => expect(onKill).toHaveBeenCalledWith(2));
@@ -70,7 +70,7 @@ describe('SessionRail', () => {
   // opening the popover must never be confused with switching the main
   // pane to that session).
   it('opens a reply popover for the waiting card, keyed to its pid and prompt', async () => {
-    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} side="left" />);
+    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
     const dialog = screen.getByRole('dialog', { name: /reply to session 2/i });
@@ -84,7 +84,7 @@ describe('SessionRail', () => {
   });
 
   it('offers no reply trigger for a card that is not waiting on you', () => {
-    render(<SessionRail sessions={[sessions[0]!]} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} side="left" />);
+    render(<SessionRail sessions={[sessions[0]!]} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     expect(screen.queryByRole('button', { name: 'Reply' })).toBeNull();
   });
 });

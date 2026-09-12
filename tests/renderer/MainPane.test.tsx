@@ -18,6 +18,8 @@ beforeEach(() => {
     listHistory: vi.fn().mockResolvedValue({ version: 1, generatedAt: '', sessions: [], total: 0 }),
     killSession: vi.fn().mockResolvedValue({ status: 'killed' }),
     revealSession: vi.fn().mockResolvedValue({ status: 'revealed' }),
+    reattach: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
+    resume: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
     // The split view's default 'conversation' pane (ConversationView) reaches
     // this directly for any selection whose session has a non-null sessionId.
     conversation: vi.fn().mockResolvedValue([]),

@@ -459,7 +459,7 @@ describe('openSessions', () => {
     expect(open).toEqual([{
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, lastProse:null, events:null, activity:null,
+      sessionId:null, lastProse:null, events:null, activity:null, tmux:false,
     }]);
   });
 
@@ -549,6 +549,19 @@ describe('openSessions', () => {
     ]);
     expect(open.map(o => o.pid)).toEqual([2, 4, 3, 1]);
   });
+
+  // tmux defaults false with no dependency at all (this module has no tmux
+  // registry access of its own -- see OpenSession's own doc comment), but a
+  // caller that DOES supply one (src/main/ipc.ts) must have it actually
+  // drive the field, per-pid, not just default every card the same way.
+  it('reports tmux per pid from the injected isTmux, defaulting false with none given', () => {
+    const withoutDeps = openSessions([], [proc({ pid:1 }), proc({ pid:2 })]);
+    expect(withoutDeps.map(o => o.tmux)).toEqual([false, false]);
+
+    const withDeps = openSessions([], [proc({ pid:1 }), proc({ pid:2 })], { isTmux: pid => pid === 2 });
+    expect(withDeps.find(o => o.pid === 1)!.tmux).toBe(false);
+    expect(withDeps.find(o => o.pid === 2)!.tmux).toBe(true);
+  });
 });
 
 // The targeted alternative to openSessions(fleetState(db, ...), ...):
@@ -585,7 +598,7 @@ describe('openSessionsLive', () => {
     expect(open).toEqual([{
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, lastProse:null, events:null, activity:null,
+      sessionId:null, lastProse:null, events:null, activity:null, tmux:false,
     }]);
   });
 
@@ -670,6 +683,16 @@ describe('openSessionsLive', () => {
       proc({ pid:4, ageSeconds:100 }),
     ], NOW);
     expect(open.map(o => o.pid)).toEqual([2, 4, 3, 1]);
+  });
+
+  it('reports tmux per pid from the injected isTmux, defaulting false with none given', () => {
+    const db = openDb(':memory:');
+    const withoutDeps = openSessionsLive(db, [proc({ pid:1 }), proc({ pid:2 })], NOW);
+    expect(withoutDeps.map(o => o.tmux)).toEqual([false, false]);
+
+    const withDeps = openSessionsLive(db, [proc({ pid:1 }), proc({ pid:2 })], NOW, { isTmux: pid => pid === 2 });
+    expect(withDeps.find(o => o.pid === 1)!.tmux).toBe(false);
+    expect(withDeps.find(o => o.pid === 2)!.tmux).toBe(true);
   });
 
   it('returns an empty array, without querying, when there are no live processes', () => {

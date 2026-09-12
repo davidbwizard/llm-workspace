@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { OpenSessionCard } from '../../src/renderer/components/OpenSessionCard.tsx';
 import type { OpenSession } from '../../src/fleet/state.ts';
 import type { KillResult } from '../../src/main/ipc.ts';
+import type { LaunchResult } from '../../src/main/launch.ts';
 
 // The model correction: one card per live process, "ALL OPEN SESSIONS
 // should show. And the source." Unmatched by default -- most tests below
@@ -14,7 +15,7 @@ import type { KillResult } from '../../src/main/ipc.ts';
 const base: OpenSession = {
   pid: 4242, provider: 'claude', host: 'iterm2', cwd: '/Users/me/trellome', project: 'trellome',
   ageSeconds: 9 * 86_400, rssBytes: 206 * 1024 * 1024, match: 'unknown',
-  sessionId: null, lastProse: null, events: null, activity: null,
+  sessionId: null, lastProse: null, events: null, activity: null, tmux: true,
 };
 
 // Every test below that isn't specifically about the kill flow needs SOME
@@ -27,9 +28,21 @@ function neverKill() {
   return vi.fn<(pid: number) => Promise<KillResult>>();
 }
 
+// Same reasoning as neverKill above, for the two reattach channels: `base`
+// fixture below is tmux:true (already interactive, ineligible), so none of
+// the tests that aren't specifically about reattaching ever have a reason
+// to call either -- these exist purely to satisfy the required-prop
+// contract without silently permitting an early call.
+function neverReattach() {
+  return vi.fn<(pid: number, cols: number, rows: number) => Promise<LaunchResult>>();
+}
+function neverResume() {
+  return vi.fn<(sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>>();
+}
+
 describe('OpenSessionCard', () => {
   it('shows pid, provider, project, cwd, host, age and memory even with no transcript match at all', () => {
-    render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} state={base} />);
+    render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
     expect(screen.getByText('trellome')).toBeTruthy();
     expect(screen.getByText('/Users/me/trellome')).toBeTruthy();
     expect(screen.getByText('Claude')).toBeTruthy();
@@ -41,7 +54,7 @@ describe('OpenSessionCard', () => {
 
   it('is operable by keyboard and mouse, passing pid to onOpen every time', () => {
     const onOpen = vi.fn();
-    render(<OpenSessionCard state={base} onOpen={onOpen} onKill={neverKill()} />);
+    render(<OpenSessionCard onReattach={neverReattach()} onResume={neverResume()} state={base} onOpen={onOpen} onKill={neverKill()} />);
     const card = screen.getByRole('button', { name: /trellome/i });
     fireEvent.click(card);
     fireEvent.keyDown(card, { key: 'Enter' });
@@ -59,32 +72,32 @@ describe('OpenSessionCard', () => {
   // transcript match at all -- unlike lastProse/activity below, which
   // genuinely are match-gated.
   it('shows the provider badge even when the process could not be matched to any session', () => {
-    render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} state={base} />);
+    render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
     expect(screen.getByText('Claude')).toBeTruthy();
   });
 
   it('shows a Codex provider badge for a codex process', () => {
     const { container } = render(
-      <OpenSessionCard onOpen={() => {}} onKill={neverKill()} state={{ ...base, provider: 'codex' }} />,
+      <OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={{ ...base, provider: 'codex' }} />,
     );
     expect(screen.getByText('Codex')).toBeTruthy();
     expect(container.querySelector('.prov.codex')).not.toBeNull();
   });
 
   it('renders no last-message text when unmatched -- blank is honest, not a placeholder', () => {
-    const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} state={base} />);
+    const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
     expect(container.querySelector('.said')).toBeNull();
   });
 
   it('renders no working/waiting state word when unmatched', () => {
-    const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} state={base} />);
+    const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
     expect(container.querySelector('.state')).toBeNull();
     expect(container.querySelector('.badge')).toBeNull();
   });
 
   it('renders no host text when host is classifyHost\'s own "unknown"', () => {
     const { container } = render(
-      <OpenSessionCard onOpen={() => {}} onKill={neverKill()} state={{ ...base, host: 'unknown' }} />,
+      <OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={{ ...base, host: 'unknown' }} />,
     );
     expect(container.querySelector('.host')).toBeNull();
   });
@@ -100,7 +113,7 @@ describe('OpenSessionCard', () => {
     };
 
     it('shows last prose, events and the working state', () => {
-      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} state={enriched} />);
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={enriched} />);
       expect(screen.getByText(/Reused the JWT helper/)).toBeTruthy();
       expect(screen.getByText('9,129')).toBeTruthy();
       expect(screen.getByText('working')).toBeTruthy();
@@ -108,13 +121,13 @@ describe('OpenSessionCard', () => {
 
     it('shows the blocked badge and wording when the matched session is waiting on the user', () => {
       const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
-        state={{ ...enriched, activity: 'waiting_permission' }} />);
+        onReattach={neverReattach()} onResume={neverResume()} state={{ ...enriched, activity: 'waiting_permission' }} />);
       expect(container.querySelector('.badge')).not.toBeNull();
       expect(screen.getByText(/waiting on you/)).toBeTruthy();
     });
 
     it('includes pid, project, provider, activity and last prose in the accessible name', () => {
-      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} state={enriched} />);
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={enriched} />);
       const card = screen.getByRole('button', { name: /trellome/i });
       const label = card.getAttribute('aria-label') ?? '';
       expect(label).toMatch(/pid 4242/);
@@ -142,7 +155,7 @@ describe('OpenSessionCard', () => {
     // otherwise cause.
     it('shows a Close button that does not itself end anything', () => {
       const onKill = neverKill();
-      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} state={withProcMeta} />);
+      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       const closeBtn = screen.getByRole('button', { name: /^Close, pid 4242/ });
       expect(closeBtn.tagName).toBe('BUTTON');
       fireEvent.click(closeBtn);
@@ -151,7 +164,7 @@ describe('OpenSessionCard', () => {
 
     it('requires a second, explicit confirmation before sending any signal', () => {
       const onKill = neverKill();
-      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} state={withProcMeta} />);
+      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
       // The confirmation is now showing -- but onKill still has not fired.
       expect(screen.getByRole('group')).toBeTruthy();
@@ -159,7 +172,7 @@ describe('OpenSessionCard', () => {
     });
 
     it('names project, source and age in the confirmation, so it is obvious which session is about to end', () => {
-      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} state={withProcMeta} />);
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
       // Scoped to the confirm text specifically -- the card's own .proj
       // ("trellome") and .path ("/Users/me/trellome") already contain
@@ -174,7 +187,7 @@ describe('OpenSessionCard', () => {
 
     it('cancels back to the Close button without ever calling onKill', () => {
       const onKill = neverKill();
-      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} state={withProcMeta} />);
+      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
       fireEvent.click(screen.getByRole('button', { name: /^Cancel/ }));
       expect(screen.getByRole('button', { name: /^Close/ })).toBeTruthy();
@@ -184,14 +197,14 @@ describe('OpenSessionCard', () => {
     // The safe default: an accidental second Enter/Space after the Close
     // press lands on Cancel, not on the destructive action.
     it('focuses Cancel, not End session, when the confirmation appears', () => {
-      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} state={withProcMeta} />);
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
       expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Cancel/ }));
     });
 
     it('sends the signal only once "End session" is pressed, with this card\'s pid', async () => {
       const onKill = vi.fn<(pid: number) => Promise<KillResult>>().mockResolvedValue({ status: 'killed' });
-      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} state={withProcMeta} />);
+      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
       fireEvent.click(screen.getByRole('button', { name: /^End session/ }));
       await waitFor(() => expect(onKill).toHaveBeenCalledTimes(1));
@@ -202,7 +215,7 @@ describe('OpenSessionCard', () => {
       let resolveKill!: (r: KillResult) => void;
       const onKill = vi.fn<(pid: number) => Promise<KillResult>>()
         .mockReturnValue(new Promise(res => { resolveKill = res; }));
-      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} state={withProcMeta} />);
+      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
       fireEvent.click(screen.getByRole('button', { name: /^End session/ }));
       const status = await screen.findByText(/Ending session/);
@@ -219,7 +232,7 @@ describe('OpenSessionCard', () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
         const onKill = vi.fn<(pid: number) => Promise<KillResult>>().mockResolvedValue({ status: 'killed' });
-        render(<OpenSessionCard onOpen={() => {}} onKill={onKill} state={withProcMeta} />);
+        render(<OpenSessionCard onOpen={() => {}} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
         fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
         fireEvent.click(screen.getByRole('button', { name: /^End session/ }));
         await waitFor(() => expect(screen.getByText(/Signal sent/)).toBeTruthy());
@@ -233,7 +246,7 @@ describe('OpenSessionCard', () => {
     it('shows a refusal message and a Dismiss control when main refuses the kill, without throwing', async () => {
       const onKill = vi.fn<(pid: number) => Promise<KillResult>>()
         .mockResolvedValue({ status: 'refused', reason: 'not_discovered' });
-      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} state={withProcMeta} />);
+      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
       fireEvent.click(screen.getByRole('button', { name: /^End session/ }));
       const status = await screen.findByText(/no longer running/i);
@@ -244,7 +257,7 @@ describe('OpenSessionCard', () => {
 
     it('shows a generic error, not a crash, when the kill call itself rejects', async () => {
       const onKill = vi.fn<(pid: number) => Promise<KillResult>>().mockRejectedValue(new Error('IPC gone'));
-      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} state={withProcMeta} />);
+      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
       fireEvent.click(screen.getByRole('button', { name: /^End session/ }));
       expect(await screen.findByText(/Could not reach the app/i)).toBeTruthy();
@@ -257,7 +270,7 @@ describe('OpenSessionCard', () => {
       const onOpen = vi.fn();
       const onKill = vi.fn<(pid: number) => Promise<KillResult>>()
         .mockReturnValue(new Promise(() => {})); // never resolves -- only the call matters here
-      render(<OpenSessionCard onOpen={onOpen} onKill={onKill} state={withProcMeta} />);
+      render(<OpenSessionCard onOpen={onOpen} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
       fireEvent.click(screen.getByRole('button', { name: /^Cancel/ }));
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
@@ -267,7 +280,7 @@ describe('OpenSessionCard', () => {
 
     it('never opens the session on Enter/Space at the Close button either', () => {
       const onOpen = vi.fn();
-      render(<OpenSessionCard onOpen={onOpen} onKill={neverKill()} state={withProcMeta} />);
+      render(<OpenSessionCard onOpen={onOpen} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />);
       const closeBtn = screen.getByRole('button', { name: /^Close/ });
       fireEvent.keyDown(closeBtn, { key: 'Enter' });
       expect(onOpen).not.toHaveBeenCalled();
@@ -291,13 +304,175 @@ describe('OpenSessionCard', () => {
       const onKill = vi.fn<(pid: number) => Promise<KillResult>>().mockResolvedValue({ status: 'killed' });
       render(
         <React.StrictMode>
-          <OpenSessionCard onOpen={() => {}} onKill={onKill} state={withProcMeta} />
+          <OpenSessionCard onOpen={() => {}} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={withProcMeta} />
         </React.StrictMode>,
       );
       fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
       fireEvent.click(screen.getByRole('button', { name: /^End session/ }));
       await waitFor(() => expect(onKill).toHaveBeenCalled());
       expect(await screen.findByText(/Signal sent/)).toBeTruthy();
+    });
+  });
+
+  // Fix-wave item 1: the payoff of removing AppleScript keystroke injection
+  // -- this is the only way the twelve real sessions running in plain
+  // iTerm2 become answerable at all. Same discipline as "closing a
+  // session" above: confirm before acting, real buttons, never opens the
+  // session underneath.
+  describe('reattaching a session', () => {
+    // provider claude, tmux false -- the one state where this is offered.
+    const reattachable: OpenSession = { ...base, tmux: false };
+
+    it('offers Reattach in app only for a Claude session that is not already tmux-backed', () => {
+      const { rerender } = render(
+        <OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+          onReattach={neverReattach()} onResume={neverResume()} state={reattachable} />,
+      );
+      expect(screen.getByRole('button', { name: /reattach in app/i })).toBeTruthy();
+
+      // Already tmux-backed: nothing wrong to explain, so nothing renders.
+      rerender(
+        <OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+          onReattach={neverReattach()} onResume={neverResume()} state={{ ...reattachable, tmux: true }} />,
+      );
+      expect(screen.queryByRole('button', { name: /reattach in app/i })).toBeNull();
+      expect(screen.queryByText(/codex/i)).toBeNull();
+    });
+
+    it('explains why, rather than hiding silently or offering a button that would fail obscurely, for a codex session', () => {
+      render(
+        <OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
+          onResume={neverResume()} state={{ ...reattachable, provider: 'codex' }} />,
+      );
+      expect(screen.queryByRole('button', { name: /reattach in app/i })).toBeNull();
+      expect(screen.getByText(/codex sessions/i)).toBeTruthy();
+    });
+
+    it('requires a second, explicit confirmation before reattaching', () => {
+      const onReattach = neverReattach();
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+        onReattach={onReattach} onResume={neverResume()} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      expect(screen.getByRole('group')).toBeTruthy();
+      expect(onReattach).not.toHaveBeenCalled();
+    });
+
+    // Brief's own wording: the conversation is preserved, anything in
+    // flight is lost, and the current process ends.
+    it('states the real cost in the confirmation', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+        onReattach={neverReattach()} onResume={neverResume()} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      const confirmText = container.querySelector('.reattach-confirm-text')?.textContent ?? '';
+      expect(confirmText).toMatch(/conversation is kept/i);
+      expect(confirmText).toMatch(/anything in flight is lost/i);
+      expect(confirmText).toMatch(/process ends/i);
+    });
+
+    it('cancels back without ever calling onReattach', () => {
+      const onReattach = neverReattach();
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+        onReattach={onReattach} onResume={neverResume()} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Cancel/ }));
+      expect(screen.getByRole('button', { name: /reattach in app/i })).toBeTruthy();
+      expect(onReattach).not.toHaveBeenCalled();
+    });
+
+    it('calls onReattach with this pid and a real size only once confirmed, and opens the new pid on success', async () => {
+      const onOpen = vi.fn();
+      const onReattach = vi.fn<(pid: number, cols: number, rows: number) => Promise<LaunchResult>>()
+        .mockResolvedValue({ status: 'launched', pid: 9001 });
+      render(<OpenSessionCard onOpen={onOpen} onKill={neverKill()}
+        onReattach={onReattach} onResume={neverResume()} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      expect(onReattach).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: /^Reattach$/ }));
+      await waitFor(() => expect(onOpen).toHaveBeenCalledWith(9001));
+      expect(onReattach).toHaveBeenCalledWith(4242, expect.any(Number), expect.any(Number));
+    });
+
+    it('shows the failure reason and a Dismiss control on an ordinary failure', async () => {
+      const onReattach = vi.fn<(pid: number, cols: number, rows: number) => Promise<LaunchResult>>()
+        .mockResolvedValue({ status: 'failed', reason: 'tmux: no server running' });
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+        onReattach={onReattach} onResume={neverResume()} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Reattach$/ }));
+      expect(await screen.findByText(/no server running/i)).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: /^Dismiss/ }));
+      expect(screen.getByRole('button', { name: /reattach in app/i })).toBeTruthy();
+    });
+
+    // The distinct, unrecoverable-looking state fix-wave item 5 introduced:
+    // must read differently from an ordinary failure (the old process is
+    // actually gone) and must offer a way forward, not just a Dismiss.
+    it('reports the old-session-ended-new-one-did-not-start state distinctly, with a way to retry', async () => {
+      const onReattach = vi.fn<(pid: number, cols: number, rows: number) => Promise<LaunchResult>>()
+        .mockResolvedValue({
+          status: 'killed_not_relaunched', reason: 'tmux: server exited', sessionId: 'abc-123', cwd: '/a/proj',
+        });
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+        onReattach={onReattach} onResume={neverResume()} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Reattach$/ }));
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toMatch(/old session ended/i);
+      expect(alert.textContent).toMatch(/did not start/i);
+      expect(alert.textContent).toMatch(/tmux: server exited/i);
+      // Not the ordinary failure's Dismiss -- a real way forward.
+      expect(screen.queryByRole('button', { name: /^Dismiss/ })).toBeNull();
+      expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy();
+    });
+
+    it('retries from the stranded sessionId/cwd, not this card\'s own pid, and opens the new pid on success', async () => {
+      const onOpen = vi.fn();
+      const onReattach = vi.fn<(pid: number, cols: number, rows: number) => Promise<LaunchResult>>()
+        .mockResolvedValue({
+          status: 'killed_not_relaunched', reason: 'tmux: server exited', sessionId: 'abc-123', cwd: '/a/proj',
+        });
+      const onResume = vi.fn<(sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>>()
+        .mockResolvedValue({ status: 'launched', pid: 9002 });
+      render(<OpenSessionCard onOpen={onOpen} onKill={neverKill()}
+        onReattach={onReattach} onResume={onResume} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Reattach$/ }));
+      fireEvent.click(await screen.findByRole('button', { name: /try again/i }));
+      await waitFor(() => expect(onOpen).toHaveBeenCalledWith(9002));
+      expect(onResume).toHaveBeenCalledWith('abc-123', '/a/proj', expect.any(Number), expect.any(Number));
+    });
+
+    // The recoverability requirement itself: a retry that ALSO fails must
+    // not degrade into a dead-end -- Try again has to still be there.
+    it('stays retryable when the retry itself fails', async () => {
+      const onReattach = vi.fn<(pid: number, cols: number, rows: number) => Promise<LaunchResult>>()
+        .mockResolvedValue({
+          status: 'killed_not_relaunched', reason: 'tmux: server exited', sessionId: 'abc-123', cwd: '/a/proj',
+        });
+      const onResume = vi.fn<(sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>>()
+        .mockResolvedValue({ status: 'failed', reason: 'tmux: still down' });
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+        onReattach={onReattach} onResume={onResume} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Reattach$/ }));
+      fireEvent.click(await screen.findByRole('button', { name: /try again/i }));
+      expect(await screen.findByText(/tmux: still down/i)).toBeTruthy();
+      expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy();
+    });
+
+    // Same regression class as killrow's own test: every control here lives
+    // inside the card's own role="button" wrapper.
+    it('never opens the session when any reattach control is clicked', () => {
+      const onOpen = vi.fn();
+      const onReattach = vi.fn<(pid: number, cols: number, rows: number) => Promise<LaunchResult>>()
+        .mockReturnValue(new Promise(() => {}));
+      render(<OpenSessionCard onOpen={onOpen} onKill={neverKill()}
+        onReattach={onReattach} onResume={neverResume()} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Cancel/ }));
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Reattach$/ }));
+      expect(onOpen).not.toHaveBeenCalled();
     });
   });
 });

@@ -48,3 +48,39 @@
             padding:0; cursor:pointer; text-decoration:underline;
             text-decoration-color:transparent; text-underline-offset:3px; }
 .host-btn:hover { color:var(--accent); text-decoration-color:currentColor; }
+
+/* The reattach affordance -- same row/confirm/status shape as .killrow
+   above, in the accent colour rather than critical: unlike Close, this is
+   a recovery action, not a destructive one. */
+.reattachrow { margin-top:2px; }
+.reattach-btn, .reattach-na { font-family:var(--f-mono); font-size:11px; }
+.reattach-btn { color:var(--accent); background:none; border:1px solid var(--line);
+                border-radius:20px; padding:4px 12px; cursor:pointer; }
+.reattach-btn:hover { border-color:color-mix(in srgb,var(--accent) 40%,transparent); }
+.reattach-confirm { display:flex; flex-direction:column; gap:8px; background:var(--raised);
+                     border:1px solid var(--line); border-radius:var(--r-sm); padding:10px 12px; }
+.reattach-confirm-text { font-size:12px; color:var(--ink-2); line-height:1.4; margin:0; }
+.reattach-confirm-actions { display:flex; gap:8px; }
+.reattach-confirm-actions button { font-family:var(--f-mono); font-size:11px; border-radius:20px;
+                                    padding:5px 12px; cursor:pointer; flex:1; }
+.reattach-cancel { background:none; border:1px solid var(--line-soft); color:var(--muted); }
+.reattach-cancel:hover { color:var(--ink); border-color:var(--line); }
+.reattach-confirm-btn { background:var(--accent); border:1px solid var(--accent); color:var(--ground); }
+.reattach-confirm-btn:hover { background:color-mix(in srgb,var(--accent) 85%,black); }
+.reattach-status { font-family:var(--f-mono); font-size:11px; color:var(--muted); margin:0; }
+.reattach-status.error { color:var(--critical); }
+.reattach-status button { margin-left:6px; background:none; border:none; color:inherit;
+                           text-decoration:underline; cursor:pointer; font:inherit; padding:0; }
+/* 'killed_not_relaunched' -- deliberately louder than .reattach-status.error
+   above: the old process is confirmed gone, which is worse than an ordinary
+   failure, not the same as one. */
+.reattach-stranded { display:flex; flex-direction:column; gap:8px; background:var(--critical-soft);
+                      border:1px solid var(--critical); border-radius:var(--r-sm); padding:10px 12px; }
+.reattach-stranded-text { font-size:12px; color:var(--ink-2); line-height:1.4; margin:0; }
+.reattach-retry { align-self:flex-start; font-family:var(--f-mono); font-size:11px; font-weight:600;
+                   color:var(--ground); background:var(--critical); border:1px solid var(--critical);
+                   border-radius:20px; padding:5px 14px; cursor:pointer; }
+.reattach-retry:hover { background:color-mix(in srgb,var(--critical) 85%,black); }
+/* Codex's explanation in place of the button -- plain text, not styled as
+   an interactive control, since it isn't one. */
+.reattach-na { color:var(--faint); margin:2px 0 0; }

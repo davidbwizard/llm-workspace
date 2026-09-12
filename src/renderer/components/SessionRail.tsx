@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { OpenSession } from '../../fleet/state.ts';
 import type { KillResult } from '../../main/ipc.ts';
+import type { LaunchResult } from '../../main/launch.ts';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
 import { ReplyPopover } from './ReplyPopover.tsx';
 import './SessionRail.css';
@@ -25,11 +26,13 @@ import './SessionRail.css';
  *  place. ReplyPopover itself stays untouched -- keyed by pid, no rail-shaped
  *  prop -- this component owns only the "which pid, if any" state and the
  *  anchoring markup around it. */
-export function SessionRail({ sessions, selectedPid, onSelect, onKill, side }: {
+export function SessionRail({ sessions, selectedPid, onSelect, onKill, onReattach, onResume, side }: {
   sessions: OpenSession[];
   selectedPid: number | null;
   onSelect: (pid: number) => void;
   onKill: (pid: number) => Promise<KillResult>;
+  onReattach: (pid: number, cols: number, rows: number) => Promise<LaunchResult>;
+  onResume: (sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
   side: 'left' | 'right';
 }) {
   const [replyPid, setReplyPid] = useState<number | null>(null);
@@ -40,7 +43,8 @@ export function SessionRail({ sessions, selectedPid, onSelect, onKill, side }: {
         const waiting = s.activity === 'waiting_permission' || s.activity === 'waiting_input';
         return (
           <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
-            <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill} />
+            <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill}
+              onReattach={onReattach} onResume={onResume} />
             {waiting && (
               <button type="button" className="railreply" onClick={() => setReplyPid(s.pid)}>
                 Reply
