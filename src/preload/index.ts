@@ -34,8 +34,17 @@ const api = {
   attach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:attach', pid, cols, rows),
   detach: (pid: number) => ipcRenderer.invoke('session:detach', pid),
   resize: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:resize', pid, cols, rows),
+  // provider/cwd/cols/rows are the renderer's whole say in what starts --
+  // main (src/main/launch.ts) generates the tmux session name and reads the
+  // pid itself, the same "renderer names a pid or an explicit directory,
+  // main re-derives everything else" boundary every other channel here
+  // keeps.
   launch: (provider: string, cwd: string, cols: number, rows: number) =>
     ipcRenderer.invoke('session:launch', provider, cwd, cols, rows),
+  // pid is the only session-identifying argument -- main resolves which
+  // session it is, ends it, and relaunches it under `claude --resume`
+  // itself, as one call (src/main/launch.ts's reattachSession). The
+  // renderer can never observe an old session killed but not relaunched.
   reattach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:reattach', pid, cols, rows),
   onTerminalData: (cb: (payload: unknown) => void) => {
     const handler = (_e: unknown, payload: unknown) => cb(payload);

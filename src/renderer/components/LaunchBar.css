@@ -1,0 +1,21 @@
+/* src/renderer/components/LaunchBar.css
+   Tokens only -- theme.css owns every colour.
+
+   Always mounted, above MainPane in every state (grid or split) -- the one
+   reliable window-drag handle regardless of selection (same
+   -webkit-app-region convention as FleetView.css's .fleetbar; the window's
+   titleBarStyle is 'hiddenInset', so nothing is draggable without an
+   explicit region somewhere). */
+.launchbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  -webkit-app-region:drag; }
+.launchbar select, .launchbar input, .launchbar button { -webkit-app-region:no-drag; }
+.launchprovider { font-family:var(--f-mono); font-size:11px; color:var(--ink);
+  background:var(--ground); border:1px solid var(--line); border-radius:6px; padding:5px 8px; }
+.launchcwd { flex:1; min-width:160px; font-family:var(--f-mono); font-size:11px;
+  color:var(--ink); background:var(--ground); border:1px solid var(--line);
+  border-radius:6px; padding:5px 8px; }
+.launchgo { font-family:var(--f-mono); font-size:11px; font-weight:600;
+  color:var(--ground); background:var(--accent); border:0; border-radius:6px;
+  padding:6px 14px; cursor:pointer; }
+.launchgo:disabled { opacity:.6; cursor:default; }
+.launchmsg { margin:0; font-size:11px; color:var(--signal); flex-basis:100%; }

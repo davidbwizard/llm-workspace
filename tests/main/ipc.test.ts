@@ -814,21 +814,33 @@ describe('terminal:data parity', () => {
   });
 });
 
-// Task 13's tripwire, not Task 6/6b's own coverage: session:launch and
-// session:reattach are deliberately still stubs (real logic is Task 13's,
-// in a new src/main/launch.ts per its brief). Asserting on source, the same
-// way the B2 and security-posture tests above do, rather than on a call
-// through registerIpc: registerIpc dereferences the real `ipcMain`, which
-// is undefined under plain-node vitest (see this file's top-of-module
+// Task 13 replaced the stubs with real handlers backed by src/main/launch.ts
+// -- updated (not deleted, per the controller's instruction) to assert the
+// real wiring instead. Asserting on source, the same way the B2 and
+// security-posture tests above do, rather than on a call through
+// registerIpc: registerIpc dereferences the real `ipcMain`, which is
+// undefined under plain-node vitest (see this file's top-of-module
 // comment), so a call-through test would throw regardless of which channel
-// it targeted. If Task 13 replaces these bodies (as it must) and forgets to
-// touch or remove this test, THIS test fails loudly, forcing it to decide
-// what "still passes" should mean here -- rather than the stub quietly
-// continuing to look finished.
-describe("session:launch / session:reattach -- Task 13's stubs", () => {
-  it('are still unimplemented placeholders, not a finished feature', () => {
+// it targeted. launchSession/reattachSession's own actual behaviour is
+// tests/main/launch.test.ts's job; this only proves ipc.ts still reaches
+// them rather than a hardcoded stub or something else entirely -- if a
+// future change reintroduces the not_implemented literal, or rewires either
+// channel away from launch.ts, this fails loudly instead of quietly
+// regressing.
+describe("session:launch / session:reattach -- Task 13's real handlers", () => {
+  it('no longer answer with the not_implemented stub', () => {
     const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
-    expect(ipc).toMatch(/ipcMain\.handle\(\s*'session:launch',\s*\(\)\s*=>\s*\(\{\s*status:\s*'failed',\s*reason:\s*'not_implemented'\s*\}\)\)/);
-    expect(ipc).toMatch(/ipcMain\.handle\(\s*'session:reattach',\s*\(\)\s*=>\s*\(\{\s*status:\s*'failed',\s*reason:\s*'not_implemented'\s*\}\)\)/);
+    expect(ipc).not.toMatch(/'session:launch',\s*\(\)\s*=>\s*\(\{\s*status:\s*'failed',\s*reason:\s*'not_implemented'\s*\}\)/);
+    expect(ipc).not.toMatch(/'session:reattach',\s*\(\)\s*=>\s*\(\{\s*status:\s*'failed',\s*reason:\s*'not_implemented'\s*\}\)/);
+  });
+
+  it('are wired to launchSession and reattachSession from src/main/launch.ts', () => {
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
+    expect(ipc).toMatch(/import\s*\{[^}]*launchSession[^}]*\}\s*from\s*'\.\/launch\.ts'/);
+    expect(ipc).toMatch(/import\s*\{[^}]*reattachSession[^}]*\}\s*from\s*'\.\/launch\.ts'/);
+    const launchHandler = ipc.match(/ipcMain\.handle\(\s*'session:launch',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
+    const reattachHandler = ipc.match(/ipcMain\.handle\(\s*'session:reattach',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
+    expect(launchHandler).toMatch(/launchSession\(/);
+    expect(reattachHandler).toMatch(/reattachSession\(/);
   });
 });

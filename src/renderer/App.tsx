@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { MainPane } from './components/MainPane.tsx';
+import { LaunchBar } from './components/LaunchBar.tsx';
 import { useFleet } from './state/useFleet.ts';
 
 interface ErrorBoundaryState { error: Error | null; componentStack: string | null }
@@ -72,6 +73,17 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
 export function App() {
   const { payload, error, selection, select, setView, clear } = useFleet();
 
+  // A freshly launched or reattached session answers the trust/resume
+  // prompt in its OWN terminal (spec: no blind Enter, the person answers
+  // it) -- so opening straight into 'conversation' would show nothing
+  // useful. select() always defaults to 'conversation'; setView() flips the
+  // just-created selection to 'terminal' in the same handler, and React 18
+  // batches both updates into one commit.
+  function openInTerminal(pid: number): void {
+    select(pid);
+    setView('terminal');
+  }
+
   if (!window.fleet) {
     return (
       <main className="shell">
@@ -96,6 +108,7 @@ export function App() {
 
   return (
     <main className="shell">
+      <LaunchBar onLaunched={openInTerminal} />
       <ErrorBoundary>
         <MainPane
           selection={selection}

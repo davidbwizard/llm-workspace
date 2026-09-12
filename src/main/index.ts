@@ -125,13 +125,16 @@ app.whenReady().then(() => {
 
   // startBackgroundWork (above) is passed through so the fleet:list handler
   // can trigger it itself, strictly after answering -- the primary trigger
-  // for the ordering this change exists to guarantee. The third argument
-  // is a forward reference to pushAfterDiscoverySweep, declared further
-  // down in this same function -- safe because registerIpc only stores
-  // this closure and calls it later (from session:kill, in response to a
-  // future IPC message), never during this synchronous setup, by which
-  // point pushAfterDiscoverySweep has long since been assigned.
-  registerIpc(db, startBackgroundWork, () => pushAfterDiscoverySweep());
+  // for the ordering this change exists to guarantee. The third and fourth
+  // arguments are forward references to pushAfterDiscoverySweep, declared
+  // further down in this same function -- safe because registerIpc only
+  // stores these closures and calls them later (from session:kill and
+  // session:launch/session:reattach, in response to a future IPC message),
+  // never during this synchronous setup, by which point
+  // pushAfterDiscoverySweep has long since been assigned. A freshly
+  // launched or reattached session gets the identical immediate refresh a
+  // kill already does, rather than sitting stale in the rail for up to 5s.
+  registerIpc(db, startBackgroundWork, () => pushAfterDiscoverySweep(), () => pushAfterDiscoverySweep());
   createWindow();
 
   // Live process discovery (pgrep/ps/lsof) has nothing to do with the

@@ -25,6 +25,8 @@ import {
 } from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
 import { conversationFor } from '../store/conversation.ts';
+import type { Provider } from '../core/types.ts';
+import { launchSession, reattachSession, type LaunchResult } from './launch.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -220,6 +222,26 @@ let cachedPushOpenSessions: OpenSession[] = [];
  *  hold up under measurement, which it did not. */
 export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: number = Date.now()): void {
   cachedPushOpenSessions = openSessionsLive(db, processes, now);
+}
+
+/** session:reattach's session lookup: which session (id, provider, cwd) a
+ *  live pid belongs to. Reads the exact same enriched cache pushFleet
+ *  already maintains (cachedPushOpenSessions, refreshed by
+ *  refreshPushEnrichment above) rather than running a query of its own --
+ *  reattachSession (src/main/launch.ts) has no database or discovery access
+ *  itself, by design, so this is the one place that resolves the pid before
+ *  handing it in as an injected dependency. sessionId is only ever non-null
+ *  on a UNIQUE cwd match (OpenSession's own doc comment, src/fleet/state.ts)
+ *  -- an ambiguous or unmatched pid resolves to null here, which
+ *  reattachSession treats as "cannot identify", never a guess. */
+function resolveSessionForReattach(pid: number): { sessionId: string; provider: Provider; cwd: string } | null {
+  const open = cachedPushOpenSessions.find(o => o.pid === pid);
+  if (!open || open.sessionId === null || open.cwd === null) return null;
+  return { sessionId: open.sessionId, provider: open.provider, cwd: open.cwd };
+}
+
+function isProvider(v: unknown): v is Provider {
+  return v === 'claude' || v === 'codex';
 }
 
 /** fleet:list -- the renderer's one-time initial pull (FleetView.tsx calls
@@ -885,8 +907,17 @@ export function sendRawFor(
  *  covers those), so there is nothing for a fresh sweep to usefully catch.
  *  Wired from src/main/index.ts to re-run discovery and push immediately,
  *  rather than leaving the killed pid's card to go stale for up to 5s
- *  until the next scheduled sweep. */
-export function registerIpc(db: Db, onFleetList?: () => void, onSessionKill?: () => void): void {
+ *  until the next scheduled sweep.
+ *
+ *  `onSessionLaunch`, if given, fires the same way after session:launch or
+ *  session:reattach actually starts a new process ('launched', never
+ *  'failed') -- same reasoning as onSessionKill above: a session appearing
+ *  is exactly the kind of change only a fresh discovery sweep can surface,
+ *  and the card should not sit stale for up to 5s waiting for the next
+ *  scheduled one. */
+export function registerIpc(
+  db: Db, onFleetList?: () => void, onSessionKill?: () => void, onSessionLaunch?: () => void,
+): void {
   ipcMain.handle('fleet:list', () => {
     const payload = buildFleetListPayload();
     if (onFleetList) setImmediate(onFleetList);
@@ -907,8 +938,8 @@ export function registerIpc(db: Db, onFleetList?: () => void, onSessionKill?: ()
   // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing
   // Task 6's TEMPORARY not_implemented stubs in place -- not a second
   // ipcMain.handle for any of these four channels, which Electron would
-  // throw on. session:launch/session:reattach are still Task 13's; left
-  // stubbed exactly as Task 6 wrote them.
+  // throw on. session:launch/session:reattach were also stubbed the same
+  // way; Task 13 replaces those two below.
   //
   // BrowserWindow.fromWebContents(event.sender), not a module-level
   // "mainWindow" reference: this handler already receives the exact
@@ -925,8 +956,32 @@ export function registerIpc(db: Db, onFleetList?: () => void, onSessionKill?: ()
     resizeTerminal(pid, cols, rows));
   ipcMain.handle('session:raw', (_event, pid: unknown, data: unknown) => sendRawFor(pid, data));
 
-  ipcMain.handle('session:launch', () => ({ status: 'failed', reason: 'not_implemented' }));
-  ipcMain.handle('session:reattach', () => ({ status: 'failed', reason: 'not_implemented' }));
+  // session:launch/session:reattach (Task 13, src/main/launch.ts). The
+  // renderer sends only a provider/pid, an explicit user-chosen directory,
+  // and a size -- main re-derives the tmux session name, resolves the
+  // existing session (reattach), and runs the actual tmux commands itself,
+  // same trust boundary as every destructive channel above.
+  ipcMain.handle('session:launch', (_event, provider: unknown, cwd: unknown, cols: unknown, rows: unknown) => {
+    if (!isProvider(provider)) return { status: 'failed', reason: 'unrecognised provider' };
+    if (typeof cwd !== 'string' || !isAbsolutePath(cwd)) {
+      return { status: 'failed', reason: 'choose a working directory first' };
+    }
+    if (!validSize(cols) || !validSize(rows)) return { status: 'failed', reason: 'invalid terminal size' };
+    const result: LaunchResult = launchSession(provider, cwd, cols, rows);
+    if (onSessionLaunch && result.status === 'launched') setImmediate(onSessionLaunch);
+    return result;
+  });
+  ipcMain.handle('session:reattach', async (_event, pid: unknown, cols: unknown, rows: unknown) => {
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
+      return { status: 'failed', reason: 'invalid pid' };
+    }
+    if (!validSize(cols) || !validSize(rows)) return { status: 'failed', reason: 'invalid terminal size' };
+    const result: LaunchResult = await reattachSession(pid, cols, rows, {
+      kill: killSession, resolveSession: resolveSessionForReattach,
+    });
+    if (onSessionLaunch && result.status === 'launched') setImmediate(onSessionLaunch);
+    return result;
+  });
 
   // Belt-and-suspenders for the fifo transport (attachTerminal's doc
   // comment): session:detach is the normal cleanup path, but a renderer

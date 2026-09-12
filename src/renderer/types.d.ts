@@ -1,6 +1,7 @@
 import type { FleetListPayload, FleetHistoryPayload, KillResult, KeysResult } from '../main/ipc.ts';
 import type { ConversationTurn } from '../store/conversation.ts';
 import type { TerminalDataPayload } from '../main/stream.ts';
+import type { LaunchResult } from '../main/launch.ts';
 
 declare global {
   interface Window {
@@ -20,18 +21,19 @@ declare global {
       // typing narrows nothing at the trust boundary itself.
       sendKeys: (pid: number, text: string) => Promise<KeysResult>;
       conversation: (sessionId: string) => Promise<ConversationTurn[]>;
-      // attach/detach/resize/sendRaw/launch/reattach: the streaming and
-      // launch/reattach logic behind these lands in Tasks 10 and 13, which
-      // is what actually defines their result shapes. Left as `unknown`
-      // here rather than guessed at, so this task does not invent a
-      // contract those tasks then have to conform to (or silently diverge
-      // from).
+      // attach/detach/resize/sendRaw: Tasks 6b/10's streaming bridge. Left as
+      // `unknown` here rather than guessed at when this file was written --
+      // TerminalView.tsx (Task 10) narrows each with its own local cast
+      // instead. Out of this task's scope to revisit.
       attach: (pid: number, cols: number, rows: number) => Promise<unknown>;
       detach: (pid: number) => Promise<unknown>;
       resize: (pid: number, cols: number, rows: number) => Promise<unknown>;
       sendRaw: (pid: number, data: string) => Promise<unknown>;
-      launch: (provider: string, cwd: string, cols: number, rows: number) => Promise<unknown>;
-      reattach: (pid: number, cols: number, rows: number) => Promise<unknown>;
+      // launch/reattach (Task 13, src/main/launch.ts): real result shapes
+      // now that main actually answers them instead of the not_implemented
+      // stub.
+      launch: (provider: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
+      reattach: (pid: number, cols: number, rows: number) => Promise<LaunchResult>;
       onTerminalData: (cb: (payload: TerminalDataPayload) => void) => () => void;
     };
   }
