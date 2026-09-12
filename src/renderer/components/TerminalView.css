@@ -1,0 +1,7 @@
+/* src/renderer/components/TerminalView.css */
+.term-wrap { display:flex; flex-direction:column; flex:1; min-height:0; }
+.term { flex:1; min-height:0; background:var(--ground); padding:6px 8px; }
+.term-gap { margin:0; padding:4px 8px; font-family:var(--f-mono); font-size:11px;
+            color:var(--signal); background:var(--signal-soft); }
+.term-refused { margin:0; padding:16px; font-family:var(--f-body); font-size:13px;
+                color:var(--critical); }
