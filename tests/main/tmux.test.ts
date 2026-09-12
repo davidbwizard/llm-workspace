@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { sendLiteral, sendKeyName, hasSession, capturePane, TMUX_NAME, type KeyName } from '../../src/main/tmux.ts';
+import {
+  sendLiteral, sendKeyName, hasSession, capturePane, pipePane, TMUX_NAME, type KeyName,
+} from '../../src/main/tmux.ts';
 
 function spy() {
   const calls: string[][] = [];
@@ -10,7 +12,7 @@ describe('tmux argv construction', () => {
   it('sends message text with -l, as its own argv element', () => {
     const s = spy();
     sendLiteral('llmws-claude-abc', 'C-c', s.exec);
-    expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc', '-l', 'C-c']);
+    expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-l', 'C-c']);
   });
 
   it('never concatenates text with a following Enter', () => {
@@ -23,7 +25,7 @@ describe('tmux argv construction', () => {
   it('sends a key name without -l, in its own call', () => {
     const s = spy();
     sendKeyName('llmws-claude-abc', 'Enter', s.exec);
-    expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc', 'Enter']);
+    expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
   });
 
   // The `KeyName` union stops this at compile time; this test proves the
@@ -38,13 +40,18 @@ describe('tmux argv construction', () => {
     expect(s.calls).toHaveLength(0);
   });
 
-  it('targets exactly, never by prefix', () => {
+  // Exact expected form, not just a startsWith('=') prefix check -- the
+  // weaker check would have passed on a bare '=name' too, which is exactly
+  // what shipped and then failed "can't find pane" against a real tmux
+  // server for every target-PANE command (send-keys, capture-pane,
+  // pipe-pane). Verified live: the ':' is required, not decorative.
+  it('targets exactly, never by prefix, with the trailing : a real tmux server requires', () => {
     const s = spy();
     hasSession('llmws-claude-abc', s.exec);
     capturePane('llmws-claude-abc', 2000, s.exec);
     for (const c of s.calls) {
       const t = c[c.indexOf('-t') + 1]!;
-      expect(t.startsWith('=')).toBe(true);
+      expect(t).toBe('=llmws-claude-abc:');
     }
   });
 
@@ -53,5 +60,24 @@ describe('tmux argv construction', () => {
     expect(TMUX_NAME.test('other-session')).toBe(false);
     expect(TMUX_NAME.test('llmws-claude-a;rm -rf /')).toBe(false);
     expect(TMUX_NAME.test('llmws-claude-a:0.1')).toBe(false);
+  });
+});
+
+describe('pipePane', () => {
+  it('starts piping with -O, targeting =name, the command as its own argv element', () => {
+    const s = spy();
+    pipePane('llmws-claude-abc', 'cat >> /tmp/x.fifo', s.exec);
+    expect(s.calls[0]).toEqual(['pipe-pane', '-O', '-t', '=llmws-claude-abc:', 'cat >> /tmp/x.fifo']);
+  });
+
+  it('stops piping when called with no command', () => {
+    const s = spy();
+    pipePane('llmws-claude-abc', undefined, s.exec);
+    expect(s.calls[0]).toEqual(['pipe-pane', '-t', '=llmws-claude-abc:']);
+  });
+
+  it('refuses a name this app did not generate', () => {
+    expect(() => pipePane('not-ours', undefined)).toThrow();
+    expect(() => pipePane('not-ours', 'cat')).toThrow();
   });
 });

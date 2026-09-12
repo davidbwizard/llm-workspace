@@ -781,8 +781,11 @@ describe('session:keys', () => {
     });
     expect(r).toEqual({ status: 'sent' });
     expect(calls).toHaveLength(2);
-    expect(calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc', '-l', 'yes']);
-    expect(calls[1]).toEqual(['send-keys', '-t', '=llmws-claude-abc', 'Enter']);
+    // Trailing ':' on the target -- tmux.ts's target() appends it because a
+    // real tmux 3.7c server rejects a bare '=name' for target-PANE commands
+    // (send-keys included) with "can't find pane"; see tmux.test.ts.
+    expect(calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-l', 'yes']);
+    expect(calls[1]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
   });
 
   // spec §9: the session name resolving is not proof the pane is still
@@ -808,5 +811,24 @@ describe('terminal:data parity', () => {
     const pushed = [...ipc.matchAll(/webContents\.send\('([^']+)'/g)].map(m => m[1]).sort();
     const heard = [...preload.matchAll(/ipcRenderer\.on\('([^']+)'/g)].map(m => m[1]).sort();
     expect(pushed).toEqual(heard);
+  });
+});
+
+// Task 13's tripwire, not Task 6/6b's own coverage: session:launch and
+// session:reattach are deliberately still stubs (real logic is Task 13's,
+// in a new src/main/launch.ts per its brief). Asserting on source, the same
+// way the B2 and security-posture tests above do, rather than on a call
+// through registerIpc: registerIpc dereferences the real `ipcMain`, which
+// is undefined under plain-node vitest (see this file's top-of-module
+// comment), so a call-through test would throw regardless of which channel
+// it targeted. If Task 13 replaces these bodies (as it must) and forgets to
+// touch or remove this test, THIS test fails loudly, forcing it to decide
+// what "still passes" should mean here -- rather than the stub quietly
+// continuing to look finished.
+describe("session:launch / session:reattach -- Task 13's stubs", () => {
+  it('are still unimplemented placeholders, not a finished feature', () => {
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
+    expect(ipc).toMatch(/ipcMain\.handle\(\s*'session:launch',\s*\(\)\s*=>\s*\(\{\s*status:\s*'failed',\s*reason:\s*'not_implemented'\s*\}\)\)/);
+    expect(ipc).toMatch(/ipcMain\.handle\(\s*'session:reattach',\s*\(\)\s*=>\s*\(\{\s*status:\s*'failed',\s*reason:\s*'not_implemented'\s*\}\)\)/);
   });
 });

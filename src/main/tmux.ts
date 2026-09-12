@@ -15,9 +15,21 @@ function defaultExec(args: string[]): TmuxResult {
   }
 }
 
-/** Every target is '=name': tmux matches by prefix otherwise. */
+/** Every target is '=name:': the leading '=' makes tmux match this name
+ *  exactly rather than by prefix. The trailing ':' is NOT decorative --
+ *  verified against a real tmux 3.7c server, not just this file's own
+ *  mocked tests (which never invoke a real binary and so could not have
+ *  caught this): target-PANE commands (send-keys, capture-pane, pipe-pane)
+ *  fail with "can't find pane" on a bare '=name' once a session has no
+ *  window/pane suffix, even though target-SESSION (has-session) and the
+ *  more lenient target-WINDOW/target commands (resize-window, list-panes)
+ *  accept it fine either way. An empty suffix after ':' means "this
+ *  session's current window, current pane" -- always window 0 pane 0 for a
+ *  session this app created via newSession and never split -- and the
+ *  exact-match property still holds with it (confirmed: '=name:' does not
+ *  match a different real session whose name merely starts with 'name'). */
 function target(name: string): string {
-  return `=${name}`;
+  return `=${name}:`;
 }
 
 function guard(name: string): void {
@@ -75,6 +87,24 @@ export function capturePane(name: string, lines: number, exec: TmuxExec = defaul
 export function resizeWindow(name: string, cols: number, rows: number, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
   return exec(['resize-window', '-t', target(name), '-x', String(cols), '-y', String(rows)]);
+}
+
+/** pipe-pane's own semantics double as the start/stop toggle: called WITH a
+ *  command, it starts copying the pane's output into that command's stdin
+ *  (-O); called with none, it closes whatever pipe currently exists (tmux
+ *  manual: "if no shell-command is given, the current pipe ... is closed").
+ *  One function mirroring that toggle, rather than two, keeps the =name
+ *  guard and argv construction in one place, matching this file's other
+ *  functions. tmux also refuses to run two pipes on the same pane at once
+ *  ("any existing pipe is closed before shell-command is executed"), so a
+ *  second start is safe at the tmux level -- ipc.ts's attachTerminal still
+ *  tracks its own state so a repeat call doesn't leak a second fifo/reader
+ *  on top of it. */
+export function pipePane(name: string, command: string | undefined, exec: TmuxExec = defaultExec): TmuxResult {
+  guard(name);
+  return command === undefined
+    ? exec(['pipe-pane', '-t', target(name)])
+    : exec(['pipe-pane', '-O', '-t', target(name), command]);
 }
 
 export function panePid(name: string, exec: TmuxExec = defaultExec): number | null {

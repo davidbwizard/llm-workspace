@@ -3,8 +3,11 @@
 // binds ipcMain to undefined rather than throwing. That stays harmless only
 // because ipcMain is dereferenced inside registerIpc's body, never at module
 // scope -- a test that imports and calls registerIpc directly will throw.
-import { ipcMain, type BrowserWindow } from 'electron';
+import { app, ipcMain, BrowserWindow } from 'electron';
 import { execFileSync } from 'node:child_process';
+import { createReadStream, mkdirSync, rmSync, type ReadStream } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { Db } from '../store/db.ts';
 import {
   openSessions, openSessionsLive, fleetStatePage, type SessionState, type OpenSession,
@@ -17,7 +20,10 @@ import {
 import type { LiveProcess } from '../discovery/parse.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid } from './sessions.ts';
-import { sendLiteral, sendKeyName, capturePane, type TmuxResult } from './tmux.ts';
+import {
+  sendLiteral, sendKeyName, capturePane, resizeWindow, pipePane, type TmuxResult, type TmuxExec,
+} from './tmux.ts';
+import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
 import { conversationFor } from '../store/conversation.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
@@ -617,6 +623,217 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
   return { status: 'sent' };
 }
 
+// ---------------------------------------------------------------------
+// The terminal streaming bridge -- session:attach/detach/resize/raw, and
+// the 'terminal:data' push they feed. This is the missing link between
+// Task 5's coalescer (src/main/stream.ts) and Task 10's xterm widget: pipe
+// each pane's real bytes out of tmux, batch them, and push them to the
+// renderer that asked to watch this session.
+// ---------------------------------------------------------------------
+
+function validSize(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0;
+}
+
+/** pid -> transport for a session's live output: the fifo tmux's pipe-pane
+ *  writes into, the Node stream reading the other end, and the coalescer
+ *  batching those reads into 'terminal:data' pushes. Keyed by pid, never by
+ *  tmux name, because a pid is the only identifier the renderer ever holds
+ *  (same premise as sessions.ts's own byPid registry). */
+type Attachment = { name: string; fifoPath: string; stream: ReadStream; coalescer: Coalescer };
+const attachments = new Map<number, Attachment>();
+
+/** Where a session's pipe-pane output lands before this process reads it.
+ *  Named for the tmux session -- itself main-generated and re-verified live
+ *  (never renderer-supplied, see TMUX_NAME) -- so this path can never be
+ *  attacker-chosen and never collides across sessions. Lives under the OS
+ *  temp dir, not this app's persisted data directory: it is transient
+ *  plumbing for the lifetime of one attachment, never state worth keeping,
+ *  let alone backing up. os.tmpdir() rather than Electron's app.getPath is
+ *  deliberate -- this file is exercised directly by tests/main/
+ *  stream-bridge.test.ts's real-tmux test, outside a running app, and must
+ *  not depend on Electron having initialised anything. */
+function fifoPathFor(name: string): string {
+  return join(tmpdir(), 'llm-workspace-terminal-pipes', `${name}.fifo`);
+}
+
+export type AttachRefusalReason = 'invalid_pid' | 'invalid_size' | 'not_tmux' | 'session_gone';
+export type AttachResult =
+  | { status: 'attached'; backlog: string }
+  | { status: 'refused'; reason: AttachRefusalReason };
+
+type AttachDeps = {
+  has?: (n: string) => boolean;
+  resize?: TmuxExec;
+  capture?: TmuxExec;
+  pipe?: TmuxExec;
+};
+
+/** session:attach. Resize first -- there is no attached tmux client for a
+ *  headless session like this, so tmux never learns the widget's real size
+ *  on its own (same reasoning as newSession's -x/-y at creation, tmux.ts),
+ *  and output arriving before the next resize would wrap at whatever width
+ *  the session started with. Then scrollback, for the widget to paint
+ *  before any live byte arrives. Then the live stream itself: start
+ *  pipe-pane writing into a fresh fifo, read that fifo, and feed every
+ *  chunk to a coalescer whose emit pushes 'terminal:data' at this window.
+ *
+ *  Idempotent: a second attach for an already-attached pid skips all of
+ *  that and answers with a fresh backlog only. Without this, a renderer
+ *  that calls attach twice for the same pid (a remount, a reconnect) would
+ *  leak a fifo, a read stream and a coalescer per extra call -- and, since
+ *  the fifo path is deterministic per session name, a naive
+ *  re-implementation that always creates one from scratch fails loudly
+ *  (mkfifo EEXIST) rather than silently doubling up. */
+export function attachTerminal(
+  rawPid: unknown, cols: unknown, rows: unknown, win: BrowserWindow, deps: AttachDeps = {},
+): AttachResult {
+  if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) {
+    return { status: 'refused', reason: 'invalid_pid' };
+  }
+  const pid = rawPid;
+
+  // Same not_tmux/session_gone split as sendKeysFor -- see its doc comment.
+  const known = tmuxNameForPid(pid);
+  if (known === null) return { status: 'refused', reason: 'not_tmux' };
+  const name = resolveLiveTmux(pid, { has: deps.has });
+  if (name === null) return { status: 'refused', reason: 'session_gone' };
+
+  const existing = attachments.get(pid);
+  if (existing) {
+    const captured = capturePane(existing.name, 2000, deps.capture);
+    return { status: 'attached', backlog: captured.ok ? captured.stdout : '' };
+  }
+
+  if (!validSize(cols) || !validSize(rows)) return { status: 'refused', reason: 'invalid_size' };
+
+  // FIRST, per this function's doc comment above.
+  resizeWindow(name, cols, rows, deps.resize);
+
+  const backlog = capturePane(name, 2000, deps.capture);
+
+  const fifoPath = fifoPathFor(name);
+  mkdirSync(dirname(fifoPath), { recursive: true });
+  // A fifo left behind by a crashed previous run would make mkfifo fail
+  // with EEXIST. Safe to clear unconditionally: the path is per-session and
+  // `attachments` has no entry for this pid (checked above), so nothing in
+  // this process can currently be reading it.
+  try { rmSync(fifoPath, { force: true }); } catch { /* not there -- fine */ }
+  execFileSync('mkfifo', [fifoPath]);
+
+  // Opening a fifo for read blocks until a writer opens the other end, so
+  // the read side has to exist before pipePane below starts the writer --
+  // otherwise that writer would have nothing to unblock it.
+  const stream = createReadStream(fifoPath);
+  const coalescer = makeCoalescer(pid, (payload: TerminalDataPayload) => {
+    if (!win.isDestroyed()) win.webContents.send('terminal:data', payload);
+  });
+  stream.on('data', chunk => coalescer.push(chunk.toString('utf8')));
+  // A stream error (e.g. tmux tearing down the pipe from its side) should
+  // not crash this process -- worst case the terminal goes quiet, and
+  // detachTerminal below can still clean up.
+  stream.on('error', () => { /* see comment above */ });
+
+  attachments.set(pid, { name, fifoPath, stream, coalescer });
+
+  // Quoted defensively: fifoPath is built entirely from os.tmpdir() and a
+  // TMUX_NAME-validated session name (see fifoPathFor above), so it can
+  // never contain renderer-chosen or shell-active characters -- but pipe-
+  // pane's command string is still interpreted by a shell on tmux's side,
+  // and quoting costs nothing.
+  pipePane(name, `cat >> '${fifoPath}'`, deps.pipe);
+
+  return { status: 'attached', backlog: backlog.ok ? backlog.stdout : '' };
+}
+
+/** session:detach. Idempotent -- detaching a pid with no attachment is a
+ *  no-op success, not an error: the renderer may call this defensively
+ *  (e.g. on unmount) without knowing whether attach ever actually
+ *  completed for it. */
+export function detachTerminal(rawPid: unknown, deps: { pipe?: TmuxExec } = {}): { status: 'detached' } {
+  const pid = typeof rawPid === 'number' ? rawPid : NaN;
+  const existing = attachments.get(pid);
+  if (!existing) return { status: 'detached' };
+  attachments.delete(pid);
+
+  existing.coalescer.flushNow();
+  // Stop tmux's copy first, so its writer closes and this process's reader
+  // gets a clean EOF, rather than destroying the reader while tmux may
+  // still be mid-write. Safe even if the tmux session has already died --
+  // pipePane's exec just reports failure, which there is nothing useful to
+  // do with here (there is nothing left to detach from).
+  pipePane(existing.name, undefined, deps.pipe);
+  existing.stream.destroy();
+  try { rmSync(existing.fifoPath, { force: true }); } catch { /* already gone -- fine */ }
+  return { status: 'detached' };
+}
+
+/** Every live attachment's transport and coalescer, torn down
+ *  unconditionally. Called once from app.on('before-quit') in registerIpc
+ *  below, so a fifo under the OS temp dir does not outlive this process
+ *  the way it would if only session:detach ever cleaned one up (a renderer
+ *  that never gets to run its own cleanup on the way out, e.g. Cmd+Q). */
+export function detachAllTerminals(): void {
+  for (const pid of [...attachments.keys()]) detachTerminal(pid);
+}
+
+export type ResizeRefusalReason = 'invalid_pid' | 'invalid_size' | 'not_tmux' | 'session_gone';
+export type ResizeResult = { status: 'resized' } | { status: 'refused'; reason: ResizeRefusalReason };
+
+/** session:resize. Unlike sendKeysFor, there is no extra capture-pane
+ *  freshness check before acting -- a resize fires on every widget resize,
+ *  far more often than a reply is sent, and resolveLiveTmux's own liveness
+ *  check is enough for an action this frequent and this harmless to repeat. */
+export function resizeTerminal(
+  rawPid: unknown, cols: unknown, rows: unknown,
+  deps: { has?: (n: string) => boolean; resize?: TmuxExec } = {},
+): ResizeResult {
+  if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) {
+    return { status: 'refused', reason: 'invalid_pid' };
+  }
+  if (!validSize(cols) || !validSize(rows)) return { status: 'refused', reason: 'invalid_size' };
+
+  const known = tmuxNameForPid(rawPid);
+  if (known === null) return { status: 'refused', reason: 'not_tmux' };
+  const name = resolveLiveTmux(rawPid, { has: deps.has });
+  if (name === null) return { status: 'refused', reason: 'session_gone' };
+
+  resizeWindow(name, cols, rows, deps.resize);
+  return { status: 'resized' };
+}
+
+export type RawRefusalReason = 'invalid_pid' | 'invalid_data' | 'not_tmux' | 'session_gone';
+export type RawResult = { status: 'sent' } | { status: 'refused'; reason: RawRefusalReason };
+
+/** session:raw -- the terminal widget's own keystrokes: arrow keys, Ctrl-C,
+ *  whatever a TUI's own prompts need (e.g. the Claude Code trust prompt).
+ *  Deliberately skips sanitizeOutbound (src/main/outbound.ts), unlike
+ *  session:keys/sendKeysFor above: that sanitiser exists to stop a REPLY
+ *  smuggling control bytes past what the popover showed as plain text.
+ *  Here, control bytes are not a smuggling risk -- they are the entire
+ *  point. Still resolves through the same not_tmux/session_gone checks as
+ *  every other tmux-writing channel: skipping the outbound sanitiser does
+ *  not mean skipping "is this pid even a live tmux session". */
+export function sendRawFor(
+  rawPid: unknown, data: unknown, deps: { has?: (n: string) => boolean; send?: TmuxExec } = {},
+): RawResult {
+  if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) {
+    return { status: 'refused', reason: 'invalid_pid' };
+  }
+  if (typeof data !== 'string' || data.length === 0) return { status: 'refused', reason: 'invalid_data' };
+
+  const known = tmuxNameForPid(rawPid);
+  if (known === null) return { status: 'refused', reason: 'not_tmux' };
+  const name = resolveLiveTmux(rawPid, { has: deps.has });
+  if (name === null) return { status: 'refused', reason: 'session_gone' };
+
+  // No sanitizeOutbound call -- see this function's doc comment. -l is
+  // still mandatory (sendLiteral's own doc comment in tmux.ts): without it
+  // tmux would read the text as a key NAME instead of literal bytes.
+  sendLiteral(name, data, deps.send);
+  return { status: 'sent' };
+}
+
 /** The complete set of channels main answers. Adding one means adding it to
  *  the preload's enumerated list as well; tests/main/ipc.test.ts asserts
  *  they match.
@@ -657,23 +874,36 @@ export function registerIpc(db: Db, onFleetList?: () => void, onSessionKill?: ()
     typeof sessionId === 'string' ? conversationFor(db, sessionId) : []);
   ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown) => sendKeysFor(pid, text));
 
-  // TEMPORARY: real logic for these six lands in Tasks 10 (attach/detach/
-  // resize/raw -- pipe-pane streaming) and 13 (launch/reattach). They are
-  // registered here, honestly refusing, only because this task's preload
-  // exposes the matching invoke() calls (so Task 10's TerminalView is
-  // typecheckable against Task 6's output alone) -- an exposed channel with
-  // no live handler is a real bug (ipcRenderer.invoke rejects at runtime
-  // with "no handler registered"), not just a lint nit, so a stub belongs
-  // here even though the behaviour behind it does not yet exist. Tasks 10
-  // and 13 must REPLACE these six lines' bodies in place, not add a
-  // second ipcMain.handle for the same channel -- Electron throws on
-  // double registration.
-  ipcMain.handle('session:attach', () => ({ status: 'refused', reason: 'not_implemented' }));
-  ipcMain.handle('session:detach', () => ({ status: 'refused', reason: 'not_implemented' }));
-  ipcMain.handle('session:resize', () => ({ status: 'refused', reason: 'not_implemented' }));
-  ipcMain.handle('session:raw', () => ({ status: 'refused', reason: 'not_implemented' }));
+  // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing
+  // Task 6's TEMPORARY not_implemented stubs in place -- not a second
+  // ipcMain.handle for any of these four channels, which Electron would
+  // throw on. session:launch/session:reattach are still Task 13's; left
+  // stubbed exactly as Task 6 wrote them.
+  //
+  // BrowserWindow.fromWebContents(event.sender), not a module-level
+  // "mainWindow" reference: this handler already receives the exact
+  // WebContents that asked to attach, which is more precise than assuming
+  // a single captured window, and needs no extra wiring from
+  // src/main/index.ts to thread a window reference in here.
+  ipcMain.handle('session:attach', (event, pid: unknown, cols: unknown, rows: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return { status: 'refused', reason: 'session_gone' };
+    return attachTerminal(pid, cols, rows, win);
+  });
+  ipcMain.handle('session:detach', (_event, pid: unknown) => detachTerminal(pid));
+  ipcMain.handle('session:resize', (_event, pid: unknown, cols: unknown, rows: unknown) =>
+    resizeTerminal(pid, cols, rows));
+  ipcMain.handle('session:raw', (_event, pid: unknown, data: unknown) => sendRawFor(pid, data));
+
   ipcMain.handle('session:launch', () => ({ status: 'failed', reason: 'not_implemented' }));
   ipcMain.handle('session:reattach', () => ({ status: 'failed', reason: 'not_implemented' }));
+
+  // Belt-and-suspenders for the fifo transport (attachTerminal's doc
+  // comment): session:detach is the normal cleanup path, but a renderer
+  // that never gets to run it on the way out (Cmd+Q, a crash) would
+  // otherwise leave a fifo under the OS temp dir. before-quit runs
+  // regardless of how the app is closing.
+  app.on('before-quit', detachAllTerminals);
 }
 
 /** Pushed on every watcher/spool/ingest/discovery change (src/main/index.ts).
