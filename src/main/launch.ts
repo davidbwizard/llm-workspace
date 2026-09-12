@@ -4,7 +4,16 @@ import type { KillResult } from './ipc.ts';
 import { newSession, panePid as tmuxPanePid, type TmuxExec } from './tmux.ts';
 import { registerSession } from './sessions.ts';
 
-export type LaunchResult = { status: 'launched'; pid: number } | { status: 'failed'; reason: string };
+export type LaunchResult =
+  | { status: 'launched'; pid: number }
+  | { status: 'failed'; reason: string }
+  // reattachSession's own failure mode, distinct from an ordinary launch
+  // failure: the OLD process is confirmed gone and the NEW one did not
+  // start. An ordinary 'failed' here would read as "nothing happened" --
+  // untrue, and the opposite of what the user needs to know. sessionId/cwd
+  // are what a retry needs: resumeSession (below) can relaunch from them
+  // directly, without re-resolving a pid that no longer exists.
+  | { status: 'killed_not_relaunched'; reason: string; sessionId: string; cwd: string };
 
 type LaunchDeps = { exec?: TmuxExec; panePid?: (name: string) => number | null };
 
@@ -47,6 +56,22 @@ export function launchSession(
  *  call). Anchored, restricted to characters no shell gives special
  *  meaning to. */
 const SESSION_ID_SAFE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** session:resume. Relaunches a Claude conversation from its session id and
+ *  cwd alone, with no kill step and no pid to resolve from -- this is what a
+ *  retry after `killed_not_relaunched` calls, and the only reason it can
+ *  work there is that it never needs the OLD pid at all (which, at retry
+ *  time, is already dead and gone from every discovery cache). Also the
+ *  primitive reattachSession itself relaunches through, below, so the
+ *  session id validation lives in exactly one place. */
+export function resumeSession(
+  sessionId: string, cwd: string, cols: number, rows: number, deps: LaunchDeps = {},
+): LaunchResult {
+  if (!SESSION_ID_SAFE.test(sessionId)) {
+    return { status: 'failed', reason: 'this session id has an unexpected shape' };
+  }
+  return launchSession('claude', cwd, cols, rows, deps, `claude --resume ${sessionId}`);
+}
 
 export interface ResolvedSession { sessionId: string; provider: Provider; cwd: string }
 
@@ -114,9 +139,24 @@ export async function reattachSession(
   // new one start, under the SAME session id, so `claude --resume` picks up
   // exactly the conversation that was just ended, never a stale copy racing
   // against a still-live one.
-  return launchSession(
-    'claude', resolved.cwd, cols, rows,
-    { exec: deps.exec, panePid: deps.panePid },
-    `claude --resume ${resolved.sessionId}`,
+  //
+  // A failure from here on is NOT an ordinary launch failure: the old
+  // process is already gone, so "nothing happened" (what 'failed' implies
+  // everywhere else) would be false. resolved.sessionId/resolved.cwd are
+  // captured now, while they still resolve -- resolveSession above reads
+  // the live-process cache, which this pid is about to permanently drop
+  // out of, so a caller that tried to re-resolve it after this point would
+  // get "cannot identify", not a retry.
+  const relaunch = resumeSession(
+    resolved.sessionId, resolved.cwd, cols, rows, { exec: deps.exec, panePid: deps.panePid },
   );
+  if (relaunch.status === 'failed') {
+    return {
+      status: 'killed_not_relaunched',
+      reason: relaunch.reason,
+      sessionId: resolved.sessionId,
+      cwd: resolved.cwd,
+    };
+  }
+  return relaunch;
 }

@@ -43,9 +43,20 @@ const api = {
     ipcRenderer.invoke('session:launch', provider, cwd, cols, rows),
   // pid is the only session-identifying argument -- main resolves which
   // session it is, ends it, and relaunches it under `claude --resume`
-  // itself, as one call (src/main/launch.ts's reattachSession). The
-  // renderer can never observe an old session killed but not relaunched.
+  // itself, as one call (src/main/launch.ts's reattachSession). A
+  // 'killed_not_relaunched' result means exactly what it says: the old
+  // process is gone and the new one did not start -- resume (below) is the
+  // recovery path for that, not another reattach (there is no pid left to
+  // reattach from).
   reattach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:reattach', pid, cols, rows),
+  // Relaunches a session from its own id/cwd, with no pid and no kill step
+  // -- the only way to retry after 'killed_not_relaunched', since the old
+  // pid is already gone from every discovery cache by the time that state
+  // is reachable. sessionId/cwd here are always values the renderer got
+  // FROM a previous launch/reattach/resume result, never invented locally;
+  // main still validates the id's shape independently (src/main/launch.ts).
+  resume: (sessionId: string, cwd: string, cols: number, rows: number) =>
+    ipcRenderer.invoke('session:resume', sessionId, cwd, cols, rows),
   onTerminalData: (cb: (payload: unknown) => void) => {
     const handler = (_e: unknown, payload: unknown) => cb(payload);
     ipcRenderer.on('terminal:data', handler);

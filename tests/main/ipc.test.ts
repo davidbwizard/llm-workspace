@@ -843,4 +843,14 @@ describe("session:launch / session:reattach -- Task 13's real handlers", () => {
     expect(launchHandler).toMatch(/launchSession\(/);
     expect(reattachHandler).toMatch(/reattachSession\(/);
   });
+
+  // Fix-wave item 5's recovery path: session:resume is what a retry after
+  // 'killed_not_relaunched' calls -- same source-assertion shape as above,
+  // for the same plain-node-vitest reason.
+  it('session:resume is wired to resumeSession from src/main/launch.ts', () => {
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
+    expect(ipc).toMatch(/import\s*\{[^}]*resumeSession[^}]*\}\s*from\s*'\.\/launch\.ts'/);
+    const resumeHandler = ipc.match(/ipcMain\.handle\(\s*'session:resume',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
+    expect(resumeHandler).toMatch(/resumeSession\(/);
+  });
 });

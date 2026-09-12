@@ -34,6 +34,9 @@ declare global {
       // stub.
       launch: (provider: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
       reattach: (pid: number, cols: number, rows: number) => Promise<LaunchResult>;
+      // The recovery path for reattach's 'killed_not_relaunched' state --
+      // see preload/index.ts's own comment on it.
+      resume: (sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
       onTerminalData: (cb: (payload: TerminalDataPayload) => void) => () => void;
     };
   }

@@ -26,7 +26,7 @@ import {
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
 import { conversationFor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
-import { launchSession, reattachSession, type LaunchResult } from './launch.ts';
+import { launchSession, reattachSession, resumeSession, type LaunchResult } from './launch.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -979,6 +979,24 @@ export function registerIpc(
     const result: LaunchResult = await reattachSession(pid, cols, rows, {
       kill: killSession, resolveSession: resolveSessionForReattach,
     });
+    if (onSessionLaunch && result.status === 'launched') setImmediate(onSessionLaunch);
+    return result;
+  });
+  // session:resume -- the recovery path for reattach's own
+  // 'killed_not_relaunched' state (src/main/launch.ts's doc comment): the
+  // renderer echoes back the sessionId/cwd THAT SAME failed reattach handed
+  // it, never a value it invented, so this is not a new way for it to name
+  // an arbitrary session -- resumeSession still validates the id's shape
+  // independently before it ever reaches tmux.
+  ipcMain.handle('session:resume', (_event, sessionId: unknown, cwd: unknown, cols: unknown, rows: unknown) => {
+    if (typeof sessionId !== 'string' || sessionId === '') {
+      return { status: 'failed', reason: 'invalid session id' };
+    }
+    if (typeof cwd !== 'string' || !isAbsolutePath(cwd)) {
+      return { status: 'failed', reason: 'choose a working directory first' };
+    }
+    if (!validSize(cols) || !validSize(rows)) return { status: 'failed', reason: 'invalid terminal size' };
+    const result: LaunchResult = resumeSession(sessionId, cwd, cols, rows);
     if (onSessionLaunch && result.status === 'launched') setImmediate(onSessionLaunch);
     return result;
   });

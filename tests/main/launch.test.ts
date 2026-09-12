@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { launchSession, reattachSession } from '../../src/main/launch.ts';
+import { launchSession, reattachSession, resumeSession } from '../../src/main/launch.ts';
 import { clearRegistry, tmuxNameForPid } from '../../src/main/sessions.ts';
 
 beforeEach(() => clearRegistry());
@@ -151,5 +151,58 @@ describe('reattachSession', () => {
     const r = await reattachSession(4821, 120, 40, d);
     expect(r.status).toBe('failed');
     expect(d.kill).not.toHaveBeenCalled();
+  });
+
+  // Fix-wave item 5: the old process is confirmed gone (kill succeeded) but
+  // the relaunch itself then fails -- this MUST be distinguishable from an
+  // ordinary 'failed' (item 5's problem 1: "your session is gone and
+  // nothing replaced it" vs "nothing happened yet" demand opposite
+  // reactions), and it MUST carry what a retry needs (problem 2: the pid is
+  // already gone from resolveSession's own cache by the time this is
+  // reachable, so a retry cannot re-derive sessionId/cwd from it).
+  it('reports a distinct killed_not_relaunched state, carrying the session id and cwd, when the kill succeeds but the relaunch fails', async () => {
+    const d = deps({ exec: () => ({ ok: false as const, error: 'tmux: server exited mid-relaunch' }) });
+    const r = await reattachSession(4821, 120, 40, d);
+    expect(r).toEqual({
+      status: 'killed_not_relaunched',
+      reason: 'tmux: server exited mid-relaunch',
+      sessionId: 'abc-123',
+      cwd: '/a/proj',
+    });
+  });
+
+  // The recovery path actually works from the dead pid's own resolved
+  // sessionId/cwd -- proven by using ONLY those two values below, with no
+  // pid and no resolveSession involved at all, exactly as a retry button
+  // would call it after the test above's result.
+  it('resumeSession relaunches from a killed_not_relaunched result\'s sessionId/cwd alone, no pid required', () => {
+    const calls: string[][] = [];
+    const r = resumeSession('abc-123', '/a/proj', 120, 40, {
+      exec: (a) => { calls.push(a); return { ok: true, stdout: '' }; },
+      panePid: () => 9001,
+    });
+    expect(r).toEqual({ status: 'launched', pid: 9001 });
+    expect(calls[0]).toContain('claude --resume abc-123');
+    expect(calls[0]).toContain('/a/proj');
+  });
+});
+
+describe('resumeSession', () => {
+  it('refuses a malformed session id rather than building a command from it', () => {
+    const calls: string[][] = [];
+    const r = resumeSession('$(rm -rf ~)', '/a/proj', 120, 40, {
+      exec: (a) => { calls.push(a); return { ok: true, stdout: '' }; },
+      panePid: () => 1,
+    });
+    expect(r.status).toBe('failed');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('reports an ordinary failure, not killed_not_relaunched, when the relaunch itself fails -- there is no old process here to have killed', () => {
+    const r = resumeSession('abc-123', '/a/proj', 120, 40, {
+      exec: () => ({ ok: false, error: 'tmux: no server' }),
+      panePid: () => null,
+    });
+    expect(r).toEqual({ status: 'failed', reason: 'tmux: no server' });
   });
 });

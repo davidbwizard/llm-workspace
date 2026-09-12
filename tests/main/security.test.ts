@@ -41,7 +41,7 @@ describe('renderer security posture', () => {
       'fleet:history', 'fleet:list',
       'session:attach', 'session:conversation', 'session:detach', 'session:keys',
       'session:kill', 'session:launch', 'session:raw', 'session:reattach',
-      'session:resize', 'session:reveal',
+      'session:resize', 'session:resume', 'session:reveal',
     ]);
   });
 });
