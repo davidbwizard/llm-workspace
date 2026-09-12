@@ -48,9 +48,66 @@ with no reply box will read as broken rather than as out of scope.
 A session that happens to already be running inside tmux can be sent keys with
 `tmux send-keys`. Worth checking whether any of his are; do not assume.
 
+## PROVEN END TO END, 2026-09-11 -- read this before designing anything
+
+tmux 3.7c was installed and the whole mechanism was run for real. Every step
+below actually happened; none of it is projected.
+
+    tmux new-session -d -s llmws-claude-probe -c <dir> "claude"   -> claude boots
+    tmux send-keys -t llmws-claude-probe Down                     -> TUI navigates
+    tmux send-keys -t llmws-claude-probe Enter                    -> selection taken
+    tmux send-keys -t llmws-claude-probe "<prompt>" ; ... Enter   -> prompt submitted
+                                                                  -> claude replied
+
+And the reply landed in the ordinary transcript, in the ordinary place, which the
+watcher already scans:
+
+    ~/.claude/projects/-private-tmp-llmws-tmux-probe/699289e2-....jsonl
+      user:      Reply with exactly the word TMUXPROBE and nothing else.
+      assistant: TMUXPROBE
+
+### What that means for the build
+
+**No terminal emulator is needed.** Not xterm.js, not node-pty, not a hidden
+buffer in the card.
+
+    reading  -- already built. The card renders parsed transcript events.
+    writing  -- `tmux send-keys`. One shell command.
+
+The terminal exists; it is tmux, off-screen. David's instinct was a hidden
+terminal inside the card. This is better: the card never holds one, so the clean
+view stays clean by construction rather than by hiding something. Raw output
+remains available by attaching to the tmux session by hand.
+
+**This is a fraction of the work section 10 implies.** Treat any design that
+starts with "embed a terminal" as the expensive path not taken, and say why.
+
+### It also widens what is replyable
+
+`send-keys` works on ANY tmux session, not only ones the app created. So a session
+David starts himself inside tmux -- from iTerm, over SSH -- is replyable too. The
+"only sessions the app launches" limit stated below is narrower in reality:
+**only sessions running inside tmux.** Whether to surface that (detect existing
+tmux sessions and offer to reply) is a product decision, not a technical one.
+
+### The startup dialog is a real design problem
+
+A launched session opens on Claude Code's trust prompt: "Is this a project you
+created or one you trust?", with **"No, exit" selected by default**. During this
+probe the first Enter chose it and killed the session.
+
+So a freshly launched session is not immediately usable, and a card that shows it
+as merely "working" is lying. The launcher must either answer that prompt
+deliberately (a Down then Enter, which is exactly what a user would do, and
+consciously means asserting trust on his behalf) or surface it -- "waiting on a
+prompt" -- and let him answer from the card. The second is more honest and is
+probably the first real use of the reply box.
+
+Codex's own startup behaviour was NOT probed. Do not assume it matches.
+
 ## Ground truth on this machine, verified 2026-09-11
 
-    tmux        NOT INSTALLED  -- `brew install tmux` is a prerequisite
+    tmux        3.7c, installed via Homebrew 2026-09-11
     claude      /Users/davidbrabbins/.local/bin/claude
     codex       /opt/homebrew/bin/codex
     codex       /Applications/ChatGPT.app/Contents/Resources/codex  (also present)
