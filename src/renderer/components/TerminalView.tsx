@@ -21,6 +21,17 @@ const ATTACH_REFUSAL_TEXT: Record<AttachRefusalReason, string> = {
   invalid_size: 'Could not attach to this session.',
 };
 
+/** Bounds the pre-backlog queue (below) against the stream's own measured
+ *  ceiling of ~30 MB/s (src/main/stream.ts) -- unbounded, a contended main
+ *  process (attach's own IPC round trip, or the capture-pane it waits on)
+ *  turns an ordinary delay into unbounded renderer memory. 64 coalesced
+ *  frames is generous headroom over how long attach should ever actually
+ *  take (capture-pane alone measures under 10ms against a real index --
+ *  spec S3) while still bounding the worst case to tens of MB, not an
+ *  open-ended stream. Exported so the overflow path is testable against
+ *  the real number, not a duplicated guess of it. */
+export const MAX_QUEUED_TERMINAL_PAYLOADS = 64;
+
 /** The raw half of the toggle. Bytes are written IMPERATIVELY -- a setState
  *  per chunk would re-render the card tree at stream rate, which is the
  *  mistake FleetView's own un-debounced subscription would invite copying.
@@ -94,7 +105,19 @@ export function TerminalView({ pid }: { pid: number }) {
       // The push channel is broadcast to every attached view -- without
       // this filter, one session's output would land in another's terminal.
       if (p.pid !== pid) return;
-      if (!backlogWritten) { queued.push(p); return; }
+      if (!backlogWritten) {
+        // Chosen over the alternative (force backlog's own write early and
+        // drain): that would mean writing whatever we have BEFORE the
+        // snapshot attach actually asked for has arrived, breaking the
+        // ordering guarantee this whole queue exists for. Dropping instead
+        // -- newest first, i.e. simply refusing to grow further -- keeps
+        // that guarantee intact and produces one clean, visible gap at a
+        // known point, rather than silently ballooning memory or silently
+        // rendering as if nothing were missing.
+        if (queued.length >= MAX_QUEUED_TERMINAL_PAYLOADS) { setGapDetected(true); return; }
+        queued.push(p);
+        return;
+      }
       applyPayload(p);
     });
 

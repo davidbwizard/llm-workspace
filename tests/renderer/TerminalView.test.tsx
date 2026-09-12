@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, act } from '@testing-library/react';
-import { TerminalView } from '../../src/renderer/components/TerminalView.tsx';
+import { TerminalView, MAX_QUEUED_TERMINAL_PAYLOADS } from '../../src/renderer/components/TerminalView.tsx';
 
 // Captures every xterm call the component makes, so tests can assert on
 // exactly what reached the (real, un-mockable-in-jsdom) terminal without
@@ -157,5 +157,39 @@ describe('TerminalView', () => {
       handler?.({ version: 1, pid: 4821, seq: 1, data: 'b' });
     });
     expect(container.textContent).not.toMatch(/missing|gap|dropped/i);
+  });
+
+  // Fix-wave item 2: the pre-backlog queue used to grow without limit while
+  // attach's own promise was still pending -- against the stream's real
+  // ~30 MB/s ceiling, a slow or contended attach turns that into unbounded
+  // renderer memory. Held pending here the same way the ordering test above
+  // does, so payloads pile up in the queue rather than being applied.
+  it('caps the pre-backlog queue rather than growing it without limit, and flags the gap visibly', async () => {
+    let resolveAttach!: (v: { status: string; backlog: string }) => void;
+    const pending = new Promise<{ status: string; backlog: string }>(res => { resolveAttach = res; });
+    window.fleet!.attach = vi.fn(() => pending) as never;
+
+    const { container } = render(<TerminalView pid={4821} />);
+    await Promise.resolve();
+
+    // One more than the cap arrives before backlog does -- the last one
+    // must be the one that gets dropped, not silently accepted and grown
+    // past the limit.
+    act(() => {
+      for (let i = 0; i < MAX_QUEUED_TERMINAL_PAYLOADS + 1; i++) {
+        handler?.({ version: 1, pid: 4821, seq: i, data: `chunk-${i}` });
+      }
+    });
+
+    await act(async () => {
+      resolveAttach({ status: 'attached', backlog: 'BACKLOG\n' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(writes).toContain('BACKLOG\n');
+    expect(writes).toContain(`chunk-${MAX_QUEUED_TERMINAL_PAYLOADS - 1}`); // last one kept
+    expect(writes).not.toContain(`chunk-${MAX_QUEUED_TERMINAL_PAYLOADS}`); // the overflow one, dropped
+    expect(container.textContent).toMatch(/missing|gap|dropped/i);
   });
 });
