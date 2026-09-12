@@ -12,7 +12,19 @@ import './FleetView.css';
 // session objects") means there is no whole array to batch over any more.
 const HISTORY_PAGE = 60;
 
-export function FleetView() {
+// `payload`/`error` used to be this component's own state, fetched by a
+// private useEffect right here. Task 7 hoists that into useFleet.ts: the
+// future Game view needs the identical openSessions list and the identical
+// "select this session" callback, and a second private subscription would
+// mean two components independently polling fleet:list/fleet:update for the
+// same data. FleetView is now just one consumer of that shared state, passed
+// in as props -- it still owns everything below (History's own accordion
+// state and paging), which no other view needs.
+export function FleetView({ payload, error, onSelect }: {
+  payload: FleetListPayload | null;
+  error: string | null;
+  onSelect: (pid: number) => void;
+}) {
   // The two independent enumerations, per the model correction: "ALL OPEN
   // SESSIONS should show. And the source." Open sessions come from live
   // PROCESSES (discovery, spec S7.1a), not from transcript recency -- a
@@ -22,13 +34,6 @@ export function FleetView() {
   // session, unfiltered, so nothing is ever lost even though most open
   // processes will also appear there once fetched.
   //
-  // `payload` never carries anything history-related, not even a count
-  // (FleetListPayload, src/main/ipc.ts) -- only openSessions. Per David's
-  // correction, nothing about History is computed, sent, or held until a
-  // person actually expands it: not deferred, not precomputed, not
-  // sent-but-unused.
-  const [payload, setPayload] = useState<FleetListPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
   // Collapsed by default: history is the common case (a handful of open
   // sessions, hundreds of history), and rendering history as the default
   // view is the noise this app exists to remove. See the history-group
@@ -43,29 +48,6 @@ export function FleetView() {
   const [historyTotal, setHistoryTotal] = useState<number | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
-
-  useEffect(() => {
-    // window.fleet is absent if the preload script failed to load (see the
-    // render-time guard below). Nothing to subscribe to in that case.
-    if (!window.fleet) return;
-    const fleet = window.fleet;
-    let alive = true;
-    // Two-arg .then, not a chained .catch: a chained .catch would also
-    // swallow a bug thrown from the fulfilled branch below, which is a
-    // different failure than "the IPC call failed" and shouldn't be
-    // reported as one. `ipcRenderer.invoke` rejects (not hangs) when main
-    // has no handler for the channel -- e.g. right now, since Task 11
-    // hasn't wired `registerIpc` into src/main/index.ts yet -- and an
-    // unhandled rejection here previously left `sessions` null forever,
-    // which looks identical on screen to a slow load. Nobody investigates
-    // a spinner that never resolves; a specific message says why.
-    void fleet.listFleet().then(
-      p => { if (alive) { setPayload(p); setError(null); } },
-      err => { if (alive) setError(err instanceof Error ? err.message : String(err)); },
-    );
-    const unsub = fleet.onFleet(p => { if (alive) { setPayload(p); setError(null); } });
-    return () => { alive = false; unsub(); };
-  }, []);
 
   // History is fetched only on the false->true transition, i.e. exactly
   // when a person actually opens the accordion -- not on every render, not
@@ -132,7 +114,7 @@ export function FleetView() {
       {openSessions.length > 0 ? (
         <div className="fleet">
           {openSessions.map(o => (
-            <OpenSessionCard key={o.pid} state={o} onOpen={() => {}} onKill={fleetApi.killSession} onReveal={fleetApi.revealSession} />
+            <OpenSessionCard key={o.pid} state={o} onOpen={onSelect} onKill={fleetApi.killSession} onReveal={fleetApi.revealSession} />
           ))}
         </div>
       ) : (
@@ -172,6 +154,11 @@ export function FleetView() {
         {historyExpanded && !historyError && historyTotal === 0 && (
           <p className="empty">No history yet.</p>
         )}
+        {/* Still a no-op: onSelect takes a pid (Task 7's Selection is
+            pid-keyed, matching the process-driven grid above), and a History
+            row is a transcript with no live process implied by it -- its
+            sessionId is a different kind of identity, not one `onSelect`
+            (or SessionRail/ConversationView downstream) is built to accept. */}
         {historyExpanded && !historyError && historyTotal !== null && historyTotal > 0 &&
           history.map(s => <SessionCard key={s.sessionId} state={s} onOpen={() => {}} />)}
       </div>

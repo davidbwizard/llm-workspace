@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { FleetView } from '../../src/renderer/components/FleetView.tsx';
 import type { SessionState, OpenSession } from '../../src/fleet/state.ts';
+import type { FleetListPayload } from '../../src/main/ipc.ts';
 
 // A transcript-session fixture. Used only for History now: History is
 // every transcript session, unfiltered (see FleetView.tsx) -- none of
@@ -31,6 +32,15 @@ const o = (over: Partial<OpenSession>): OpenSession => ({
   activity:null, ...over,
 });
 
+// Task 7 hoisted the fleet:list fetch/subscription out of FleetView into
+// useFleet.ts (tests/renderer/useFleet.test.tsx now covers that fetch,
+// its rejection handling, and the live-update subscription). FleetView is
+// rendered directly with a payload here, the same shape useFleet would
+// have handed it -- not through a mocked window.fleet.listFleet/onFleet,
+// which no longer drives this component at all.
+const payload = (openSessions: OpenSession[]): FleetListPayload =>
+  ({ version: 1, generatedAt: 't', openSessions });
+
 // A small fixed "corpus" History pagination tests slice against, so the
 // mock's behaviour (return the requested offset/limit window, plus the
 // true total) mirrors what src/main/ipc.ts's buildFleetHistoryPayload
@@ -44,14 +54,14 @@ function pagedHistory(all: SessionState[]) {
   }));
 }
 
+// FleetView still reaches window.fleet directly for kill/reveal (per open
+// card) and for History's own fetch/paging -- none of that moved to
+// useFleet.ts, so it still needs a live mock here.
 beforeEach(() => {
   (globalThis as any).window.fleet = {
-    listFleet: vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', openSessions:[o({ pid:1, project:'trellome' })],
-    }),
     listHistory: pagedHistory(defaultHistory),
     killSession: vi.fn().mockResolvedValue({ status: 'killed' }),
-    onFleet: vi.fn().mockReturnValue(() => {}),
+    revealSession: vi.fn().mockResolvedValue({ status: 'revealed' }),
   };
 });
 
@@ -60,8 +70,8 @@ describe('FleetView', () => {
     // trellome is open (process-enumerated) AND has transcript history;
     // chocabloc has transcript history only (no matching open process) --
     // the two enumerations are independent, not mutually exclusive.
-    render(<FleetView />);
-    await waitFor(() => expect(screen.getByText('trellome')).toBeTruthy());
+    render(<FleetView payload={payload([o({ pid:1, project:'trellome' })])} error={null} onSelect={() => {}} />);
+    expect(screen.getByText('trellome')).toBeTruthy();
     expect(screen.queryByText('chocabloc')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name:/History/i }));
     await waitFor(() => expect(screen.getByText('chocabloc')).toBeTruthy());
@@ -71,20 +81,16 @@ describe('FleetView', () => {
     expect(screen.getAllByText('trellome')).toHaveLength(2);
   });
 
-  it('subscribes to live updates and unsubscribes on unmount', async () => {
-    const unsub = vi.fn();
-    (globalThis as any).window.fleet.onFleet = vi.fn().mockReturnValue(unsub);
-    const { unmount } = render(<FleetView />);
-    await waitFor(() => expect((globalThis as any).window.fleet.onFleet).toHaveBeenCalled());
-    unmount();
-    expect(unsub).toHaveBeenCalled();
+  it('reports the pid to onSelect when an open card is chosen', async () => {
+    const onSelect = vi.fn();
+    render(<FleetView payload={payload([o({ pid:1, project:'trellome' })])} error={null} onSelect={onSelect} />);
+    fireEvent.click(screen.getByText('trellome'));
+    expect(onSelect).toHaveBeenCalledWith(1);
   });
 
   it('shows a real empty message, not a blank panel, when nothing is open', async () => {
-    (globalThis as any).window.fleet.listFleet =
-      vi.fn().mockResolvedValue({ version:1, generatedAt:'t', openSessions:[] });
-    render(<FleetView />);
-    await waitFor(() => expect(screen.getByText(/No open sessions right now/i)).toBeTruthy());
+    render(<FleetView payload={payload([])} error={null} onSelect={() => {}} />);
+    expect(screen.getByText(/No open sessions right now/i)).toBeTruthy();
     expect(screen.getByText(/0 open/)).toBeTruthy();
   });
 
@@ -95,11 +101,9 @@ describe('FleetView', () => {
   // fetching. Expanding an empty History shows this INSIDE the section
   // instead.
   it('shows "No history yet" inside the expanded section when History is genuinely empty', async () => {
-    (globalThis as any).window.fleet.listFleet =
-      vi.fn().mockResolvedValue({ version:1, generatedAt:'t', openSessions:[] });
     (globalThis as any).window.fleet.listHistory = pagedHistory([]);
-    render(<FleetView />);
-    await waitFor(() => expect(screen.getByText(/No open sessions right now/i)).toBeTruthy());
+    render(<FleetView payload={payload([])} error={null} onSelect={() => {}} />);
+    expect(screen.getByText(/No open sessions right now/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name:/History/i }));
     await waitFor(() => expect(screen.getByText(/No history yet/i)).toBeTruthy());
   });
@@ -108,32 +112,27 @@ describe('FleetView', () => {
   // a brief window, but spec S7.1a's "never lost" promise has to hold from
   // the moment a process starts, not from its first indexed event.
   it('shows an open session even when nothing has been indexed to transcripts yet', async () => {
-    (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', openSessions:[o({ pid:9, project:'brandnew' })],
-    });
-    render(<FleetView />);
-    await waitFor(() => expect(screen.getByText('brandnew')).toBeTruthy());
+    render(<FleetView payload={payload([o({ pid:9, project:'brandnew' })])} error={null} onSelect={() => {}} />);
+    expect(screen.getByText('brandnew')).toBeTruthy();
   });
 
   it('separates history below a divider heading rather than hiding it', async () => {
-    render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
+    render(<FleetView payload={payload([])} error={null} onSelect={() => {}} />);
+    expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy();
   });
 
   // David's correction goes further than the original brief: nothing
   // history-related is computed or sent until History is actually
   // expanded -- not even a count. The heading shows no number until then.
   it('shows no history count until History has actually been expanded and fetched', async () => {
-    render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
+    render(<FleetView payload={payload([])} error={null} onSelect={() => {}} />);
     const heading = screen.getByRole('heading', { name:/History/i });
     expect(heading.textContent?.trim()).toBe('History');
     expect((globalThis as any).window.fleet.listHistory).not.toHaveBeenCalled();
   });
 
   it('fetches history only once, with offset 0, the instant History is expanded', async () => {
-    render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
+    render(<FleetView payload={payload([])} error={null} onSelect={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name:/History/i }));
     await waitFor(() => expect((globalThis as any).window.fleet.listHistory).toHaveBeenCalledTimes(1));
     expect((globalThis as any).window.fleet.listHistory).toHaveBeenCalledWith(0, 60);
@@ -143,32 +142,38 @@ describe('FleetView', () => {
   // lifecycle 'active' or 'disconnected', last-known working or idle --
   // every transcript session shows there once expanded and fetched.
   it('does not silently drop a disconnected session whose last known activity was working', async () => {
-    (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', openSessions:[],
-    });
     (globalThis as any).window.fleet.listHistory = pagedHistory(
       [s({ sessionId:'g', project:'ghostproj', lifecycle:'disconnected', activity:'working', stale:true })]);
-    render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
+    render(<FleetView payload={payload([])} error={null} onSelect={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name:/History/i }));
     await waitFor(() => expect(screen.getByText('ghostproj')).toBeTruthy());
   });
 
+  // FleetView still guards window.fleet itself (it calls killSession/
+  // revealSession/listHistory on it directly) -- this check runs even when
+  // an `error` prop is also set, and takes priority: the specific preload
+  // message, not the generic "index could not be loaded" text built from
+  // whatever error string useFleet produced for the same underlying cause.
   it('shows a specific message when the preload did not load, instead of throwing', async () => {
     delete (globalThis as any).window.fleet;
-    render(<FleetView />);
+    render(<FleetView payload={null} error="bridge unavailable" onSelect={() => {}} />);
     expect(screen.getByText(/preload script did not load/i)).toBeTruthy();
+    expect(screen.queryByText(/bridge unavailable/i)).toBeNull();
   });
 
   it('shows the error instead of loading forever when the index fails to load', async () => {
-    // The realistic case today: main has no 'fleet:list' handler registered
-    // yet (Task 11), so ipcRenderer.invoke rejects rather than hanging.
-    (globalThis as any).window.fleet.listFleet =
-      vi.fn().mockRejectedValue(new Error("No handler registered for 'fleet:list'"));
-    render(<FleetView />);
-    await waitFor(() => expect(
-      screen.getByText(/No handler registered for 'fleet:list'/)).toBeTruthy());
+    // The error prop is exactly what useFleet.ts now produces from a
+    // rejected fleet:list call (see tests/renderer/useFleet.test.tsx) --
+    // FleetView's own job is just to render it instead of hanging on
+    // "Reading the index...".
+    render(<FleetView payload={null} error="No handler registered for 'fleet:list'" onSelect={() => {}} />);
+    expect(screen.getByText(/No handler registered for 'fleet:list'/)).toBeTruthy();
     expect(screen.queryByText(/Reading the index/i)).toBeNull();
+  });
+
+  it('shows the loading message while payload has not arrived yet and there is no error', async () => {
+    render(<FleetView payload={null} error={null} onSelect={() => {}} />);
+    expect(screen.getByText(/Reading the index/i)).toBeTruthy();
   });
 
   // fleet:history gets the exact same discipline fleet:list already has
@@ -179,8 +184,7 @@ describe('FleetView', () => {
   it('shows an error, not an empty-looking list, when the history fetch fails', async () => {
     (globalThis as any).window.fleet.listHistory =
       vi.fn().mockRejectedValue(new Error("No handler registered for 'fleet:history'"));
-    render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
+    render(<FleetView payload={payload([])} error={null} onSelect={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name:/History/i }));
     await waitFor(() => expect(
       screen.getByText(/No handler registered for 'fleet:history'/)).toBeTruthy());
@@ -193,8 +197,7 @@ describe('FleetView', () => {
     // hidden with CSS would still satisfy a text-content check, so this
     // asserts directly against the DOM node count inside the history group
     // wrapper rather than against anything a stylesheet could fake.
-    const { container } = render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
+    const { container } = render(<FleetView payload={payload([])} error={null} onSelect={() => {}} />);
     const group = container.querySelector('#history-group')!;
     expect(group).toBeTruthy();
     expect(group.querySelectorAll('[role="button"]').length).toBe(0);
@@ -226,13 +229,9 @@ describe('FleetView', () => {
   // (offset 0, then 60, then 120 -- never re-fetching offset 0).
   it('fetches history a page at a time, via "Show more", with the right offset each time', async () => {
     const corpus = Array.from({ length:130 }, (_, i) => s({ sessionId:`idle-${i}`, project:`idleproj${i}` }));
-    (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-      version:1, generatedAt:'t', openSessions:[],
-    });
     const listHistory = pagedHistory(corpus);
     (globalThis as any).window.fleet.listHistory = listHistory;
-    const { container } = render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
+    const { container } = render(<FleetView payload={payload([])} error={null} onSelect={() => {}} />);
     const group = container.querySelector('#history-group')!;
 
     fireEvent.click(screen.getByRole('button', { name:/History/i }));
@@ -259,8 +258,7 @@ describe('FleetView', () => {
   });
 
   it('exposes the history group as a keyboard-operable disclosure that announces its state', async () => {
-    render(<FleetView />);
-    await waitFor(() => expect(screen.getByRole('heading', { name:/History/i })).toBeTruthy());
+    render(<FleetView payload={payload([])} error={null} onSelect={() => {}} />);
     const toggle = screen.getByRole('button', { name:/History/i });
 
     // A real <button> element (not a div with a click handler) is what
@@ -291,13 +289,10 @@ describe('FleetView', () => {
   // one should get a card no matter when its transcript was last written."
   describe('Open sessions', () => {
     it('shows every open session immediately -- no click needed, unlike History', async () => {
-      (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', openSessions:[
-          o({ pid:1, project:'one' }), o({ pid:2, project:'two' }), o({ pid:3, project:'three' }),
-        ],
-      });
-      const { container } = render(<FleetView />);
-      await waitFor(() => expect(screen.getByText('one')).toBeTruthy());
+      const { container } = render(<FleetView payload={payload([
+        o({ pid:1, project:'one' }), o({ pid:2, project:'two' }), o({ pid:3, project:'three' }),
+      ])} error={null} onSelect={() => {}} />);
+      expect(screen.getByText('one')).toBeTruthy();
       expect(screen.getByText('two')).toBeTruthy();
       expect(screen.getByText('three')).toBeTruthy();
       // Not inside the collapsed history group.
@@ -307,22 +302,15 @@ describe('FleetView', () => {
     // A session opened nine days ago and never touched since is still
     // open -- transcript recency (History) plays no part in this list.
     it('shows an open session that has no matching transcript session at all', async () => {
-      (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t',
-        openSessions:[o({ pid:7, project:'orphaned', match:'unknown', sessionId:null })],
-      });
-      render(<FleetView />);
-      await waitFor(() => expect(screen.getByText('orphaned')).toBeTruthy());
+      render(<FleetView payload={payload(
+        [o({ pid:7, project:'orphaned', match:'unknown', sessionId:null })])} error={null} onSelect={() => {}} />);
+      expect(screen.getByText('orphaned')).toBeTruthy();
     });
 
     it('counts open sessions in the "N open" chip', async () => {
-      (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', openSessions:[
-          o({ pid:1, project:'one' }), o({ pid:2, project:'two' }),
-        ],
-      });
-      render(<FleetView />);
-      await waitFor(() => expect(screen.getByText(/2 open/)).toBeTruthy());
+      render(<FleetView payload={payload(
+        [o({ pid:1, project:'one' }), o({ pid:2, project:'two' })])} error={null} onSelect={() => {}} />);
+      expect(screen.getByText(/2 open/)).toBeTruthy();
     });
 
     it('counts only open sessions blocked on the user in the "need you" chip', async () => {
@@ -330,25 +318,19 @@ describe('FleetView', () => {
       // one unknown state -- counts diverge under any predicate that
       // confuses "blocked" with "working" or "known", so this pins the
       // exact set, not just a count that could coincidentally match.
-      (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', openSessions:[
-          o({ pid:1, project:'blocked-perm', activity:'waiting_permission' }),
-          o({ pid:2, project:'blocked-input', activity:'waiting_input' }),
-          o({ pid:3, project:'working', activity:'working' }),
-          o({ pid:4, project:'unknown-state', activity:null }),
-        ],
-      });
-      render(<FleetView />);
-      await waitFor(() => expect(screen.getByText(/4 open/)).toBeTruthy());
+      render(<FleetView payload={payload([
+        o({ pid:1, project:'blocked-perm', activity:'waiting_permission' }),
+        o({ pid:2, project:'blocked-input', activity:'waiting_input' }),
+        o({ pid:3, project:'working', activity:'working' }),
+        o({ pid:4, project:'unknown-state', activity:null }),
+      ])} error={null} onSelect={() => {}} />);
+      expect(screen.getByText(/4 open/)).toBeTruthy();
       expect(screen.getByText(/2 need you/)).toBeTruthy();
     });
 
     it('shows no "need you" chip when nothing is blocked', async () => {
-      (globalThis as any).window.fleet.listFleet = vi.fn().mockResolvedValue({
-        version:1, generatedAt:'t', openSessions:[o({ pid:1, project:'one' })],
-      });
-      render(<FleetView />);
-      await waitFor(() => expect(screen.getByText(/1 open/)).toBeTruthy());
+      render(<FleetView payload={payload([o({ pid:1, project:'one' })])} error={null} onSelect={() => {}} />);
+      expect(screen.getByText(/1 open/)).toBeTruthy();
       expect(screen.queryByText(/need you/)).toBeNull();
     });
   });

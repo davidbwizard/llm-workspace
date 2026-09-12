@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { FleetView } from './components/FleetView.tsx';
+import { useFleet } from './state/useFleet.ts';
 
 interface ErrorBoundaryState { error: Error | null; componentStack: string | null }
 
@@ -62,6 +63,17 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
   }
 }
 
+// Interim wiring for Task 7's hoist: useFleet() is now the one subscription
+// to fleet:list/fleet:update, and FleetView is just its first consumer. The
+// rail/pane split that actually uses `selection` (SessionRail,
+// ConversationView, ReplyPopover) is Task 12's MainPane, not built yet --
+// until then FleetView keeps rendering the full grid and `selection` sits
+// unused here, same as it would on a Game view before Game exists.
 export function App() {
-  return <main className="shell"><ErrorBoundary><FleetView /></ErrorBoundary></main>;
+  const { payload, error, select } = useFleet();
+  return (
+    <main className="shell">
+      <ErrorBoundary><FleetView payload={payload} error={error} onSelect={select} /></ErrorBoundary>
+    </main>
+  );
 }
