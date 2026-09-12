@@ -9,6 +9,7 @@ import {
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry } from '../../src/main/sessions.ts';
 import { newSession, type TmuxResult } from '../../src/main/tmux.ts';
+import { COALESCE_MS } from '../../src/main/stream.ts';
 
 /** Mirrors ipc.ts's own (private) fifoPathFor exactly -- reimplemented
  *  here, not imported, so these tests can check the real path on disk
@@ -326,6 +327,21 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
   // calls. Without a try/finally around it, none of the cleanup after it
   // (pipe-pane stop, stream destroy, fifo unlink) would ever run, leaking
   // all three every time a detach races a window closing.
+  //
+  // Flake, found in the whole-branch review: this used to rely on a 5ms
+  // sleep landing before the coalescer's own internal 16ms auto-flush
+  // (stream.ts's COALESCE_MS) fired -- a real race against a real timer,
+  // not a fixed ordering. On a contended run the auto-flush sometimes won,
+  // drained the buffer itself, and left nothing for detachTerminal's own
+  // flushNow to flush -- so it returned early without ever calling
+  // webContents.send, and the "throws" assertion failed. Reproduced 1 run
+  // in 6 on an otherwise idle machine; a bigger sleep would only have
+  // improved the odds, not removed the race, and this is specifically an
+  // error-path test, where a flake does the most damage. Fixed by removing
+  // the competing timer rather than outrunning it: `schedule: () => {}`
+  // makes the coalescer's own auto-flush arm and then never actually fire,
+  // so detachTerminal's explicit flushNow is the ONLY thing that can ever
+  // flush the buffer -- deterministic, not merely more likely.
   it('still stops the pipe, destroys the stream, and unlinks the fifo when flushNow throws', async () => {
     killTestSession();
     const created = newSession(TEST_SESSION, process.cwd(), 'bash', 80, 24);
@@ -338,21 +354,26 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
       webContents: { send: () => { throw new Error('window already destroyed'); } },
     } as unknown as Parameters<typeof attachTerminal>[3];
 
-    const result = attachTerminal(TEST_PID, 80, 24, poisonedWin);
+    // Never actually schedules the coalescer's auto-flush -- see the test's
+    // own doc comment above. arm() still runs (buffer.length stays > 0
+    // until something flushes it), it just never gets a chance to fire.
+    const result = attachTerminal(TEST_PID, 80, 24, poisonedWin, { schedule: () => {} });
     expect(result.status).toBe('attached');
 
     const fifoPath = fifoPathForTest(TEST_SESSION);
     expect(existsSync(fifoPath)).toBe(true);
 
-    // Real bytes, then a short wait: long enough for the fifo to actually
-    // deliver them into the coalescer's buffer (local fifo latency is well
-    // under a millisecond), short enough that the coalescer's own internal
-    // 16ms auto-flush (stream.ts's COALESCE_MS) has not fired yet -- so
-    // detachTerminal's own explicit flushNow() below is what first tries,
-    // and fails, to emit.
+    // Real bytes, then a wait DELIBERATELY LONGER than the coalescer's own
+    // COALESCE_MS -- the opposite of the old 5ms sleep, which only worked
+    // by usually finishing before COALESCE_MS did. Waiting past it instead
+    // makes this test PROVE the auto-flush cannot fire, rather than merely
+    // hoping it hasn't yet: if `schedule` above were ever ignored (the
+    // mutation this margin exists to catch), the real setTimeout(16ms)
+    // would fire well within this wait, drain the buffer itself, and this
+    // test would fail every single time -- not occasionally.
     execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, '-l', 'echo PENDING']);
     execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, 'Enter']);
-    await delay(5);
+    await delay(COALESCE_MS * 3);
 
     // The throw propagates -- this fix is about cleanup running regardless,
     // not about swallowing the error.

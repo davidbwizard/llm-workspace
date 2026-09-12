@@ -716,6 +716,15 @@ type AttachDeps = {
   resize?: TmuxExec;
   capture?: TmuxExec;
   pipe?: TmuxExec;
+  /** Threaded straight through to makeCoalescer's own injectable `schedule`
+   *  (src/main/stream.ts) -- undefined here means undefined there, which
+   *  falls back to its real `setTimeout(fn, COALESCE_MS)` default, so this
+   *  changes nothing for the one production caller (session:attach, which
+   *  never passes it). Exists so a test asserting on detachTerminal's own
+   *  explicit flushNow can remove the coalescer's internal auto-flush as a
+   *  competing timer entirely, rather than racing it with a sleep -- see
+   *  tests/main/stream-bridge.test.ts's "flushNow throws" test. */
+  schedule?: (fn: () => void) => void;
 };
 
 /** session:attach. Resize first -- there is no attached tmux client for a
@@ -796,7 +805,7 @@ export function attachTerminal(
   const stream = createReadStream(fifoPath);
   const coalescer = makeCoalescer(pid, (payload: TerminalDataPayload) => {
     if (!win.isDestroyed()) win.webContents.send('terminal:data', payload);
-  });
+  }, deps.schedule);
   stream.on('data', chunk => coalescer.push(chunk.toString('utf8')));
   // A stream error (e.g. tmux tearing down the pipe from its side) should
   // not crash this process -- worst case the terminal goes quiet, and
