@@ -54,6 +54,14 @@
      Theme-independent, so declared once here and nowhere else. */
   --f-display-fx:"SOFT" 100, "WONK" 1;
   --r-lg:16px; --r-md:12px; --r-sm:9px;
+  /* Elevation for anything that floats above the surface it sits on --
+     a flat black shadow reads correctly against either palette (same as
+     --r-lg/--r-md/--r-sm above, theme-independent by nature, not merely
+     by omission). Value matches ReplyPopover.css's own pre-existing
+     `box-shadow:0 8px 20px #0009` exactly (0x99 = 60% alpha) -- not a new
+     depth, the one both SessionCard.css's hover lift and ReplyPopover's
+     own shadow already rendered before either had a token to share. */
+  --shadow-pop:0 8px 20px rgba(0,0,0,.6);
 }
 /* The light palette below is declared twice, verbatim: once here, guarded so
    an explicit dark choice wins over the OS setting, and again under

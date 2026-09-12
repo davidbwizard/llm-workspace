@@ -126,4 +126,22 @@ describe('theme tokens', () => {
   it('disables transitions under reduced motion', () => {
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
   });
+
+  // Fix-wave item 4: ReplyPopover.css and SessionCard.css each hardcoded
+  // their own raw shadow hex against the "existing tokens only" constraint
+  // -- one shared token, declared once (shadows read correctly against
+  // either palette, same as --r-lg/--r-md/--r-sm), used in both places.
+  it('gives elevation its own token, used by both the popover and the card hover lift instead of a hardcoded shadow', () => {
+    const bare = css.slice(0, css.search(/@media|:root\[data-theme/));
+    expect(parseTokens(bare)).toHaveProperty('--shadow-pop');
+
+    const popover = readFileSync('src/renderer/components/ReplyPopover.css', 'utf8');
+    const card = readFileSync('src/renderer/components/SessionCard.css', 'utf8');
+    expect(popover).toMatch(/box-shadow:\s*var\(--shadow-pop\)/);
+    expect(card).toMatch(/box-shadow:\s*var\(--shadow-pop\)/);
+    // Not just present somewhere alongside the old value -- the raw
+    // hardcoded shadow each file used to carry must actually be gone.
+    expect(popover).not.toContain('#0009');
+    expect(card).not.toContain('rgba(0,0,0,.22)');
+  });
 });
