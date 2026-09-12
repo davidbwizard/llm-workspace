@@ -5,7 +5,7 @@
 // scope -- a test that imports and calls registerIpc directly will throw.
 import { app, ipcMain, BrowserWindow } from 'electron';
 import { execFileSync } from 'node:child_process';
-import { createReadStream, mkdirSync, rmSync, type ReadStream } from 'node:fs';
+import { createReadStream, mkdirSync, rmSync, chmodSync, type ReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Db } from '../store/db.ts';
@@ -713,13 +713,33 @@ export function attachTerminal(
   const backlog = capturePane(name, 2000, deps.capture);
 
   const fifoPath = fifoPathFor(name);
-  mkdirSync(dirname(fifoPath), { recursive: true });
+  const fifoDir = dirname(fifoPath);
+  // 0o700/0o600: this fifo carries raw agent terminal output -- commands,
+  // file contents, whatever the agent prints -- and os.tmpdir() is safe
+  // from other local users ONLY because macOS's per-user temp dir is mode
+  // 700 and blocks traversal. That assumption breaks the moment TMPDIR is
+  // unset and os.tmpdir() falls back to world-writable /tmp (plausible
+  // under some launchers, under sudo, or a future non-macOS port); a
+  // world-traversable directory with a 644 fifo under it is full
+  // disclosure to any local user. `mode` on mkdirSync is itself
+  // umask-masked (and mkfifo has no reliable -m either), so both are
+  // followed by an explicit chmodSync of the REAL, post-creation path --
+  // never trusted from the creation call's own argument.
+  //
+  // chmodSync runs even when the directory already existed (mkdirSync's
+  // `mode` only applies to a directory it actually creates, never one
+  // already there) -- otherwise a directory left over from a build of this
+  // app that predates this hardening would stay at its old, weaker mode
+  // forever, silently keeping the exact gap this fix exists to close.
+  mkdirSync(fifoDir, { recursive: true, mode: 0o700 });
+  chmodSync(fifoDir, 0o700);
   // A fifo left behind by a crashed previous run would make mkfifo fail
   // with EEXIST. Safe to clear unconditionally: the path is per-session and
   // `attachments` has no entry for this pid (checked above), so nothing in
   // this process can currently be reading it.
   try { rmSync(fifoPath, { force: true }); } catch { /* not there -- fine */ }
   execFileSync('mkfifo', [fifoPath]);
+  chmodSync(fifoPath, 0o600);
 
   // Opening a fifo for read blocks until a writer opens the other end, so
   // the read side has to exist before pipePane below starts the writer --
@@ -756,15 +776,25 @@ export function detachTerminal(rawPid: unknown, deps: { pipe?: TmuxExec } = {}):
   if (!existing) return { status: 'detached' };
   attachments.delete(pid);
 
-  existing.coalescer.flushNow();
-  // Stop tmux's copy first, so its writer closes and this process's reader
-  // gets a clean EOF, rather than destroying the reader while tmux may
-  // still be mid-write. Safe even if the tmux session has already died --
-  // pipePane's exec just reports failure, which there is nothing useful to
-  // do with here (there is nothing left to detach from).
-  pipePane(existing.name, undefined, deps.pipe);
-  existing.stream.destroy();
-  try { rmSync(existing.fifoPath, { force: true }); } catch { /* already gone -- fine */ }
+  // flushNow's emit calls win.webContents.send (attachTerminal above) --
+  // if the window is already half-destroyed that can throw, and without
+  // this try/finally none of the cleanup below it would ever run, leaking
+  // the tmux pipe, the read stream and the fifo file. The pipe/stream/fifo
+  // cleanup does not depend on the flush having succeeded, so it belongs
+  // in finally, not after a call that might not return.
+  try {
+    existing.coalescer.flushNow();
+  } finally {
+    // Stop tmux's copy first, so its writer closes and this process's
+    // reader gets a clean EOF, rather than destroying the reader while
+    // tmux may still be mid-write. Safe even if the tmux session has
+    // already died -- pipePane's exec just reports failure, which there
+    // is nothing useful to do with here (there is nothing left to detach
+    // from).
+    pipePane(existing.name, undefined, deps.pipe);
+    existing.stream.destroy();
+    try { rmSync(existing.fifoPath, { force: true }); } catch { /* already gone -- fine */ }
+  }
   return { status: 'detached' };
 }
 

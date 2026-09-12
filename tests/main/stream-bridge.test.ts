@@ -1,11 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { statSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import {
   attachTerminal, detachTerminal, detachAllTerminals, resizeTerminal, sendRawFor,
   type AttachResult,
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry } from '../../src/main/sessions.ts';
 import { newSession, type TmuxResult } from '../../src/main/tmux.ts';
+
+/** Mirrors ipc.ts's own (private) fifoPathFor exactly -- reimplemented
+ *  here, not imported, so these tests can check the real path on disk
+ *  without exporting an internal solely for that purpose. */
+function fifoPathForTest(name: string): string {
+  return join(tmpdir(), 'llm-workspace-terminal-pipes', `${name}.fifo`);
+}
 
 /** Same shape as tmux.ts's own (private) defaultExec -- reimplemented here,
  *  not imported, so tests can wrap it in a call-counter while still
@@ -287,5 +297,71 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
 
     expect(counts.resize).toBe(1);
     expect(counts.pipe).toBe(1);
+  });
+
+  // Fix round 1, finding 1: the fifo carries raw agent terminal output, so
+  // its directory and the fifo itself must not be group/world accessible.
+  // Asserted via statSync on the REAL, post-creation path -- not the mode
+  // argument passed to mkdirSync/mkfifo, which the reviewer noted is itself
+  // umask-masked and therefore not proof of anything on its own.
+  it('creates the pipe directory 0o700 and the fifo itself 0o600', () => {
+    killTestSession();
+    const created = newSession(TEST_SESSION, process.cwd(), 'bash', 80, 24);
+    expect(created.ok).toBe(true);
+
+    registerSession(TEST_PID, TEST_SESSION);
+    const result = attachTerminal(TEST_PID, 80, 24, fakeWin([]));
+    expect(result.status).toBe('attached');
+
+    const fifoPath = fifoPathForTest(TEST_SESSION);
+    const dirMode = statSync(dirname(fifoPath)).mode & 0o777;
+    const fifoMode = statSync(fifoPath).mode & 0o777;
+    expect(dirMode).toBe(0o700);
+    expect(fifoMode).toBe(0o600);
+  });
+
+  // Fix round 1, finding 2: detachTerminal's own explicit flushNow() call
+  // (below, not the coalescer's internal auto-flush) can throw if the
+  // window is already half-destroyed -- webContents.send is what emit
+  // calls. Without a try/finally around it, none of the cleanup after it
+  // (pipe-pane stop, stream destroy, fifo unlink) would ever run, leaking
+  // all three every time a detach races a window closing.
+  it('still stops the pipe, destroys the stream, and unlinks the fifo when flushNow throws', async () => {
+    killTestSession();
+    const created = newSession(TEST_SESSION, process.cwd(), 'bash', 80, 24);
+    expect(created.ok).toBe(true);
+    await delay(200);
+
+    registerSession(TEST_PID, TEST_SESSION);
+    const poisonedWin = {
+      isDestroyed: () => false,
+      webContents: { send: () => { throw new Error('window already destroyed'); } },
+    } as unknown as Parameters<typeof attachTerminal>[3];
+
+    const result = attachTerminal(TEST_PID, 80, 24, poisonedWin);
+    expect(result.status).toBe('attached');
+
+    const fifoPath = fifoPathForTest(TEST_SESSION);
+    expect(existsSync(fifoPath)).toBe(true);
+
+    // Real bytes, then a short wait: long enough for the fifo to actually
+    // deliver them into the coalescer's buffer (local fifo latency is well
+    // under a millisecond), short enough that the coalescer's own internal
+    // 16ms auto-flush (stream.ts's COALESCE_MS) has not fired yet -- so
+    // detachTerminal's own explicit flushNow() below is what first tries,
+    // and fails, to emit.
+    execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, '-l', 'echo PENDING']);
+    execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, 'Enter']);
+    await delay(5);
+
+    // The throw propagates -- this fix is about cleanup running regardless,
+    // not about swallowing the error.
+    expect(() => detachTerminal(TEST_PID)).toThrow('window already destroyed');
+
+    // Cleanup ran anyway: the fifo is gone, and a second detach (the
+    // attachment was already removed from the map before flushNow ran) is
+    // a clean no-op, not a repeat of the same throw.
+    expect(existsSync(fifoPath)).toBe(false);
+    expect(detachTerminal(TEST_PID)).toEqual({ status: 'detached' });
   });
 });
