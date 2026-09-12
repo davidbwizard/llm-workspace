@@ -72,7 +72,7 @@ describe('SessionRail', () => {
   it('opens a reply popover for the waiting card, keyed to its pid and prompt', async () => {
     render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     expect(screen.queryByRole('dialog')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
+    fireEvent.click(screen.getByRole('button', { name: /reply to game-viewer, pid 2/i }));
     const dialog = screen.getByRole('dialog', { name: /reply to session 2/i });
     // Scoped to the dialog: OpenSessionCard's own .said already renders this
     // same lastProse text once, so a page-wide text search would match both.
@@ -85,6 +85,19 @@ describe('SessionRail', () => {
 
   it('offers no reply trigger for a card that is not waiting on you', () => {
     render(<SessionRail sessions={[sessions[0]!]} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
-    expect(screen.queryByRole('button', { name: 'Reply' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /reply/i })).toBeNull();
+  });
+
+  // Fix-wave item 6: a bare "Reply" button, unlike its Close neighbour
+  // (OpenSessionCard.tsx's `Close, pid ${pid}`), gave two waiting sessions
+  // in the rail two indistinguishable buttons in the accessibility tree.
+  it('gives two waiting sessions two distinguishable Reply buttons, not two identical ones', () => {
+    const both = [
+      { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'waiting_permission', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+    ] as never[];
+    render(<SessionRail sessions={both} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
+    expect(screen.getByRole('button', { name: /reply to llm-workspace, pid 1/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /reply to game-viewer, pid 2/i })).toBeTruthy();
   });
 });

@@ -46,7 +46,15 @@ export function SessionRail({ sessions, selectedPid, onSelect, onKill, onReattac
             <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill}
               onReattach={onReattach} onResume={onResume} />
             {waiting && (
-              <button type="button" className="railreply" onClick={() => setReplyPid(s.pid)}>
+              // Named with project and pid, matching the neighbouring
+              // Close button's own convention (OpenSessionCard.tsx's
+              // `Close, pid ${pid}`) -- with two waiting sessions in the
+              // rail, a bare "Reply" would put two indistinguishable
+              // buttons in the accessibility tree, defeating the rail's
+              // whole point of telling sessions apart.
+              <button type="button" className="railreply"
+                aria-label={`Reply to ${s.project}, pid ${s.pid}`}
+                onClick={() => setReplyPid(s.pid)}>
                 Reply
               </button>
             )}
