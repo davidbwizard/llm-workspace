@@ -1010,11 +1010,18 @@ export function registerIpc(
     return result;
   });
   // session:resume -- the recovery path for reattach's own
-  // 'killed_not_relaunched' state (src/main/launch.ts's doc comment): the
-  // renderer echoes back the sessionId/cwd THAT SAME failed reattach handed
-  // it, never a value it invented, so this is not a new way for it to name
-  // an arbitrary session -- resumeSession still validates the id's shape
-  // independently before it ever reaches tmux.
+  // 'killed_not_relaunched' state (src/main/launch.ts's doc comment).
+  // Whole-branch review, item 3: this comment used to justify safety by
+  // saying the renderer "only echoes back" a prior value -- that is not
+  // enforced anywhere. contextBridge exposes `resume` to the entire
+  // renderer scope, callable with any arguments; nothing here can tell a
+  // value the renderer actually got from an earlier result apart from one
+  // it invented. What IS enforced, in order below: sessionId must match
+  // resumeSession's own SESSION_ID_SAFE shape (checked again inside
+  // resumeSession itself, not only here) before it is ever interpolated
+  // into the shell string tmux's new-session command takes; cwd must be an
+  // absolute path; and the provider is hardcoded to 'claude' in
+  // resumeSession, never taken from the renderer at all.
   ipcMain.handle('session:resume', (_event, sessionId: unknown, cwd: unknown, cols: unknown, rows: unknown) => {
     if (typeof sessionId !== 'string' || sessionId === '') {
       return { status: 'failed', reason: 'invalid session id' };

@@ -52,9 +52,14 @@ const api = {
   // Relaunches a session from its own id/cwd, with no pid and no kill step
   // -- the only way to retry after 'killed_not_relaunched', since the old
   // pid is already gone from every discovery cache by the time that state
-  // is reachable. sessionId/cwd here are always values the renderer got
-  // FROM a previous launch/reattach/resume result, never invented locally;
-  // main still validates the id's shape independently (src/main/launch.ts).
+  // is reachable. contextBridge exposes this to the whole renderer scope,
+  // callable with any string, not only the sessionId/cwd a prior
+  // reattach/resume actually returned -- this is not a trust boundary the
+  // preload can narrow by typing the arguments as `string` here, same as
+  // every other channel in this file. What actually constrains sessionId
+  // is main's own SESSION_ID_SAFE check (src/main/launch.ts) before it is
+  // ever interpolated into a command; cwd is checked for an absolute path;
+  // the provider is hardcoded to 'claude', never taken from the renderer.
   resume: (sessionId: string, cwd: string, cols: number, rows: number) =>
     ipcRenderer.invoke('session:resume', sessionId, cwd, cols, rows),
   onTerminalData: (cb: (payload: unknown) => void) => {
