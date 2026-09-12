@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { launchSession, reattachSession, resumeSession } from '../../src/main/launch.ts';
-import { clearRegistry, tmuxNameForPid } from '../../src/main/sessions.ts';
+import { clearRegistry, tmuxNameForPid, registerSession } from '../../src/main/sessions.ts';
+import { killSession } from '../../src/main/ipc.ts';
+import type { ExecFn } from '../../src/discovery/live.ts';
 
 beforeEach(() => clearRegistry());
 
@@ -184,6 +186,31 @@ describe('reattachSession', () => {
     expect(r).toEqual({ status: 'launched', pid: 9001 });
     expect(calls[0]).toContain('claude --resume abc-123');
     expect(calls[0]).toContain('/a/proj');
+  });
+
+  // Whole-branch review, item 1: reattachSession's own kill step is always
+  // the REAL killSession in production (src/main/ipc.ts wires `kill:
+  // killSession`) -- every other test above mocks `kill`, which proves the
+  // atomicity contract but can't prove the registry side effect killSession
+  // itself now has. This uses the real function (with safe injected
+  // discovery/signal fakes, never a real process) to prove the OLD pid's
+  // registry entry is actually gone once reattach's kill step runs, not
+  // merely that the kill was reported as successful.
+  it('clears the old pid from the tmux registry once reattach kills it, through the real killSession', async () => {
+    registerSession(4821, 'llmws-claude-old');
+    const noAncestors = async () => '';
+    const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4821\n' : '');
+    const realKill = (pid: number) => killSession(pid, { hop: noAncestors, exec, signal: vi.fn() });
+
+    const r = await reattachSession(4821, 120, 40, {
+      kill: realKill,
+      resolveSession: () => ({ sessionId: 'abc-123', provider: 'claude', cwd: '/a/proj' }),
+      exec: () => ({ ok: true, stdout: '' }),
+      panePid: () => 9001,
+    });
+
+    expect(r).toEqual({ status: 'launched', pid: 9001 });
+    expect(tmuxNameForPid(4821)).toBeNull();
   });
 });
 

@@ -10,7 +10,7 @@ import {
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
   killSession, ownProcessAncestry, revealSession, sendKeysFor,
 } from '../../src/main/ipc.ts';
-import { registerSession, clearRegistry } from '../../src/main/sessions.ts';
+import { registerSession, clearRegistry, tmuxNameForPid } from '../../src/main/sessions.ts';
 import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { Blocker } from '../../src/store/signals.ts';
@@ -681,6 +681,51 @@ describe('killSession', () => {
     const signal = vi.fn(() => { throw eperm; });
     expect(await killSession(4242, { hop: noAncestors, exec, signal }))
       .toEqual({ status: 'refused', reason: 'signal_failed' });
+  });
+
+  // Whole-branch review, item 1: forgetSession had zero production callers
+  // -- killSession never removed a pid it just ended from the tmux
+  // registry, so a long-running app doing many launches leaked one entry
+  // per pid forever. Proven here by actually registering the pid first and
+  // checking the registry afterwards -- not merely that the kill reported
+  // success, which would pass even with the registry entry left behind.
+  it('clears the tmux registry entry for a pid it just killed', async () => {
+    clearRegistry();
+    try {
+      registerSession(4242, 'llmws-claude-abc');
+      const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4242\n' : '');
+      expect(await killSession(4242, { hop: noAncestors, exec, signal: vi.fn() })).toEqual({ status: 'killed' });
+      expect(tmuxNameForPid(4242)).toBeNull();
+    } finally {
+      clearRegistry();
+    }
+  });
+
+  it('clears the tmux registry entry even when the process was already gone', async () => {
+    clearRegistry();
+    try {
+      registerSession(4242, 'llmws-claude-abc');
+      const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4242\n' : '');
+      const esrch = Object.assign(new Error('No such process'), { code: 'ESRCH' });
+      const signal = vi.fn(() => { throw esrch; });
+      expect(await killSession(4242, { hop: noAncestors, exec, signal })).toEqual({ status: 'already_gone' });
+      expect(tmuxNameForPid(4242)).toBeNull();
+    } finally {
+      clearRegistry();
+    }
+  });
+
+  it('leaves the registry alone when the kill is refused -- nothing was actually ended', async () => {
+    clearRegistry();
+    try {
+      registerSession(4242, 'llmws-claude-abc');
+      const exec: ExecFn = async () => ''; // sweep finds nothing -- not_discovered
+      expect(await killSession(4242, { hop: noAncestors, exec, signal: vi.fn() }))
+        .toEqual({ status: 'refused', reason: 'not_discovered' });
+      expect(tmuxNameForPid(4242)).toBe('llmws-claude-abc');
+    } finally {
+      clearRegistry();
+    }
   });
 });
 

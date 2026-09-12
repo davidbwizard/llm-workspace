@@ -19,7 +19,7 @@ import {
 } from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
-import { resolveLiveTmux, tmuxNameForPid } from './sessions.ts';
+import { resolveLiveTmux, tmuxNameForPid, forgetSession } from './sessions.ts';
 import {
   sendLiteral, sendKeyName, capturePane, resizeWindow, pipePane, type TmuxResult, type TmuxExec,
 } from './tmux.ts';
@@ -519,6 +519,19 @@ export async function ownProcessAncestry(
  *     that ignores SIGTERM simply stays alive and its card stays on
  *     screen -- deciding to escalate is left to the person looking at it,
  *     not automated here.
+ *  6. Either way the process turns out to be gone (killed, or already_gone
+ *     -- found the process was already gone when the signal was sent),
+ *     forgetSession(pid) below clears the tmux registry entry, if this pid
+ *     ever had one. Whole-branch review, item 1: killSession/reattachSession
+ *     had no production caller of forgetSession at all, so a long-running
+ *     app doing many launches/reattaches leaked one entry per pid forever.
+ *     Not exploitable on its own -- resolveLiveTmux re-verifies every
+ *     lookup against a real `tmux has-session` before anything acts on it,
+ *     so a stale entry is inert -- but it is exactly the "populated thing
+ *     nothing acts on" pattern the phase-4 inherited-risks doc warns about.
+ *     Safe to call unconditionally: forgetSession on a pid with no entry
+ *     (the ordinary case -- most killed pids were never tmux-backed) is a
+ *     no-op delete.
  *
  *  `exec`/`hop`/`signal` are all injectable (discovery/live.ts's ExecFn
  *  shape, and the two above) so this is fully testable -- including the
@@ -545,9 +558,13 @@ export async function killSession(rawPid: unknown, opts: {
   try {
     (opts.signal ?? defaultSignal)(pid, 'SIGTERM');
   } catch (err) {
-    if (isErrnoException(err) && err.code === 'ESRCH') return { status: 'already_gone' };
+    if (isErrnoException(err) && err.code === 'ESRCH') {
+      forgetSession(pid);
+      return { status: 'already_gone' };
+    }
     return { status: 'refused', reason: 'signal_failed' };
   }
+  forgetSession(pid);
   return { status: 'killed' };
 }
 
