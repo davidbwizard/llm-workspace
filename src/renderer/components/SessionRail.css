@@ -1,0 +1,8 @@
+/* src/renderer/components/SessionRail.css
+   Tokens only -- theme.css owns every colour. */
+.rail { display:flex; flex-direction:column; gap:6px; padding:8px;
+  width:180px; flex:none; overflow-y:auto;
+  background:var(--surface); }
+.rail.left  { border-right:1px solid var(--line); order:0; }
+.rail.right { border-left:1px solid var(--line); order:2; }
+.railitem.sel .card { border-color:var(--accent); background:var(--raised); }
