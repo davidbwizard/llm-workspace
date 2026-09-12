@@ -21,6 +21,27 @@ const api = {
     ipcRenderer.on('fleet:update', handler);
     return () => ipcRenderer.off('fleet:update', handler);
   },
+  // Free-form text from the renderer: the first channel of its kind here.
+  // Main sanitises and revalidates; the typing below narrows nothing.
+  sendKeys: (pid: number, text: string) => ipcRenderer.invoke('session:keys', pid, text),
+  // Raw keystrokes from the terminal widget itself -- arrow keys, Ctrl-C, the
+  // TUI menu navigation the reply box deliberately refuses. Separate channel
+  // from sendKeys precisely because the rules differ: this one MUST pass
+  // control bytes through, so it is only ever reachable from a focused
+  // TerminalView, never from the popover.
+  sendRaw: (pid: number, data: string) => ipcRenderer.invoke('session:raw', pid, data),
+  conversation: (sessionId: string) => ipcRenderer.invoke('session:conversation', sessionId),
+  attach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:attach', pid, cols, rows),
+  detach: (pid: number) => ipcRenderer.invoke('session:detach', pid),
+  resize: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:resize', pid, cols, rows),
+  launch: (provider: string, cwd: string, cols: number, rows: number) =>
+    ipcRenderer.invoke('session:launch', provider, cwd, cols, rows),
+  reattach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:reattach', pid, cols, rows),
+  onTerminalData: (cb: (payload: unknown) => void) => {
+    const handler = (_e: unknown, payload: unknown) => cb(payload);
+    ipcRenderer.on('terminal:data', handler);
+    return () => ipcRenderer.off('terminal:data', handler);
+  },
 };
 
 contextBridge.exposeInMainWorld('fleet', api);

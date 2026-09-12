@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sendLiteral, sendKeyName, hasSession, capturePane, TMUX_NAME } from '../../src/main/tmux.ts';
+import { sendLiteral, sendKeyName, hasSession, capturePane, TMUX_NAME, type KeyName } from '../../src/main/tmux.ts';
 
 function spy() {
   const calls: string[][] = [];
@@ -24,6 +24,18 @@ describe('tmux argv construction', () => {
     const s = spy();
     sendKeyName('llmws-claude-abc', 'Enter', s.exec);
     expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc', 'Enter']);
+  });
+
+  // The `KeyName` union stops this at compile time; this test proves the
+  // allowlist ALSO holds at runtime, for a caller reached through a
+  // boundary (e.g. IPC) that has already widened the type back to string.
+  it('refuses a key name outside the allowlist, even past the type', () => {
+    const s = spy();
+    // Cast deliberately: the KeyName union stops this at compile time for a
+    // typed caller, so proving the runtime guard requires bypassing it, the
+    // way a value arriving through an `unknown`-typed IPC boundary would.
+    expect(() => sendKeyName('llmws-claude-abc', 'Escape' as unknown as KeyName, s.exec)).toThrow();
+    expect(s.calls).toHaveLength(0);
   });
 
   it('targets exactly, never by prefix', () => {

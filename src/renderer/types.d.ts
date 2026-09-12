@@ -1,4 +1,6 @@
-import type { FleetListPayload, FleetHistoryPayload, KillResult } from '../main/ipc.ts';
+import type { FleetListPayload, FleetHistoryPayload, KillResult, KeysResult } from '../main/ipc.ts';
+import type { ConversationTurn } from '../store/conversation.ts';
+import type { TerminalDataPayload } from '../main/stream.ts';
 
 declare global {
   interface Window {
@@ -14,6 +16,23 @@ declare global {
       killSession: (pid: number) => Promise<KillResult>;
       revealSession: (pid: number) => Promise<RevealResult>;
       onFleet: (cb: (payload: FleetListPayload) => void) => () => void;
+      // Main sanitises and revalidates pid and text on every call; this
+      // typing narrows nothing at the trust boundary itself.
+      sendKeys: (pid: number, text: string) => Promise<KeysResult>;
+      conversation: (sessionId: string) => Promise<ConversationTurn[]>;
+      // attach/detach/resize/sendRaw/launch/reattach: the streaming and
+      // launch/reattach logic behind these lands in Tasks 10 and 13, which
+      // is what actually defines their result shapes. Left as `unknown`
+      // here rather than guessed at, so this task does not invent a
+      // contract those tasks then have to conform to (or silently diverge
+      // from).
+      attach: (pid: number, cols: number, rows: number) => Promise<unknown>;
+      detach: (pid: number) => Promise<unknown>;
+      resize: (pid: number, cols: number, rows: number) => Promise<unknown>;
+      sendRaw: (pid: number, data: string) => Promise<unknown>;
+      launch: (provider: string, cwd: string, cols: number, rows: number) => Promise<unknown>;
+      reattach: (pid: number, cols: number, rows: number) => Promise<unknown>;
+      onTerminalData: (cb: (payload: TerminalDataPayload) => void) => () => void;
     };
   }
 }

@@ -15,6 +15,10 @@ import {
   getCachedLiveProcesses, refreshLiveProcesses, execFileSoft, type ExecFn,
 } from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
+import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
+import { resolveLiveTmux, tmuxNameForPid } from './sessions.ts';
+import { sendLiteral, sendKeyName, capturePane, type TmuxResult } from './tmux.ts';
+import { conversationFor } from '../store/conversation.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -570,6 +574,49 @@ export async function revealSession(rawPid: unknown, opts: {
   return { status: 'revealed' };
 }
 
+export type KeysRefusalReason = 'not_tmux' | 'session_gone' | 'invalid_pid' | OutboundRefusal;
+export type KeysResult = { status: 'sent' } | { status: 'refused'; reason: KeysRefusalReason };
+
+type KeysDeps = {
+  has?: (n: string) => boolean;
+  send?: (args: string[]) => TmuxResult;
+  capture?: (args: string[]) => TmuxResult;
+};
+
+/** The renderer sends a pid and text, never a session name. Refusals are
+ *  returned, not thrown: the card has to be able to say WHY nothing happened,
+ *  and "not_tmux" is the ordinary answer for a session running in plain iTerm. */
+export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): KeysResult {
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
+    return { status: 'refused', reason: 'invalid_pid' };
+  }
+  // Sanitise BEFORE resolving, so malformed text never reaches tmux even
+  // momentarily, and the cheap check runs first.
+  const clean = sanitizeOutbound(raw);
+  if (!clean.ok) return { status: 'refused', reason: clean.reason };
+
+  // tmuxNameForPid distinguishes "never registered" (an ordinary iTerm
+  // session -- not_tmux) from "registered, but the tmux session has since
+  // died" (session_gone). resolveLiveTmux alone collapses both into null,
+  // and the reply card shows the user different text for each.
+  const known = tmuxNameForPid(pid);
+  if (known === null) return { status: 'refused', reason: 'not_tmux' };
+  const name = resolveLiveTmux(pid, { has: deps.has });
+  if (name === null) return { status: 'refused', reason: 'session_gone' };
+
+  // The session name resolving is not proof the pane is still there to
+  // receive anything -- re-check the pane itself, immediately before
+  // sending, rather than trusting a name that was live a moment ago.
+  const captured = capturePane(name, 1, deps.capture);
+  if (!captured.ok) return { status: 'refused', reason: 'session_gone' };
+
+  // Two calls, always. Text with -l; Enter as a key name our code chose.
+  // Concatenating them would let a reply of "Enter" become a keypress.
+  sendLiteral(name, clean.text, deps.send);
+  sendKeyName(name, 'Enter', deps.send);
+  return { status: 'sent' };
+}
+
 /** The complete set of channels main answers. Adding one means adding it to
  *  the preload's enumerated list as well; tests/main/ipc.test.ts asserts
  *  they match.
@@ -606,6 +653,27 @@ export function registerIpc(db: Db, onFleetList?: () => void, onSessionKill?: ()
     if (onSessionKill && result.status === 'killed') setImmediate(onSessionKill);
     return result;
   });
+  ipcMain.handle('session:conversation', (_event, sessionId: unknown) =>
+    typeof sessionId === 'string' ? conversationFor(db, sessionId) : []);
+  ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown) => sendKeysFor(pid, text));
+
+  // TEMPORARY: real logic for these six lands in Tasks 10 (attach/detach/
+  // resize/raw -- pipe-pane streaming) and 13 (launch/reattach). They are
+  // registered here, honestly refusing, only because this task's preload
+  // exposes the matching invoke() calls (so Task 10's TerminalView is
+  // typecheckable against Task 6's output alone) -- an exposed channel with
+  // no live handler is a real bug (ipcRenderer.invoke rejects at runtime
+  // with "no handler registered"), not just a lint nit, so a stub belongs
+  // here even though the behaviour behind it does not yet exist. Tasks 10
+  // and 13 must REPLACE these six lines' bodies in place, not add a
+  // second ipcMain.handle for the same channel -- Electron throws on
+  // double registration.
+  ipcMain.handle('session:attach', () => ({ status: 'refused', reason: 'not_implemented' }));
+  ipcMain.handle('session:detach', () => ({ status: 'refused', reason: 'not_implemented' }));
+  ipcMain.handle('session:resize', () => ({ status: 'refused', reason: 'not_implemented' }));
+  ipcMain.handle('session:raw', () => ({ status: 'refused', reason: 'not_implemented' }));
+  ipcMain.handle('session:launch', () => ({ status: 'failed', reason: 'not_implemented' }));
+  ipcMain.handle('session:reattach', () => ({ status: 'failed', reason: 'not_implemented' }));
 }
 
 /** Pushed on every watcher/spool/ingest/discovery change (src/main/index.ts).

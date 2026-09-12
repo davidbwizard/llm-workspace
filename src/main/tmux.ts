@@ -46,10 +46,24 @@ export function sendLiteral(name: string, text: string, exec: TmuxExec = default
   return exec(['send-keys', '-t', target(name), '-l', text]);
 }
 
+/** Only 'Enter' has a caller this phase -- do not pre-populate
+ *  Escape/Up/Down/Tab/C-c ahead of a real need. */
+export type KeyName = 'Enter';
+
+/** Runtime mirror of the KeyName union. The type alone is not a boundary:
+ *  an IPC handler receives `unknown` and widens it back to `string` before
+ *  this function ever sees it, so a caller reached through that path could
+ *  pass arbitrary text as `key` -- exactly the -l bypass sendLiteral exists
+ *  to prevent -- unless this list is also checked at runtime. */
+const ALLOWED_KEY_NAMES: readonly string[] = ['Enter'] as const satisfies readonly KeyName[];
+
 /** Deliberate control keys only, chosen by our code, never derived from
  *  user text. Kept in a separate call so text and Enter can never merge. */
-export function sendKeyName(name: string, key: string, exec: TmuxExec = defaultExec): TmuxResult {
+export function sendKeyName(name: string, key: KeyName, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
+  if (!ALLOWED_KEY_NAMES.includes(key)) {
+    throw new Error('refusing a key name this app did not allowlist');
+  }
   return exec(['send-keys', '-t', target(name), key]);
 }
 

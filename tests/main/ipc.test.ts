@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
@@ -8,8 +8,9 @@ import {
   sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
-  killSession, ownProcessAncestry, revealSession,
+  killSession, ownProcessAncestry, revealSession, sendKeysFor,
 } from '../../src/main/ipc.ts';
+import { registerSession, clearRegistry } from '../../src/main/sessions.ts';
 import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { Blocker } from '../../src/store/signals.ts';
@@ -734,5 +735,78 @@ describe('revealSession', () => {
       expect(result).toEqual({ status: 'refused', reason: 'not_discovered' });
       expect(open).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe('session:keys', () => {
+  beforeEach(() => clearRegistry());
+
+  it('refuses a pid with no tmux session -- the iTerm case', () => {
+    expect(sendKeysFor(4821, 'hello', { has: () => true, send: () => ({ ok: true, stdout: '' }) }))
+      .toEqual({ status: 'refused', reason: 'not_tmux' });
+  });
+
+  it('refuses when the session vanished between render and click', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    // capture is mocked to SUCCEED here, deliberately: without it, dropping
+    // the resolveLiveTmux() call (and falling back to plain `known`) still
+    // reaches the real, absent tmux binary at the capture-pane check below,
+    // which fails too and produces the same 'session_gone' -- a mutation
+    // that survives by accident. Mocking capture as healthy isolates what
+    // this test actually means to pin: resolveLiveTmux's own has() check.
+    expect(sendKeysFor(4821, 'hello', {
+      has: () => false,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: () => ({ ok: true, stdout: '' }),
+    })).toEqual({ status: 'refused', reason: 'session_gone' });
+  });
+
+  it('refuses multi-line text before it reaches tmux', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    let called = false;
+    const r = sendKeysFor(4821, 'a\nb', { has: () => true, send: () => { called = true; return { ok: true, stdout: '' }; } });
+    expect(r).toEqual({ status: 'refused', reason: 'contains_newline' });
+    expect(called).toBe(false);
+  });
+
+  it('sends text and Enter as two separate calls, text first, with -l', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'yes', {
+      has: () => true,
+      // The pane is confirmed live before anything is sent -- see the
+      // capture-pane test below for the refusal path this stands in for.
+      capture: () => ({ ok: true, stdout: '' }),
+      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc', '-l', 'yes']);
+    expect(calls[1]).toEqual(['send-keys', '-t', '=llmws-claude-abc', 'Enter']);
+  });
+
+  // spec §9: the session name resolving is not proof the pane is still
+  // there to receive anything -- re-verify with a real capture, immediately
+  // before sending, not just that the name exists.
+  it('refuses when the pane no longer looks like the session we think it is', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const r = sendKeysFor(4821, 'yes', {
+      has: () => true,
+      capture: () => ({ ok: false as const, error: 'no such pane' }),
+      send: () => ({ ok: true, stdout: '' }),
+    });
+    expect(r).toEqual({ status: 'refused', reason: 'session_gone' });
+  });
+});
+
+describe('terminal:data parity', () => {
+  // The parity test above only sees ipcMain.handle/ipcRenderer.invoke, so a
+  // push channel is invisible to it and ships unguarded otherwise.
+  it('every webContents.send channel has a matching ipcRenderer.on in preload', () => {
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
+    const preload = strip(readFileSync('src/preload/index.ts', 'utf8'));
+    const pushed = [...ipc.matchAll(/webContents\.send\('([^']+)'/g)].map(m => m[1]).sort();
+    const heard = [...preload.matchAll(/ipcRenderer\.on\('([^']+)'/g)].map(m => m[1]).sort();
+    expect(pushed).toEqual(heard);
   });
 });
