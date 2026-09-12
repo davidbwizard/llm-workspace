@@ -1,0 +1,9 @@
+/* src/renderer/components/ConversationView.css */
+.conv { padding:12px 14px; overflow-y:auto; flex:1; }
+.conv.empty, .conv.loading, .conv.unknown { color:var(--muted); }
+.turn { display:flex; gap:10px; margin-bottom:10px; }
+.turn .who { font-family:var(--f-mono); font-size:11px; color:var(--faint);
+  width:48px; flex:none; padding-top:2px; }
+.turn .said { margin:0; font-size:13px; line-height:1.5; color:var(--ink-2);
+  white-space:pre-wrap; }
+.turn.user .said { color:var(--ink); }
