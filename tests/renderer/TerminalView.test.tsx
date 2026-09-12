@@ -66,6 +66,22 @@ describe('TerminalView', () => {
     expect(writes).toContain('hello');
   });
 
+  // Fix-wave item 3: webglShouldThrow was declared and reset every
+  // beforeEach but never actually set true anywhere, so the WebGL-init-
+  // failure -> canvas/DOM-fallback branch (TerminalView.tsx's try/catch
+  // around `new WebglAddon()`) was never exercised by this suite at all.
+  // No GPU context in CI/most dev machines running headless is exactly
+  // when this branch is real, not hypothetical.
+  it('falls back to the canvas/DOM renderer without throwing when WebGL init fails', async () => {
+    webglShouldThrow = true;
+    render(<TerminalView pid={4821} />);
+    await Promise.resolve();
+    // The rest of the component still works -- WebGL is an optimisation,
+    // not a requirement (TerminalView's own doc comment on the addon).
+    handler?.({ version: 1, pid: 4821, seq: 0, data: 'still works' });
+    expect(writes).toContain('still works');
+  });
+
   it('ignores bytes addressed to a different session', async () => {
     render(<TerminalView pid={4821} />);
     await Promise.resolve();
