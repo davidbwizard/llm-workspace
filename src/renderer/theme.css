@@ -90,12 +90,21 @@
 }
 
 * { box-sizing:border-box; }
+/* html/body/#root all need an explicit height for #root's own height:100%
+   to resolve to anything -- percentage heights only work down a chain
+   where every ancestor has one. Needed as of the split view (MainPane):
+   the grid alone never needed a bounded viewport (the page just grew and
+   the window scrolled), but a live terminal does -- TerminalView's
+   ResizeObserver/FitAddon need a real, bounded parent to fit against, not
+   an ever-growing document. */
+html, body, #root { height:100%; }
 body {
   margin:0; background:var(--ground); color:var(--ink);
   font-family:var(--f-body); font-size:15px; line-height:1.6;
   -webkit-font-smoothing:antialiased;
 }
-.shell { padding:20px; }
+.shell { display:flex; flex-direction:column; height:100%; box-sizing:border-box;
+  padding:20px; gap:14px; }
 
 /* Display face: soft serif with SOFT and WONK both pushed to their maximum,
    per the visual design doc §4. Headings, project names, panel names --

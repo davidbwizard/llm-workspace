@@ -5,4 +5,17 @@
   background:var(--surface); }
 .rail.left  { border-right:1px solid var(--line); order:0; }
 .rail.right { border-left:1px solid var(--line); order:2; }
+.railitem { position:relative; }
 .railitem.sel .card { border-color:var(--accent); background:var(--raised); }
+
+/* The reply trigger for a card that is waiting on you. A sibling of
+   OpenSessionCard's own <article>, not something nested inside it -- the
+   card's onOpen already means "select this session"; this needs an
+   unambiguous separate control rather than reusing the card's own
+   role="button" click target for a different action. .replypop
+   (ReplyPopover.css) is position:absolute, so .railitem above is the
+   positioned ancestor it anchors to. */
+.railreply { margin-top:-2px; width:100%; font-family:var(--f-mono); font-size:11px;
+  color:var(--critical); background:none; border:1px solid var(--critical);
+  border-radius:20px; padding:4px 0; cursor:pointer; }
+.railreply:hover { background:var(--critical-soft); }

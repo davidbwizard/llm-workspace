@@ -1,5 +1,8 @@
+import { useState } from 'react';
 import type { OpenSession } from '../../fleet/state.ts';
+import type { KillResult } from '../../main/ipc.ts';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
+import { ReplyPopover } from './ReplyPopover.tsx';
 import './SessionRail.css';
 
 /** The card grid, collapsed to one column. Deliberately reuses
@@ -7,29 +10,48 @@ import './SessionRail.css';
  *  fleet stays readable while you work in one session, which means the cards
  *  keep their content and their attention state.
  *
- *  onKill is stubbed to `already_gone` rather than wired to the real
- *  session:kill channel -- this component's own Interfaces contract has no
- *  onKill prop, and Task 12 (which mounts this alongside the pane it wires
- *  a real callback into) is what decides whether Close belongs in the rail
- *  at all. The stub keeps OpenSessionCard's contract satisfied without
- *  silently no-op'ing a destructive action the person thinks fired. */
-export function SessionRail({ sessions, selectedPid, onSelect, side }: {
+ *  onKill is now a real prop (Task 12 ruling): a Close button reachable in
+ *  the live UI that always answers `already_gone` lies to the user, which is
+ *  worse than no button at all -- the stub was acceptable only while this
+ *  component was unmounted (Task 8). The caller (MainPane) passes the real
+ *  window.fleet.killSession through.
+ *
+ *  Also opens the reply popover for whichever card is currently waiting on
+ *  you -- spec: "click shows the prompt". This is a SEPARATE trigger from
+ *  the card's own onOpen (which still just selects it, per the existing,
+ *  already-reviewed "reports the pid when a card is chosen" test): opening a
+ *  waiting session's popover must never be confused with switching the main
+ *  pane to it, since the entire point is answering it WITHOUT losing your
+ *  place. ReplyPopover itself stays untouched -- keyed by pid, no rail-shaped
+ *  prop -- this component owns only the "which pid, if any" state and the
+ *  anchoring markup around it. */
+export function SessionRail({ sessions, selectedPid, onSelect, onKill, side }: {
   sessions: OpenSession[];
   selectedPid: number | null;
   onSelect: (pid: number) => void;
+  onKill: (pid: number) => Promise<KillResult>;
   side: 'left' | 'right';
 }) {
+  const [replyPid, setReplyPid] = useState<number | null>(null);
+
   return (
     <nav className={`rail ${side}`} aria-label="Open sessions">
-      {sessions.map(s => (
-        <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
-          <OpenSessionCard
-            state={s}
-            onOpen={onSelect}
-            onKill={async () => ({ status: 'already_gone' as const })}
-          />
-        </div>
-      ))}
+      {sessions.map(s => {
+        const waiting = s.activity === 'waiting_permission' || s.activity === 'waiting_input';
+        return (
+          <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
+            <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill} />
+            {waiting && (
+              <button type="button" className="railreply" onClick={() => setReplyPid(s.pid)}>
+                Reply
+              </button>
+            )}
+            {replyPid === s.pid && (
+              <ReplyPopover pid={s.pid} prompt={s.lastProse} onClose={() => setReplyPid(null)} />
+            )}
+          </div>
+        );
+      })}
     </nav>
   );
 }

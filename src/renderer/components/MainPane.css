@@ -1,0 +1,18 @@
+.mainpane { display:flex; flex-direction:column; flex:1; min-height:0;
+  /* The full grid (FleetView, selection === null) can be taller than the
+     window -- it used to rely on the whole page scrolling for that. Once
+     .shell (theme.css) became a bounded-height flex column so the split
+     view's terminal has real space to fill, the grid needs its own scroll
+     instead, or it would simply be clipped at the window's edge. */
+  overflow-y:auto; }
+.mainpane.split { flex-direction:row; }
+.pane { display:flex; flex-direction:column; flex:1; min-width:0; order:1; }
+.panehead { display:flex; gap:10px; align-items:center; padding:7px 12px;
+  border-bottom:1px solid var(--line); background:var(--surface); }
+.panetitle { font-family:var(--f-display); font-size:14px; }
+.paneback { background:none; border:0; color:var(--muted); font-size:11px; cursor:pointer; }
+.seg { margin-left:auto; display:inline-flex; border:1px solid var(--line);
+  border-radius:6px; overflow:hidden; }
+.seg button { background:none; border:0; color:var(--muted); font-size:11px;
+  padding:3px 9px; cursor:pointer; }
+.seg button[aria-pressed="true"] { background:var(--raised); color:var(--ink); }

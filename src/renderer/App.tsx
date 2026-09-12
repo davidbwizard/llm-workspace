@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { FleetView } from './components/FleetView.tsx';
+import { MainPane } from './components/MainPane.tsx';
 import { useFleet } from './state/useFleet.ts';
 
 interface ErrorBoundaryState { error: Error | null; componentStack: string | null }
@@ -63,17 +63,49 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
   }
 }
 
-// Interim wiring for Task 7's hoist: useFleet() is now the one subscription
-// to fleet:list/fleet:update, and FleetView is just its first consumer. The
-// rail/pane split that actually uses `selection` (SessionRail,
-// ConversationView, ReplyPopover) is Task 12's MainPane, not built yet --
-// until then FleetView keeps rendering the full grid and `selection` sits
-// unused here, same as it would on a Game view before Game exists.
+/** Owns the one gate on whether the index is ready to show at all (bridge
+ *  missing, still loading, load failed) -- MainPane's own contract takes a
+ *  concrete `sessions: OpenSession[]`, not a nullable payload, precisely so
+ *  it never has to re-derive "is this even loaded yet" itself (the same
+ *  three states FleetView used to guard on its own, before it became one
+ *  branch inside MainPane instead of everything App rendered). */
 export function App() {
-  const { payload, error, select } = useFleet();
+  const { payload, error, selection, select, setView, clear } = useFleet();
+
+  if (!window.fleet) {
+    return (
+      <main className="shell">
+        <p className="empty error">The preload script did not load, so this window
+          has no connection to the session index. Restart the app; if this keeps happening,
+          check the main process log for a preload error.</p>
+      </main>
+    );
+  }
+
+  if (error) {
+    return (
+      <main className="shell">
+        <p className="empty error">The session index could not be loaded: {error}</p>
+      </main>
+    );
+  }
+
+  if (payload === null) {
+    return <main className="shell"><p className="empty">Reading the index…</p></main>;
+  }
+
   return (
     <main className="shell">
-      <ErrorBoundary><FleetView payload={payload} error={error} onSelect={select} /></ErrorBoundary>
+      <ErrorBoundary>
+        <MainPane
+          selection={selection}
+          sessions={payload.openSessions}
+          onSelect={select}
+          onSetView={setView}
+          onClear={clear}
+          railSide="left"
+        />
+      </ErrorBoundary>
     </main>
   );
 }
