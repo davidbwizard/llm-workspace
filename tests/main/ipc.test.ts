@@ -324,6 +324,22 @@ describe('buildFleetHistoryPayload — pagination', () => {
     expect(p.sessions).toEqual([]);
     expect(p.total).toBe(1);
   });
+
+  // The display switch (HIDDEN_PROVIDERS, src/fleet/state.ts): a Codex
+  // transcript must never reach fleet:history's payload, and must not
+  // inflate `total` or eat a page slot either -- David only works with
+  // Claude sessions in the app.
+  it('hides a Codex transcript from fleet:history entirely, while a Claude session in the same index still shows', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'claude-1', contentHash:'a', ts:'2026-01-01T00:00:00Z' }),
+      ev({ sessionId:'codex-1', provider:'codex', contentHash:'b', ts:'2026-01-01T00:01:00Z' }),
+    ]);
+    const p = buildFleetHistoryPayload(db, 0, PAGE);
+    expect(p.sessions.map(s => s.sessionId)).toEqual(['claude-1']);
+    expect(p.sessions[0]!.provider).toBe('claude');
+    expect(p.total).toBe(1);
+  });
 });
 
 // Untrusted input from the renderer (spec S11.2: validate at the IPC
@@ -386,16 +402,31 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
   it('wires openSessions end to end, one card per live process, regardless of transcript match', async () => {
     await refreshLiveProcesses(async (bin, args) => {
       if (bin === 'pgrep' && args[1] === 'claude') return '100\n';
+      return '';
+    });
+
+    const p = buildFleetListPayload();
+    expect(p.openSessions.map(o => o.pid)).toEqual([100]);
+    expect(p.openSessions.every(o => o.match === 'unknown' && o.sessionId === null)).toBe(true);
+    expect(p.openSessions[0]!.provider).toBe('claude');
+  });
+
+  // The display switch (HIDDEN_PROVIDERS, src/fleet/state.ts): this used to
+  // be the test proving a Codex process gets a card end to end (pid 200,
+  // provider 'codex') alongside the Claude one -- it now proves the
+  // opposite, end to end through the real discovery pipeline, because
+  // David only works with Claude sessions in the app and Codex cards
+  // cannot be reattached anyway.
+  it('hides a Codex process from buildFleetListPayload entirely, while a Claude process in the same sweep still shows', async () => {
+    await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'pgrep' && args[1] === 'claude') return '100\n';
       if (bin === 'pgrep' && args[1] === 'codex') return '200\n';
       return '';
     });
 
     const p = buildFleetListPayload();
-    expect(p.openSessions.map(o => o.pid).sort((a, b) => a - b)).toEqual([100, 200]);
-    expect(p.openSessions.every(o => o.match === 'unknown' && o.sessionId === null)).toBe(true);
-    const byPid = new Map(p.openSessions.map(o => [o.pid, o]));
-    expect(byPid.get(100)!.provider).toBe('claude');
-    expect(byPid.get(200)!.provider).toBe('codex');
+    expect(p.openSessions.map(o => o.pid)).toEqual([100]);
+    expect(p.openSessions[0]!.provider).toBe('claude');
   });
 
   it('never includes the sessions array', async () => {
