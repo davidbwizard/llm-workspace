@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  sendLiteral, sendKeyName, hasSession, capturePane, pipePane, paneIsAlternate, TMUX_NAME,
+  sendLiteral, sendKeyName, hasSession, capturePane, pipePane, paneIsAlternate, paneSize, TMUX_NAME,
   listSessionNames, type KeyName,
 } from '../../src/main/tmux.ts';
 
@@ -102,6 +102,34 @@ describe('paneIsAlternate', () => {
 
   it('refuses a name this app did not generate', () => {
     expect(() => paneIsAlternate('not-ours')).toThrow();
+  });
+});
+
+describe('paneSize', () => {
+  it('queries both dimensions in a single display-message call, against the exact target', () => {
+    const s = spy();
+    paneSize('llmws-claude-abc', s.exec);
+    expect(s.calls[0]).toEqual([
+      'display-message', '-p', '-t', '=llmws-claude-abc:', '#{pane_width}x#{pane_height}',
+    ]);
+  });
+
+  it('parses the WxH reply into numbers', () => {
+    expect(paneSize('llmws-claude-abc', () => ({ ok: true, stdout: '126x40\n' })))
+      .toEqual({ cols: 126, rows: 40 });
+  });
+
+  // Same never-guess reasoning as paneIsAlternate's failed-query case above:
+  // a failed query or a reply that doesn't match WxH reads as null, not a
+  // guessed size -- attachTerminal (ipc.ts) treats null as "differs" and
+  // falls back to its previous always-resize behaviour.
+  it('reads a failed or unparseable query as null, not a thrown error or a guess', () => {
+    expect(paneSize('llmws-claude-abc', () => ({ ok: false, error: 'no such pane' }))).toBeNull();
+    expect(paneSize('llmws-claude-abc', () => ({ ok: true, stdout: 'garbage\n' }))).toBeNull();
+  });
+
+  it('refuses a name this app did not generate', () => {
+    expect(() => paneSize('not-ours')).toThrow();
   });
 });
 

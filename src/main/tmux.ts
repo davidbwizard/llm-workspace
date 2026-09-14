@@ -57,6 +57,26 @@ export function paneIsAlternate(name: string, exec: TmuxExec = defaultExec): boo
   return r.ok && r.stdout.trim() === '1';
 }
 
+/** The pane's current size, straight from tmux -- the ground truth
+ *  attachTerminal (ipc.ts) compares a requested resize against before
+ *  acting: resizing (and then waiting out the repaint settle) when the
+ *  pane is already at the requested size would cost real time for no
+ *  effect. Same display-message mechanism as paneIsAlternate above, one
+ *  query for both dimensions rather than two round trips. A failed query
+ *  or unparseable reply (pane gone, tmux unreachable) reads as null, not a
+ *  guessed size -- same never-guess reasoning as paneIsAlternate's own doc
+ *  comment; the caller (attachTerminal) treats null as "differs" so it
+ *  falls back to this function's previous always-resize behaviour when
+ *  the new check itself can't answer. */
+export function paneSize(name: string, exec: TmuxExec = defaultExec): { cols: number; rows: number } | null {
+  guard(name);
+  const r = exec(['display-message', '-p', '-t', target(name), '#{pane_width}x#{pane_height}']);
+  if (!r.ok) return null;
+  const m = /^(\d+)x(\d+)$/.exec(r.stdout.trim());
+  if (!m) return null;
+  return { cols: Number(m[1]), rows: Number(m[2]) };
+}
+
 export function newSession(
   name: string, cwd: string, command: string, cols: number, rows: number,
   exec: TmuxExec = defaultExec,

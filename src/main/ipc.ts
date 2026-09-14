@@ -21,7 +21,7 @@ import type { LiveProcess } from '../discovery/parse.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import {
-  sendLiteral, sendKeyName, capturePane, resizeWindow, pipePane, paneIsAlternate,
+  sendLiteral, sendKeyName, capturePane, resizeWindow, pipePane, paneIsAlternate, paneSize,
   type TmuxResult, type TmuxExec,
 } from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
@@ -722,6 +722,12 @@ type AttachDeps = {
    *  to mock this without also having to stub out capture-pane's shape. */
   alternate?: TmuxExec;
   pipe?: TmuxExec;
+  /** Injected exec for paneSize's own display-message query (tmux.ts) --
+   *  kept separate from `resize` below for the same reason `alternate` is
+   *  kept separate from `capture` above: a test proving the resize-skip
+   *  branch should be able to mock this without also stubbing resize-
+   *  window's own argv shape. */
+  paneSize?: TmuxExec;
   /** Threaded straight through to makeCoalescer's own injectable `schedule`
    *  (src/main/stream.ts) -- undefined here means undefined there, which
    *  falls back to its real `setTimeout(fn, COALESCE_MS)` default, so this
@@ -731,7 +737,30 @@ type AttachDeps = {
    *  competing timer entirely, rather than racing it with a sleep -- see
    *  tests/main/stream-bridge.test.ts's "flushNow throws" test. */
   schedule?: (fn: () => void) => void;
+  /** How long attachTerminal waits, after an actual resize, for the pane's
+   *  own program to repaint before capturing backlog -- see
+   *  REPAINT_SETTLE_MS's doc comment below for why a fixed delay is safe
+   *  here. Defaults to a real timer; tests inject an immediate resolve so
+   *  the suite does not sleep, same precedent as `schedule` above. */
+  settle?: (ms: number) => Promise<void>;
 };
+
+/** tmux's resize-window returns as soon as tmux updates its own pane
+ *  geometry; the PROGRAM inside the pane (a full-screen TUI on the
+ *  alternate screen, e.g. Claude Code) only repaints a few milliseconds
+ *  later, once it receives SIGWINCH and redraws at the new width.
+ *  Capturing backlog before that repaint reads content still laid out at
+ *  the OLD width, which is then handed to a renderer terminal of the NEW
+ *  width -- the mid-word line-break bug this constant exists to fix. A
+ *  fixed delay (rather than polling for the repaint) is acceptable here:
+ *  it runs at most once per attach, and only when the size actually
+ *  changed (see attachTerminal below), and 150ms is comfortably under the
+ *  threshold where a user notices a delay in something they just clicked. */
+const REPAINT_SETTLE_MS = 150;
+
+function defaultSettle(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 /** The backlog attach (and re-attach) hand the terminal as scrollback. An
  *  ordinary shell's 2000 lines of history is a meaningful backlog worth
@@ -753,10 +782,16 @@ function backlogFor(name: string, deps: AttachDeps): TmuxResult {
  *  headless session like this, so tmux never learns the widget's real size
  *  on its own (same reasoning as newSession's -x/-y at creation, tmux.ts),
  *  and output arriving before the next resize would wrap at whatever width
- *  the session started with. Then scrollback, for the widget to paint
- *  before any live byte arrives. Then the live stream itself: start
- *  pipe-pane writing into a fresh fifo, read that fifo, and feed every
- *  chunk to a coalescer whose emit pushes 'terminal:data' at this window.
+ *  the session started with. But only when the pane isn't already at the
+ *  requested size: an attach that changes nothing (e.g. a remount at the
+ *  same size) must stay fast, with no resize call and no settle wait. When
+ *  it does differ, resize, then wait REPAINT_SETTLE_MS for the pane's own
+ *  program to repaint at the new width -- see REPAINT_SETTLE_MS's doc
+ *  comment above -- before capturing scrollback, so the widget paints
+ *  content actually laid out at the new width before any live byte
+ *  arrives. Then the live stream itself: start pipe-pane writing into a
+ *  fresh fifo, read that fifo, and feed every chunk to a coalescer whose
+ *  emit pushes 'terminal:data' at this window.
  *
  *  Idempotent: a second attach for an already-attached pid skips all of
  *  that and answers with a fresh backlog only. Without this, a renderer
@@ -765,9 +800,9 @@ function backlogFor(name: string, deps: AttachDeps): TmuxResult {
  *  the fifo path is deterministic per session name, a naive
  *  re-implementation that always creates one from scratch fails loudly
  *  (mkfifo EEXIST) rather than silently doubling up. */
-export function attachTerminal(
+export async function attachTerminal(
   rawPid: unknown, cols: unknown, rows: unknown, win: BrowserWindow, deps: AttachDeps = {},
-): AttachResult {
+): Promise<AttachResult> {
   if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) {
     return { status: 'refused', reason: 'invalid_pid' };
   }
@@ -787,8 +822,17 @@ export function attachTerminal(
 
   if (!validSize(cols) || !validSize(rows)) return { status: 'refused', reason: 'invalid_size' };
 
-  // FIRST, per this function's doc comment above.
-  resizeWindow(name, cols, rows, deps.resize);
+  // Resize (and settle) only when the pane isn't already at the requested
+  // size -- per this function's doc comment above. A failed/unparseable
+  // paneSize query reads as "differs", not "already correct": see
+  // paneSize's own doc comment (tmux.ts) for why null falls back to the
+  // safe, previous always-resize behaviour rather than guessing a match.
+  const currentSize = paneSize(name, deps.paneSize);
+  const alreadyCorrectSize = currentSize !== null && currentSize.cols === cols && currentSize.rows === rows;
+  if (!alreadyCorrectSize) {
+    resizeWindow(name, cols, rows, deps.resize);
+    await (deps.settle ?? defaultSettle)(REPAINT_SETTLE_MS);
+  }
 
   const backlog = backlogFor(name, deps);
 

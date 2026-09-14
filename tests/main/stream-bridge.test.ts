@@ -47,28 +47,28 @@ describe('attachTerminal refusals', () => {
   const sent: unknown[] = [];
   const win = fakeWin(sent);
 
-  it('refuses an invalid pid', () => {
-    expect(attachTerminal(-1, 80, 24, win)).toEqual({ status: 'refused', reason: 'invalid_pid' });
-    expect(attachTerminal(1.5, 80, 24, win)).toEqual({ status: 'refused', reason: 'invalid_pid' });
+  it('refuses an invalid pid', async () => {
+    expect(await attachTerminal(-1, 80, 24, win)).toEqual({ status: 'refused', reason: 'invalid_pid' });
+    expect(await attachTerminal(1.5, 80, 24, win)).toEqual({ status: 'refused', reason: 'invalid_pid' });
   });
 
-  it('refuses a pid with no tmux session -- the iTerm case', () => {
-    expect(attachTerminal(4821, 80, 24, win)).toEqual({ status: 'refused', reason: 'not_tmux' });
+  it('refuses a pid with no tmux session -- the iTerm case', async () => {
+    expect(await attachTerminal(4821, 80, 24, win)).toEqual({ status: 'refused', reason: 'not_tmux' });
   });
 
-  it('refuses when the session vanished between render and click', () => {
+  it('refuses when the session vanished between render and click', async () => {
     registerSession(4821, 'llmws-claude-abc');
-    expect(attachTerminal(4821, 80, 24, win, { has: () => false }))
+    expect(await attachTerminal(4821, 80, 24, win, { has: () => false }))
       .toEqual({ status: 'refused', reason: 'session_gone' });
   });
 
-  it('refuses a non-positive-integer size before touching tmux or the filesystem', () => {
+  it('refuses a non-positive-integer size before touching tmux or the filesystem', async () => {
     registerSession(4821, 'llmws-claude-abc');
-    expect(attachTerminal(4821, 0, 24, win, { has: () => true }))
+    expect(await attachTerminal(4821, 0, 24, win, { has: () => true }))
       .toEqual({ status: 'refused', reason: 'invalid_size' });
-    expect(attachTerminal(4821, 80, -1, win, { has: () => true }))
+    expect(await attachTerminal(4821, 80, -1, win, { has: () => true }))
       .toEqual({ status: 'refused', reason: 'invalid_size' });
-    expect(attachTerminal(4821, 80.5, 24, win, { has: () => true }))
+    expect(await attachTerminal(4821, 80.5, 24, win, { has: () => true }))
       .toEqual({ status: 'refused', reason: 'invalid_size' });
   });
 });
@@ -210,11 +210,19 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
     expect(created.ok).toBe(true);
     await delay(200); // let bash actually start and print its first prompt
 
+    // A line far longer than either width, written while the pane is still
+    // 80 cols -- so the resize below has real soft-wrapped history to
+    // reflow, not just a short prompt that would trivially fit any width
+    // and prove nothing about the assertion below.
+    execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, '-l', `echo ${'A'.repeat(200)}`]);
+    execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, 'Enter']);
+    await delay(100);
+
     registerSession(TEST_PID, TEST_SESSION);
     const sent: unknown[] = [];
     const win = fakeWin(sent);
 
-    const result: AttachResult = attachTerminal(TEST_PID, 100, 30, win);
+    const result: AttachResult = await attachTerminal(TEST_PID, 100, 30, win);
     expect(result.status).toBe('attached');
     if (result.status !== 'attached') throw new Error('unreachable');
     expect(typeof result.backlog).toBe('string');
@@ -226,6 +234,13 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
       'tmux', ['display-message', '-p', '-t', `=${TEST_SESSION}:`, '#{pane_width}'],
     ).toString().trim();
     expect(width).toBe('100');
+
+    // The settle fix's own point: every line handed to the widget is
+    // already laid out at the NEW width (100), not still reflecting the
+    // OLD width (80) the long echo above was written at -- a capture that
+    // raced the repaint could return a line longer than the pane it is
+    // about to be rendered into.
+    for (const line of result.backlog.split('\n')) expect(line.length).toBeLessThanOrEqual(100);
 
     // Real bytes into the pane -- through the pane's shell, out through
     // pipe-pane, through the fifo, through the coalescer, into
@@ -241,7 +256,7 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
     // implementation that always creates a fresh fifo/coalescer would
     // throw here (mkfifo EEXIST on the same deterministic path) rather
     // than quietly succeeding with a fresh backlog.
-    const second = attachTerminal(TEST_PID, 100, 30, win);
+    const second = await attachTerminal(TEST_PID, 100, 30, win);
     expect(second.status).toBe('attached');
 
     execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, '-l', 'echo STREAM_MARKER_2']);
@@ -303,7 +318,7 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
 
     const normalCalls: string[][] = [];
     const win = fakeWin([]);
-    const normalResult = attachTerminal(TEST_PID, 80, 10, win, {
+    const normalResult = await attachTerminal(TEST_PID, 80, 10, win, {
       capture: args => { normalCalls.push(args); return realTmuxExec(args); },
     });
     expect(normalResult.status).toBe('attached');
@@ -325,7 +340,7 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
     expect(alt).toBe('1'); // proves the test setup actually reached the alternate screen
 
     const altCalls: string[][] = [];
-    const altResult = attachTerminal(TEST_PID, 80, 10, win, {
+    const altResult = await attachTerminal(TEST_PID, 80, 10, win, {
       capture: args => { altCalls.push(args); return realTmuxExec(args); },
     });
     expect(altResult.status).toBe('attached');
@@ -353,9 +368,14 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
   // calls through the injected deps -- still hitting the real tmux binary,
   // not mocking it away -- is what actually distinguishes them: the
   // idempotent branch calls neither on a repeat attach.
-  it('does not resize or start a second pipe-pane on a repeat attach for an already-attached pid', () => {
+  it('does not resize or start a second pipe-pane on a repeat attach for an already-attached pid', async () => {
     killTestSession();
-    const created = newSession(TEST_SESSION, process.cwd(), 'bash', 80, 24);
+    // Created at a size DIFFERENT from the one requested below (60x20 vs.
+    // the 80x24 attach asks for), so the first attach's resize is a real
+    // one -- the resize-skip fix (attachTerminal, ipc.ts) would otherwise
+    // skip it too, since the two sizes would already match, and this test
+    // would no longer distinguish "resized once" from "never resized".
+    const created = newSession(TEST_SESSION, process.cwd(), 'bash', 60, 20);
     expect(created.ok).toBe(true);
 
     registerSession(TEST_PID, TEST_SESSION);
@@ -364,14 +384,75 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
     const deps = {
       resize: (args: string[]) => { counts.resize++; return realTmuxExec(args); },
       pipe: (args: string[]) => { counts.pipe++; return realTmuxExec(args); },
+      settle: () => Promise.resolve(),
     };
 
-    expect(attachTerminal(TEST_PID, 80, 24, win, deps).status).toBe('attached');
-    expect(attachTerminal(TEST_PID, 80, 24, win, deps).status).toBe('attached');
-    expect(attachTerminal(TEST_PID, 80, 24, win, deps).status).toBe('attached');
+    expect((await attachTerminal(TEST_PID, 80, 24, win, deps)).status).toBe('attached');
+    expect((await attachTerminal(TEST_PID, 80, 24, win, deps)).status).toBe('attached');
+    expect((await attachTerminal(TEST_PID, 80, 24, win, deps)).status).toBe('attached');
 
     expect(counts.resize).toBe(1);
     expect(counts.pipe).toBe(1);
+  });
+
+  // The resize-skip fix's own fast path: a pane already at the requested
+  // size must not pay for a resize call OR the repaint settle wait -- both
+  // asserted via spies, not just "attach still succeeds", since a
+  // mutation that resizes/settles unconditionally would still leave this
+  // test's status assertion passing.
+  it('does not resize or settle when the pane is already at the requested size', async () => {
+    killTestSession();
+    const created = newSession(TEST_SESSION, process.cwd(), 'bash', 80, 24);
+    expect(created.ok).toBe(true);
+
+    registerSession(TEST_PID, TEST_SESSION);
+    const counts = { resize: 0, settle: 0 };
+    const deps = {
+      resize: (args: string[]) => { counts.resize++; return realTmuxExec(args); },
+      settle: () => { counts.settle++; return Promise.resolve(); },
+    };
+
+    const result = await attachTerminal(TEST_PID, 80, 24, fakeWin([]), deps);
+    expect(result.status).toBe('attached');
+    expect(counts.resize).toBe(0);
+    expect(counts.settle).toBe(0);
+  });
+
+  // The other half: a pane at a genuinely different size IS resized, and
+  // the settle wait happens BEFORE backlog is captured. Ordering is the
+  // entire bug this fix exists for (see attachTerminal's own doc comment,
+  // ipc.ts) -- a mutation that calls settle AFTER capture, or drops the
+  // await so it never actually blocks, would still make every OTHER
+  // assertion in this file pass; only checking relative order here catches
+  // it. `settle`'s own 'settle' marker is pushed from INSIDE a setTimeout
+  // callback, not at call time -- so a dropped `await` (settle invoked but
+  // never waited on) lets capture race ahead of it, landing 'capture'
+  // before 'settle' in the order array, exactly the mutation this test
+  // exists to catch. Pushing at call time instead would miss that: the
+  // mock would record 'settle' immediately regardless of whether the
+  // implementation actually waited for it.
+  it('resizes and settles BEFORE capturing backlog when the size differs', async () => {
+    killTestSession();
+    const created = newSession(TEST_SESSION, process.cwd(), 'bash', 60, 20);
+    expect(created.ok).toBe(true);
+
+    registerSession(TEST_PID, TEST_SESSION);
+    const order: string[] = [];
+    const deps = {
+      resize: (args: string[]) => { order.push('resize'); return realTmuxExec(args); },
+      settle: (): Promise<void> => new Promise(resolve => {
+        setTimeout(() => { order.push('settle'); resolve(); }, 5);
+      }),
+      capture: (args: string[]) => { order.push('capture'); return realTmuxExec(args); },
+    };
+
+    const result = await attachTerminal(TEST_PID, 80, 24, fakeWin([]), deps);
+    expect(result.status).toBe('attached');
+    expect(order).toContain('resize');
+    expect(order).toContain('settle');
+    expect(order).toContain('capture');
+    expect(order.indexOf('resize')).toBeLessThan(order.indexOf('settle'));
+    expect(order.indexOf('settle')).toBeLessThan(order.indexOf('capture'));
   });
 
   // Fix round 1, finding 1: the fifo carries raw agent terminal output, so
@@ -379,13 +460,13 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
   // Asserted via statSync on the REAL, post-creation path -- not the mode
   // argument passed to mkdirSync/mkfifo, which the reviewer noted is itself
   // umask-masked and therefore not proof of anything on its own.
-  it('creates the pipe directory 0o700 and the fifo itself 0o600', () => {
+  it('creates the pipe directory 0o700 and the fifo itself 0o600', async () => {
     killTestSession();
     const created = newSession(TEST_SESSION, process.cwd(), 'bash', 80, 24);
     expect(created.ok).toBe(true);
 
     registerSession(TEST_PID, TEST_SESSION);
-    const result = attachTerminal(TEST_PID, 80, 24, fakeWin([]));
+    const result = await attachTerminal(TEST_PID, 80, 24, fakeWin([]));
     expect(result.status).toBe('attached');
 
     const fifoPath = fifoPathForTest(TEST_SESSION);
@@ -431,7 +512,7 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
     // Never actually schedules the coalescer's auto-flush -- see the test's
     // own doc comment above. arm() still runs (buffer.length stays > 0
     // until something flushes it), it just never gets a chance to fire.
-    const result = attachTerminal(TEST_PID, 80, 24, poisonedWin, { schedule: () => {} });
+    const result = await attachTerminal(TEST_PID, 80, 24, poisonedWin, { schedule: () => {} });
     expect(result.status).toBe('attached');
 
     const fifoPath = fifoPathForTest(TEST_SESSION);
