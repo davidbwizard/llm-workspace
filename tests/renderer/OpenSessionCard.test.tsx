@@ -150,6 +150,44 @@ describe('OpenSessionCard', () => {
     expect(container.querySelector('.proj')!.getAttribute('title')).toBe('trellome');
   });
 
+  // The unread indicator (SessionRail computes `unread`; this component
+  // only renders it). Undefined -- the grid's own usage, FleetView.tsx,
+  // never passes this prop -- must render exactly like `false`, not throw
+  // and not show the dot: a card that has never opted into this tracking
+  // must not appear to have "new output" it never actually measured.
+  describe('the unread indicator (unread prop)', () => {
+    const working: OpenSession = { ...base, match: 'unique', sessionId: 's1', activity: 'working', events: 12 };
+
+    it('shows nothing when unread is omitted', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={working} />);
+      expect(container.querySelector('.unread-dot')).toBeNull();
+    });
+
+    it('shows the dot, and names it in the accessible name, when unread is true', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={working} unread />);
+      expect(container.querySelector('.unread-dot')).not.toBeNull();
+      expect(screen.getByRole('button', { name: /trellome/i }).getAttribute('aria-label')).toMatch(/new output/i);
+    });
+
+    it('shows nothing when unread is explicitly false', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={working} unread={false} />);
+      expect(container.querySelector('.unread-dot')).toBeNull();
+    });
+
+    // The two indicators must stay visually and semantically distinct
+    // (the brief's own words) -- a blocked card already says "waiting on
+    // you" via its badge, so unread=true must never also draw its dot or
+    // add a second, redundant announcement on top of that.
+    it('never shows the unread dot on a card that is already blocked, even if unread is true', () => {
+      const blockedState: OpenSession = { ...working, activity: 'waiting_permission' };
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={blockedState} unread />);
+      expect(container.querySelector('.unread-dot')).toBeNull();
+      expect(container.querySelector('.badge')).not.toBeNull();
+      const label = screen.getByRole('button', { name: /trellome/i }).getAttribute('aria-label') ?? '';
+      expect(label).not.toMatch(/new output/i);
+    });
+  });
+
   // The app's first destructive action. These prove: the signal is never
   // sent without an explicit confirmation step; every control is a real,
   // keyboard-operable <button>, not a div with a click handler; pressing

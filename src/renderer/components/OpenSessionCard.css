@@ -16,6 +16,19 @@
    not the card's headline. */
 .pid { font-family:var(--f-mono); font-size:11px; color:var(--faint); }
 
+/* The unread indicator (SessionRail's own doc comment on `unread` covers
+   how it's computed) -- same corner .badge already occupies, since the
+   two are mutually exclusive (OpenSessionCard.tsx's showUnread is always
+   false while blocked is true) and a plain quiet dot, not a pill with a
+   count, is the deliberately less urgent of the two: --signal, not
+   --critical (the "waiting on you" colour, which must stay unambiguous),
+   and not --accent either (already this card's "working/live" colour --
+   .card.live's border and .state.working's dot two rows down -- reusing
+   it here would put two differently-meant accent-coloured marks on one
+   card). */
+.unread-dot { position:absolute; top:16px; right:18px; width:8px; height:8px;
+  border-radius:50%; background:var(--signal); }
+
 /* The kill affordance -- session:kill's UI. Its own row below .metrics
    rather than a corner icon layered over .crow/.badge: the app's first
    destructive action gets a real, unambiguous target to press, not

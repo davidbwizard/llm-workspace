@@ -98,7 +98,7 @@ const KILL_SETTLE_MS = 5_500;
 const REATTACH_COLS = 120;
 const REATTACH_ROWS = 40;
 
-export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume }: {
+export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume, unread }: {
   state: OpenSession; onOpen: (pid: number) => void;
   /** Sends session:kill for this card's pid. Always resolves to a
    *  KillResult (src/main/ipc.ts), never throws by contract -- but this
@@ -117,6 +117,14 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
    *  from a session id and cwd alone, no pid. Only ever reachable from the
    *  'stranded' phase below, which is what supplies those two values. */
   onResume: (sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
+  /** True when this session has produced output since the caller last
+   *  considered it "seen" -- SessionRail is the only caller that tracks
+   *  that today (comparing state.events against a per-pid baseline it
+   *  updates on selection), so the grid (FleetView) never passes this and
+   *  gets none of the treatment below. Optional, not defaulted to `false`
+   *  in a destructure: `undefined` and `false` mean the same thing here
+   *  (see `showUnread` below), so there's nothing a default would add. */
+  unread?: boolean;
 }) {
   // Same "say nothing rather than guess" rule as SessionCard's hostLabel --
   // unknown and null both mean the same thing to the user.
@@ -137,6 +145,13 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   const providerLabel = state.provider === 'claude' ? 'Claude' : 'Codex';
   const blocked = state.activity === 'waiting_permission' || state.activity === 'waiting_input';
   const activityWord = state.activity ? ACTIVITY_WORD[state.activity] : null;
+  // A blocked card already shows its own badge (below) and its own
+  // "waiting on you" wording -- a stronger, more specific signal than
+  // "something happened" that would otherwise collide with it in the same
+  // corner of the card. Unread is the quieter signal for everything else:
+  // working/idle/error sessions that produced output while you were
+  // looking elsewhere.
+  const showUnread = unread === true && !blocked;
 
   // What the confirmation names -- project, source, age (David: "so I can
   // close if they are actually dead" only works if it's obvious WHICH one
@@ -284,6 +299,10 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   const label = [
     `Open ${state.project} (${providerLabel}), pid ${state.pid}`,
     activityWord,
+    // Placed right after activityWord, before lastProse -- "there is new
+    // output" is a fact about the session's state, the same category as
+    // activityWord, not part of what it actually said.
+    showUnread ? 'New output since you last looked' : null,
     state.lastProse,
     hostLabel ? `Running in ${hostLabel}` : null,
   ].filter((part): part is string => Boolean(part)).join('. ');
@@ -298,6 +317,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(state.pid); } }}
     >
       {blocked && <span className="badge" aria-hidden="true">1</span>}
+      {showUnread && <span className="unread-dot" aria-hidden="true" />}
 
       <div className={`crow${blocked ? ' hasbadge' : ''}`}>
         <span className={`prov ${state.provider}`}>
