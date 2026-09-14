@@ -8,6 +8,36 @@
 .railitem { position:relative; }
 .railitem.sel .card { border-color:var(--accent); background:var(--raised); }
 
+/* Bug: in this rail's narrow width, a long project name rendered past the
+   card's own border ("greaterthangator", no hyphen to break on) while a
+   hyphenated one wrapped mid-word at its own hyphen ("llm-workspace" ->
+   "llm-" / "workspace", the browser's ordinary line-break behaviour once a
+   word runs out of room). Single line, ellipsis: the rail's whole job is
+   telling sessions apart at a glance, so keeping the start of the name
+   intact and cutting the tail reads better than a mid-word break -- and
+   never wrapping at all is the only treatment that also satisfies "no
+   glyph outside the card border" without trading the old mid-word break
+   for a new one. The full name stays reachable via the native `title`
+   attribute OpenSessionCard.tsx now sets on this element unconditionally
+   (hover tooltip, and available to assistive tech). Scoped to `.rail`
+   alone -- the full grid's cards (FleetView, SessionCard.css's own
+   unscoped .proj) are wider and this bug was never reported there, so
+   they keep their existing rule untouched. */
+.rail .proj { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* Bug: the metadata row ("47s · 228 MB") squeezed into three lines --
+   flexbox shrinking .host/.procmeta below their own text's natural
+   wrap points, in this same narrow width. white-space:nowrap alone would
+   just push that overflow past the card border instead (trading one
+   containment bug for another); min-width:0 is what lets these flex
+   children actually shrink narrower than their own text, so
+   overflow:hidden + text-overflow:ellipsis has something to truncate
+   rather than nothing to do. Degrades gracefully rather than forcing
+   everything onto one unreadable line: host and procMeta each truncate
+   independently, so the row stays one line total instead of stacking. */
+.rail .crow-meta { min-width:0; }
+.rail .host, .rail .procmeta { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+
 /* The reply trigger for a card that is waiting on you. A sibling of
    OpenSessionCard's own <article>, not something nested inside it -- the
    card's onOpen already means "select this session"; this needs an

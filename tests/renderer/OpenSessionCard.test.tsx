@@ -137,6 +137,19 @@ describe('OpenSessionCard', () => {
     });
   });
 
+  // The rail's own bug report: a long project name rendered past the
+  // card's border in the rail's narrow width. The truncation itself is
+  // SessionRail.css's job (a rail-scoped CSS rule, asserted against
+  // directly in tests/renderer/SessionRail.css.test.ts, since jsdom does
+  // not compute real layout) -- this only proves the card gives the
+  // browser a native tooltip to fall back on once that truncation hides
+  // part of the name, regardless of which container (rail or grid) ends
+  // up rendering it.
+  it('sets the full project name as a native title, so a truncated name is still readable on hover', () => {
+    const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
+    expect(container.querySelector('.proj')!.getAttribute('title')).toBe('trellome');
+  });
+
   // The app's first destructive action. These prove: the signal is never
   // sent without an explicit confirmation step; every control is a real,
   // keyboard-operable <button>, not a div with a click handler; pressing

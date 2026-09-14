@@ -319,7 +319,14 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
       </div>
 
       <div>
-        <p className="proj display">{state.project}</p>
+        {/* title: the native hover tooltip for the full name when it's
+            truncated -- only actually needed in the rail's narrow width
+            (SessionRail.css's `.rail .proj` ellipsis rule), but harmless
+            and unused when this card is wide enough to show the whole
+            name anyway (the grid), so it's set unconditionally rather
+            than threading a second "am I in the rail" prop through just
+            for this. */}
+        <p className="proj display" title={state.project}>{state.project}</p>
         <p className="path">{state.cwd ?? 'no working directory'}</p>
       </div>
 
