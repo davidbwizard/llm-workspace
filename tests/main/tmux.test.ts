@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  sendLiteral, sendKeyName, hasSession, capturePane, pipePane, paneIsAlternate, paneSize, TMUX_NAME,
+  sendLiteral, sendKeyName, hasSession, capturePane, pipePane, paneSize, TMUX_NAME,
   listSessionNames, type KeyName,
 } from '../../src/main/tmux.ts';
 
@@ -63,10 +63,9 @@ describe('tmux argv construction', () => {
     expect(TMUX_NAME.test('llmws-claude-a:0.1')).toBe(false);
   });
 
-  // capturePane's `lines: null` is the visible-pane-only path a full-screen
-  // TUI's backfill uses (ipc.ts's backlogFor) -- it must omit -S entirely
-  // rather than pass some sentinel range, since -S is what makes tmux walk
-  // back through scrollback in the first place.
+  // `lines: null` must omit -S entirely rather than pass some sentinel
+  // range, since -S is what makes tmux walk back through scrollback in the
+  // first place.
   it('omits -S entirely when capturePane is asked for the visible pane only', () => {
     const s = spy();
     capturePane('llmws-claude-abc', null, s.exec);
@@ -77,31 +76,6 @@ describe('tmux argv construction', () => {
     const s = spy();
     capturePane('llmws-claude-abc', 2000, s.exec);
     expect(s.calls[0]).toEqual(['capture-pane', '-p', '-S', '-2000', '-t', '=llmws-claude-abc:']);
-  });
-});
-
-describe('paneIsAlternate', () => {
-  it('queries #{alternate_on} against the exact target', () => {
-    const s = spy();
-    paneIsAlternate('llmws-claude-abc', s.exec);
-    expect(s.calls[0]).toEqual(['display-message', '-p', '-t', '=llmws-claude-abc:', '#{alternate_on}']);
-  });
-
-  it('is true only when tmux reports the alternate screen is on', () => {
-    expect(paneIsAlternate('llmws-claude-abc', () => ({ ok: true, stdout: '1\n' }))).toBe(true);
-    expect(paneIsAlternate('llmws-claude-abc', () => ({ ok: true, stdout: '0\n' }))).toBe(false);
-  });
-
-  // A failed query (pane gone, tmux unreachable) must read as "not
-  // alternate" -- the caller's existing full-scrollback behaviour is the
-  // safe fallback, not a guess that it's an alt-screen app.
-  it('reads a failed query as false, not a thrown error', () => {
-    expect(paneIsAlternate('llmws-claude-abc', () => ({ ok: false, error: 'no such pane' })))
-      .toBe(false);
-  });
-
-  it('refuses a name this app did not generate', () => {
-    expect(() => paneIsAlternate('not-ours')).toThrow();
   });
 });
 
@@ -119,10 +93,8 @@ describe('paneSize', () => {
       .toEqual({ cols: 126, rows: 40 });
   });
 
-  // Same never-guess reasoning as paneIsAlternate's failed-query case above:
-  // a failed query or a reply that doesn't match WxH reads as null, not a
-  // guessed size -- attachTerminal (ipc.ts) treats null as "differs" and
-  // falls back to its previous always-resize behaviour.
+  // A failed query or a reply that doesn't match WxH must read as null, not
+  // a guessed size.
   it('reads a failed or unparseable query as null, not a thrown error or a guess', () => {
     expect(paneSize('llmws-claude-abc', () => ({ ok: false, error: 'no such pane' }))).toBeNull();
     expect(paneSize('llmws-claude-abc', () => ({ ok: true, stdout: 'garbage\n' }))).toBeNull();

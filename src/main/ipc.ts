@@ -5,9 +5,7 @@
 // scope -- a test that imports and calls registerIpc directly will throw.
 import { app, ipcMain, BrowserWindow, dialog } from 'electron';
 import { execFileSync } from 'node:child_process';
-import { createReadStream, mkdirSync, rmSync, chmodSync, type ReadStream } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { spawn as ptySpawn, type IPty } from 'node-pty';
 import type { Db } from '../store/db.ts';
 import {
   openSessions, openSessionsLive, fleetStatePage, type SessionState, type OpenSession,
@@ -20,10 +18,7 @@ import {
 import type { LiveProcess } from '../discovery/parse.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
-import {
-  sendLiteral, sendKeyName, capturePane, resizeWindow, pipePane, paneIsAlternate, paneSize,
-  type TmuxResult, type TmuxExec,
-} from './tmux.ts';
+import { sendLiteral, sendKeyName, capturePane, type TmuxResult } from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
 import { conversationFor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
@@ -675,59 +670,49 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
 
 // ---------------------------------------------------------------------
 // The terminal streaming bridge -- session:attach/detach/resize/raw, and
-// the 'terminal:data' push they feed. This is the missing link between
-// Task 5's coalescer (src/main/stream.ts) and Task 10's xterm widget: pipe
-// each pane's real bytes out of tmux, batch them, and push them to the
-// renderer that asked to watch this session.
+// the 'terminal:data' push they feed. The original design ran tmux
+// headless: it copied output out by hand with pipe-pane into a fifo and
+// poked keys in with send-keys, but never attached a real client. That is
+// where every pain point came from -- tmux never learned the widget's
+// size (so main had to resize the window by hand before every capture),
+// there was no attached client to trigger a redraw (so a fixed settle
+// delay stood in for one), and the fifo needed its own directory
+// permissions and cleanup.
+//
+// This attaches a REAL client instead: `tmux attach -t =name:` runs
+// inside a node-pty, and that pty's bytes are what the widget renders.
+// node-pty gives tmux a real terminal, so pty.resize() makes tmux resize
+// the window itself -- no resize-window call, no settle wait, no size
+// race -- and tmux redraws the full screen on attach, already at the
+// right size, so there is no backlog to capture or replay either. The
+// tmux SESSION still outlives the app: killing the pty only detaches this
+// one client, the same as closing a real terminal window would.
 // ---------------------------------------------------------------------
 
 function validSize(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v > 0;
 }
 
-/** pid -> transport for a session's live output: the fifo tmux's pipe-pane
- *  writes into, the Node stream reading the other end, and the coalescer
- *  batching those reads into 'terminal:data' pushes. Keyed by pid, never by
- *  tmux name, because a pid is the only identifier the renderer ever holds
- *  (same premise as sessions.ts's own byPid registry). */
-type Attachment = { name: string; fifoPath: string; stream: ReadStream; coalescer: Coalescer };
+/** pid -> transport for a session's live output: the pty running `tmux
+ *  attach`, and the coalescer batching its bytes into 'terminal:data'
+ *  pushes. Keyed by pid, never by tmux name, because a pid is the only
+ *  identifier the renderer ever holds (same premise as sessions.ts's own
+ *  byPid registry). */
+type Attachment = { name: string; pty: IPty; coalescer: Coalescer };
 const attachments = new Map<number, Attachment>();
-
-/** Where a session's pipe-pane output lands before this process reads it.
- *  Named for the tmux session -- itself main-generated and re-verified live
- *  (never renderer-supplied, see TMUX_NAME) -- so this path can never be
- *  attacker-chosen and never collides across sessions. Lives under the OS
- *  temp dir, not this app's persisted data directory: it is transient
- *  plumbing for the lifetime of one attachment, never state worth keeping,
- *  let alone backing up. os.tmpdir() rather than Electron's app.getPath is
- *  deliberate -- this file is exercised directly by tests/main/
- *  stream-bridge.test.ts's real-tmux test, outside a running app, and must
- *  not depend on Electron having initialised anything. */
-function fifoPathFor(name: string): string {
-  return join(tmpdir(), 'llm-workspace-terminal-pipes', `${name}.fifo`);
-}
 
 export type AttachRefusalReason = 'invalid_pid' | 'invalid_size' | 'not_tmux' | 'session_gone';
 export type AttachResult =
-  | { status: 'attached'; backlog: string }
+  | { status: 'attached' }
   | { status: 'refused'; reason: AttachRefusalReason };
 
 type AttachDeps = {
   has?: (n: string) => boolean;
-  resize?: TmuxExec;
-  capture?: TmuxExec;
-  /** Injected exec for paneIsAlternate's own display-message query (tmux.ts)
-   *  -- kept separate from `capture` above because it is a different tmux
-   *  subcommand, and a test proving backlogFor's branching should be able
-   *  to mock this without also having to stub out capture-pane's shape. */
-  alternate?: TmuxExec;
-  pipe?: TmuxExec;
-  /** Injected exec for paneSize's own display-message query (tmux.ts) --
-   *  kept separate from `resize` below for the same reason `alternate` is
-   *  kept separate from `capture` above: a test proving the resize-skip
-   *  branch should be able to mock this without also stubbing resize-
-   *  window's own argv shape. */
-  paneSize?: TmuxExec;
+  /** Injectable in place of node-pty's own `spawn` -- lets a test capture
+   *  or fake the IPty a call creates (to assert on its resize/kill/onData)
+   *  without substituting anything for the real tmux binary underneath.
+   *  Defaults to node-pty's real spawn. */
+  spawn?: typeof ptySpawn;
   /** Threaded straight through to makeCoalescer's own injectable `schedule`
    *  (src/main/stream.ts) -- undefined here means undefined there, which
    *  falls back to its real `setTimeout(fn, COALESCE_MS)` default, so this
@@ -737,69 +722,21 @@ type AttachDeps = {
    *  competing timer entirely, rather than racing it with a sleep -- see
    *  tests/main/stream-bridge.test.ts's "flushNow throws" test. */
   schedule?: (fn: () => void) => void;
-  /** How long attachTerminal waits, after an actual resize, for the pane's
-   *  own program to repaint before capturing backlog -- see
-   *  REPAINT_SETTLE_MS's doc comment below for why a fixed delay is safe
-   *  here. Defaults to a real timer; tests inject an immediate resolve so
-   *  the suite does not sleep, same precedent as `schedule` above. */
-  settle?: (ms: number) => Promise<void>;
 };
 
-/** tmux's resize-window returns as soon as tmux updates its own pane
- *  geometry; the PROGRAM inside the pane (a full-screen TUI on the
- *  alternate screen, e.g. Claude Code) only repaints a few milliseconds
- *  later, once it receives SIGWINCH and redraws at the new width.
- *  Capturing backlog before that repaint reads content still laid out at
- *  the OLD width, which is then handed to a renderer terminal of the NEW
- *  width -- the mid-word line-break bug this constant exists to fix. A
- *  fixed delay (rather than polling for the repaint) is acceptable here:
- *  it runs at most once per attach, and only when the size actually
- *  changed (see attachTerminal below), and 150ms is comfortably under the
- *  threshold where a user notices a delay in something they just clicked. */
-const REPAINT_SETTLE_MS = 150;
-
-function defaultSettle(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/** The backlog attach (and re-attach) hand the terminal as scrollback. An
- *  ordinary shell's 2000 lines of history is a meaningful backlog worth
- *  replaying in full. A full-screen TUI on the alternate screen (Claude
- *  Code, vim, etc.) redraws its whole banner on every resize, so that same
- *  2000-line flatten replays every historical redraw instead -- exactly
- *  the repeated-banner symptom this exists to fix. paneIsAlternate (see
- *  tmux.ts) is how tmux itself tells the two apart; when it says the pane
- *  is on the alternate screen, backfill only what's currently visible
- *  (capturePane's `lines: null`) instead of walking back through history
- *  that belongs to that app's own redraws, not to a shell's.
- */
-function backlogFor(name: string, deps: AttachDeps): TmuxResult {
-  const lines = paneIsAlternate(name, deps.alternate) ? null : 2000;
-  return capturePane(name, lines, deps.capture);
-}
-
-/** session:attach. Resize first -- there is no attached tmux client for a
- *  headless session like this, so tmux never learns the widget's real size
- *  on its own (same reasoning as newSession's -x/-y at creation, tmux.ts),
- *  and output arriving before the next resize would wrap at whatever width
- *  the session started with. But only when the pane isn't already at the
- *  requested size: an attach that changes nothing (e.g. a remount at the
- *  same size) must stay fast, with no resize call and no settle wait. When
- *  it does differ, resize, then wait REPAINT_SETTLE_MS for the pane's own
- *  program to repaint at the new width -- see REPAINT_SETTLE_MS's doc
- *  comment above -- before capturing scrollback, so the widget paints
- *  content actually laid out at the new width before any live byte
- *  arrives. Then the live stream itself: start pipe-pane writing into a
- *  fresh fifo, read that fifo, and feed every chunk to a coalescer whose
- *  emit pushes 'terminal:data' at this window.
+/** session:attach. Spawns `tmux attach -t =name:` inside a pty sized to
+ *  cols/rows, and feeds every byte it prints to a coalescer whose emit
+ *  pushes 'terminal:data' at this window. TERM is set explicitly to a
+ *  colour-capable value -- without it neither tmux nor a full-screen
+ *  program inside it (Claude Code) renders colour, since node-pty's
+ *  default env is a copy of this process's own (a GUI app's environment
+ *  frequently has no TERM at all).
  *
- *  Idempotent: a second attach for an already-attached pid skips all of
- *  that and answers with a fresh backlog only. Without this, a renderer
- *  that calls attach twice for the same pid (a remount, a reconnect) would
- *  leak a fifo, a read stream and a coalescer per extra call -- and, since
- *  the fifo path is deterministic per session name, a naive
- *  re-implementation that always creates one from scratch fails loudly
- *  (mkfifo EEXIST) rather than silently doubling up. */
+ *  Idempotent: a second attach for an already-attached pid is a no-op
+ *  success. Without this, a renderer that calls attach twice for the same
+ *  pid (a remount, a reconnect) would leak a second pty and coalescer on
+ *  top of the first -- and a second real `tmux attach` client alongside
+ *  the first, which tmux would happily allow. */
 export async function attachTerminal(
   rawPid: unknown, cols: unknown, rows: unknown, win: BrowserWindow, deps: AttachDeps = {},
 ): Promise<AttachResult> {
@@ -814,87 +751,34 @@ export async function attachTerminal(
   const name = resolveLiveTmux(pid, { has: deps.has });
   if (name === null) return { status: 'refused', reason: 'session_gone' };
 
-  const existing = attachments.get(pid);
-  if (existing) {
-    const captured = backlogFor(existing.name, deps);
-    return { status: 'attached', backlog: captured.ok ? captured.stdout : '' };
-  }
+  if (attachments.has(pid)) return { status: 'attached' };
 
   if (!validSize(cols) || !validSize(rows)) return { status: 'refused', reason: 'invalid_size' };
 
-  // Resize (and settle) only when the pane isn't already at the requested
-  // size -- per this function's doc comment above. A failed/unparseable
-  // paneSize query reads as "differs", not "already correct": see
-  // paneSize's own doc comment (tmux.ts) for why null falls back to the
-  // safe, previous always-resize behaviour rather than guessing a match.
-  const currentSize = paneSize(name, deps.paneSize);
-  const alreadyCorrectSize = currentSize !== null && currentSize.cols === cols && currentSize.rows === rows;
-  if (!alreadyCorrectSize) {
-    resizeWindow(name, cols, rows, deps.resize);
-    await (deps.settle ?? defaultSettle)(REPAINT_SETTLE_MS);
-  }
+  const spawn = deps.spawn ?? ptySpawn;
+  const clientPty = spawn('tmux', ['attach', '-t', `=${name}:`], {
+    cols, rows,
+    env: { ...process.env, TERM: 'xterm-256color' },
+  });
 
-  const backlog = backlogFor(name, deps);
-
-  const fifoPath = fifoPathFor(name);
-  const fifoDir = dirname(fifoPath);
-  // 0o700/0o600: this fifo carries raw agent terminal output -- commands,
-  // file contents, whatever the agent prints -- and os.tmpdir() is safe
-  // from other local users ONLY because macOS's per-user temp dir is mode
-  // 700 and blocks traversal. That assumption breaks the moment TMPDIR is
-  // unset and os.tmpdir() falls back to world-writable /tmp (plausible
-  // under some launchers, under sudo, or a future non-macOS port); a
-  // world-traversable directory with a 644 fifo under it is full
-  // disclosure to any local user. `mode` on mkdirSync is itself
-  // umask-masked (and mkfifo has no reliable -m either), so both are
-  // followed by an explicit chmodSync of the REAL, post-creation path --
-  // never trusted from the creation call's own argument.
-  //
-  // chmodSync runs even when the directory already existed (mkdirSync's
-  // `mode` only applies to a directory it actually creates, never one
-  // already there) -- otherwise a directory left over from a build of this
-  // app that predates this hardening would stay at its old, weaker mode
-  // forever, silently keeping the exact gap this fix exists to close.
-  mkdirSync(fifoDir, { recursive: true, mode: 0o700 });
-  chmodSync(fifoDir, 0o700);
-  // A fifo left behind by a crashed previous run would make mkfifo fail
-  // with EEXIST. Safe to clear unconditionally: the path is per-session and
-  // `attachments` has no entry for this pid (checked above), so nothing in
-  // this process can currently be reading it.
-  try { rmSync(fifoPath, { force: true }); } catch { /* not there -- fine */ }
-  execFileSync('mkfifo', [fifoPath]);
-  chmodSync(fifoPath, 0o600);
-
-  // Opening a fifo for read blocks until a writer opens the other end, so
-  // the read side has to exist before pipePane below starts the writer --
-  // otherwise that writer would have nothing to unblock it.
-  const stream = createReadStream(fifoPath);
   const coalescer = makeCoalescer(pid, (payload: TerminalDataPayload) => {
     if (!win.isDestroyed()) win.webContents.send('terminal:data', payload);
   }, deps.schedule);
-  stream.on('data', chunk => coalescer.push(chunk.toString('utf8')));
-  // A stream error (e.g. tmux tearing down the pipe from its side) should
-  // not crash this process -- worst case the terminal goes quiet, and
-  // detachTerminal below can still clean up.
-  stream.on('error', () => { /* see comment above */ });
+  clientPty.onData(chunk => coalescer.push(chunk));
 
-  attachments.set(pid, { name, fifoPath, stream, coalescer });
+  attachments.set(pid, { name, pty: clientPty, coalescer });
 
-  // Quoted defensively: fifoPath is built entirely from os.tmpdir() and a
-  // TMUX_NAME-validated session name (see fifoPathFor above), so it can
-  // never contain renderer-chosen or shell-active characters -- but pipe-
-  // pane's command string is still interpreted by a shell on tmux's side,
-  // and quoting costs nothing.
-  pipePane(name, `cat >> '${fifoPath}'`, deps.pipe);
-
-  return { status: 'attached', backlog: backlog.ok ? backlog.stdout : '' };
+  return { status: 'attached' };
 }
 
 /** session:detach. Idempotent -- detaching a pid with no attachment is a
  *  no-op success, not an error: the renderer may call this defensively
  *  (e.g. on unmount) without knowing whether attach ever actually
- *  completed for it. */
-export function detachTerminal(rawPid: unknown, deps: { pipe?: TmuxExec } = {}): { status: 'detached' } {
+ *  completed for it. Kills only the PTY -- the `tmux attach` client
+ *  process -- never the tmux session itself: exactly like closing a real
+ *  terminal window, the session and everything running inside it (the
+ *  agent process, its shell) keeps running under the tmux server. */
+export function detachTerminal(rawPid: unknown): { status: 'detached' } {
   const pid = typeof rawPid === 'number' ? rawPid : NaN;
   const existing = attachments.get(pid);
   if (!existing) return { status: 'detached' };
@@ -902,31 +786,28 @@ export function detachTerminal(rawPid: unknown, deps: { pipe?: TmuxExec } = {}):
 
   // flushNow's emit calls win.webContents.send (attachTerminal above) --
   // if the window is already half-destroyed that can throw, and without
-  // this try/finally none of the cleanup below it would ever run, leaking
-  // the tmux pipe, the read stream and the fifo file. The pipe/stream/fifo
-  // cleanup does not depend on the flush having succeeded, so it belongs
-  // in finally, not after a call that might not return.
+  // this try/finally the pty below would never be killed, leaking the
+  // client and its coalescer. Cleanup does not depend on the flush having
+  // succeeded, so it belongs in finally, not after a call that might not
+  // return.
   try {
     existing.coalescer.flushNow();
   } finally {
-    // Stop tmux's copy first, so its writer closes and this process's
-    // reader gets a clean EOF, rather than destroying the reader while
-    // tmux may still be mid-write. Safe even if the tmux session has
-    // already died -- pipePane's exec just reports failure, which there
-    // is nothing useful to do with here (there is nothing left to detach
-    // from).
-    pipePane(existing.name, undefined, deps.pipe);
-    existing.stream.destroy();
-    try { rmSync(existing.fifoPath, { force: true }); } catch { /* already gone -- fine */ }
+    // Default signal is SIGHUP -- the same signal a closed terminal window
+    // sends its foreground process, which is exactly what detaching a real
+    // tmux client looks like. IPty.kill swallows a "no such process" error
+    // internally, so this is safe even if the client has already exited on
+    // its own (the tmux session ended, say).
+    existing.pty.kill();
   }
   return { status: 'detached' };
 }
 
-/** Every live attachment's transport and coalescer, torn down
- *  unconditionally. Called once from app.on('before-quit') in registerIpc
- *  below, so a fifo under the OS temp dir does not outlive this process
- *  the way it would if only session:detach ever cleaned one up (a renderer
- *  that never gets to run its own cleanup on the way out, e.g. Cmd+Q). */
+/** Every live attachment's pty and coalescer, torn down unconditionally.
+ *  Called once from app.on('before-quit') in registerIpc below, so a
+ *  renderer that never gets to run its own cleanup on the way out (Cmd+Q)
+ *  does not leave an orphaned tmux client running after this process
+ *  exits. */
 export function detachAllTerminals(): void {
   for (const pid of [...attachments.keys()]) detachTerminal(pid);
 }
@@ -934,13 +815,22 @@ export function detachAllTerminals(): void {
 export type ResizeRefusalReason = 'invalid_pid' | 'invalid_size' | 'not_tmux' | 'session_gone';
 export type ResizeResult = { status: 'resized' } | { status: 'refused'; reason: ResizeRefusalReason };
 
-/** session:resize. Unlike sendKeysFor, there is no extra capture-pane
- *  freshness check before acting -- a resize fires on every widget resize,
- *  far more often than a reply is sent, and resolveLiveTmux's own liveness
- *  check is enough for an action this frequent and this harmless to repeat. */
+/** session:resize. Resizes the PTY, not tmux directly -- because this pty
+ *  is a real attached client, tmux itself follows its client's size, the
+ *  same way it follows a real terminal window being resized. Unlike
+ *  sendKeysFor, there is no extra freshness check before acting -- a
+ *  resize fires on every widget resize, far more often than a reply is
+ *  sent, and resolveLiveTmux's own liveness check is enough for an action
+ *  this frequent and this harmless to repeat.
+ *
+ *  A pid with no live attachment yet (the widget's first resize, from its
+ *  own initial fit, can race ahead of the attach call that will create the
+ *  pty) is treated as refused rather than silently doing nothing -- there
+ *  is genuinely nothing to resize yet, and the pty attachTerminal spawns
+ *  moments later is sized correctly from the start regardless. */
 export function resizeTerminal(
   rawPid: unknown, cols: unknown, rows: unknown,
-  deps: { has?: (n: string) => boolean; resize?: TmuxExec } = {},
+  deps: { has?: (n: string) => boolean } = {},
 ): ResizeResult {
   if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) {
     return { status: 'refused', reason: 'invalid_pid' };
@@ -952,7 +842,10 @@ export function resizeTerminal(
   const name = resolveLiveTmux(rawPid, { has: deps.has });
   if (name === null) return { status: 'refused', reason: 'session_gone' };
 
-  resizeWindow(name, cols, rows, deps.resize);
+  const existing = attachments.get(rawPid);
+  if (!existing) return { status: 'refused', reason: 'session_gone' };
+
+  existing.pty.resize(cols, rows);
   return { status: 'resized' };
 }
 
@@ -961,15 +854,20 @@ export type RawResult = { status: 'sent' } | { status: 'refused'; reason: RawRef
 
 /** session:raw -- the terminal widget's own keystrokes: arrow keys, Ctrl-C,
  *  whatever a TUI's own prompts need (e.g. the Claude Code trust prompt).
+ *  Written straight to the attached client's own pty, exactly as a real
+ *  terminal would deliver them, which is what lets tmux's own key
+ *  processing see them as real input rather than an injected command.
  *  Deliberately skips sanitizeOutbound (src/main/outbound.ts), unlike
  *  session:keys/sendKeysFor above: that sanitiser exists to stop a REPLY
  *  smuggling control bytes past what the popover showed as plain text.
  *  Here, control bytes are not a smuggling risk -- they are the entire
  *  point. Still resolves through the same not_tmux/session_gone checks as
- *  every other tmux-writing channel: skipping the outbound sanitiser does
- *  not mean skipping "is this pid even a live tmux session". */
+ *  every other tmux-writing channel, plus the same "no live attachment
+ *  yet" refusal resizeTerminal uses above: skipping the outbound sanitiser
+ *  does not mean skipping "is this pid even a live, attached tmux
+ *  session", and there is no pty to write into before attach creates one. */
 export function sendRawFor(
-  rawPid: unknown, data: unknown, deps: { has?: (n: string) => boolean; send?: TmuxExec } = {},
+  rawPid: unknown, data: unknown, deps: { has?: (n: string) => boolean } = {},
 ): RawResult {
   if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) {
     return { status: 'refused', reason: 'invalid_pid' };
@@ -981,10 +879,10 @@ export function sendRawFor(
   const name = resolveLiveTmux(rawPid, { has: deps.has });
   if (name === null) return { status: 'refused', reason: 'session_gone' };
 
-  // No sanitizeOutbound call -- see this function's doc comment. -l is
-  // still mandatory (sendLiteral's own doc comment in tmux.ts): without it
-  // tmux would read the text as a key NAME instead of literal bytes.
-  sendLiteral(name, data, deps.send);
+  const existing = attachments.get(rawPid);
+  if (!existing) return { status: 'refused', reason: 'session_gone' };
+
+  existing.pty.write(data);
   return { status: 'sent' };
 }
 

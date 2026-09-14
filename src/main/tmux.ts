@@ -41,33 +41,12 @@ export function hasSession(name: string, exec: TmuxExec = defaultExec): boolean 
   return exec(['has-session', '-t', target(name)]).ok;
 }
 
-/** True when the pane is showing its alternate screen -- i.e. a full-screen
- *  TUI (Claude Code, vim, etc.) that owns the whole pane and repaints it on
- *  every resize, rather than an ordinary shell whose scrollback is a
- *  meaningful line-by-line history. tmux's own `#{alternate_on}` format
- *  variable is exactly this distinction (1 while the alternate screen is
- *  active, 0 for the normal screen), so this defers to tmux rather than
- *  guessing from a process name or command string. A failed query (pane
- *  gone, tmux unreachable) reads as false -- the caller's existing
- *  full-scrollback behaviour is the safe default when this can't be
- *  determined, not a guess that it's an alt-screen app. */
-export function paneIsAlternate(name: string, exec: TmuxExec = defaultExec): boolean {
-  guard(name);
-  const r = exec(['display-message', '-p', '-t', target(name), '#{alternate_on}']);
-  return r.ok && r.stdout.trim() === '1';
-}
-
-/** The pane's current size, straight from tmux -- the ground truth
- *  attachTerminal (ipc.ts) compares a requested resize against before
- *  acting: resizing (and then waiting out the repaint settle) when the
- *  pane is already at the requested size would cost real time for no
- *  effect. Same display-message mechanism as paneIsAlternate above, one
- *  query for both dimensions rather than two round trips. A failed query
- *  or unparseable reply (pane gone, tmux unreachable) reads as null, not a
- *  guessed size -- same never-guess reasoning as paneIsAlternate's own doc
- *  comment; the caller (attachTerminal) treats null as "differs" so it
- *  falls back to this function's previous always-resize behaviour when
- *  the new check itself can't answer. */
+/** The pane's current size, straight from tmux. No production caller since
+ *  the streaming bridge (ipc.ts) started attaching a real pty client --
+ *  tmux follows that client's own size instead -- but kept here with its
+ *  own direct coverage in tests/main/tmux.test.ts as a general-purpose
+ *  primitive. A failed query or unparseable reply (pane gone, tmux
+ *  unreachable) reads as null, never a guessed size. */
 export function paneSize(name: string, exec: TmuxExec = defaultExec): { cols: number; rows: number } | null {
   guard(name);
   const r = exec(['display-message', '-p', '-t', target(name), '#{pane_width}x#{pane_height}']);
@@ -116,10 +95,10 @@ export function sendKeyName(name: string, key: KeyName, exec: TmuxExec = default
 }
 
 /** `lines: null` omits -S entirely, which makes tmux capture only the
- *  currently-visible pane instead of walking back through scrollback --
- *  the right call for a full-screen TUI on the alternate screen (see
- *  paneIsAlternate above), where "scrollback" is a stack of that app's own
- *  historical repaints, not a history worth flattening into the backlog. */
+ *  currently-visible pane instead of walking back through scrollback.
+ *  Still used by sendKeysFor (ipc.ts) as a freshness check immediately
+ *  before sending a reply -- `lines: 1` there, since it only cares whether
+ *  the pane is still there to receive anything, not what it contains. */
 export function capturePane(name: string, lines: number | null, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
   return exec(lines === null
@@ -127,6 +106,11 @@ export function capturePane(name: string, lines: number | null, exec: TmuxExec =
     : ['capture-pane', '-p', '-S', `-${lines}`, '-t', target(name)]);
 }
 
+/** No production caller since the streaming bridge (ipc.ts) started
+ *  attaching a real pty client -- tmux resizes the window itself to
+ *  follow that client's own size, the same way it would for a real
+ *  terminal. Kept here with its own direct coverage in
+ *  tests/main/tmux.test.ts as a general-purpose primitive. */
 export function resizeWindow(name: string, cols: number, rows: number, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
   return exec(['resize-window', '-t', target(name), '-x', String(cols), '-y', String(rows)]);
@@ -140,9 +124,11 @@ export function resizeWindow(name: string, cols: number, rows: number, exec: Tmu
  *  guard and argv construction in one place, matching this file's other
  *  functions. tmux also refuses to run two pipes on the same pane at once
  *  ("any existing pipe is closed before shell-command is executed"), so a
- *  second start is safe at the tmux level -- ipc.ts's attachTerminal still
- *  tracks its own state so a repeat call doesn't leak a second fifo/reader
- *  on top of it. */
+ *  second start is safe at the tmux level either way. No production caller
+ *  since the streaming bridge (ipc.ts) started attaching a real pty client
+ *  instead of copying pane output out by hand -- kept here with its own
+ *  direct coverage in tests/main/tmux.test.ts as a general-purpose
+ *  primitive. */
 export function pipePane(name: string, command: string | undefined, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
   return command === undefined

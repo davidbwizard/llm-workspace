@@ -21,17 +21,6 @@ const ATTACH_REFUSAL_TEXT: Record<AttachRefusalReason, string> = {
   invalid_size: 'Could not attach to this session.',
 };
 
-/** Bounds the pre-backlog queue (below) against the stream's own measured
- *  ceiling of ~30 MB/s (src/main/stream.ts) -- unbounded, a contended main
- *  process (attach's own IPC round trip, or the capture-pane it waits on)
- *  turns an ordinary delay into unbounded renderer memory. 64 coalesced
- *  frames is generous headroom over how long attach should ever actually
- *  take (capture-pane alone measures under 10ms against a real index --
- *  spec S3) while still bounding the worst case to tens of MB, not an
- *  open-ended stream. Exported so the overflow path is testable against
- *  the real number, not a duplicated guess of it. */
-export const MAX_QUEUED_TERMINAL_PAYLOADS = 64;
-
 /** The raw half of the toggle. Bytes are written IMPERATIVELY -- a setState
  *  per chunk would re-render the card tree at stream rate, which is the
  *  mistake FleetView's own un-debounced subscription would invite copying.
@@ -98,18 +87,6 @@ export function TerminalView({ pid }: { pid: number }) {
       attachOnce();
     });
 
-    // The live-data subscription is registered before attach's own promise
-    // resolves (below), and the two race: main can start pushing bytes the
-    // instant it sets up the pipe attachment, which may be before this
-    // invoke's reply lands back here. Subscribing only after attach
-    // resolves would risk losing exactly those bytes (ipcRenderer drops a
-    // send with no listener yet, rather than queuing it) -- so the
-    // subscription is live from the start, and anything it sees before
-    // backlog has been written is queued here instead of written straight
-    // through. That is what keeps scrollback and live output from ever
-    // interleaving out of order (spec'd behaviour, not a style choice).
-    let backlogWritten = false;
-    let queued: TerminalDataPayload[] = [];
     let lastSeq: number | null = null;
 
     function applyPayload(p: TerminalDataPayload): void {
@@ -123,42 +100,30 @@ export function TerminalView({ pid }: { pid: number }) {
       term.write(p.data);
     }
 
-    // tmux has no attached client, so it never learns our size on its own:
-    // without this the window keeps its creation size and output wraps wrong.
+    // A real tmux client -- attach spawns `tmux attach` inside a pty --
+    // learns our size the moment the pty is created at it, and pty.resize
+    // (main) makes tmux follow every resize after that on its own.
     const onResize = term.onResize(({ cols, rows }) => { void api.resize(pid, cols, rows); });
     const ro = new ResizeObserver(() => fit.fit());
     ro.observe(el);
 
+    // Nothing to queue any more: tmux redraws its own full screen the
+    // moment this pty attaches, already at the right size, so there is no
+    // backlog to wait for and no ordering race between it and live bytes.
     const unsub = api.onTerminalData(payload => {
       const p = payload as TerminalDataPayload;
       // The push channel is broadcast to every attached view -- without
       // this filter, one session's output would land in another's terminal.
       if (p.pid !== pid) return;
-      if (!backlogWritten) {
-        // Chosen over the alternative (force backlog's own write early and
-        // drain): that would mean writing whatever we have BEFORE the
-        // snapshot attach actually asked for has arrived, breaking the
-        // ordering guarantee this whole queue exists for. Dropping instead
-        // -- newest first, i.e. simply refusing to grow further -- keeps
-        // that guarantee intact and produces one clean, visible gap at a
-        // known point, rather than silently ballooning memory or silently
-        // rendering as if nothing were missing.
-        if (queued.length >= MAX_QUEUED_TERMINAL_PAYLOADS) { setGapDetected(true); return; }
-        queued.push(p);
-        return;
-      }
       applyPayload(p);
     });
 
-    /** Attaching is what fixes tmux's pane to a size and captures the backlog
-     *  at that size, so it MUST NOT run until the fit is trustworthy. Called
-     *  from the animation frame above, never on the mount tick: the mount-tick
-     *  fit measures this element before the rail beside it has taken its share
-     *  of the row, so attaching there tells main a width that is too large.
-     *  Main then sizes the pane to it and captures a backlog laid out at that
-     *  width, and the later corrected fit resizes the pane but cannot unwrite
-     *  the backlog already rendered -- which is the mid-word wrapping seen on
-     *  every switch back to this view. */
+    /** Attaching is what spawns the pty at this size, so it MUST NOT run
+     *  until the fit is trustworthy. Called from the animation frame above,
+     *  never on the mount tick: the mount-tick fit measures this element
+     *  before the rail beside it has taken its share of the row, so
+     *  attaching there would tell main a width that is too large, and
+     *  tmux's own redraw would then be laid out at that wrong width. */
     function attachOnce(): void {
       // Re-read rather than closing over the narrowed `api`: this is a hoisted
       // declaration, so TypeScript will not carry the outer null-check into it.
@@ -167,14 +132,7 @@ export function TerminalView({ pid }: { pid: number }) {
       void bridge.attach(pid, term.cols, term.rows).then(r => {
         const res = r as AttachResult;
         if (!alive) return;
-        if (res.status === 'refused') {
-          setRefusalText(ATTACH_REFUSAL_TEXT[res.reason]);
-          return;
-        }
-        term.write(res.backlog);
-        backlogWritten = true;
-        for (const p of queued) applyPayload(p);
-        queued = [];
+        if (res.status === 'refused') setRefusalText(ATTACH_REFUSAL_TEXT[res.reason]);
       });
     }
 

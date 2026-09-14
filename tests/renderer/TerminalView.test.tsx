@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, act } from '@testing-library/react';
-import { TerminalView, MAX_QUEUED_TERMINAL_PAYLOADS } from '../../src/renderer/components/TerminalView.tsx';
+import { TerminalView } from '../../src/renderer/components/TerminalView.tsx';
 
 // Captures every xterm call the component makes, so tests can assert on
 // exactly what reached the (real, un-mockable-in-jsdom) terminal without
@@ -61,11 +61,12 @@ beforeEach(() => {
   webglShouldThrow = false;
   // The component attaches from inside an animation frame, deliberately: the
   // mount-tick fit measures the element before the rail has taken its share of
-  // the row, so attaching there would tell main a width that is too wide and
-  // capture a backlog laid out at it. jsdom's rAF is a real timer, which these
-  // tests -- driven by `await Promise.resolve()` -- would never reach. Run the
-  // callback synchronously so the tests exercise the same path, in the same
-  // order, without waiting on a frame that never comes.
+  // the row, so attaching there would tell main a width that is too wide, and
+  // the pty main spawns (and tmux's own redraw inside it) would be laid out at
+  // that wrong width. jsdom's rAF is a real timer, which these tests -- driven
+  // by `await Promise.resolve()` -- would never reach. Run the callback
+  // synchronously so the tests exercise the same path, in the same order,
+  // without waiting on a frame that never comes.
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
     cb(0);
     return 0;
@@ -75,7 +76,7 @@ beforeEach(() => {
   // test that cares sets (or deliberately clears) it itself.
   document.documentElement.style.removeProperty('--f-mono');
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-    attach: vi.fn(async () => ({ status: 'attached', backlog: 'previous output\n' })),
+    attach: vi.fn(async () => ({ status: 'attached' })),
     detach: vi.fn(async () => ({ status: 'detached' })),
     resize: vi.fn(async () => ({ status: 'resized' })),
     sendRaw: vi.fn(async () => ({ status: 'sent' })),
@@ -154,37 +155,15 @@ describe('TerminalView', () => {
     expect(handler).toBeNull();
   });
 
-  it('writes backlog before any live byte queued ahead of it, never interleaved', async () => {
-    let resolveAttach!: (v: { status: string; backlog: string }) => void;
-    const pending = new Promise<{ status: string; backlog: string }>(res => { resolveAttach = res; });
-    window.fleet!.attach = vi.fn(() => pending) as never;
-
-    render(<TerminalView pid={4821} />);
-    await Promise.resolve();
-    // A live chunk arrives on the broadcast channel before attach's own
-    // promise has resolved -- the subscription is registered before attach
-    // is awaited, precisely because it must not miss data racing ahead of
-    // the reply. It must still queue rather than write straight through.
-    handler?.({ version: 1, pid: 4821, seq: 0, data: 'raced-ahead' });
-    expect(writes).not.toContain('raced-ahead');
-
-    resolveAttach({ status: 'attached', backlog: 'BACKLOG\n' });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(writes).toContain('BACKLOG\n');
-    expect(writes).toContain('raced-ahead');
-    expect(writes.indexOf('BACKLOG\n')).toBeLessThan(writes.indexOf('raced-ahead'));
-  });
-
-  it('does not attach until the corrected fit has run, so the backlog is captured at the real width', async () => {
+  it('does not attach until the corrected fit has run, so the pty is spawned at the real width', async () => {
     // The ordering IS the bug. The mount-tick fit measures this element before
     // the rail beside it has taken its share of the row, so it reads too wide.
-    // Attaching there tells main that width; main sizes the pane to it and
-    // captures a backlog laid out at it, and the later corrected fit resizes
-    // the pane but cannot unwrite a backlog already rendered -- which is the
-    // mid-word wrapping that appeared on every switch back to this view.
-    // So: hold the frame, prove nothing attached, then release it.
+    // Attaching there tells main that width; main would spawn the pty (and
+    // tmux's own redraw inside it) at that wrong width, and the later
+    // corrected fit resizes the pane but cannot unwrite output already
+    // rendered -- which is the mid-word wrapping that appeared on every
+    // switch back to this view. So: hold the frame, prove nothing attached,
+    // then release it.
     let frame: FrameRequestCallback | null = null;
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frame = cb; return 1; });
 
@@ -247,39 +226,5 @@ describe('TerminalView', () => {
       handler?.({ version: 1, pid: 4821, seq: 1, data: 'b' });
     });
     expect(container.textContent).not.toMatch(/missing|gap|dropped/i);
-  });
-
-  // Fix-wave item 2: the pre-backlog queue used to grow without limit while
-  // attach's own promise was still pending -- against the stream's real
-  // ~30 MB/s ceiling, a slow or contended attach turns that into unbounded
-  // renderer memory. Held pending here the same way the ordering test above
-  // does, so payloads pile up in the queue rather than being applied.
-  it('caps the pre-backlog queue rather than growing it without limit, and flags the gap visibly', async () => {
-    let resolveAttach!: (v: { status: string; backlog: string }) => void;
-    const pending = new Promise<{ status: string; backlog: string }>(res => { resolveAttach = res; });
-    window.fleet!.attach = vi.fn(() => pending) as never;
-
-    const { container } = render(<TerminalView pid={4821} />);
-    await Promise.resolve();
-
-    // One more than the cap arrives before backlog does -- the last one
-    // must be the one that gets dropped, not silently accepted and grown
-    // past the limit.
-    act(() => {
-      for (let i = 0; i < MAX_QUEUED_TERMINAL_PAYLOADS + 1; i++) {
-        handler?.({ version: 1, pid: 4821, seq: i, data: `chunk-${i}` });
-      }
-    });
-
-    await act(async () => {
-      resolveAttach({ status: 'attached', backlog: 'BACKLOG\n' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(writes).toContain('BACKLOG\n');
-    expect(writes).toContain(`chunk-${MAX_QUEUED_TERMINAL_PAYLOADS - 1}`); // last one kept
-    expect(writes).not.toContain(`chunk-${MAX_QUEUED_TERMINAL_PAYLOADS}`); // the overflow one, dropped
-    expect(container.textContent).toMatch(/missing|gap|dropped/i);
   });
 });
