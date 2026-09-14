@@ -1,6 +1,16 @@
 /* src/renderer/components/TerminalView.css */
-.term-wrap { display:flex; flex-direction:column; flex:1; min-height:0; }
-.term { flex:1; min-height:0; background:var(--ground); padding:6px 8px; }
+/* min-width:0 on both is load-bearing, not tidiness. A flex item's automatic
+   minimum size is its CONTENT size, and xterm's canvas has an intrinsic width
+   equal to however many columns it last rendered. Without this, one too-wide
+   fit() -- e.g. measured at mount, before the rail has taken its share of the
+   row -- makes the canvas wide, which pins these containers wide, which makes
+   the next fit() compute the same wrong width. The error can never shrink
+   back, so the terminal renders more columns than the pane shows and the
+   overflow is clipped. overflow:hidden keeps a transient over-wide canvas from
+   pushing the layout before the next fit corrects it. */
+.term-wrap { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
+.term { flex:1; min-height:0; min-width:0; overflow:hidden;
+        background:var(--ground); padding:6px 8px; }
 .term-gap { margin:0; padding:4px 8px; font-family:var(--f-mono); font-size:11px;
             color:var(--signal); background:var(--signal-soft); }
 .term-refused { margin:0; padding:16px; font-family:var(--f-body); font-size:13px;

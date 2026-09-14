@@ -81,6 +81,14 @@ export function TerminalView({ pid }: { pid: number }) {
 
     let alive = true;
 
+    // That first fit measures whatever width this element has on the mount
+    // tick, which is before the rail beside it has taken its share of the row
+    // -- so it reads too wide. The ResizeObserver below does correct it, but
+    // only on a later frame, which means the first paint (and the size attach
+    // is told about) is wrong. Re-fit once layout has settled, so the terminal
+    // is right on the frame the user actually sees.
+    const firstFrame = requestAnimationFrame(() => { if (alive) fit.fit(); });
+
     // The live-data subscription is registered before attach's own promise
     // resolves (below), and the two race: main can start pushing bytes the
     // instant it sets up the pipe attachment, which may be before this
@@ -153,6 +161,7 @@ export function TerminalView({ pid }: { pid: number }) {
       unsub();
       onData.dispose();
       onResize.dispose();
+      cancelAnimationFrame(firstFrame);
       ro.disconnect();
       void api.detach(pid);
       term.dispose();

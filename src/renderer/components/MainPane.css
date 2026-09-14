@@ -5,7 +5,11 @@
      view's terminal has real space to fill, the grid needs its own scroll
      instead, or it would simply be clipped at the window's edge. */
   overflow-y:auto; }
-.mainpane.split { flex-direction:row; }
+/* The split view must NOT inherit that scroll. Its children (rail, pane) each
+   manage their own overflow, and a scrolling row container lets an over-wide
+   terminal canvas extend the scroll area instead of being constrained by it --
+   which is the other half of the clipping the min-width:0 rules above fix. */
+.mainpane.split { flex-direction:row; overflow:hidden; }
 .pane { display:flex; flex-direction:column; flex:1; min-width:0; order:1; }
 .panehead { display:flex; gap:10px; align-items:center; padding:7px 12px;
   border-bottom:1px solid var(--line); background:var(--surface); }
