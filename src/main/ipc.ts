@@ -21,7 +21,8 @@ import type { LiveProcess } from '../discovery/parse.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession } from './sessions.ts';
 import {
-  sendLiteral, sendKeyName, capturePane, resizeWindow, pipePane, type TmuxResult, type TmuxExec,
+  sendLiteral, sendKeyName, capturePane, resizeWindow, pipePane, paneIsAlternate,
+  type TmuxResult, type TmuxExec,
 } from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
 import { conversationFor } from '../store/conversation.ts';
@@ -715,6 +716,11 @@ type AttachDeps = {
   has?: (n: string) => boolean;
   resize?: TmuxExec;
   capture?: TmuxExec;
+  /** Injected exec for paneIsAlternate's own display-message query (tmux.ts)
+   *  -- kept separate from `capture` above because it is a different tmux
+   *  subcommand, and a test proving backlogFor's branching should be able
+   *  to mock this without also having to stub out capture-pane's shape. */
+  alternate?: TmuxExec;
   pipe?: TmuxExec;
   /** Threaded straight through to makeCoalescer's own injectable `schedule`
    *  (src/main/stream.ts) -- undefined here means undefined there, which
@@ -726,6 +732,22 @@ type AttachDeps = {
    *  tests/main/stream-bridge.test.ts's "flushNow throws" test. */
   schedule?: (fn: () => void) => void;
 };
+
+/** The backlog attach (and re-attach) hand the terminal as scrollback. An
+ *  ordinary shell's 2000 lines of history is a meaningful backlog worth
+ *  replaying in full. A full-screen TUI on the alternate screen (Claude
+ *  Code, vim, etc.) redraws its whole banner on every resize, so that same
+ *  2000-line flatten replays every historical redraw instead -- exactly
+ *  the repeated-banner symptom this exists to fix. paneIsAlternate (see
+ *  tmux.ts) is how tmux itself tells the two apart; when it says the pane
+ *  is on the alternate screen, backfill only what's currently visible
+ *  (capturePane's `lines: null`) instead of walking back through history
+ *  that belongs to that app's own redraws, not to a shell's.
+ */
+function backlogFor(name: string, deps: AttachDeps): TmuxResult {
+  const lines = paneIsAlternate(name, deps.alternate) ? null : 2000;
+  return capturePane(name, lines, deps.capture);
+}
 
 /** session:attach. Resize first -- there is no attached tmux client for a
  *  headless session like this, so tmux never learns the widget's real size
@@ -759,7 +781,7 @@ export function attachTerminal(
 
   const existing = attachments.get(pid);
   if (existing) {
-    const captured = capturePane(existing.name, 2000, deps.capture);
+    const captured = backlogFor(existing.name, deps);
     return { status: 'attached', backlog: captured.ok ? captured.stdout : '' };
   }
 
@@ -768,7 +790,7 @@ export function attachTerminal(
   // FIRST, per this function's doc comment above.
   resizeWindow(name, cols, rows, deps.resize);
 
-  const backlog = capturePane(name, 2000, deps.capture);
+  const backlog = backlogFor(name, deps);
 
   const fifoPath = fifoPathFor(name);
   const fifoDir = dirname(fifoPath);

@@ -41,6 +41,22 @@ export function hasSession(name: string, exec: TmuxExec = defaultExec): boolean 
   return exec(['has-session', '-t', target(name)]).ok;
 }
 
+/** True when the pane is showing its alternate screen -- i.e. a full-screen
+ *  TUI (Claude Code, vim, etc.) that owns the whole pane and repaints it on
+ *  every resize, rather than an ordinary shell whose scrollback is a
+ *  meaningful line-by-line history. tmux's own `#{alternate_on}` format
+ *  variable is exactly this distinction (1 while the alternate screen is
+ *  active, 0 for the normal screen), so this defers to tmux rather than
+ *  guessing from a process name or command string. A failed query (pane
+ *  gone, tmux unreachable) reads as false -- the caller's existing
+ *  full-scrollback behaviour is the safe default when this can't be
+ *  determined, not a guess that it's an alt-screen app. */
+export function paneIsAlternate(name: string, exec: TmuxExec = defaultExec): boolean {
+  guard(name);
+  const r = exec(['display-message', '-p', '-t', target(name), '#{alternate_on}']);
+  return r.ok && r.stdout.trim() === '1';
+}
+
 export function newSession(
   name: string, cwd: string, command: string, cols: number, rows: number,
   exec: TmuxExec = defaultExec,
@@ -79,9 +95,16 @@ export function sendKeyName(name: string, key: KeyName, exec: TmuxExec = default
   return exec(['send-keys', '-t', target(name), key]);
 }
 
-export function capturePane(name: string, lines: number, exec: TmuxExec = defaultExec): TmuxResult {
+/** `lines: null` omits -S entirely, which makes tmux capture only the
+ *  currently-visible pane instead of walking back through scrollback --
+ *  the right call for a full-screen TUI on the alternate screen (see
+ *  paneIsAlternate above), where "scrollback" is a stack of that app's own
+ *  historical repaints, not a history worth flattening into the backlog. */
+export function capturePane(name: string, lines: number | null, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
-  return exec(['capture-pane', '-p', '-S', `-${lines}`, '-t', target(name)]);
+  return exec(lines === null
+    ? ['capture-pane', '-p', '-t', target(name)]
+    : ['capture-pane', '-p', '-S', `-${lines}`, '-t', target(name)]);
 }
 
 export function resizeWindow(name: string, cols: number, rows: number, exec: TmuxExec = defaultExec): TmuxResult {

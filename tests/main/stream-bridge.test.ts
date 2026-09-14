@@ -263,6 +263,80 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
     expect(detachTerminal(TEST_PID)).toEqual({ status: 'detached' });
   });
 
+  // Repeated-banner bug: a full-screen TUI (Claude Code, vim, ...) switches
+  // the pane to the alternate screen and repaints its whole banner on every
+  // resize. Flattening 2000 lines of scrollback (the old unconditional
+  // behaviour) replays every one of those historical repaints as if they
+  // were ordinary shell history -- confirmed for real against this tmux
+  // binary: capture-pane -S walks back through content from BEFORE the
+  // alternate-screen switch too, not just the alt screen's own lines.
+  // backlogFor (ipc.ts) exists to avoid that by omitting -S whenever
+  // paneIsAlternate says the pane is on the alternate screen. Both halves
+  // of the branch are asserted here so a mutation that always (or never)
+  // omits -S fails this test, not just half of it.
+  it('backfills only the visible pane on the alternate screen, and full scrollback on the normal screen', async () => {
+    killTestSession();
+    // A short pane (10 rows), deliberately: the marker below has to scroll
+    // off the visible area and into real scrollback history BEFORE the
+    // alternate-screen switch, which is what makes -S's bleed-through (see
+    // this test's own doc comment) reproducible against a real tmux server,
+    // rather than merely plausible.
+    const created = newSession(TEST_SESSION, process.cwd(), 'bash', 80, 10);
+    expect(created.ok).toBe(true);
+    await delay(200);
+    registerSession(TEST_PID, TEST_SESSION);
+
+    const type = (text: string): void => {
+      execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, '-l', text]);
+      execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, 'Enter']);
+    };
+
+    // Normal screen: attach now sees this in scrollback -- the existing,
+    // unchanged behaviour for an ordinary shell.
+    type('echo NORMAL_SCREEN_MARKER');
+    // Push the marker off the visible 10 rows and into real history, so
+    // -S -2000 has actual scrollback to walk back through, not just the
+    // still-visible current screen (which -S and its absence would return
+    // identically, proving nothing about the branch under test).
+    for (let i = 0; i < 20; i++) type(`echo pad_${i}`);
+    await delay(200);
+
+    const normalCalls: string[][] = [];
+    const win = fakeWin([]);
+    const normalResult = attachTerminal(TEST_PID, 80, 10, win, {
+      capture: args => { normalCalls.push(args); return realTmuxExec(args); },
+    });
+    expect(normalResult.status).toBe('attached');
+    if (normalResult.status !== 'attached') throw new Error('unreachable');
+    expect(normalResult.backlog).toContain('NORMAL_SCREEN_MARKER');
+    expect(normalCalls[0]).toContain('-S');
+
+    detachTerminal(TEST_PID);
+
+    // Switch the pane to the alternate screen -- the same escape sequence a
+    // real full-screen TUI emits on startup -- then repaint it, the way a
+    // resize-triggered redraw would. NORMAL_SCREEN_MARKER is now well
+    // outside the visible area, sitting only in the history captured above.
+    type("printf '\\033[?1049h'; clear; echo ALT_SCREEN_MARKER");
+    await delay(300);
+    const alt = execFileSync(
+      'tmux', ['display-message', '-p', '-t', `=${TEST_SESSION}:`, '#{alternate_on}'],
+    ).toString().trim();
+    expect(alt).toBe('1'); // proves the test setup actually reached the alternate screen
+
+    const altCalls: string[][] = [];
+    const altResult = attachTerminal(TEST_PID, 80, 10, win, {
+      capture: args => { altCalls.push(args); return realTmuxExec(args); },
+    });
+    expect(altResult.status).toBe('attached');
+    if (altResult.status !== 'attached') throw new Error('unreachable');
+    // The point of the fix: the pre-alt-screen marker must NOT reappear via
+    // flattened scrollback, and -S must not be in the argv that produced it.
+    expect(altResult.backlog).toContain('ALT_SCREEN_MARKER');
+    expect(altResult.backlog).not.toContain('NORMAL_SCREEN_MARKER');
+    expect(altCalls[0]).not.toContain('-S');
+  });
+
   // A dedicated, narrower proof for mutation target 2 above. The big test's
   // own idempotent-reattach step is not enough on its own: a broken,
   // non-idempotent attach that always recreates the fifo/stream/coalescer

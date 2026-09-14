@@ -56,7 +56,19 @@ export function TerminalView({ pid }: { pid: number }) {
     const api = window.fleet;
     if (!api) { setRefusalText('Could not reach the app.'); return; }
 
-    const term = new Terminal({ scrollback: 5000, fontFamily: 'var(--f-mono)', convertEol: false });
+    // xterm measures its cell width by drawing to a canvas 2D context, which
+    // -- unlike CSS -- never resolves a custom property: passing the literal
+    // string 'var(--f-mono)' as fontFamily measures against a fallback font
+    // (usually a generic monospace), giving every cell the wrong width. That
+    // mismatch is what produced the huge letter-spacing, wrapped/overlapping
+    // lines and blank-glyph rectangles this fix addresses. Resolving the
+    // real value at runtime, rather than duplicating theme.css's font list
+    // here, keeps this in sync with the token instead of two sources of
+    // truth drifting apart. The fallback stack matters on its own -- an
+    // early mount, before the stylesheet has applied, can read back ''.
+    const mono = getComputedStyle(document.documentElement).getPropertyValue('--f-mono').trim();
+    const fontFamily = mono || 'ui-monospace, SFMono-Regular, Menlo, monospace';
+    const term = new Terminal({ scrollback: 5000, fontFamily, fontSize: 13, convertEol: false });
     const fit = new FitAddon();
     term.loadAddon(fit);
     // WebGL rendering is an optimization for the ~30 MB/s stream, not a

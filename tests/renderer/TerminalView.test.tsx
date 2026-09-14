@@ -12,10 +12,19 @@ const writes: string[] = [];
 let resizeCb: ((e: { cols: number; rows: number }) => void) | null = null;
 let dataCb: ((text: string) => void) | null = null;
 let webglShouldThrow = false;
+// Every options object a `new Terminal(...)` call in the component received,
+// in order. This is the only way to pin BUG 1 (huge letter-spacing/overlap/
+// blank-glyph rectangles): xterm measures cell width against a real canvas
+// 2D context, which this mock cannot reproduce -- but the actual defect was
+// never in xterm's measurement, it was in the STRING the component handed
+// it ('var(--f-mono)', which canvas text measurement never resolves). That
+// is exactly the argument this array captures.
+const terminalOptions: Array<{ fontFamily?: string }> = [];
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     cols = 80; rows = 24;
+    constructor(opts: { fontFamily?: string }) { terminalOptions.push(opts); }
     loadAddon() {}
     open() {}
     dispose() {}
@@ -45,10 +54,14 @@ let handler: ((p: unknown) => void) | null = null;
 
 beforeEach(() => {
   writes.length = 0;
+  terminalOptions.length = 0;
   resizeCb = null;
   dataCb = null;
   handler = null;
   webglShouldThrow = false;
+  // No test relies on a --f-mono left over from a previous one -- each
+  // test that cares sets (or deliberately clears) it itself.
+  document.documentElement.style.removeProperty('--f-mono');
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
     attach: vi.fn(async () => ({ status: 'attached', backlog: 'previous output\n' })),
     detach: vi.fn(async () => ({ status: 'detached' })),
@@ -64,6 +77,35 @@ describe('TerminalView', () => {
     await Promise.resolve();
     handler?.({ version: 1, pid: 4821, seq: 0, data: 'hello' });
     expect(writes).toContain('hello');
+  });
+
+  // BUG 1: xterm measures cell width against a real canvas 2D context,
+  // which never resolves a CSS custom property -- passing the literal
+  // string 'var(--f-mono)' as fontFamily measures every cell against
+  // whatever fallback the canvas context substitutes, not against the real
+  // font. That mismatch produced the huge letter-spacing, overlapping and
+  // mis-wrapped lines, and blank-glyph rectangles from the report. Pinned
+  // here on the actual string reaching the constructor, not on any visual
+  // symptom (which this mocked Terminal cannot render at all).
+  it('resolves the real --f-mono font stack at runtime instead of handing xterm a raw var() string', async () => {
+    document.documentElement.style.setProperty('--f-mono', '"Test Mono", monospace');
+    render(<TerminalView pid={4821} />);
+    await Promise.resolve();
+    expect(terminalOptions).toHaveLength(1);
+    expect(terminalOptions[0]!.fontFamily).toBe('"Test Mono", monospace');
+    expect(terminalOptions[0]!.fontFamily).not.toContain('var(');
+  });
+
+  // The fallback matters on its own: getComputedStyle can read back '' if
+  // this ever mounts before the stylesheet defining the token has applied.
+  // Without a fallback that would hand xterm an empty fontFamily, not
+  // merely the wrong one.
+  it('falls back to a real font stack when --f-mono resolves empty', async () => {
+    render(<TerminalView pid={4821} />); // beforeEach never sets --f-mono
+    await Promise.resolve();
+    const family = terminalOptions[0]!.fontFamily;
+    expect(family).toBeTruthy();
+    expect(family).not.toContain('var(');
   });
 
   // Fix-wave item 3: webglShouldThrow was declared and reset every
