@@ -29,6 +29,11 @@ declare global {
       detach: (pid: number) => Promise<unknown>;
       resize: (pid: number, cols: number, rows: number) => Promise<unknown>;
       sendRaw: (pid: number, data: string) => Promise<unknown>;
+      // Opens the native folder picker; resolves to the chosen absolute
+      // path, or null if the user cancelled. main still revalidates
+      // whatever comes back (isAbsolutePath in session:launch) -- this
+      // typing narrows nothing at the trust boundary itself.
+      chooseDirectory: () => Promise<string | null>;
       // launch/reattach (Task 13, src/main/launch.ts): real result shapes
       // now that main actually answers them instead of the not_implemented
       // stub.

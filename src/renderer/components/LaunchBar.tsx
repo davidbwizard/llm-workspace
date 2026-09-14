@@ -40,6 +40,15 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
     }
   }
 
+  // Opens the native picker as an alternative to typing the path. A
+  // cancel (or an unreachable main process) resolves to null/undefined --
+  // either way, cwd is left exactly as it was, since a misclick on
+  // "Choose…" must never wipe out a path someone already typed.
+  async function chooseDirectory(): Promise<void> {
+    const chosen = await window.fleet?.chooseDirectory();
+    if (chosen) setCwd(chosen);
+  }
+
   return (
     <form className="launchbar" onSubmit={e => { e.preventDefault(); void launch(); }}>
       <select className="launchprovider" aria-label="Provider" value={provider}
@@ -49,6 +58,10 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
       </select>
       <input className="launchcwd" type="text" aria-label="Working directory"
         placeholder="/path/to/project" value={cwd} onChange={e => setCwd(e.target.value)} />
+      <button type="button" className="launchchoose" aria-label="Choose a working directory"
+        disabled={pending} onClick={() => { void chooseDirectory(); }}>
+        Choose…
+      </button>
       <button type="submit" className="launchgo" disabled={pending}>
         {pending ? 'Launching…' : 'Launch'}
       </button>

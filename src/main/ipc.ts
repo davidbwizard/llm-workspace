@@ -3,7 +3,7 @@
 // binds ipcMain to undefined rather than throwing. That stays harmless only
 // because ipcMain is dereferenced inside registerIpc's body, never at module
 // scope -- a test that imports and calls registerIpc directly will throw.
-import { app, ipcMain, BrowserWindow } from 'electron';
+import { app, ipcMain, BrowserWindow, dialog } from 'electron';
 import { execFileSync } from 'node:child_process';
 import { createReadStream, mkdirSync, rmSync, chmodSync, type ReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -991,6 +991,33 @@ export function registerIpc(
   ipcMain.handle('session:resize', (_event, pid: unknown, cols: unknown, rows: unknown) =>
     resizeTerminal(pid, cols, rows));
   ipcMain.handle('session:raw', (_event, pid: unknown, data: unknown) => sendRawFor(pid, data));
+
+  // LaunchBar's "Choose…" button -- an alternative to typing the working
+  // directory by hand, not a new trust boundary: this returns exactly the
+  // path Electron's native dialog handed back, chosen by the person at the
+  // keyboard, and session:launch below still runs it through
+  // isAbsolutePath itself rather than trusting that this picker guarantees
+  // an absolute path. BrowserWindow.fromWebContents(event.sender), same
+  // pattern as session:attach above, so the dialog opens as a sheet on
+  // macOS rather than a detached window; a missing window (should not
+  // happen in practice) falls back to the windowless form, which Electron
+  // still shows as a standalone dialog. null means either the user
+  // cancelled or nothing was chosen -- the renderer treats both the same
+  // way (leave whatever was already typed alone).
+  ipcMain.handle('dialog:directory', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const result = win
+      ? await dialog.showOpenDialog(win, {
+          title: 'Choose a working directory',
+          properties: ['openDirectory', 'createDirectory'],
+        })
+      : await dialog.showOpenDialog({
+          title: 'Choose a working directory',
+          properties: ['openDirectory', 'createDirectory'],
+        });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
 
   // session:launch/session:reattach (Task 13, src/main/launch.ts). The
   // renderer sends only a provider/pid, an explicit user-chosen directory,

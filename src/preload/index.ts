@@ -34,6 +34,11 @@ const api = {
   attach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:attach', pid, cols, rows),
   detach: (pid: number) => ipcRenderer.invoke('session:detach', pid),
   resize: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:resize', pid, cols, rows),
+  // Opens the native folder picker (LaunchBar's "Choose…" button). Returns
+  // the chosen absolute path, or null on cancel -- main still revalidates
+  // whatever comes back through isAbsolutePath in session:launch, same as
+  // every other channel here.
+  chooseDirectory: () => ipcRenderer.invoke('dialog:directory'),
   // provider/cwd/cols/rows are the renderer's whole say in what starts --
   // main (src/main/launch.ts) generates the tmux session name and reads the
   // pid itself, the same "renderer names a pid or an explicit directory,
