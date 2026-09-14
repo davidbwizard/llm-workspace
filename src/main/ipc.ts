@@ -18,7 +18,7 @@ import {
 import type { LiveProcess } from '../discovery/parse.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
-import { sendLiteral, sendKeyName, capturePane, type TmuxResult } from './tmux.ts';
+import { sendLiteral, sendKeyName, capturePane, setSessionOption, type TmuxResult } from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
 import { conversationFor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
@@ -722,6 +722,10 @@ type AttachDeps = {
    *  competing timer entirely, rather than racing it with a sleep -- see
    *  tests/main/stream-bridge.test.ts's "flushNow throws" test. */
   schedule?: (fn: () => void) => void;
+  /** Injectable in place of tmux.ts's real defaultExec, for setSessionOption
+   *  below -- lets a test capture that call's argv without a real tmux
+   *  binary underneath, the same role `capture`/`send` play for KeysDeps. */
+  setOption?: (args: string[]) => TmuxResult;
 };
 
 /** session:attach. Spawns `tmux attach -t =name:` inside a pty sized to
@@ -754,6 +758,14 @@ export async function attachTerminal(
   if (attachments.has(pid)) return { status: 'attached' };
 
   if (!validSize(cols) || !validSize(rows)) return { status: 'refused', reason: 'invalid_size' };
+
+  // A session this app did not create -- adopted from iTerm, or from a
+  // previous run of this app -- never went through launchSession's own
+  // setSessionOption call, so tmux's mouse support (off by default) is
+  // still off for it. Set it here too, right before the real client
+  // attaches, so every attach -- created or adopted -- ends up scrollable.
+  // Session-scoped (never -g): see setSessionOption's own doc comment.
+  setSessionOption(name, 'mouse', 'on', deps.setOption);
 
   const spawn = deps.spawn ?? ptySpawn;
   const clientPty = spawn('tmux', ['attach', '-t', `=${name}:`], {

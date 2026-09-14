@@ -5,7 +5,7 @@ import {
   attachTerminal, detachTerminal, detachAllTerminals, resizeTerminal, sendRawFor,
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry } from '../../src/main/sessions.ts';
-import { newSession } from '../../src/main/tmux.ts';
+import { newSession, type TmuxResult } from '../../src/main/tmux.ts';
 
 function fakeWin(sent: unknown[]) {
   return {
@@ -44,6 +44,20 @@ function fakePty() {
     resume: () => {},
   } as unknown as IPty;
   return { pty, onDataHandlers, resizeCalls, writeCalls, killCalls };
+}
+
+// Every fake-pty attachTerminal call below now reaches setSessionOption
+// (BUG 2: mouse-scroll) on its way to spawning. A plain no-op stub keeps
+// this suite hermetic -- without it, an uninjected `setOption` falls back
+// to tmux.ts's own real defaultExec, a genuine subprocess call against a
+// session that (in this suite) was never actually created in real tmux.
+function noopOption(): TmuxResult {
+  return { ok: true, stdout: '' };
+}
+
+function optionSpy() {
+  const calls: string[][] = [];
+  return { calls, setOption: (args: string[]): TmuxResult => { calls.push(args); return { ok: true, stdout: '' }; } };
 }
 
 function fakeSpawn(instance: ReturnType<typeof fakePty>) {
@@ -85,11 +99,11 @@ describe('attachTerminal refusals', () => {
   it('refuses a non-positive-integer size before ever spawning a pty', async () => {
     registerSession(4821, 'llmws-claude-abc');
     const { spawn, calls } = fakeSpawn(fakePty());
-    expect(await attachTerminal(4821, 0, 24, win, { has: () => true, spawn }))
+    expect(await attachTerminal(4821, 0, 24, win, { has: () => true, spawn, setOption: noopOption }))
       .toEqual({ status: 'refused', reason: 'invalid_size' });
-    expect(await attachTerminal(4821, 80, -1, win, { has: () => true, spawn }))
+    expect(await attachTerminal(4821, 80, -1, win, { has: () => true, spawn, setOption: noopOption }))
       .toEqual({ status: 'refused', reason: 'invalid_size' });
-    expect(await attachTerminal(4821, 80.5, 24, win, { has: () => true, spawn }))
+    expect(await attachTerminal(4821, 80.5, 24, win, { has: () => true, spawn, setOption: noopOption }))
       .toEqual({ status: 'refused', reason: 'invalid_size' });
     expect(calls).toHaveLength(0);
   });
@@ -182,12 +196,30 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     registerSession(4821, 'llmws-claude-abc');
     const instance = fakePty();
     const { spawn, calls } = fakeSpawn(instance);
-    const result = await attachTerminal(4821, 100, 30, fakeWin([]), { has: () => true, spawn });
+    const result = await attachTerminal(4821, 100, 30, fakeWin([]), { has: () => true, spawn, setOption: noopOption });
     expect(result).toEqual({ status: 'attached' });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.file).toBe('tmux');
     expect(calls[0]!.args).toEqual(['attach', '-t', '=llmws-claude-abc:']);
     expect(calls[0]!.opts).toMatchObject({ cols: 100, rows: 30 });
+  });
+
+  // BUG 2 (terminal scroll): tmux's own mouse support is off by default,
+  // so attaching a real client must turn it on for THIS session before
+  // spawning the client -- and only for this session ('-t', never '-g',
+  // which would silently flip the setting for every tmux session on the
+  // machine, including ones this app has nothing to do with). This also
+  // covers an ADOPTED session (one this app did not create): attachTerminal
+  // is the only tmux-mouse call site such a session ever reaches, since it
+  // skipped launchSession's own setSessionOption call entirely.
+  it('turns mouse mode on for this session alone before attaching, never globally', async () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const { spawn } = fakeSpawn(fakePty());
+    const opt = optionSpy();
+    const result = await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn, setOption: opt.setOption });
+    expect(result).toEqual({ status: 'attached' });
+    expect(opt.calls).toEqual([['set-option', '-t', '=llmws-claude-abc:', 'mouse', 'on']]);
+    expect(opt.calls.flat()).not.toContain('-g');
   });
 
   // Mutation target: TERM in the pty's own env. Without it, neither tmux
@@ -198,7 +230,7 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     registerSession(4821, 'llmws-claude-abc');
     const instance = fakePty();
     const { spawn, calls } = fakeSpawn(instance);
-    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn });
+    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn, setOption: noopOption });
     const opts = calls[0]!.opts as { env?: Record<string, string | undefined> };
     expect(opts.env?.TERM).toBe('xterm-256color');
   });
@@ -208,9 +240,9 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     const instance = fakePty();
     const { spawn, calls } = fakeSpawn(instance);
     const win = fakeWin([]);
-    expect(await attachTerminal(4821, 80, 24, win, { has: () => true, spawn })).toEqual({ status: 'attached' });
-    expect(await attachTerminal(4821, 80, 24, win, { has: () => true, spawn })).toEqual({ status: 'attached' });
-    expect(await attachTerminal(4821, 100, 40, win, { has: () => true, spawn })).toEqual({ status: 'attached' });
+    expect(await attachTerminal(4821, 80, 24, win, { has: () => true, spawn, setOption: noopOption })).toEqual({ status: 'attached' });
+    expect(await attachTerminal(4821, 80, 24, win, { has: () => true, spawn, setOption: noopOption })).toEqual({ status: 'attached' });
+    expect(await attachTerminal(4821, 100, 40, win, { has: () => true, spawn, setOption: noopOption })).toEqual({ status: 'attached' });
     expect(calls).toHaveLength(1);
   });
 
@@ -219,7 +251,9 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     const instance = fakePty();
     const { spawn } = fakeSpawn(instance);
     const sent: unknown[] = [];
-    await attachTerminal(4821, 80, 24, fakeWin(sent), { has: () => true, spawn, schedule: fn => fn() });
+    await attachTerminal(4821, 80, 24, fakeWin(sent), {
+      has: () => true, spawn, schedule: fn => fn(), setOption: noopOption,
+    });
     instance.onDataHandlers[0]!('hello from tmux');
     expect(sent).toEqual([{ version: 1, pid: 4821, seq: 0, data: 'hello from tmux' }]);
   });
@@ -228,7 +262,7 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     registerSession(4821, 'llmws-claude-abc');
     const instance = fakePty();
     const { spawn } = fakeSpawn(instance);
-    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn });
+    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn, setOption: noopOption });
     expect(resizeTerminal(4821, 120, 40, { has: () => true })).toEqual({ status: 'resized' });
     expect(instance.resizeCalls).toEqual([{ cols: 120, rows: 40 }]);
   });
@@ -241,7 +275,7 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     registerSession(4821, 'llmws-claude-abc');
     const instance = fakePty();
     const { spawn } = fakeSpawn(instance);
-    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn });
+    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn, setOption: noopOption });
     expect(sendRawFor(4821, '\x03', { has: () => true })).toEqual({ status: 'sent' });
     expect(sendRawFor(4821, '\x1b[A', { has: () => true })).toEqual({ status: 'sent' });
     expect(instance.writeCalls).toEqual(['\x03', '\x1b[A']);
@@ -251,7 +285,7 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     registerSession(4821, 'llmws-claude-abc');
     const instance = fakePty();
     const { spawn } = fakeSpawn(instance);
-    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn });
+    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn, setOption: noopOption });
 
     expect(detachTerminal(4821)).toEqual({ status: 'detached' });
     expect(instance.killCalls).toHaveLength(1);
@@ -266,8 +300,8 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     registerSession(4822, 'llmws-claude-def');
     const a = fakePty();
     const b = fakePty();
-    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn: fakeSpawn(a).spawn });
-    await attachTerminal(4822, 80, 24, fakeWin([]), { has: () => true, spawn: fakeSpawn(b).spawn });
+    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn: fakeSpawn(a).spawn, setOption: noopOption });
+    await attachTerminal(4822, 80, 24, fakeWin([]), { has: () => true, spawn: fakeSpawn(b).spawn, setOption: noopOption });
 
     detachAllTerminals();
     expect(a.killCalls).toHaveLength(1);

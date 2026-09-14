@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   sendLiteral, sendKeyName, hasSession, capturePane, pipePane, paneSize, TMUX_NAME,
-  listSessionNames, type KeyName,
+  listSessionNames, setSessionOption, type KeyName,
 } from '../../src/main/tmux.ts';
 
 function spy() {
@@ -102,6 +102,38 @@ describe('paneSize', () => {
 
   it('refuses a name this app did not generate', () => {
     expect(() => paneSize('not-ours')).toThrow();
+  });
+});
+
+// BUG 2 (terminal scroll): tmux's own mouse support defaults off, so the
+// wheel does nothing once this app attaches a real client. This is the
+// per-session fix -- '-t', never '-g' (which would flip the setting for
+// every tmux session on the machine, not just ones this app manages).
+describe('setSessionOption', () => {
+  it('scopes the option to this session alone, with -t, never -g', () => {
+    const s = spy();
+    setSessionOption('llmws-claude-abc', 'mouse', 'on', s.exec);
+    expect(s.calls[0]).toEqual(['set-option', '-t', '=llmws-claude-abc:', 'mouse', 'on']);
+  });
+
+  // Mutation target: a '-t' -> '-g' swap must fail this, since that is
+  // exactly the difference between a local setting and editing the user's
+  // own tmux config for every session on the machine.
+  it('never passes -g', () => {
+    const s = spy();
+    setSessionOption('llmws-claude-abc', 'mouse', 'on', s.exec);
+    expect(s.calls[0]).not.toContain('-g');
+  });
+
+  it('targets exactly, with the trailing : a real tmux server requires', () => {
+    const s = spy();
+    setSessionOption('llmws-claude-abc', 'mouse', 'on', s.exec);
+    const t = s.calls[0]![s.calls[0]!.indexOf('-t') + 1]!;
+    expect(t).toBe('=llmws-claude-abc:');
+  });
+
+  it('refuses a name this app did not generate', () => {
+    expect(() => setSessionOption('not-ours', 'mouse', 'on')).toThrow();
   });
 });
 

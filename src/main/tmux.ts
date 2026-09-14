@@ -56,6 +56,22 @@ export function paneSize(name: string, exec: TmuxExec = defaultExec): { cols: nu
   return { cols: Number(m[1]), rows: Number(m[2]) };
 }
 
+/** Session-scoped `set-option` -- e.g. turning mouse mode on so a wheel
+ *  scroll enters tmux copy-mode (tmux's own mouse support defaults off,
+ *  verified against a real server: `tmux show-options -g mouse` -> `mouse
+ *  off`). Always `-t <target>`, NEVER `-g`: `-g` sets the option GLOBALLY,
+ *  for every tmux session on the machine, including ones this app has
+ *  nothing to do with -- that would silently rewrite the user's own tmux
+ *  config. `-t` scopes the change to exactly the one session `name`
+ *  identifies, via the same target()/guard() every other function here
+ *  uses, so this can only ever touch a session this app generates. */
+export function setSessionOption(
+  name: string, option: string, value: string, exec: TmuxExec = defaultExec,
+): TmuxResult {
+  guard(name);
+  return exec(['set-option', '-t', target(name), option, value]);
+}
+
 export function newSession(
   name: string, cwd: string, command: string, cols: number, rows: number,
   exec: TmuxExec = defaultExec,

@@ -38,6 +38,36 @@ describe('launchSession', () => {
     expect(calls.some(c => c.includes('send-keys'))).toBe(false);
   });
 
+  // BUG 2 (terminal scroll): tmux's mouse support is off by default, so a
+  // freshly created session must have it turned on for itself alone --
+  // '-t', never '-g' (which would edit the user's own tmux config for
+  // every session on the machine, not just this one).
+  it('turns mouse mode on for the new session alone, never globally', () => {
+    const calls: string[][] = [];
+    const r = launchSession('claude', '/tmp/proj', 120, 40, {
+      exec: (a: string[]) => { calls.push(a); return { ok: true, stdout: '' }; },
+      panePid: () => 4821,
+    });
+    expect(r).toEqual({ status: 'launched', pid: 4821 });
+    const name = tmuxNameForPid(4821)!;
+    expect(calls).toEqual(expect.arrayContaining([
+      ['set-option', '-t', `=${name}:`, 'mouse', 'on'],
+    ]));
+    expect(calls.flat()).not.toContain('-g');
+  });
+
+  // The set-option call must never run when creation itself failed -- there
+  // is no session left to scope it to.
+  it('never sets the mouse option when new-session itself fails', () => {
+    const calls: string[][] = [];
+    const r = launchSession('claude', '/tmp/proj', 120, 40, {
+      exec: (a: string[]) => { calls.push(a); return { ok: false, error: 'tmux: no server' }; },
+      panePid: () => null,
+    });
+    expect(r.status).toBe('failed');
+    expect(calls.some(c => c.includes('set-option'))).toBe(false);
+  });
+
   it('reports failure rather than registering a session that never started', () => {
     const r = launchSession('claude', '/tmp/proj', 120, 40, {
       exec: () => ({ ok: false, error: 'tmux: no server' }),

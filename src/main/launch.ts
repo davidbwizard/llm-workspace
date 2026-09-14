@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Provider } from '../core/types.ts';
 import type { KillResult } from './ipc.ts';
-import { newSession, panePid as tmuxPanePid, type TmuxExec } from './tmux.ts';
+import { newSession, setSessionOption, panePid as tmuxPanePid, type TmuxExec } from './tmux.ts';
 import { registerSession } from './sessions.ts';
 
 export type LaunchResult =
@@ -45,6 +45,13 @@ export function launchSession(
   const name = `llmws-${provider}-${randomUUID().slice(0, 8)}`;
   const started = newSession(name, cwd, command, cols, rows, deps.exec);
   if (!started.ok) return { status: 'failed', reason: started.error };
+
+  // tmux's mouse support is off by default, so once a real client attaches
+  // (session:attach, ipc.ts) the wheel does nothing until this runs. Set
+  // here too -- not just at attach time -- so a freshly created session is
+  // already scrollable from its very first attach. Session-scoped (never
+  // -g): see setSessionOption's own doc comment in tmux.ts.
+  setSessionOption(name, 'mouse', 'on', deps.exec);
 
   const lookup = deps.panePid ?? (n => tmuxPanePid(n));
   const pid = lookup(name);
