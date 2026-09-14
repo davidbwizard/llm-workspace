@@ -56,6 +56,27 @@ describe('launchSession', () => {
     expect(calls.flat()).not.toContain('-g');
   });
 
+  // tmux's own status line otherwise renders inside the app's terminal
+  // (reported as a literal "[llmws-claude-...:[tmux]" row at the bottom
+  // once a real client attaches) -- pure noise inside an app with its own
+  // chrome. Same '-t'-alone discipline as the mouse option above.
+  it('turns the tmux status bar off for the new session alone, never globally', () => {
+    const calls: string[][] = [];
+    const r = launchSession('claude', '/tmp/proj', 120, 40, {
+      exec: (a: string[]) => { calls.push(a); return { ok: true, stdout: '' }; },
+      panePid: () => 4821,
+    });
+    expect(r).toEqual({ status: 'launched', pid: 4821 });
+    const name = tmuxNameForPid(4821)!;
+    // Mutation target: a '-t' -> '-g' swap must fail this, since that is
+    // the difference between a local setting and editing the user's own
+    // tmux config for every session on the machine.
+    expect(calls).toEqual(expect.arrayContaining([
+      ['set-option', '-t', `=${name}:`, 'status', 'off'],
+    ]));
+    expect(calls.flat()).not.toContain('-g');
+  });
+
   // The set-option call must never run when creation itself failed -- there
   // is no session left to scope it to.
   it('never sets the mouse option when new-session itself fails', () => {

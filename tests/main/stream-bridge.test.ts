@@ -218,7 +218,30 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     const opt = optionSpy();
     const result = await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn, setOption: opt.setOption });
     expect(result).toEqual({ status: 'attached' });
-    expect(opt.calls).toEqual([['set-option', '-t', '=llmws-claude-abc:', 'mouse', 'on']]);
+    expect(opt.calls).toEqual([
+      ['set-option', '-t', '=llmws-claude-abc:', 'mouse', 'on'],
+      ['set-option', '-t', '=llmws-claude-abc:', 'status', 'off'],
+    ]);
+    expect(opt.calls.flat()).not.toContain('-g');
+  });
+
+  // Same adopted-session reasoning as the mouse test above: attaching is
+  // the only tmux-status call site an adopted session ever reaches, since
+  // it skipped launchSession's own setSessionOption call entirely. tmux's
+  // status line otherwise renders inside the terminal once a real client
+  // attaches (reported as a literal "[llmws-claude-...:[tmux]" row at the
+  // bottom) -- pure noise inside an app that already has its own chrome.
+  it('turns the tmux status bar off for this session alone before attaching, never globally', async () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const { spawn } = fakeSpawn(fakePty());
+    const opt = optionSpy();
+    const result = await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn, setOption: opt.setOption });
+    expect(result).toEqual({ status: 'attached' });
+    // Mutation target: a '-t' -> '-g' swap on the status call must fail
+    // this, since that is exactly the difference between a per-session
+    // setting and rewriting the user's own tmux config for every session
+    // on the machine.
+    expect(opt.calls).toContainEqual(['set-option', '-t', '=llmws-claude-abc:', 'status', 'off']);
     expect(opt.calls.flat()).not.toContain('-g');
   });
 

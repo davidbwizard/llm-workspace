@@ -52,6 +52,15 @@ export function launchSession(
   // already scrollable from its very first attach. Session-scoped (never
   // -g): see setSessionOption's own doc comment in tmux.ts.
   setSessionOption(name, 'mouse', 'on', deps.exec);
+  // tmux's own status line has no reason to render inside this app -- the
+  // app already has its own chrome around the terminal, and the status
+  // line just wastes a row and reads as noise (it showed up as a literal
+  // "[llmws-claude-...:[tmux]" line at the bottom once a real client
+  // attached). Off for THIS session alone, same -t-not-g discipline as the
+  // mouse option above -- never global, which would strip the status line
+  // from every tmux session on the machine, including ones this app has
+  // nothing to do with.
+  setSessionOption(name, 'status', 'off', deps.exec);
 
   const lookup = deps.panePid ?? (n => tmuxPanePid(n));
   const pid = lookup(name);

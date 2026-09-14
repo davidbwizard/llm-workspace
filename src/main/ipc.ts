@@ -766,6 +766,11 @@ export async function attachTerminal(
   // attaches, so every attach -- created or adopted -- ends up scrollable.
   // Session-scoped (never -g): see setSessionOption's own doc comment.
   setSessionOption(name, 'mouse', 'on', deps.setOption);
+  // Same reasoning, same site, for tmux's own status line (see
+  // launchSession's doc comment in launch.ts) -- an adopted session skipped
+  // launchSession entirely, so this is the only place it is ever turned off
+  // for one. Session-scoped, never -g.
+  setSessionOption(name, 'status', 'off', deps.setOption);
 
   const spawn = deps.spawn ?? ptySpawn;
   const clientPty = spawn('tmux', ['attach', '-t', `=${name}:`], {
