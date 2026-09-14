@@ -4,37 +4,6 @@ import { openBlockers, type Blocker } from '../store/signals.ts';
 import { classifyMatch, type MatchQuality, type MatchResult } from '../discovery/match.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
 
-/** Providers hidden from the app entirely -- the fleet grid, the session
- *  rail, and History all source their rows from this module (fleetState/
- *  fleetStatePage for History, openSessions/openSessionsLive for the grid
- *  and rail), so filtering HERE is the one place that keeps every surface
- *  in sync, rather than a `provider !== 'codex'` check scattered through
- *  each renderer component.
- *
- *  This is a PRODUCT PREFERENCE, not a fact discovery got wrong: David
- *  only works with Claude sessions in the app, and Codex cards were pure
- *  noise -- doubly so since Codex reattach is gated off (unprobed resume
- *  behaviour), so those cards could never be acted on anyway. It does NOT
- *  touch capability: the Codex parser, the `Provider` type, the
- *  launch-bar's provider dropdown, `probeCapabilities`, and reattach
- *  gating are all unaffected -- this only decides what gets DISPLAYED.
- *
- *  To bring Codex sessions back, remove 'codex' from this set. That is
- *  the one edit needed anywhere in the codebase. */
-export const HIDDEN_PROVIDERS: ReadonlySet<Provider> = new Set<Provider>(['codex']);
-
-/** SQL fragment + bound params for excluding HIDDEN_PROVIDERS from a query
- *  that aliases the events table as `alias` -- shared by sessionSummaries
- *  and fleetState's main query so the two can't drift on how the exclusion
- *  is built. Returns an empty clause (never `NOT IN ()`, which is invalid
- *  SQL) when HIDDEN_PROVIDERS is empty, so clearing the set to re-enable
- *  every provider degrades cleanly rather than breaking the query. */
-function excludeHiddenProviders(alias: string): { clause: string; params: string[] } {
-  if (HIDDEN_PROVIDERS.size === 0) return { clause: '', params: [] };
-  const params = [...HIDDEN_PROVIDERS];
-  return { clause: `${alias}.provider NOT IN (${params.map(() => '?').join(',')})`, params };
-}
-
 /** Is this run reachable? (spec §9.2) */
 export type Lifecycle = 'active' | 'disconnected' | 'ended';
 /** What is it doing? Current while active, LAST KNOWN while disconnected. */
@@ -198,18 +167,12 @@ export interface FleetOpts {
  *  the fleet:list/fleet:update path (see buildFleetListPayload's and
  *  pushFleet's doc comments in src/main/ipc.ts). */
 function sessionSummaries(db: Db): SessionSummaryRow[] {
-  // HIDDEN_PROVIDERS excluded IN the query, not filtered from the result
-  // afterward: fleetStatePage ranks and slices pages from exactly what
-  // this returns, so an after-the-fact filter would leave `total` counting
-  // hidden sessions and a page short of `limit` rows whenever a hidden
-  // session took one of its slots.
-  const { clause, params } = excludeHiddenProviders('e');
   return db.prepare(`
     SELECT session_id, provider, MAX(ts) last_ts,
       (SELECT json_extract(payload,'$.cwd') FROM events c
         WHERE c.session_id = e.session_id AND c.kind='session.started'
         ORDER BY c.ts DESC, c.id DESC LIMIT 1) cwd
-    FROM events e ${clause ? `WHERE ${clause}` : ''} GROUP BY session_id, provider`).all(...params) as any[];
+    FROM events e GROUP BY session_id, provider`).all() as any[];
 }
 
 export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
@@ -221,21 +184,6 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   if (opts.sessionIds && opts.sessionIds.length === 0) return [];
   const idFilter = opts.sessionIds ? `WHERE e.session_id IN (${opts.sessionIds.map(() => '?').join(',')})` : '';
   const idParams = opts.sessionIds ?? [];
-  // A SEPARATE filter/params pair for the main rows query below, rather
-  // than folding this into idFilter/idParams: those two are reused
-  // verbatim by the agentIdFilter query further down (same placeholder
-  // count, same bound values), and appending HIDDEN_PROVIDERS' params to
-  // idParams would desync that second query's placeholder count from what
-  // it actually binds. Same "in the query, not after" reasoning as
-  // sessionSummaries above -- rows) feeds fleetStatePage's globalRows
-  // (worktree-sharing/matching context) when opts.sessionIds is unset, so
-  // filtering afterward would leave that context inconsistent with the
-  // sessionSummaries-derived globalRows used when it IS set.
-  const { clause: hiddenClause, params: hiddenParams } = excludeHiddenProviders('e');
-  const rowsFilter = hiddenClause
-    ? `${idFilter}${idFilter ? ' AND ' : 'WHERE '}${hiddenClause}`
-    : idFilter;
-  const rowsParams = [...idParams, ...hiddenParams];
 
   // DEVIATION from the brief's SQL (see task-4-report.md for the write-up):
   //
@@ -291,7 +239,7 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
       (SELECT k.kind FROM events k
         WHERE k.session_id = e.session_id
         ORDER BY k.ts DESC, k.id DESC LIMIT 1) last_kind
-    FROM events e ${rowsFilter} GROUP BY session_id, provider`).all(...rowsParams) as any[];
+    FROM events e ${idFilter} GROUP BY session_id, provider`).all(...idParams) as any[];
 
   // Per-agent recency + spawn membership, merged into one scan (review:
   // the two separate unindexed full scans over `events` -- one for
@@ -623,14 +571,11 @@ export function openSessions(
   sessions: SessionState[], processes: LiveProcess[], deps: { isTmux?: (pid: number) => boolean } = {},
 ): OpenSession[] {
   const isTmux = deps.isTmux ?? (() => false);
-  // HIDDEN_PROVIDERS dropped before matching even runs -- a Codex process
-  // must never produce a card, one per live process below.
-  const visible = processes.filter(p => !HIDDEN_PROVIDERS.has(p.provider));
   const refs = sessions.map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
-  const matches = classifyMatch(visible, refs);
+  const matches = classifyMatch(processes, refs);
   const byId = new Map(sessions.map(s => [s.sessionId, s]));
 
-  return visible.map((p, i) => {
+  return processes.map((p, i) => {
     const m = matches[i]!; // classifyMatch returns one result per process, same order
     const matched = m.quality === 'unique' ? byId.get(m.sessionId!) ?? null : null;
     return buildOpenSession(p, m, matched, isTmux);
@@ -691,12 +636,7 @@ export function openSessionsLive(
 ): OpenSession[] {
   const isTmux = deps.isTmux ?? (() => false);
   const launchedAtForPid = deps.launchedAtForPid ?? (() => null);
-  // HIDDEN_PROVIDERS dropped before matching even runs -- a Codex process
-  // must never produce a card, and must never spend a candidate-cwd query
-  // proving that it won't. Everything below reads `visible`, never the
-  // raw `processes` param.
-  const visible = processes.filter(p => !HIDDEN_PROVIDERS.has(p.provider));
-  const cwds = [...new Set(visible.map(p => p.cwd).filter((c): c is string => c !== null))];
+  const cwds = [...new Set(processes.map(p => p.cwd).filter((c): c is string => c !== null))];
 
   const candidateRows = cwds.length === 0 ? [] : db.prepare(`
     SELECT session_id, json_extract(payload,'$.cwd') cwd, ts, id
@@ -714,7 +654,7 @@ export function openSessionsLive(
   }
 
   const refs = [...cwdBySession.entries()].map(([sessionId, cwd]) => ({ sessionId, cwd }));
-  const matches = classifyMatch(visible, refs);
+  const matches = classifyMatch(processes, refs);
 
   // Disambiguate an ambiguous match for a pid THIS APP launched: among the
   // several sessions sharing that cwd, the app's own session is the one
@@ -764,13 +704,6 @@ export function openSessionsLive(
     sessionId: string; lastProse: string | null; events: number | null; activity: Activity;
   }>();
   if (uniqueIds.length > 0) {
-    // Deliberately the raw `processes` count, not `visible`'s: this is
-    // "did discovery's pgrep/ps/lsof toolchain find anything AT ALL this
-    // sweep" (spec §7.1a, see fleetState's own hasLiveSignal), a signal
-    // about whether discovery itself is working -- a machine running only
-    // Codex right now is not a broken toolchain, and must not trip the
-    // "discovery found nothing" escape hatch in deriveActivity just
-    // because every process it found happens to be hidden from display.
     const hasLiveSignal = processes.length > 0;
     const blockers = new Map<string, Blocker>();
     for (const b of openBlockers(db, undefined, now)) blockers.set(b.sessionId, b);
@@ -798,7 +731,7 @@ export function openSessionsLive(
     }
   }
 
-  return visible.map((p, i) => {
+  return processes.map((p, i) => {
     const m = resolvedMatches[i]!;
     const enrichment = m.quality === 'unique' ? enrichmentById.get(m.sessionId!) ?? null : null;
     return buildOpenSession(p, m, enrichment, isTmux);

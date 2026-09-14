@@ -1,9 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import {
-  fleetState, openSessions, openSessionsLive, fleetStatePage, HIDDEN_PROVIDERS, type SessionState,
-} from '../../src/fleet/state.ts';
+import { fleetState, openSessions, openSessionsLive, fleetStatePage } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
 
@@ -422,44 +420,6 @@ describe('fleetState', () => {
       expect(s!.lifecycle).toBe('disconnected');
     });
   });
-
-  // The display switch (HIDDEN_PROVIDERS, src/fleet/state.ts): Codex is
-  // hidden from History entirely -- David only works with Claude sessions
-  // in the app, and Codex reattach is gated off, so those rows were pure
-  // noise. Capability (the parser, the Provider type, launch, reattach
-  // gating) is untouched; only what fleetState hands back for display is
-  // filtered, in the query itself (see the doc comments on
-  // excludeHiddenProviders and HIDDEN_PROVIDERS).
-  describe('HIDDEN_PROVIDERS -- Codex hidden from History', () => {
-    it('pins the hidden set to exactly Codex, not anything broader', () => {
-      expect(HIDDEN_PROVIDERS).toEqual(new Set(['codex']));
-    });
-
-    it('drops a Codex session from fleetState entirely, while a Claude session in the same index still shows', () => {
-      const db = openDb(':memory:');
-      insertEvents(db, [
-        ev({ kind:'session.started', payload:{ cwd:'/repo/claude' }, contentHash:'a' }),
-        ev({ sessionId:'s2', provider:'codex', kind:'session.started', payload:{ cwd:'/repo/codex' }, contentHash:'b' }),
-      ]);
-      const sessions = fleetState(db, { now: NOW });
-      expect(sessions.map(s => s.sessionId)).toEqual(['s1']);
-      expect(sessions[0]!.provider).toBe('claude');
-    });
-
-    it('excludes a hidden-provider session from the total count and page contents, not just from the rows shown', () => {
-      const db = openDb(':memory:');
-      insertEvents(db, [
-        ev({ kind:'session.started', payload:{ cwd:'/repo/claude' }, contentHash:'a' }),
-        ev({ sessionId:'s2', provider:'codex', kind:'session.started', payload:{ cwd:'/repo/codex' }, contentHash:'b' }),
-      ]);
-      const page = fleetStatePage(db, 0, 10, { now: NOW });
-      // total must count only what David can actually see -- a total that
-      // includes the hidden session, with fleetState then dropping it from
-      // `sessions`, is a page silently short of its own claimed count.
-      expect(page.total).toBe(1);
-      expect(page.sessions.map(s => s.sessionId)).toEqual(['s1']);
-    });
-  });
 });
 
 // openSessions enumerates from live PROCESSES, not from transcripts -- the
@@ -494,10 +454,10 @@ describe('openSessions', () => {
 
   it('shows pid, provider, host, cwd, project, age and memory for a process with no transcript match at all', () => {
     const open = openSessions([], [proc({
-      pid:42, provider:'claude', cwd:'/Users/me/orphan', host:'iterm2', ageSeconds:120, rssBytes:50_000_000,
+      pid:42, provider:'codex', cwd:'/Users/me/orphan', host:'iterm2', ageSeconds:120, rssBytes:50_000_000,
     })]);
     expect(open).toEqual([{
-      pid:42, provider:'claude', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
+      pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
       sessionId:null, lastProse:null, events:null, activity:null, tmux:false,
     }]);
@@ -506,25 +466,17 @@ describe('openSessions', () => {
   // provider is not enrichment: it is the one field discovery already knows
   // with certainty for every process (which `pgrep -x <bin>` found it),
   // independent of any transcript match -- see the openSessions doc
-  // comment. Proven here with the roles reversed from a hand-built session
-  // (not routed through fleetState -- fleetState now hides HIDDEN_PROVIDERS
-  // sessions outright, so it could never hand back a 'codex' one to match
-  // against): the SESSION is 'codex', the PROCESS is the visible 'claude',
-  // and the process's own provider is still what comes out, because
-  // provider answers "which CLI is this process", not "which session does
-  // this belong to".
+  // comment. A process discovered as 'codex' reports 'codex' even when it
+  // matches a 'claude' session's cwd, because provider answers "which CLI
+  // is this process", not "which session does this belong to".
   it("reports provider from the process's own discovery, not from a matched session of a different provider", () => {
-    const session: SessionState = {
-      sessionId:'s1', runId:null, provider:'codex', cwd:'/repo/live', project:'live',
-      lifecycle:'active', activity:'idle', stale:false, confidence:'guess', source:'transcript',
-      lastProse:null, lastActivityAt:null, agents:0, liveAgents:0, events:0, blocker:null,
-      match:'unknown', candidates:[], host:null, alive:false, processAgeSeconds:null,
-      processRssBytes:null, sharesWorktreeWith:[],
-    };
-    const open = openSessions([session], [proc({ pid:9, provider:'claude', cwd:'/repo/live' })]);
+    const db = openDb(':memory:');
+    insertEvents(db, [ev({ kind:'session.started', provider:'claude', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
+    const sessions = fleetState(db, { now: NOW });
+    const open = openSessions(sessions, [proc({ pid:9, provider:'codex', cwd:'/repo/live' })]);
     expect(open[0]!.match).toBe('unique');
     expect(open[0]!.sessionId).toBe('s1');
-    expect(open[0]!.provider).toBe('claude');
+    expect(open[0]!.provider).toBe('codex');
   });
 
   it('enriches a uniquely-matched card with last prose, events and activity', () => {
@@ -561,7 +513,7 @@ describe('openSessions', () => {
     ]);
     const sessions = fleetState(db, { now: NOW });
     const open = openSessions(sessions, [proc({
-      pid:7, provider:'claude', cwd:'/repo/shared', host:'terminal', ageSeconds:300, rssBytes:1_000_000,
+      pid:7, provider:'codex', cwd:'/repo/shared', host:'terminal', ageSeconds:300, rssBytes:1_000_000,
     })]);
     expect(open).toHaveLength(1);
     expect(open[0]!.match).toBe('ambiguous');
@@ -572,23 +524,10 @@ describe('openSessions', () => {
     // Still attributable: these come from the process itself, not from a
     // matched session.
     expect(open[0]!.pid).toBe(7);
-    expect(open[0]!.provider).toBe('claude');
+    expect(open[0]!.provider).toBe('codex');
     expect(open[0]!.host).toBe('terminal');
     expect(open[0]!.ageSeconds).toBe(300);
     expect(open[0]!.rssBytes).toBe(1_000_000);
-  });
-
-  // The display switch (HIDDEN_PROVIDERS, src/fleet/state.ts): a Codex
-  // process must never produce a card, while a Claude one in the exact
-  // same sweep still does. Filtered before matching even runs, so this
-  // also proves a hidden process cannot consume the other's 'unique' slot.
-  it('hides a Codex process from the open-session cards entirely, while a Claude process in the same sweep still shows', () => {
-    const open = openSessions([], [
-      proc({ pid:1, provider:'claude', cwd:'/repo/claude' }),
-      proc({ pid:2, provider:'codex', cwd:'/repo/codex' }),
-    ]);
-    expect(open.map(o => o.pid)).toEqual([1]);
-    expect(open[0]!.provider).toBe('claude');
   });
 
   it('does not filter open cards against sessions -- a process with a cwd no session has ever used still gets a card', () => {
@@ -654,28 +593,22 @@ describe('openSessionsLive', () => {
   it('shows pid, provider, host, cwd, project, age and memory for a process with no transcript match at all', () => {
     const db = openDb(':memory:');
     const open = openSessionsLive(db, [proc({
-      pid:42, provider:'claude', cwd:'/Users/me/orphan', host:'iterm2', ageSeconds:120, rssBytes:50_000_000,
+      pid:42, provider:'codex', cwd:'/Users/me/orphan', host:'iterm2', ageSeconds:120, rssBytes:50_000_000,
     })], NOW);
     expect(open).toEqual([{
-      pid:42, provider:'claude', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
+      pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
       sessionId:null, lastProse:null, events:null, activity:null, tmux:false,
     }]);
   });
 
-  // Roles reversed from the openSessions version of this test: the
-  // candidate-matching query here scans `events` directly by cwd/
-  // session_id, with no provider filter of its own, so a 'codex'-recorded
-  // session still matches (unlike routing through fleetState, which now
-  // hides HIDDEN_PROVIDERS sessions outright). The PROCESS is the visible
-  // 'claude', and its own provider is still what comes out.
   it("reports provider from the process's own discovery, not from a matched session of a different provider", () => {
     const db = openDb(':memory:');
-    insertEvents(db, [ev({ kind:'session.started', provider:'codex', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
-    const open = openSessionsLive(db, [proc({ pid:9, provider:'claude', cwd:'/repo/live' })], NOW);
+    insertEvents(db, [ev({ kind:'session.started', provider:'claude', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
+    const open = openSessionsLive(db, [proc({ pid:9, provider:'codex', cwd:'/repo/live' })], NOW);
     expect(open[0]!.match).toBe('unique');
     expect(open[0]!.sessionId).toBe('s1');
-    expect(open[0]!.provider).toBe('claude');
+    expect(open[0]!.provider).toBe('codex');
   });
 
   it('enriches a uniquely-matched card with last prose, events and activity', () => {
@@ -717,7 +650,7 @@ describe('openSessionsLive', () => {
       ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
     ]);
     const open = openSessionsLive(db, [proc({
-      pid:7, provider:'claude', cwd:'/repo/shared', host:'terminal', ageSeconds:300, rssBytes:1_000_000,
+      pid:7, provider:'codex', cwd:'/repo/shared', host:'terminal', ageSeconds:300, rssBytes:1_000_000,
     })], NOW);
     expect(open).toHaveLength(1);
     expect(open[0]!.match).toBe('ambiguous');
@@ -726,23 +659,10 @@ describe('openSessionsLive', () => {
     expect(open[0]!.events).toBeNull();
     expect(open[0]!.activity).toBeNull();
     expect(open[0]!.pid).toBe(7);
-    expect(open[0]!.provider).toBe('claude');
+    expect(open[0]!.provider).toBe('codex');
     expect(open[0]!.host).toBe('terminal');
     expect(open[0]!.ageSeconds).toBe(300);
     expect(open[0]!.rssBytes).toBe(1_000_000);
-  });
-
-  // The display switch (HIDDEN_PROVIDERS, src/fleet/state.ts): a Codex
-  // process must never produce a card, while a Claude one discovered in
-  // the exact same sweep still does.
-  it('hides a Codex process from the open-session cards entirely, while a Claude process in the same sweep still shows', () => {
-    const db = openDb(':memory:');
-    const open = openSessionsLive(db, [
-      proc({ pid:1, provider:'claude', cwd:'/repo/claude' }),
-      proc({ pid:2, provider:'codex', cwd:'/repo/codex' }),
-    ], NOW);
-    expect(open.map(o => o.pid)).toEqual([1]);
-    expect(open[0]!.provider).toBe('claude');
   });
 
   it('does not filter open cards against sessions -- a process with a cwd no session has ever used still gets a card', () => {
