@@ -59,6 +59,18 @@ beforeEach(() => {
   dataCb = null;
   handler = null;
   webglShouldThrow = false;
+  // The component attaches from inside an animation frame, deliberately: the
+  // mount-tick fit measures the element before the rail has taken its share of
+  // the row, so attaching there would tell main a width that is too wide and
+  // capture a backlog laid out at it. jsdom's rAF is a real timer, which these
+  // tests -- driven by `await Promise.resolve()` -- would never reach. Run the
+  // callback synchronously so the tests exercise the same path, in the same
+  // order, without waiting on a frame that never comes.
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+    cb(0);
+    return 0;
+  });
+  vi.stubGlobal('cancelAnimationFrame', () => {});
   // No test relies on a --f-mono left over from a previous one -- each
   // test that cares sets (or deliberately clears) it itself.
   document.documentElement.style.removeProperty('--f-mono');
@@ -163,6 +175,26 @@ describe('TerminalView', () => {
     expect(writes).toContain('BACKLOG\n');
     expect(writes).toContain('raced-ahead');
     expect(writes.indexOf('BACKLOG\n')).toBeLessThan(writes.indexOf('raced-ahead'));
+  });
+
+  it('does not attach until the corrected fit has run, so the backlog is captured at the real width', async () => {
+    // The ordering IS the bug. The mount-tick fit measures this element before
+    // the rail beside it has taken its share of the row, so it reads too wide.
+    // Attaching there tells main that width; main sizes the pane to it and
+    // captures a backlog laid out at it, and the later corrected fit resizes
+    // the pane but cannot unwrite a backlog already rendered -- which is the
+    // mid-word wrapping that appeared on every switch back to this view.
+    // So: hold the frame, prove nothing attached, then release it.
+    let frame: FrameRequestCallback | null = null;
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frame = cb; return 1; });
+
+    render(<TerminalView pid={4821} />);
+    await Promise.resolve();
+    expect(window.fleet!.attach).not.toHaveBeenCalled();
+
+    frame!(0);
+    await Promise.resolve();
+    expect(window.fleet!.attach).toHaveBeenCalledTimes(1);
   });
 
   it('resizes tmux through fleet.resize on every FitAddon resize, since tmux never learns the size on its own', async () => {

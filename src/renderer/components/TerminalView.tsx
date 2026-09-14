@@ -87,7 +87,16 @@ export function TerminalView({ pid }: { pid: number }) {
     // only on a later frame, which means the first paint (and the size attach
     // is told about) is wrong. Re-fit once layout has settled, so the terminal
     // is right on the frame the user actually sees.
-    const firstFrame = requestAnimationFrame(() => { if (alive) fit.fit(); });
+    //
+    // Attaching happens HERE, after that corrected fit, rather than on the
+    // mount tick -- see attachOnce below for why the order is load-bearing.
+    // attachOnce is a hoisted function declaration, so it is callable from
+    // here despite being written further down next to the code it owns.
+    const firstFrame = requestAnimationFrame(() => {
+      if (!alive) return;
+      fit.fit();
+      attachOnce();
+    });
 
     // The live-data subscription is registered before attach's own promise
     // resolves (below), and the two race: main can start pushing bytes the
@@ -141,18 +150,33 @@ export function TerminalView({ pid }: { pid: number }) {
       applyPayload(p);
     });
 
-    void api.attach(pid, term.cols, term.rows).then(r => {
-      const res = r as AttachResult;
-      if (!alive) return;
-      if (res.status === 'refused') {
-        setRefusalText(ATTACH_REFUSAL_TEXT[res.reason]);
-        return;
-      }
-      term.write(res.backlog);
-      backlogWritten = true;
-      for (const p of queued) applyPayload(p);
-      queued = [];
-    });
+    /** Attaching is what fixes tmux's pane to a size and captures the backlog
+     *  at that size, so it MUST NOT run until the fit is trustworthy. Called
+     *  from the animation frame above, never on the mount tick: the mount-tick
+     *  fit measures this element before the rail beside it has taken its share
+     *  of the row, so attaching there tells main a width that is too large.
+     *  Main then sizes the pane to it and captures a backlog laid out at that
+     *  width, and the later corrected fit resizes the pane but cannot unwrite
+     *  the backlog already rendered -- which is the mid-word wrapping seen on
+     *  every switch back to this view. */
+    function attachOnce(): void {
+      // Re-read rather than closing over the narrowed `api`: this is a hoisted
+      // declaration, so TypeScript will not carry the outer null-check into it.
+      const bridge = window.fleet;
+      if (!bridge) return;
+      void bridge.attach(pid, term.cols, term.rows).then(r => {
+        const res = r as AttachResult;
+        if (!alive) return;
+        if (res.status === 'refused') {
+          setRefusalText(ATTACH_REFUSAL_TEXT[res.reason]);
+          return;
+        }
+        term.write(res.backlog);
+        backlogWritten = true;
+        for (const p of queued) applyPayload(p);
+        queued = [];
+      });
+    }
 
     const onData = term.onData(text => { void api.sendRaw(pid, text); });
 
