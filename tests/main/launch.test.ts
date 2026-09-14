@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { launchSession, reattachSession, resumeSession } from '../../src/main/launch.ts';
-import { clearRegistry, tmuxNameForPid, registerSession } from '../../src/main/sessions.ts';
+import { clearRegistry, tmuxNameForPid, registerSession, launchedAtForPid } from '../../src/main/sessions.ts';
 import { killSession } from '../../src/main/ipc.ts';
 import type { ExecFn } from '../../src/discovery/live.ts';
 
@@ -65,6 +65,21 @@ describe('launchSession', () => {
     });
     expect(r.status).toBe('failed');
     expect(tmuxNameForPid(4821)).toBeNull();
+  });
+
+  // Bug 2 (Conversation-identification fix): the registry needs a launch
+  // timestamp, not just the pid->name mapping, so src/fleet/state.ts's
+  // openSessionsLive can later disambiguate this pid's own session. `now`
+  // is injected here (rather than asserting against real Date.now(), which
+  // this test can't pin precisely) the same way exec/panePid already are.
+  it('records the launch timestamp it was given, so the app can later disambiguate its own session', () => {
+    const r = launchSession('claude', '/tmp/proj', 120, 40, {
+      exec: (a: string[]) => ({ ok: true, stdout: '' }),
+      panePid: () => 4821,
+      now: 1_700_000_000_000,
+    });
+    expect(r).toEqual({ status: 'launched', pid: 4821 });
+    expect(launchedAtForPid(4821)).toBe(1_700_000_000_000);
   });
 
   it('runs claude --resume <id> as the pane command when reattachSession asks for it, not a bare claude', () => {

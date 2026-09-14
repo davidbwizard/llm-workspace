@@ -621,9 +621,21 @@ export function openSessions(
  *  deriveActivity, the same function fleetState's own per-row map now
  *  calls, so the two paths cannot compute it differently. */
 export function openSessionsLive(
-  db: Db, processes: LiveProcess[], now: number = Date.now(), deps: { isTmux?: (pid: number) => boolean } = {},
+  db: Db, processes: LiveProcess[], now: number = Date.now(),
+  deps: {
+    isTmux?: (pid: number) => boolean;
+    /** Launch timestamp for a pid THIS APP started (src/main/sessions.ts),
+     *  or null for an ordinary discovered process. No default beyond
+     *  "always null" -- a pid this function cannot prove was launched by
+     *  the app must never be guessed at, only matched by cwd as before.
+     *  See the disambiguation step below for why this narrows an
+     *  otherwise-ambiguous match instead of feeding classifyMatch itself
+     *  (spec/team-lead ruling: keep classifyMatch a pure cwd matcher). */
+    launchedAtForPid?: (pid: number) => number | null;
+  } = {},
 ): OpenSession[] {
   const isTmux = deps.isTmux ?? (() => false);
+  const launchedAtForPid = deps.launchedAtForPid ?? (() => null);
   const cwds = [...new Set(processes.map(p => p.cwd).filter((c): c is string => c !== null))];
 
   const candidateRows = cwds.length === 0 ? [] : db.prepare(`
@@ -644,11 +656,49 @@ export function openSessionsLive(
   const refs = [...cwdBySession.entries()].map(([sessionId, cwd]) => ({ sessionId, cwd }));
   const matches = classifyMatch(processes, refs);
 
+  // Disambiguate an ambiguous match for a pid THIS APP launched: among the
+  // several sessions sharing that cwd, the app's own session is the one
+  // whose EARLIEST event lands at or after the launch time -- a session
+  // that already existed before the launch cannot be the one this pid just
+  // started. Only pids classifyMatch already called 'ambiguous' AND that
+  // launchedAtForPid recognises are even considered; every other match
+  // (unique, unknown, or ambiguous-but-not-launched-by-us) passes through
+  // untouched, exactly as before this existed.
+  const launchedAmbiguousPids = new Set(
+    matches.filter(m => m.quality === 'ambiguous' && launchedAtForPid(m.pid) !== null).map(m => m.pid));
+  const earliestBySession = new Map<string, number>();
+  if (launchedAmbiguousPids.size > 0) {
+    // One bounded query for every candidate across every launched-and-
+    // ambiguous pid, not one query per pid -- candidate sets are typically
+    // tiny (a handful of sessions sharing one cwd), but this stays a single
+    // round trip regardless of how many launched pids are ambiguous at once.
+    const candidateIds = [...new Set(
+      matches.filter(m => launchedAmbiguousPids.has(m.pid)).flatMap(m => m.candidates))];
+    const rows = db.prepare(`
+      SELECT session_id, MIN(ts) earliest FROM events
+      WHERE session_id IN (${candidateIds.map(() => '?').join(',')})
+      GROUP BY session_id
+    `).all(...candidateIds) as { session_id: string; earliest: string }[];
+    for (const r of rows) earliestBySession.set(r.session_id, Date.parse(r.earliest));
+  }
+  const resolvedMatches = matches.map(m => {
+    if (!launchedAmbiguousPids.has(m.pid)) return m;
+    const launchedAt = launchedAtForPid(m.pid)!; // set above -- this pid is in launchedAmbiguousPids precisely because it isn't null
+    const qualifying = m.candidates.filter(id => (earliestBySession.get(id) ?? -Infinity) >= launchedAt);
+    // Exactly one qualifying candidate is what actually resolves this --
+    // none (the launched session's own first event hasn't been ingested
+    // yet) or several (more than one candidate started at/after launch,
+    // e.g. two sessions launched back to back) both leave the existing
+    // ambiguous result untouched rather than guessing among them.
+    if (qualifying.length !== 1) return m;
+    return { ...m, quality: 'unique' as const, sessionId: qualifying[0]! };
+  });
+
   // Only sessions that end up uniquely matched ever reach the renderer
   // (buildOpenSession below blanks enrichment for anything else) -- bounded
   // by process count, never by how many sessions share a cwd.
   const uniqueIds = [...new Set(
-    matches.filter((m): m is MatchResult & { sessionId: string } => m.quality === 'unique').map(m => m.sessionId))];
+    resolvedMatches.filter((m): m is MatchResult & { sessionId: string } => m.quality === 'unique').map(m => m.sessionId))];
 
   const enrichmentById = new Map<string, {
     sessionId: string; lastProse: string | null; events: number | null; activity: Activity;
@@ -682,7 +732,7 @@ export function openSessionsLive(
   }
 
   return processes.map((p, i) => {
-    const m = matches[i]!;
+    const m = resolvedMatches[i]!;
     const enrichment = m.quality === 'unique' ? enrichmentById.get(m.sessionId!) ?? null : null;
     return buildOpenSession(p, m, enrichment, isTmux);
   }).sort(byProcessAge);

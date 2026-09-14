@@ -71,4 +71,15 @@ describe('MainPane', () => {
     render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={ambiguous} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
     expect(screen.getByText(/transcript can't be identified/i)).toBeTruthy();
   });
+
+  // Bug 1's fix reaches all the way out here: MainPane must hand
+  // ConversationView the session's own `match`, not just its sessionId, so
+  // the specific ambiguous/unknown wording (not the generic fallback above)
+  // is what a real user actually sees.
+  it("passes the session's match quality through, so ConversationView shows the specific ambiguous wording, not the generic fallback", () => {
+    const ambiguous = [{ pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'x', cwd: '/a', host: 'iterm2', ageSeconds: 1, rssBytes: 1, events: 1, sessionId: null, match: 'ambiguous' }] as never[];
+    render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={ambiguous} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    expect(screen.getByText(/several recorded sessions/i)).toBeTruthy();
+    expect(screen.queryByText(/transcript can't be identified\.$/)).toBeNull();
+  });
 });

@@ -802,6 +802,56 @@ describe('openSessionsLive', () => {
     expect(byPid.get(2)!.match).toBe('unknown');
     expect(byPid.get(2)!.sessionId).toBeNull();
   });
+
+  // Bug 2: when the app itself launched a pid, an otherwise-ambiguous cwd
+  // match resolves to a unique sessionId, using the launch timestamp
+  // (src/main/sessions.ts's launchedAtForPid) to pick out the ONE candidate
+  // whose earliest event lands at or after the launch -- a session that
+  // predates the launch cannot be the one this pid just started. A second,
+  // unlaunched pid sharing the exact same cwd must still report ambiguous:
+  // this is not "cwd disambiguates now," only "a launched pid's OWN match
+  // does."
+  it("resolves a launched pid's ambiguous match to the one session started at or after its launch, while an unlaunched pid at the same cwd stays ambiguous", () => {
+    const db = openDb(':memory:');
+    const launchedAt = Date.parse(at(5)); // launched 5 minutes ago
+    insertEvents(db, [
+      // s1 already existed before this app-launched pid ever started.
+      ev({ sessionId:'s1', kind:'session.started', ts:at(30), payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+      // s2 is the session the app actually launched -- its first event
+      // lands after `launchedAt`.
+      ev({ sessionId:'s2', kind:'session.started', ts:at(2), payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+    ]);
+    const open = openSessionsLive(db, [
+      proc({ pid:100, cwd:'/repo/shared' }), // the app's own launched process
+      proc({ pid:200, cwd:'/repo/shared' }), // some other, unlaunched process at the same cwd
+    ], NOW, { launchedAtForPid: pid => (pid === 100 ? launchedAt : null) });
+
+    const byPid = new Map(open.map(o => [o.pid, o]));
+    expect(byPid.get(100)!.match).toBe('unique');
+    expect(byPid.get(100)!.sessionId).toBe('s2');
+    expect(byPid.get(200)!.match).toBe('ambiguous');
+    expect(byPid.get(200)!.sessionId).toBeNull();
+  });
+
+  // Guards the "exactly one qualifying candidate" rule: if TWO sessions
+  // both started at/after the launch (e.g. two launches back to back at
+  // nearly the same moment), there is no way to tell them apart from the
+  // launch timestamp alone -- this must stay ambiguous, not guess the
+  // first one it finds.
+  it('leaves the match ambiguous when the launch time fails to narrow it to exactly one candidate', () => {
+    const db = openDb(':memory:');
+    const launchedAt = Date.parse(at(10));
+    insertEvents(db, [
+      ev({ sessionId:'s1', kind:'session.started', ts:at(5), payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+      ev({ sessionId:'s2', kind:'session.started', ts:at(2), payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+    ]);
+    const open = openSessionsLive(db, [
+      proc({ pid:100, cwd:'/repo/shared' }),
+    ], NOW, { launchedAtForPid: pid => (pid === 100 ? launchedAt : null) });
+
+    expect(open[0]!.match).toBe('ambiguous');
+    expect(open[0]!.sessionId).toBeNull();
+  });
 });
 
 describe('fleetState — sessionIds filter', () => {

@@ -558,6 +558,48 @@ describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
     expect(payload.openSessions[0]!.lastProse).not.toContain(RLO);
   });
 
+  // Bug 2, wired end to end: refreshPushEnrichment (called here exactly as
+  // src/main/index.ts's discovery interval calls it) must actually pass the
+  // real launchedAtForPid through to openSessionsLive -- registerSession is
+  // what src/main/launch.ts calls at the moment main launches a pid, and
+  // this proves that recorded launch time is what turns an otherwise-
+  // ambiguous cwd match (two sessions share '/repo/shared' here) into a
+  // unique one for the pid the app itself started. A forgotten wire-up
+  // (e.g. `openSessionsLive(db, processes, now, { isTmux: pidIsTmux })`
+  // alone, dropping `launchedAtForPid`) would leave this 'ambiguous'.
+  it("passes the real launch registry through, so a launched pid's ambiguous cwd match resolves to unique in the actual push", async () => {
+    clearRegistry();
+    try {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        // s1 pre-existed before the app launched pid 4242.
+        ev({ sessionId:'s1', kind:'session.started', ts:'2026-09-10T11:00:00Z',
+          payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+        // s2 is the session the app actually launched -- its first event
+        // lands after the registered launch time.
+        ev({ sessionId:'s2', kind:'session.started', ts:'2026-09-10T11:30:00Z',
+          payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+      ]);
+      registerSession(4242, 'llmws-claude-abc', Date.parse('2026-09-10T11:15:00Z'));
+      const processes = await refreshLiveProcesses(async (bin, args) => {
+        if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+        if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/shared\n';
+        return '';
+      });
+      refreshPushEnrichment(db, processes);
+
+      const send = vi.fn();
+      const win = { isDestroyed: () => false, webContents: { send } } as unknown as
+        Parameters<typeof pushFleet>[0];
+      pushFleet(win);
+      const payload = send.mock.calls[0]![1];
+      expect(payload.openSessions[0]!.match).toBe('unique');
+      expect(payload.openSessions[0]!.sessionId).toBe('s2');
+    } finally {
+      clearRegistry();
+    }
+  });
+
   it('does nothing when there is no window', () => {
     expect(() => pushFleet(null)).not.toThrow();
   });

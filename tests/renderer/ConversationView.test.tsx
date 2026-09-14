@@ -41,10 +41,38 @@ describe('ConversationView', () => {
   // session this is" -- conflating the two would print a false claim about
   // a session that might have plenty to say. Both are asserted separately
   // in this file so neither message can silently regress into the other.
-  it('says the session is unidentifiable, not that it has nothing to show, when sessionId is null', () => {
-    render(<ConversationView sessionId={null} />);
-    expect(screen.getByText(/several open sessions share/i)).toBeTruthy();
+  //
+  // `match` says WHY sessionId is null, and each of its three states below
+  // must render a genuinely different string (bug fix: the old single
+  // message said "several open sessions share this process's working
+  // directory" for EVERY null case, which is a false claim when the real
+  // reason is 'unknown' (no transcript at all) or when a user has exactly
+  // one session open and the ambiguity is against HISTORY, not open
+  // sessions).
+  it('says several RECORDED sessions share the cwd when the match is ambiguous, never "open sessions"', () => {
+    render(<ConversationView sessionId={null} match="ambiguous" />);
+    expect(screen.getByText(/several recorded sessions/i)).toBeTruthy();
     expect(screen.queryByText(/no conversation/i)).toBeNull();
+    expect(screen.queryByText(/open session/i)).toBeNull();
+  });
+
+  it('says no transcript has been found yet when the match is unknown, distinct from the ambiguous message', () => {
+    render(<ConversationView sessionId={null} match="unknown" />);
+    expect(screen.getByText(/no transcript has been found/i)).toBeTruthy();
+    expect(screen.queryByText(/several recorded sessions/i)).toBeNull();
+  });
+
+  it('falls back to a neutral message, distinct from both above, when sessionId is null with no match info', () => {
+    render(<ConversationView sessionId={null} />);
+    expect(screen.getByText(/transcript can't be identified/i)).toBeTruthy();
+    expect(screen.queryByText(/several recorded sessions/i)).toBeNull();
+    expect(screen.queryByText(/no transcript has been found/i)).toBeNull();
+    // The exact old bug: a substring-compatible fallback ("Several open
+    // sessions share this... transcript can't be identified") would pass
+    // every assertion above while still lying about "open sessions" -- this
+    // is what actually catches that regression.
+    expect(screen.queryByText(/open session/i)).toBeNull();
+    expect(screen.queryByText(/^Several/i)).toBeNull();
   });
 
   it('never calls window.fleet.conversation when sessionId is null', async () => {

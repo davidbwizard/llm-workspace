@@ -19,7 +19,7 @@ import {
 } from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
-import { resolveLiveTmux, tmuxNameForPid, forgetSession } from './sessions.ts';
+import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import {
   sendLiteral, sendKeyName, capturePane, resizeWindow, pipePane, paneIsAlternate,
   type TmuxResult, type TmuxExec,
@@ -232,7 +232,7 @@ let cachedPushOpenSessions: OpenSession[] = [];
  *  fallback the team lead pre-authorized if the push-path cost did not
  *  hold up under measurement, which it did not. */
 export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: number = Date.now()): void {
-  cachedPushOpenSessions = openSessionsLive(db, processes, now, { isTmux: pidIsTmux });
+  cachedPushOpenSessions = openSessionsLive(db, processes, now, { isTmux: pidIsTmux, launchedAtForPid });
 }
 
 /** session:reattach's session lookup: which session (id, provider, cwd) a

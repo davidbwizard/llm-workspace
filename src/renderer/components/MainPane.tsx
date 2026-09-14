@@ -84,8 +84,10 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
           // the common case on a real workspace (many sessions can share one
           // cwd, which makes the match ambiguous), not an edge case, and
           // ConversationView already renders a distinct, honest message for
-          // it rather than the misleading "no conversation recorded".
-          : <ConversationView sessionId={session?.sessionId ?? null} />}
+          // it rather than the misleading "no conversation recorded". `match`
+          // rides along so ConversationView can say WHY sessionId is null
+          // (ambiguous vs. unknown) instead of one generic claim.
+          : <ConversationView sessionId={session?.sessionId ?? null} match={session?.match} />}
       </section>
     </div>
   );

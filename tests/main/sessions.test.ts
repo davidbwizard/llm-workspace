@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { registerSession, forgetSession, tmuxNameForPid, resolveLiveTmux, clearRegistry } from '../../src/main/sessions.ts';
+import {
+  registerSession, forgetSession, tmuxNameForPid, resolveLiveTmux, clearRegistry, launchedAtForPid,
+} from '../../src/main/sessions.ts';
 
 beforeEach(() => clearRegistry());
 
@@ -44,5 +46,41 @@ describe('session registry', () => {
     registerSession(4821, 'llmws-claude-abc');
     forgetSession(4821);
     expect(tmuxNameForPid(4821)).toBeNull();
+  });
+
+  // Bug 2 (Conversation-identification fix): the registry records WHEN
+  // main launched a pid, not just its tmux name -- src/fleet/state.ts's
+  // openSessionsLive reads this to disambiguate an otherwise-ambiguous cwd
+  // match for a session the app started itself.
+  it('records the launch timestamp alongside the tmux name', () => {
+    registerSession(4821, 'llmws-claude-abc', 1_700_000_000_000);
+    expect(launchedAtForPid(4821)).toBe(1_700_000_000_000);
+  });
+
+  it('defaults the launch timestamp to now when none is given', () => {
+    const before = Date.now();
+    registerSession(4821, 'llmws-claude-abc');
+    const after = Date.now();
+    expect(launchedAtForPid(4821)).not.toBeNull();
+    expect(launchedAtForPid(4821)!).toBeGreaterThanOrEqual(before);
+    expect(launchedAtForPid(4821)!).toBeLessThanOrEqual(after);
+  });
+
+  it('returns null for an unknown or malformed pid, same as tmuxNameForPid', () => {
+    expect(launchedAtForPid(9999)).toBeNull();
+    expect(launchedAtForPid('4821')).toBeNull();
+    expect(launchedAtForPid(-1)).toBeNull();
+  });
+
+  it('forgets the launch timestamp along with the pid', () => {
+    registerSession(4821, 'llmws-claude-abc', 1_700_000_000_000);
+    forgetSession(4821);
+    expect(launchedAtForPid(4821)).toBeNull();
+  });
+
+  it('clearRegistry wipes launch timestamps too, not just names', () => {
+    registerSession(4821, 'llmws-claude-abc', 1_700_000_000_000);
+    clearRegistry();
+    expect(launchedAtForPid(4821)).toBeNull();
   });
 });

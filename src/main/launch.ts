@@ -15,7 +15,14 @@ export type LaunchResult =
   // directly, without re-resolving a pid that no longer exists.
   | { status: 'killed_not_relaunched'; reason: string; sessionId: string; cwd: string };
 
-type LaunchDeps = { exec?: TmuxExec; panePid?: (name: string) => number | null };
+type LaunchDeps = {
+  exec?: TmuxExec; panePid?: (name: string) => number | null;
+  /** Injectable clock for the launch timestamp registerSession records
+   *  below -- defaults to Date.now(). Exists so a test can pin the launch
+   *  moment precisely relative to fixture event timestamps, the same
+   *  reason FleetOpts.now (src/fleet/state.ts) is injectable. */
+  now?: number;
+};
 
 /** Nothing spawns on its own: this is only ever reached from an explicit
  *  choice of provider and directory (LaunchBar), or from reattachSession
@@ -43,7 +50,7 @@ export function launchSession(
   const pid = lookup(name);
   if (pid === null) return { status: 'failed', reason: 'session started but no pid could be read' };
 
-  registerSession(pid, name);
+  registerSession(pid, name, deps.now ?? Date.now());
   return { status: 'launched', pid };
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ConversationTurn } from '../../store/conversation.ts';
+import type { MatchQuality } from '../../discovery/match.ts';
 import './ConversationView.css';
 
 /** The clean half of the toggle: what was said, not how it was rendered.
@@ -13,8 +14,18 @@ import './ConversationView.css';
  *  an edge case. Rendering the empty-conversation message for that would be
  *  a lie: "no conversation recorded" claims the session said nothing, when
  *  the truth is we don't know which session this process even is. Same "say
- *  nothing rather than guess" rule as OpenSessionCard's lastProse. */
-export function ConversationView({ sessionId }: { sessionId: string | null }) {
+ *  nothing rather than guess" rule as OpenSessionCard's lastProse.
+ *
+ *  `match` (OpenSession.match) says WHY sessionId is null, and the three
+ *  cases are genuinely different claims, not one message with a variable
+ *  slotted in: 'ambiguous' means several RECORDED sessions share this
+ *  process's cwd (contention against history, never "open sessions" --
+ *  a user can hit this with exactly one session open); 'unknown' means no
+ *  transcript has matched at all, which is also what a session looks like
+ *  in the moment right after it launches, before its first events are
+ *  written and ingested; and no match info at all (match omitted) falls
+ *  back to a neutral message rather than asserting either specific claim. */
+export function ConversationView({ sessionId, match }: { sessionId: string | null; match?: MatchQuality }) {
   const [turns, setTurns] = useState<ConversationTurn[] | null>(null);
 
   useEffect(() => {
@@ -28,10 +39,26 @@ export function ConversationView({ sessionId }: { sessionId: string | null }) {
   }, [sessionId]);
 
   if (sessionId === null) {
+    if (match === 'ambiguous') {
+      return (
+        <div className="conv unknown">
+          This working directory has several recorded sessions, so the app
+          can't tell which transcript belongs to this process.
+        </div>
+      );
+    }
+    if (match === 'unknown') {
+      return (
+        <div className="conv unknown">
+          No transcript has been found for this process yet -- which is also
+          what a session looks like right after it launches, before its
+          first events are written and ingested.
+        </div>
+      );
+    }
     return (
       <div className="conv unknown">
-        Several open sessions share this process's working directory, so its
-        transcript can't be identified.
+        This process's transcript can't be identified.
       </div>
     );
   }
