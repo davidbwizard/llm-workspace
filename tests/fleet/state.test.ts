@@ -946,6 +946,142 @@ describe('openSessionsLive', () => {
     expect(open[0]!.match).toBe('ambiguous');
     expect(open[0]!.sessionId).toBeNull();
   });
+
+  // Bug 1: the general fallback for a pid this app did NOT launch (no
+  // launchedAtForPid entry at all) -- an adopted session, or one started
+  // in iTerm. Mirrors the real measurement that motivated this: a cwd
+  // commonly has several recorded sessions but exactly one live process,
+  // and `/clear` starts a new session id INSIDE that same process -- so
+  // one process legitimately owns several ids across its life, and the
+  // live one is simply the most recently active of the ones that began
+  // at/after the process itself started. Three candidates: one predates
+  // the process entirely (excluded outright), and two postdate it but
+  // differ clearly in their own last activity -- proving the "most
+  // recently active of the survivors" half of the rule, not just the
+  // start-time filter.
+  it("resolves an unlaunched pid's ambiguous match to the most recently active session that began at or after it started", () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      // Predates the process (started 10 min ago) by a wide margin --
+      // excluded regardless of how active it later was.
+      ev({ sessionId:'s_before', kind:'session.started', ts:at(30), payload:{ cwd:'/repo/live' }, contentHash:'a' }),
+      // Started after the process (8 min ago), but its last activity is
+      // older than the other survivor's.
+      ev({ sessionId:'s_after_1', kind:'session.started', ts:at(8), payload:{ cwd:'/repo/live' }, contentHash:'b' }),
+      ev({ sessionId:'s_after_1', kind:'turn.completed', ts:at(6), payload:{}, contentHash:'c', subIndex:1 }),
+      // Started after the process too (4 min ago) -- and is the live
+      // conversation right now, proven by being the more recently active
+      // of the two survivors.
+      ev({ sessionId:'s_after_2', kind:'session.started', ts:at(4), payload:{ cwd:'/repo/live' }, contentHash:'d' }),
+      ev({ sessionId:'s_after_2', kind:'turn.completed', ts:at(1), payload:{}, contentHash:'e', subIndex:1 }),
+    ]);
+    const open = openSessionsLive(db, [proc({ pid:50, cwd:'/repo/live', ageSeconds:10 * 60 })], NOW);
+    expect(open[0]!.match).toBe('unique');
+    expect(open[0]!.sessionId).toBe('s_after_2');
+  });
+
+  // Rule 1: a SECOND live process at the same cwd must keep BOTH pids
+  // ambiguous, even though one candidate clearly started after both --
+  // with two live processes sharing a cwd there is no signal here that
+  // tells the two apart, so guessing is refused. This is what actually
+  // distinguishes the fallback from "cwd disambiguates once there's a
+  // clear timing winner": the winner-picking logic above never even runs.
+  it('stays ambiguous for both pids when a second live process shares the exact same cwd', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s1', kind:'session.started', ts:at(20), payload:{ cwd:'/repo/shared2' }, contentHash:'a' }),
+      ev({ sessionId:'s2', kind:'session.started', ts:at(2), payload:{ cwd:'/repo/shared2' }, contentHash:'b' }),
+    ]);
+    const open = openSessionsLive(db, [
+      proc({ pid:60, cwd:'/repo/shared2', ageSeconds:5 * 60 }),
+      proc({ pid:61, cwd:'/repo/shared2', ageSeconds:3 * 60 }),
+    ], NOW);
+    const byPid = new Map(open.map(o => [o.pid, o]));
+    expect(byPid.get(60)!.match).toBe('ambiguous');
+    expect(byPid.get(60)!.sessionId).toBeNull();
+    expect(byPid.get(61)!.match).toBe('ambiguous');
+    expect(byPid.get(61)!.sessionId).toBeNull();
+  });
+
+  // Isolates the start-time exclusion itself (rule 3), rather than just
+  // asserting a final answer the "most recent survivor" logic (rule 2)
+  // could produce on its own: s_predates started long before the process
+  // AND is the more recently active of the two candidates by last event --
+  // so picking by recency alone, without excluding it first, would name
+  // s_predates. Only the exclusion filter running gets this right.
+  it('excludes a candidate whose earliest event predates the process, even though it is the more recently active of the two', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      // Predates the process by a wide margin, but is still being used --
+      // its own last activity is the most recent event in this fixture.
+      ev({ sessionId:'s_predates', kind:'session.started', ts:at(30), payload:{ cwd:'/repo/excl' }, contentHash:'a' }),
+      ev({ sessionId:'s_predates', kind:'turn.completed', ts:at(1), payload:{}, contentHash:'b', subIndex:1 }),
+      // Started after the process (3 min ago, process started 5 min ago),
+      // but its own last activity is older than s_predates' -- so it can
+      // only win once s_predates is excluded on start time.
+      ev({ sessionId:'s_after', kind:'session.started', ts:at(3), payload:{ cwd:'/repo/excl' }, contentHash:'c' }),
+    ]);
+    const open = openSessionsLive(db, [proc({ pid:70, cwd:'/repo/excl', ageSeconds:5 * 60 })], NOW);
+    expect(open[0]!.match).toBe('unique');
+    expect(open[0]!.sessionId).toBe('s_after');
+  });
+
+  // Rule 4: every candidate predates the process, so nothing survives the
+  // filter -- this must fall back to the existing ambiguous result rather
+  // than inventing an answer among candidates that cannot actually be it.
+  it('falls back to ambiguous, rather than guessing, when every candidate predates the process', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s1', kind:'session.started', ts:at(40), payload:{ cwd:'/repo/stale' }, contentHash:'a' }),
+      ev({ sessionId:'s2', kind:'session.started', ts:at(35), payload:{ cwd:'/repo/stale' }, contentHash:'b' }),
+    ]);
+    const open = openSessionsLive(db, [proc({ pid:80, cwd:'/repo/stale', ageSeconds:5 * 60 })], NOW);
+    expect(open[0]!.match).toBe('ambiguous');
+    expect(open[0]!.sessionId).toBeNull();
+  });
+
+  // Rule 3: with no process age at all (ps failed to report elapsed time),
+  // there is no start time to compare against -- must never guess one.
+  it('leaves the match ambiguous when the process age itself is unknown, never treating a missing age as "started now"', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s_old', kind:'session.started', ts:at(20), payload:{ cwd:'/repo/noage' }, contentHash:'a' }),
+      // Recorded essentially "now" -- if a missing ageSeconds were ever
+      // treated as "the process started now" instead of "unknown", this
+      // would wrongly look like the one candidate that qualifies.
+      ev({ sessionId:'s_recent', kind:'session.started', ts:at(0), payload:{ cwd:'/repo/noage' }, contentHash:'b' }),
+    ]);
+    const open = openSessionsLive(db, [proc({ pid:90, cwd:'/repo/noage', ageSeconds:null })], NOW);
+    expect(open[0]!.match).toBe('ambiguous');
+    expect(open[0]!.sessionId).toBeNull();
+  });
+
+  // Rule 3's tolerance: `ps` reports elapsed time as whole, rounded
+  // seconds while event timestamps carry millisecond precision, so a
+  // candidate that actually belongs to this process can appear to have
+  // started a couple of seconds "before" it. A clearly-stale second
+  // candidate keeps this ambiguous at the classifyMatch level (so the
+  // fallback actually runs), and only resolves to the near-edge one if
+  // the tolerance correctly keeps it in.
+  it('tolerates a few seconds of clock/rounding skew between the process start and a candidate\'s earliest event', () => {
+    const db = openDb(':memory:');
+    const nominalStart = NOW - 120_000; // ageSeconds:120 -> process started ~2 min ago
+    insertEvents(db, [
+      ev({
+        sessionId:'s_old', kind:'session.started',
+        ts:new Date(nominalStart - 60_000).toISOString(), payload:{ cwd:'/repo/skew' }, contentHash:'a',
+      }),
+      // 3s "before" the process's own rounded start -- within the 5s
+      // tolerance this fallback allows for `ps`-vs-event skew.
+      ev({
+        sessionId:'s_edge', kind:'session.started',
+        ts:new Date(nominalStart - 3_000).toISOString(), payload:{ cwd:'/repo/skew' }, contentHash:'b',
+      }),
+    ]);
+    const open = openSessionsLive(db, [proc({ pid:95, cwd:'/repo/skew', ageSeconds:120 })], NOW);
+    expect(open[0]!.match).toBe('unique');
+    expect(open[0]!.sessionId).toBe('s_edge');
+  });
 });
 
 describe('fleetState — sessionIds filter', () => {

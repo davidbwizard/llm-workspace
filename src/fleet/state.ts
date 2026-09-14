@@ -718,32 +718,111 @@ export function openSessionsLive(
   // untouched, exactly as before this existed.
   const launchedAmbiguousPids = new Set(
     matches.filter(m => m.quality === 'ambiguous' && launchedAtForPid(m.pid) !== null).map(m => m.pid));
+
+  // General fallback, for an ambiguous pid the launch timestamp above does
+  // NOT cover -- an adopted session, or one this app never launched at all
+  // (started in iTerm, or by a previous run). Bug report measurement: a
+  // real cwd commonly has several recorded sessions (a directory
+  // accumulates history over time) but exactly one live process, and
+  // `/clear` starts a new session id INSIDE the same process -- so one
+  // process can legitimately own several session ids across its life, and
+  // the live conversation is simply the most recently active one that
+  // began at or after this process started.
+  //
+  // Only viable when EXACTLY ONE live process shares this pid's cwd
+  // (rule 1): with two live processes at the same cwd there is no signal
+  // here that tells the two apart, so that case must stay ambiguous rather
+  // than guess. `pidCwdCounts` counts PROCESSES per cwd -- deliberately
+  // distinct from `m.candidates.length`, which counts SESSIONS sharing
+  // that cwd (the thing that made classifyMatch call this ambiguous in the
+  // first place): a cwd can have two live processes and five old
+  // sessions, or one live process and five old sessions -- only the former
+  // must stay ambiguous under this rule.
+  const pidCwdCounts = new Map<string, number>();
+  for (const p of processes) {
+    if (p.cwd !== null) pidCwdCounts.set(p.cwd, (pidCwdCounts.get(p.cwd) ?? 0) + 1);
+  }
+  // classifyMatch returns one result per process, in the SAME order (see
+  // the identical assumption in openSessions above) -- so `processes[i]`
+  // is the exact process `matches[i]` was built from, cwd included.
+  const fallbackAmbiguousPids = new Set(
+    matches.filter((m, i) => {
+      if (m.quality !== 'ambiguous' || launchedAtForPid(m.pid) !== null) return false;
+      const cwd = processes[i]!.cwd;
+      return cwd !== null && pidCwdCounts.get(cwd) === 1;
+    }).map(m => m.pid));
+
+  // One bounded query covering candidates from EITHER disambiguation path,
+  // earliest and latest event per session: earliest is what both paths
+  // filter "started before this process existed" candidates out with;
+  // latest is what the fallback path (only, rule 2) then breaks a
+  // multi-candidate survival with, by picking the most recently active.
+  const timedPids = new Set([...launchedAmbiguousPids, ...fallbackAmbiguousPids]);
   const earliestBySession = new Map<string, number>();
-  if (launchedAmbiguousPids.size > 0) {
-    // One bounded query for every candidate across every launched-and-
-    // ambiguous pid, not one query per pid -- candidate sets are typically
-    // tiny (a handful of sessions sharing one cwd), but this stays a single
-    // round trip regardless of how many launched pids are ambiguous at once.
+  const latestBySession = new Map<string, number>();
+  if (timedPids.size > 0) {
+    // One bounded query for every candidate across every pid either path
+    // is trying to resolve, not one query per pid -- candidate sets are
+    // typically tiny (a handful of sessions sharing one cwd), but this
+    // stays a single round trip regardless of how many pids qualify.
     const candidateIds = [...new Set(
-      matches.filter(m => launchedAmbiguousPids.has(m.pid)).flatMap(m => m.candidates))];
+      matches.filter(m => timedPids.has(m.pid)).flatMap(m => m.candidates))];
     const rows = db.prepare(`
-      SELECT session_id, MIN(ts) earliest FROM events
+      SELECT session_id, MIN(ts) earliest, MAX(ts) latest FROM events
       WHERE session_id IN (${candidateIds.map(() => '?').join(',')})
       GROUP BY session_id
-    `).all(...candidateIds) as { session_id: string; earliest: string }[];
-    for (const r of rows) earliestBySession.set(r.session_id, Date.parse(r.earliest));
+    `).all(...candidateIds) as { session_id: string; earliest: string; latest: string }[];
+    for (const r of rows) {
+      earliestBySession.set(r.session_id, Date.parse(r.earliest));
+      latestBySession.set(r.session_id, Date.parse(r.latest));
+    }
   }
-  const resolvedMatches = matches.map(m => {
-    if (!launchedAmbiguousPids.has(m.pid)) return m;
-    const launchedAt = launchedAtForPid(m.pid)!; // set above -- this pid is in launchedAmbiguousPids precisely because it isn't null
-    const qualifying = m.candidates.filter(id => (earliestBySession.get(id) ?? -Infinity) >= launchedAt);
-    // Exactly one qualifying candidate is what actually resolves this --
-    // none (the launched session's own first event hasn't been ingested
-    // yet) or several (more than one candidate started at/after launch,
-    // e.g. two sessions launched back to back) both leave the existing
-    // ambiguous result untouched rather than guessing among them.
-    if (qualifying.length !== 1) return m;
-    return { ...m, quality: 'unique' as const, sessionId: qualifying[0]! };
+
+  // Rule 3: process start comes from the process's own elapsed time
+  // (ageSeconds), not from any event. Tolerance for the comparison below:
+  // `ps` reports elapsed time as whole seconds, rounded, while event
+  // timestamps carry millisecond precision -- a session's own first event
+  // can land a second or two "before" the process's rounded start without
+  // that session actually predating the process. 5s covers that skew
+  // comfortably without being wide enough to let a genuinely older session
+  // (started, say, 30s earlier) qualify by accident.
+  const START_TOLERANCE_MS = 5_000;
+
+  const resolvedMatches = matches.map((m, i) => {
+    if (launchedAmbiguousPids.has(m.pid)) {
+      const launchedAt = launchedAtForPid(m.pid)!; // set above -- this pid is in launchedAmbiguousPids precisely because it isn't null
+      const qualifying = m.candidates.filter(id => (earliestBySession.get(id) ?? -Infinity) >= launchedAt);
+      // Exactly one qualifying candidate is what actually resolves this --
+      // none (the launched session's own first event hasn't been ingested
+      // yet) or several (more than one candidate started at/after launch,
+      // e.g. two sessions launched back to back) both leave the existing
+      // ambiguous result untouched rather than guessing among them.
+      if (qualifying.length !== 1) return m;
+      return { ...m, quality: 'unique' as const, sessionId: qualifying[0]! };
+    }
+    if (fallbackAmbiguousPids.has(m.pid)) {
+      const ageSeconds = processes[i]!.ageSeconds;
+      if (ageSeconds == null) return m; // no process start time to compare against -- never guess
+      const start = now - ageSeconds * 1000 - START_TOLERANCE_MS;
+      // Rule 2: keep only sessions that could actually belong to this
+      // process (their earliest event at or after its start), then take
+      // the most recently active of those -- the live conversation inside
+      // a process that has run through one or more `/clear`s is always
+      // the newest surviving id.
+      const qualifying = m.candidates.filter(id => (earliestBySession.get(id) ?? -Infinity) >= start);
+      // Rule 4 (nothing survived the start-time filter) and the
+      // never-guess tie case (two survivors sharing the exact same most-
+      // recent-activity time) both fall out of the SAME check below:
+      // `Math.max()` over an empty array is `-Infinity`, which nothing
+      // filters back in, so `mostRecent` is empty and this returns `m`
+      // unchanged either way -- one explicit guard, not two paths that
+      // could quietly drift apart.
+      const maxLatest = Math.max(...qualifying.map(id => latestBySession.get(id) ?? -Infinity));
+      const mostRecent = qualifying.filter(id => (latestBySession.get(id) ?? -Infinity) === maxLatest);
+      if (mostRecent.length !== 1) return m;
+      return { ...m, quality: 'unique' as const, sessionId: mostRecent[0]! };
+    }
+    return m;
   });
 
   // Only sessions that end up uniquely matched ever reach the renderer
