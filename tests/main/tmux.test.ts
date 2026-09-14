@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   sendLiteral, sendKeyName, hasSession, capturePane, pipePane, paneIsAlternate, TMUX_NAME,
-  type KeyName,
+  listSessionNames, type KeyName,
 } from '../../src/main/tmux.ts';
 
 function spy() {
@@ -121,5 +121,29 @@ describe('pipePane', () => {
   it('refuses a name this app did not generate', () => {
     expect(() => pipePane('not-ours', undefined)).toThrow();
     expect(() => pipePane('not-ours', 'cat')).toThrow();
+  });
+});
+
+// Bug 3: adoptRunningSessions (src/main/sessions.ts) rebuilds the pid
+// registry from the whole tmux server, so this lists every session name --
+// no -t target, and therefore nothing to guard() against, unlike every
+// other function above.
+describe('listSessionNames', () => {
+  it('asks for session names alone, with no target', () => {
+    const s = spy();
+    listSessionNames(s.exec);
+    expect(s.calls[0]).toEqual(['list-sessions', '-F', '#{session_name}']);
+  });
+
+  it('splits multiple sessions, one per line, dropping any blank trailing line', () => {
+    const names = listSessionNames(() => ({ ok: true, stdout: 'llmws-claude-a\nother-session\n' }));
+    expect(names).toEqual(['llmws-claude-a', 'other-session']);
+  });
+
+  // No server running at all (nothing has ever opened a terminal on this
+  // machine) is the ordinary case this must not treat as an error --
+  // "nothing to adopt", not a thrown exception or a caller-visible failure.
+  it('returns an empty array, not an error, when tmux has no server running', () => {
+    expect(listSessionNames(() => ({ ok: false, error: 'no server running on ...' }))).toEqual([]);
   });
 });

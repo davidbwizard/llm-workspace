@@ -137,3 +137,19 @@ export function panePid(name: string, exec: TmuxExec = defaultExec): number | nu
   const pid = Number.parseInt(r.stdout.trim().split('\n')[0] ?? '', 10);
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
+
+/** Every currently running tmux session's name -- our own and anyone
+ *  else's. Unlike every function above, there is no single name to guard()
+ *  against here: this is a whole-server listing, not a target-PANE/
+ *  target-SESSION command, so filtering against TMUX_NAME is the CALLER's
+ *  job (adoptRunningSessions, src/main/sessions.ts) -- exactly the division
+ *  guard() already draws everywhere else in this file (validate the name
+ *  BEFORE it becomes a tmux target), just with no target here to validate.
+ *  No running server at all (the common case on a machine that has never
+ *  opened a terminal) reads as no sessions, not an error -- "nothing to
+ *  adopt" needs no special case from the caller. */
+export function listSessionNames(exec: TmuxExec = defaultExec): string[] {
+  const r = exec(['list-sessions', '-F', '#{session_name}']);
+  if (!r.ok) return [];
+  return r.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+}

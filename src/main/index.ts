@@ -8,6 +8,7 @@ import { ingestSpool, rotateSpool } from '../hooks/spool.ts';
 import { resolvePaths } from '../config.ts';
 import { registerIpc, pushFleet, refreshPushEnrichment } from './ipc.ts';
 import { refreshLiveProcesses } from '../discovery/live.ts';
+import { adoptRunningSessions } from './sessions.ts';
 
 let db: Db | null = null;
 let watcher: Watcher | null = null;
@@ -159,6 +160,15 @@ app.whenReady().then(() => {
   // same sweep-refresh-push a scheduled tick would, just immediately
   // rather than waiting out however much of the 5s interval is left.
   const pushAfterDiscoverySweep = () => {
+    // Rebuilds the pid->tmux-name registry from tmux itself before this
+    // sweep's own push -- synchronous and cheap (list-sessions plus one
+    // list-panes per matched name), and the ONLY thing that makes a
+    // restart's very first render already know which cards are tmux-
+    // backed, since `byPid` (src/main/sessions.ts) starts empty on every
+    // launch of this app. Also what lets a session's tmux status recover
+    // if it ended between sweeps (see adoptRunningSessions' own doc
+    // comment) -- run every 5s here, not just once at startup.
+    adoptRunningSessions();
     void refreshLiveProcesses().then(processes => {
       if (!db) return;
       refreshPushEnrichment(db, processes);

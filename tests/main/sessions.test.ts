@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   registerSession, forgetSession, tmuxNameForPid, resolveLiveTmux, clearRegistry, launchedAtForPid,
+  adoptRunningSessions,
 } from '../../src/main/sessions.ts';
 
 beforeEach(() => clearRegistry());
@@ -82,5 +83,55 @@ describe('session registry', () => {
     registerSession(4821, 'llmws-claude-abc', 1_700_000_000_000);
     clearRegistry();
     expect(launchedAtForPid(4821)).toBeNull();
+  });
+});
+
+// Bug 3: byPid is otherwise written only at launch, so it starts empty on
+// every app restart even though the tmux sessions it named do not --
+// leaving every previously-launched session reporting `tmux: false`
+// forever. adoptRunningSessions rebuilds it from tmux, the actual source
+// of truth.
+describe('adoptRunningSessions', () => {
+  it('adopts a session present in tmux, so its pid resolves', () => {
+    adoptRunningSessions({ listSessionNames: () => ['llmws-claude-abc'], panePid: () => 43741 });
+    expect(tmuxNameForPid(43741)).toBe('llmws-claude-abc');
+  });
+
+  it('does not adopt a session whose name this app did not generate', () => {
+    adoptRunningSessions({ listSessionNames: () => ['someone-elses-session'], panePid: () => 43741 });
+    expect(tmuxNameForPid(43741)).toBeNull();
+  });
+
+  it("does not register a session whose pane pid can't be read", () => {
+    adoptRunningSessions({ listSessionNames: () => ['llmws-claude-abc'], panePid: () => null });
+    expect(tmuxNameForPid(43741)).toBeNull();
+  });
+
+  // The actual Bug 3 scenario: a stale entry (from an earlier sweep, or
+  // from registerSession at launch time) for a session that has since
+  // ended must stop resolving on the very next sweep, not linger as a
+  // false `tmux: true` until the app happens to restart.
+  it('drops a stale entry once its tmux session is no longer in the live list', () => {
+    registerSession(43741, 'llmws-claude-abc');
+    expect(tmuxNameForPid(43741)).toBe('llmws-claude-abc');
+
+    adoptRunningSessions({ listSessionNames: () => [], panePid: () => null });
+    expect(tmuxNameForPid(43741)).toBeNull();
+  });
+
+  it('leaves an already-known pid/name pair, and its launch timestamp, untouched', () => {
+    registerSession(43741, 'llmws-claude-abc', 1_700_000_000_000);
+    adoptRunningSessions({ listSessionNames: () => ['llmws-claude-abc'], panePid: () => 43741 });
+    expect(tmuxNameForPid(43741)).toBe('llmws-claude-abc');
+    expect(launchedAtForPid(43741)).toBe(1_700_000_000_000);
+  });
+
+  // A pid genuinely new this sweep (this run never launched it) must not
+  // get a fabricated launch timestamp -- openSessionsLive's disambiguation
+  // (src/fleet/state.ts) must fall back to ordinary cwd matching for it,
+  // never a guessed launch moment.
+  it('adopts a brand-new pid with no launch timestamp at all', () => {
+    adoptRunningSessions({ listSessionNames: () => ['llmws-claude-abc'], panePid: () => 43741 });
+    expect(launchedAtForPid(43741)).toBeNull();
   });
 });
