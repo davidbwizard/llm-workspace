@@ -13,6 +13,28 @@ const sessions = [
   { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 
+// Same two sessions, pid 2's events bumped -- the "new output arrived
+// while unselected" case the unread tests below exercise. pid 2's own
+// activity is 'idle' here, not the base fixture's 'waiting_input': a
+// blocked card already shows its own badge/wording (OpenSessionCard's
+// showUnread is always false while blocked), so a card that is meant to
+// prove the UNREAD dot specifically must not also be the blocked one.
+const sessionsPid2Bumped = [
+  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'Overwrite?', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+] as never[];
+
+// Same two sessions, pid 1's events bumped instead -- the "own selected
+// session keeps producing output" case, which must never flag itself.
+const sessionsPid1Bumped = [
+  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+] as never[];
+
+const noopKill = async () => ({ status: 'already_gone' as const });
+const noopReattach = async () => ({ status: 'failed' as const, reason: 'not exercised' });
+const noopResume = async () => ({ status: 'failed' as const, reason: 'not exercised' });
+
 // ReplyPopover (Task 11) reaches window.fleet.sendKeys directly -- present
 // so the reply tests below don't throw on a missing bridge, and so its
 // call can be asserted the same way tests/renderer/ReplyPopover.test.tsx
@@ -21,6 +43,12 @@ let sendKeys: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   sendKeys = vi.fn(async () => ({ status: 'sent' }));
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = { sendKeys };
+  // The resize width is persisted here (see readStoredRailWidth/
+  // writeStoredRailWidth in SessionRail.tsx) -- without clearing it, one
+  // test's resize would leak into the next test's "starts at the default
+  // width" assumption, since jsdom's localStorage survives across tests
+  // within a file.
+  localStorage.clear();
 });
 
 describe('SessionRail', () => {
@@ -99,5 +127,168 @@ describe('SessionRail', () => {
     render(<SessionRail sessions={both} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     expect(screen.getByRole('button', { name: /reply to llm-workspace, pid 1/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /reply to game-viewer, pid 2/i })).toBeTruthy();
+  });
+
+  describe('resizing the rail', () => {
+    it('exposes the handle as a focusable, named separator carrying its own width', () => {
+      render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      const handle = screen.getByRole('separator', { name: /180 pixels wide/i });
+      expect(handle.tabIndex).toBe(0);
+      expect(handle.getAttribute('aria-valuenow')).toBe('180');
+    });
+
+    it('starts at the default width, applied to the rail element itself', () => {
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect((container.querySelector('.rail') as HTMLElement).style.width).toBe('180px');
+    });
+
+    it('grows a left rail on ArrowRight and shrinks it on ArrowLeft, at its own handle', () => {
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      const handle = screen.getByRole('separator');
+      const width = () => (container.querySelector('.rail') as HTMLElement).style.width;
+      fireEvent.keyDown(handle, { key: 'ArrowRight' });
+      expect(width()).toBe('192px');
+      fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+      fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+      expect(width()).toBe('168px');
+    });
+
+    // Mutation target: dropping the Math.max half of clampRailWidth (or
+    // the whole clamp) must fail this -- a left rail driven far past its
+    // minimum with ArrowLeft would otherwise go negative or to zero,
+    // "dragged to nothing" per the brief.
+    it('clamps growth at a sensible minimum, never to zero or negative', () => {
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      const handle = screen.getByRole('separator');
+      for (let i = 0; i < 20; i++) fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+      const width = (container.querySelector('.rail') as HTMLElement).style.width;
+      expect(width).toBe('140px');
+      expect(parseInt(width, 10)).toBeGreaterThan(0);
+    });
+
+    // Mutation target: dropping the Math.min half of clampRailWidth must
+    // fail this -- an unbounded rail could otherwise be grown until it
+    // swallows the pane entirely.
+    it('clamps growth at a sensible maximum too, so the rail cannot swallow the pane', () => {
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      const handle = screen.getByRole('separator');
+      for (let i = 0; i < 30; i++) fireEvent.keyDown(handle, { key: 'ArrowRight' });
+      expect((container.querySelector('.rail') as HTMLElement).style.width).toBe('420px');
+    });
+
+    // The rail's inner edge -- the edge next to the pane -- is on the
+    // OPPOSITE side for 'right', so the same physical drag/key direction
+    // must grow it the opposite way, or the handle would visually detach
+    // from the border it is supposed to be sitting on.
+    it('mirrors the arrow-key direction for a right rail', () => {
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="right" />);
+      const handle = screen.getByRole('separator');
+      const width = () => (container.querySelector('.rail') as HTMLElement).style.width;
+      fireEvent.keyDown(handle, { key: 'ArrowLeft' }); // grows a right rail
+      expect(width()).toBe('192px');
+      fireEvent.keyDown(handle, { key: 'ArrowRight' }); // shrinks it
+      fireEvent.keyDown(handle, { key: 'ArrowRight' });
+      expect(width()).toBe('168px');
+    });
+
+    it('resizes by dragging the handle with the mouse, mirrored the same way as the keyboard', () => {
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      const handle = screen.getByRole('separator');
+      fireEvent.mouseDown(handle, { clientX: 100 });
+      fireEvent.mouseMove(window, { clientX: 145 });
+      fireEvent.mouseUp(window);
+      expect((container.querySelector('.rail') as HTMLElement).style.width).toBe('225px');
+    });
+
+    it('stops following the mouse once the drag ends', () => {
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      const handle = screen.getByRole('separator');
+      fireEvent.mouseDown(handle, { clientX: 100 });
+      fireEvent.mouseMove(window, { clientX: 145 });
+      fireEvent.mouseUp(window);
+      const settled = (container.querySelector('.rail') as HTMLElement).style.width;
+      fireEvent.mouseMove(window, { clientX: 300 }); // no mousedown first -- must be a no-op
+      expect((container.querySelector('.rail') as HTMLElement).style.width).toBe(settled);
+    });
+
+    // The width must survive a restart -- localStorage is what makes that
+    // true (a per-viewer UI preference, not fleet state), so a fresh
+    // mount of the SAME rail must pick up what a previous one left behind.
+    it('persists the resized width across a remount', () => {
+      const { unmount, container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      const handle = screen.getByRole('separator');
+      fireEvent.keyDown(handle, { key: 'ArrowRight' });
+      fireEvent.keyDown(handle, { key: 'ArrowRight' });
+      const resized = (container.querySelector('.rail') as HTMLElement).style.width;
+      expect(resized).toBe('204px');
+      unmount();
+
+      const { container: container2 } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect((container2.querySelector('.rail') as HTMLElement).style.width).toBe(resized);
+    });
+
+    it('ignores a corrupt or out-of-range stored width rather than rendering it verbatim', () => {
+      localStorage.setItem('llmws:rail-width', 'not-a-number');
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect((container.querySelector('.rail') as HTMLElement).style.width).toBe('180px');
+
+      localStorage.setItem('llmws:rail-width', '99999');
+      const { container: container2 } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect((container2.querySelector('.rail') as HTMLElement).style.width).toBe('420px');
+    });
+  });
+
+  describe('the unread indicator', () => {
+    it('shows nothing on first render -- a pre-existing event count is never reported as new', () => {
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
+    });
+
+    it('flags a session whose events increase while it is not the current selection', () => {
+      const { rerender, container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(container.querySelectorAll('.unread-dot')).toHaveLength(1);
+    });
+
+    // Mutation target: dropping the `s.pid !== selectedPid` guard (or
+    // never updating the baseline on selection) must fail this.
+    it('never flags the session currently being viewed, even as its own events grow', () => {
+      const { rerender, container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(<SessionRail sessions={sessionsPid1Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
+    });
+
+    // Distinct from the "never flags the currently selected session" test
+    // above: that one never looks away. This is the scenario its own doc
+    // comment in SessionRail.tsx calls out specifically -- a session that
+    // produced output while genuinely being viewed must not light up
+    // retroactively the moment you switch to something else, which only
+    // holds if the baseline is updated WHILE selected (SessionRail.tsx's
+    // effect), not merely suppressed by the render-time check for as
+    // long as it stays selected.
+    it('does not light up after you look away, having produced output while you were viewing it', () => {
+      const { rerender, container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(<SessionRail sessions={sessionsPid1Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(<SessionRail sessions={sessionsPid1Bumped} selectedPid={2} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
+    });
+
+    it('clears once the user selects the flagged session', () => {
+      const { rerender, container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(container.querySelectorAll('.unread-dot')).toHaveLength(1);
+      rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={2} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
+    });
+
+    // Once selected, a later re-render (unrelated data refresh, still with
+    // events unchanged) must not resurrect the indicator for that same
+    // session -- the baseline recorded on selection has to stick.
+    it('stays cleared for the selected session across further re-renders', () => {
+      const { rerender, container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={2} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={2} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
+    });
   });
 });

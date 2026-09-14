@@ -1,10 +1,34 @@
 /* src/renderer/components/SessionRail.css
    Tokens only -- theme.css owns every colour. */
-.rail { display:flex; flex-direction:column; gap:6px; padding:8px;
-  width:180px; flex:none; overflow-y:auto;
+
+/* .rail is now a flex ROW of two children -- .railhandle (the resize grip)
+   and .railcards (the actual card column, everything .rail's own rules
+   used to be before the resize feature existed) -- rather than the column
+   itself. This keeps width/flex:none/border/order on the one element
+   MainPane.tsx actually places in the split-view row, so nothing outside
+   this file needs to change to support resizing. */
+.rail { display:flex; align-items:stretch; flex:none;
   background:var(--surface); }
 .rail.left  { border-right:1px solid var(--line); order:0; }
 .rail.right { border-left:1px solid var(--line); order:2; }
+
+.railcards { flex:1; min-width:0; display:flex; flex-direction:column;
+  gap:6px; padding:8px; overflow-y:auto; }
+
+/* The resize grip -- a thin strip on the rail's INNER edge (the border it
+   shares with the main pane), so dragging it changes the one thing this
+   rail owns: its own width. A flex SIBLING of .railcards, not an
+   absolutely-positioned overlay: .railcards already scrolls
+   (overflow-y:auto), which -- per the CSS overflow spec -- computes
+   overflow-x to 'auto' too the moment overflow-y isn't 'visible', so an
+   overlay child positioned outside .railcards' own box would get clipped
+   (or force a horizontal scrollbar) instead of floating on the border.
+   Ordered by `side` in the JSX (before .railcards for 'right', after it
+   for 'left') so it always renders on the edge next to .pane, never the
+   outer edge against the window frame. */
+.railhandle { flex:none; width:6px; cursor:col-resize; background:transparent; }
+.railhandle:hover, .railhandle:focus-visible { background:color-mix(in srgb,var(--accent) 35%,transparent); }
+
 .railitem { position:relative; }
 .railitem.sel .card { border-color:var(--accent); background:var(--raised); }
 
