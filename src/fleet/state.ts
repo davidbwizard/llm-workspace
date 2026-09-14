@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os';
 import type { Db } from '../store/db.ts';
 import type { Provider } from '../core/types.ts';
 import { openBlockers, type Blocker } from '../store/signals.ts';
@@ -57,12 +58,54 @@ export interface SessionState {
 const WORKING_MS = 20_000;
 const ACTIVE_MS = 30 * 60_000;
 
+/** Which kind of "not a real project" this cwd is -- the platform scratch
+ *  directory or either spelling of `/tmp`, versus the filesystem root
+ *  itself -- or null for an ordinary project directory. Matched by
+ *  directory CONTAINMENT against a fixed list of roots, never by matching
+ *  a directory NAME (e.g. the literal letter "T", the last path segment of
+ *  a tmpdir path): name-matching would also catch a real project directory
+ *  that happens to be called that. Drives both an honest card title
+ *  (projectName, below) and sorting these cards after every real project
+ *  (byProcessAge, further down) instead of hiding them -- "ALL OPEN
+ *  SESSIONS should show... so I can close if they are actually dead"
+ *  (Phase 3); a hidden card can't be closed from the app.
+ *
+ *  - `tmpdir()`: honours TMPDIR, and on macOS resolves to a per-user
+ *    `/var/folders/<xx>/<yy>/T`-style path -- the literal case this exists
+ *    for (a card whose title rendered as the bare letter "T", that path's
+ *    last segment).
+ *  - '/tmp' and '/private/tmp': the SAME directory on macOS ('/tmp' is a
+ *    symlink to '/private/tmp'), listed under both spellings because a cwd
+ *    can arrive already resolved to either one.
+ *  - '/var/folders': the parent of every macOS per-user temp directory --
+ *    catches one under a DIFFERENT user's tree, or one recorded before
+ *    TMPDIR pointed here, that `tmpdir()` alone would miss.
+ *  - '/': the filesystem root -- a session launched with no real cwd
+ *    context lands here, and there is no project to name. Checked as an
+ *    exact match, not containment: every real directory is "inside" '/',
+ *    so containment here would misclassify everything. */
+function junkCwdKind(cwd: string | null): 'temp' | 'root' | null {
+  if (!cwd) return null;
+  if (cwd === '/') return 'root';
+  const tempRoots = [tmpdir(), '/tmp', '/private/tmp', '/var/folders'];
+  return tempRoots.some(root => cwd === root || cwd.startsWith(`${root}/`)) ? 'temp' : null;
+}
+
 /** Last path segment of a working directory, or 'unknown' with none --
  *  shared between fleetState's session rows and openSessions' process
  *  rows below, which each derive a project name from a cwd of their own
- *  (a session's from its transcript, a process's from `lsof`). */
+ *  (a session's from its transcript, a process's from `lsof`). A junk cwd
+ *  (see junkCwdKind above) gets a description instead of its last segment
+ *  -- that segment is meaningless (e.g. the bare letter "T" for a macOS
+ *  tmpdir path, or '/' itself for the filesystem root), and the card's
+ *  full cwd is already shown underneath, so the title can afford to say
+ *  what the directory IS rather than name it. */
 function projectName(cwd: string | null): string {
-  return cwd ? cwd.split('/').filter(Boolean).slice(-1)[0] ?? cwd : 'unknown';
+  switch (junkCwdKind(cwd)) {
+    case 'root': return 'filesystem root';
+    case 'temp': return 'temp folder';
+    default: return cwd ? cwd.split('/').filter(Boolean).slice(-1)[0] ?? cwd : 'unknown';
+  }
 }
 
 /** Event kinds that mean the agent handed control back and is now waiting on
@@ -562,8 +605,17 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
 // opened session is the most likely one David just asked about. Unknown
 // age (ps failed) sorts last rather than first: it cannot honestly claim
 // to be the newest. pid breaks ties deterministically. Shared by
-// openSessions and openSessionsLive so both order cards the same way.
+// openSessions and openSessionsLive so both order cards the same way --
+// which is also why the junk-last tiebreak below lives HERE rather than as
+// a second sort layered on top of each call site: a junk cwd (junkCwdKind
+// above) sorts after every real project, but never reorders real projects
+// against each other -- the junk comparison only fires when exactly one
+// side is junk; two reals (or two junk cards) fall straight through to the
+// original ageSeconds/pid comparison, unchanged.
 function byProcessAge(a: OpenSession, b: OpenSession): number {
+  const junkA = junkCwdKind(a.cwd) !== null;
+  const junkB = junkCwdKind(b.cwd) !== null;
+  if (junkA !== junkB) return junkA ? 1 : -1;
   return (a.ageSeconds ?? Infinity) - (b.ageSeconds ?? Infinity) || a.pid - b.pid;
 }
 

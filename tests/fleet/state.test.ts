@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { tmpdir } from 'node:os';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
 import { fleetState, openSessions, openSessionsLive, fleetStatePage } from '../../src/fleet/state.ts';
@@ -550,6 +551,63 @@ describe('openSessions', () => {
     expect(open.map(o => o.pid)).toEqual([2, 4, 3, 1]);
   });
 
+  // A temp-dir cwd is not a project -- the card's title used to render as
+  // the bare last path segment (e.g. "T" for a macOS
+  // /var/folders/xx/yy/T tmpdir), which is meaningless. It gets a
+  // description instead, and sorts after every real project even though
+  // it is the NEWEST process here (ageSeconds:1) -- proving the junk
+  // tiebreak actually overrides age, not just coincides with it.
+  it('gives a temp-dir session an honest title and sorts it after every real project despite being newest', () => {
+    const open = openSessions([], [
+      proc({ pid:1, cwd:`${tmpdir()}/xyz/T`, ageSeconds:1 }),
+      proc({ pid:2, cwd:'/repo/real', ageSeconds:1000 }),
+    ]);
+    expect(open.map(o => o.pid)).toEqual([2, 1]);
+    expect(open.find(o => o.pid === 1)!.project).toBe('temp folder');
+  });
+
+  // Same as above for the filesystem root -- a session with no real cwd
+  // context used to render its title as the literal "/".
+  it('gives a root-cwd session an honest title and sorts it after every real project despite being newest', () => {
+    const open = openSessions([], [
+      proc({ pid:1, cwd:'/', ageSeconds:1 }),
+      proc({ pid:2, cwd:'/repo/real', ageSeconds:1000 }),
+    ]);
+    expect(open.map(o => o.pid)).toEqual([2, 1]);
+    expect(open.find(o => o.pid === 1)!.project).toBe('filesystem root');
+  });
+
+  // The naive fix (matching the last path segment against the literal
+  // string "T" or "tmp") would also catch a real project directory that
+  // happens to be named that -- this is the assertion that stops it: both
+  // stay real projects, keeping their own name as the title and their
+  // place in the age-ordered sort, not shoved to the end.
+  it('does not treat a real project directory literally named "T" or "tmp" as junk', () => {
+    const open = openSessions([], [
+      proc({ pid:1, cwd:'/Users/me/projects/T', ageSeconds:5 }),
+      proc({ pid:2, cwd:'/Users/me/projects/tmp', ageSeconds:1 }),
+    ]);
+    expect(open.find(o => o.pid === 1)!.project).toBe('T');
+    expect(open.find(o => o.pid === 2)!.project).toBe('tmp');
+    // Ordered by age like any other real project -- not pushed to the end.
+    expect(open.map(o => o.pid)).toEqual([2, 1]);
+  });
+
+  // The junk tiebreak must be exactly that -- a tiebreak -- and never a
+  // second, competing sort: mixing one junk card in among several real
+  // ones must not disturb the real ones' relative order (still plain
+  // ageSeconds-ascending, pid-breaking-ties, same as the "orders by
+  // process age" test above), only append the junk card past all of them.
+  it('keeps ordering among real sessions unchanged when a junk card is mixed in', () => {
+    const open = openSessions([], [
+      proc({ pid:3, cwd:'/repo/c', ageSeconds:500 }),
+      proc({ pid:9, cwd:tmpdir(), ageSeconds:1 }), // junk, newest -- must still sort last
+      proc({ pid:1, cwd:'/repo/a', ageSeconds:null }),
+      proc({ pid:2, cwd:'/repo/b', ageSeconds:100 }),
+    ]);
+    expect(open.map(o => o.pid)).toEqual([2, 3, 1, 9]);
+  });
+
   // tmux defaults false with no dependency at all (this module has no tmux
   // registry access of its own -- see OpenSession's own doc comment), but a
   // caller that DOES supply one (src/main/ipc.ts) must have it actually
@@ -683,6 +741,42 @@ describe('openSessionsLive', () => {
       proc({ pid:4, ageSeconds:100 }),
     ], NOW);
     expect(open.map(o => o.pid)).toEqual([2, 4, 3, 1]);
+  });
+
+  // Mirrors the openSessions block's own junk-cwd tests above: this path
+  // shares projectName/byProcessAge with openSessions (see state.ts), so
+  // the same title-and-sort behaviour must hold here too -- this is what
+  // actually feeds the rail/grid on the fleet:update push path (see
+  // openSessionsLive's own doc comment), not openSessions.
+  it('gives a temp-dir session an honest title and sorts it after every real project despite being newest', () => {
+    const db = openDb(':memory:');
+    const open = openSessionsLive(db, [
+      proc({ pid:1, cwd:`${tmpdir()}/xyz/T`, ageSeconds:1 }),
+      proc({ pid:2, cwd:'/repo/real', ageSeconds:1000 }),
+    ], NOW);
+    expect(open.map(o => o.pid)).toEqual([2, 1]);
+    expect(open.find(o => o.pid === 1)!.project).toBe('temp folder');
+  });
+
+  it('gives a root-cwd session an honest title and sorts it after every real project despite being newest', () => {
+    const db = openDb(':memory:');
+    const open = openSessionsLive(db, [
+      proc({ pid:1, cwd:'/', ageSeconds:1 }),
+      proc({ pid:2, cwd:'/repo/real', ageSeconds:1000 }),
+    ], NOW);
+    expect(open.map(o => o.pid)).toEqual([2, 1]);
+    expect(open.find(o => o.pid === 1)!.project).toBe('filesystem root');
+  });
+
+  it('does not treat a real project directory literally named "T" or "tmp" as junk', () => {
+    const db = openDb(':memory:');
+    const open = openSessionsLive(db, [
+      proc({ pid:1, cwd:'/Users/me/projects/T', ageSeconds:5 }),
+      proc({ pid:2, cwd:'/Users/me/projects/tmp', ageSeconds:1 }),
+    ], NOW);
+    expect(open.find(o => o.pid === 1)!.project).toBe('T');
+    expect(open.find(o => o.pid === 2)!.project).toBe('tmp');
+    expect(open.map(o => o.pid)).toEqual([2, 1]);
   });
 
   it('reports tmux per pid from the injected isTmux, defaulting false with none given', () => {
