@@ -250,13 +250,14 @@ id reaches a command line.
 
 ## 7. Open items to settle while planning
 
-1. **Does `startedAt` change on `/clear`?** It matched process start on sessions
-   that had not cleared. If it resets, the start-time guard must use `procStart`
-   instead. `procStart` is a UTC date string, observed as
-   `"Tue Sep  8 19:53:43 2026"`. Measure before writing the guard.
-2. **What does `status` show during a permission prompt?** If it is `waiting`,
-   §3.4 stands. If it is something new, it is an unrecognised value, `status`
-   becomes null, and the fallback applies. Measure and record which.
-3. **Does a non-interactive session write the file?** Examples are `claude -p`
-   or SDK sessions. The design does not depend on it, because a missing file
-   means fallback, but record the answer.
+All three were measured on 2026-09-15 (Claude Code 2.1.272) before planning:
+
+1. **`startedAt` does not change on `/clear`.** A throwaway session kept
+   `startedAt: 1789484783913` while `sessionId` went from `ac322d5f…` to
+   `9e3c4b49…`. The start-time guard uses `startedAt`, and Reattach's fresh
+   re-read compares it to the value discovery verified.
+2. **`status` is `waiting` during a permission prompt**, the same as during a
+   multiple-choice question. §3.4 stands.
+3. **`claude -p` writes the file too**, with `entrypoint: "sdk-cli"`,
+   `kind: "interactive"`, and `status: null` at first. Such sessions get exact
+   identity; their activity uses the transcript rule until a status appears.
