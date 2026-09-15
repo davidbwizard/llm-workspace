@@ -191,6 +191,23 @@ id reaches a command line.
 | `~/.claude/sessions` missing entirely (Claude Code changed) | Every Claude pid falls back. One log line per app run, not one per pid per sweep. |
 | File read throws for another reason (permissions) | Treated as missing, logged once per pid per app run. The sweep never throws because of this module. |
 
+### 3.7 Reply guard (added after in-app testing)
+
+In-app testing found that the card's Reply popover, which types text into
+tmux via `session:keys`, cannot answer a Claude choice (a question picker or
+a permission prompt): the picker ignores the typed letters and Enter selects
+whichever option is highlighted -- "blue" was recorded as `"Pick a
+color?"="Red"`, and at a permission prompt option 1 is "Yes", so the same
+action would silently approve a command. `sendKeysFor` now refuses to send
+while a choice is open (reason `prompt_open`): the exact `waiting` status
+(§3.4) wins when a fresh read is available, and otherwise only a cached
+`waiting_permission` (a PermissionRequest hook blocker, always a picker)
+counts -- a cached `waiting_input` does not, since a hook-based one can be an
+ordinary text prompt where Reply is correct. The Terminal view's own keys
+(`session:raw`) are unaffected; typing directly into the terminal remains the
+correct way to answer a choice until Part 4 replaces this with proper choice
+cards.
+
 ## 4. Out of scope
 
 - Codex sessions. Nothing equivalent exists, so the heuristics stay.
