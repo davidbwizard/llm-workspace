@@ -1,5 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
-import { discoverLiveProcesses, execFileSoft, type ExecFn } from '../../src/discovery/live.ts';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  discoverLiveProcesses, execFileSoft, resetLiveSessionWarnings, type ExecFn,
+} from '../../src/discovery/live.ts';
+import type { LiveSessionFile, LiveSessionRead } from '../../src/providers/claude/liveSession.ts';
 
 // A canned exec: keys are "bin arg1 arg2 ...", exactly how discoverLiveProcesses
 // invokes exec() -- so a test only needs to name the calls it cares about.
@@ -311,5 +314,88 @@ describe('refreshLiveProcesses — in-flight sweep guard', () => {
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult).toEqual(secondResult);
     expect(firstResult.map(p => p.pid)).toEqual([100]);
+  });
+});
+
+describe('discoverLiveProcesses: live session file', () => {
+  const NOW = 1_789_500_000_000;
+  // 05:23 elapsed = 323 s, so the process started at NOW - 323_000.
+  const claudeExec = fakeExec({
+    'pgrep -x claude': '100\n',
+    'ps -o tty= -p 100': 'ttys001\n',
+    'lsof -a -p 100 -d cwd -Fn': 'p100\nfcwd\nn/repo/a\n',
+    'ps -o etime=,rss= -p 100': '05:23  1234\n',
+    'ps -o ppid=,comm= -p 100': '1 claude\n',
+  });
+  const file = (o: Partial<LiveSessionFile> = {}): LiveSessionFile => ({
+    sessionId: 'sess-a', cwd: '/repo/a', startedAtMs: NOW - 323_000 + 700, status: 'waiting', ...o,
+  });
+  const ok = (f: LiveSessionFile): LiveSessionRead => ({ ok: true, file: f });
+
+  beforeEach(() => resetLiveSessionWarnings());
+
+  it('attaches the file when its start time agrees with the process', async () => {
+    const [p] = await discoverLiveProcesses(claudeExec, { readLiveSession: () => ok(file()), now: () => NOW, warn: vi.fn() });
+    expect(p!.liveSession).toEqual(file());
+  });
+
+  it('ignores the file and warns once when the start time disagrees (pid reuse)', async () => {
+    const warn = vi.fn();
+    const deps = { readLiveSession: () => ok(file({ startedAtMs: NOW - 900_000 })), now: () => NOW, warn };
+    const [p] = await discoverLiveProcesses(claudeExec, deps);
+    await discoverLiveProcesses(claudeExec, deps);
+    expect(p).not.toHaveProperty('liveSession');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/pid 100.*start time/);
+  });
+
+  it('ignores the file when the process age is unknown', async () => {
+    const exec: ExecFn = async (bin, args) =>
+      (bin === 'ps' && args[1] === 'etime=,rss=') ? '' : claudeExec(bin, args);
+    const [p] = await discoverLiveProcesses(exec, { readLiveSession: () => ok(file()), now: () => NOW, warn: vi.fn() });
+    expect(p).not.toHaveProperty('liveSession');
+  });
+
+  it('treats a missing file as normal: no liveSession, no warning', async () => {
+    const warn = vi.fn();
+    const [p] = await discoverLiveProcesses(claudeExec, {
+      readLiveSession: () => ({ ok: false, reason: 'missing' }), now: () => NOW, warn,
+    });
+    expect(p).not.toHaveProperty('liveSession');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns once per pid and reason for a rejected file, naming the reason but not the contents', async () => {
+    const warn = vi.fn();
+    const deps = { readLiveSession: (): LiveSessionRead => ({ ok: false, reason: 'invalid' }), now: () => NOW, warn };
+    await discoverLiveProcesses(claudeExec, deps);
+    await discoverLiveProcesses(claudeExec, deps);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/pid 100.*invalid/);
+  });
+
+  it('warns once per app run, not per pid, when the sessions directory is missing', async () => {
+    const warn = vi.fn();
+    const exec = fakeExec({
+      'pgrep -x claude': '100\n101\n',
+      'ps -o etime=,rss= -p 100': '05:23  1\n', 'ps -o ppid=,comm= -p 100': '1 claude\n',
+      'ps -o etime=,rss= -p 101': '05:23  1\n', 'ps -o ppid=,comm= -p 101': '1 claude\n',
+    });
+    const deps = { readLiveSession: (): LiveSessionRead => ({ ok: false, reason: 'missing_dir' }), now: () => NOW, warn };
+    await discoverLiveProcesses(exec, deps);
+    await discoverLiveProcesses(exec, deps);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('never reads a session file for a Codex process', async () => {
+    const readLiveSession = vi.fn((): LiveSessionRead => ({ ok: true, file: file() }));
+    const exec = fakeExec({
+      'pgrep -x codex': '200\n',
+      'ps -o etime=,rss= -p 200': '05:23  1\n',
+      'ps -o ppid=,comm= -p 200': '1 codex\n',
+    });
+    const [p] = await discoverLiveProcesses(exec, { readLiveSession, now: () => NOW, warn: vi.fn() });
+    expect(readLiveSession).not.toHaveBeenCalled();
+    expect(p).not.toHaveProperty('liveSession');
   });
 });
