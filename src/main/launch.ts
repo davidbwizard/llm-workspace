@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Provider } from '../core/types.ts';
+// Validated before any session id reaches tmux's shell string; see src/core/identity.ts.
 import { SESSION_ID_SAFE } from '../core/identity.ts';
 import type { KillResult } from './ipc.ts';
 import { newSession, setSessionOption, panePid as tmuxPanePid, type TmuxExec } from './tmux.ts';
@@ -70,15 +71,6 @@ export function launchSession(
   registerSession(pid, name, deps.now ?? Date.now());
   return { status: 'launched', pid };
 }
-
-/** Claude's own session id, exactly as it names its transcript file
- *  (src/watch/watcher.ts: `sessionId = basename(sessionDir)`) -- a UUID in
- *  practice, but validated here rather than trusted, because it is about to
- *  be interpolated into the one string tmux's own new-session command takes
- *  (there is no argv-array escape from that -- tmux hands its trailing
- *  shell-command argument to a shell, same as every other launchSession
- *  call). Anchored, restricted to characters no shell gives special
- *  meaning to. */
 
 /** session:resume. Relaunches a Claude conversation from its session id and
  *  cwd alone, with no kill step and no pid to resolve from -- this is what a
