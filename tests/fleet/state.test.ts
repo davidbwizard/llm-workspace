@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions } from '../../src/fleet/state.ts';
+import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions, activityFromLiveStatus } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
 import type { OpenSession } from '../../src/fleet/state.ts';
@@ -691,6 +691,58 @@ describe('openSessionsLive', () => {
       const db = openDb(':memory:');
       const [o] = openSessionsLive(db, [proc({ pid:1, cwd:'/repo/new', ageSeconds:5, ...live('just-launched', '/repo/new') })], NOW);
       expect(o).toMatchObject({ match:'unique', sessionId:'just-launched', lastProse:null, events:null });
+    });
+  });
+
+  describe('activity from the live session status', () => {
+    function oneSession(lastKind: 'turn.completed' | 'prose') {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', ts:at(2), payload:{ cwd:'/repo/s' }, contentHash:'a' }),
+        ev({ kind:lastKind, ts:at(1), payload: lastKind === 'prose' ? { text:'hi' } : {}, contentHash:'b', subIndex:1 }),
+      ]);
+      return db;
+    }
+    const withStatus = (status: 'idle' | 'busy' | 'waiting' | null) =>
+      proc({ pid:3, cwd:'/repo/s', ageSeconds:600, ...live('s1', '/repo/s', status) });
+
+    it('waiting means waiting on you, even after a turn boundary', () => {
+      expect(openSessionsLive(oneSession('turn.completed'), [withStatus('waiting')], NOW)[0]!.activity).toBe('waiting_input');
+    });
+
+    it('busy means working, even after a turn boundary', () => {
+      expect(openSessionsLive(oneSession('turn.completed'), [withStatus('busy')], NOW)[0]!.activity).toBe('working');
+    });
+
+    it('idle means idle, even mid-turn by the transcript rule', () => {
+      expect(openSessionsLive(oneSession('prose'), [withStatus('idle')], NOW)[0]!.activity).toBe('idle');
+    });
+
+    it('null status keeps the transcript rule', () => {
+      expect(openSessionsLive(oneSession('prose'), [withStatus(null)], NOW)[0]!.activity).toBe('working');
+    });
+
+    it('a hook PermissionRequest still wins over the file', () => {
+      const db = oneSession('turn.completed');
+      db.prepare(`INSERT INTO signal_events
+        (event_id, occurred_at, ingested_at, provider, session_id, tool_use_id, kind, payload)
+        VALUES (?,?,?,?,?,?,?,?)`).run('e1', at(1), at(1), 'claude', 's1', 't1',
+          'PermissionRequest', JSON.stringify({ tool_name:'Bash', tool_input:{ command:'ls' } }));
+      expect(openSessionsLive(db, [withStatus('idle')], NOW)[0]!.activity).toBe('waiting_permission');
+    });
+
+    it('an exact match with no index rows yet still shows waiting', () => {
+      const [o] = openSessionsLive(openDb(':memory:'), [
+        proc({ pid:4, cwd:'/repo/new', ageSeconds:5, ...live('fresh', '/repo/new', 'waiting') }),
+      ], NOW);
+      expect(o!.activity).toBe('waiting_input');
+    });
+
+    it('an exact match with no index rows and no status leaves activity unknown', () => {
+      const [o] = openSessionsLive(openDb(':memory:'), [
+        proc({ pid:4, cwd:'/repo/new', ageSeconds:5, ...live('fresh', '/repo/new', null) }),
+      ], NOW);
+      expect(o!.activity).toBeNull();
     });
   });
 
@@ -1496,5 +1548,15 @@ describe('compareOpenSessions', () => {
     const forward = [...items].sort(cmp).map(o => o.pid);
     const reversed = [...items].reverse().sort(cmp).map(o => o.pid);
     expect(reversed).toEqual(forward);
+  });
+});
+
+describe('activityFromLiveStatus', () => {
+  it('maps each known status and nothing else', () => {
+    expect(activityFromLiveStatus('waiting')).toBe('waiting_input');
+    expect(activityFromLiveStatus('busy')).toBe('working');
+    expect(activityFromLiveStatus('idle')).toBe('idle');
+    expect(activityFromLiveStatus(null)).toBeNull();
+    expect(activityFromLiveStatus(undefined)).toBeNull();
   });
 });
