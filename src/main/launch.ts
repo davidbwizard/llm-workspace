@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Provider } from '../core/types.ts';
+import { SESSION_ID_SAFE } from '../core/identity.ts';
 import type { KillResult } from './ipc.ts';
 import { newSession, setSessionOption, panePid as tmuxPanePid, type TmuxExec } from './tmux.ts';
 import { registerSession } from './sessions.ts';
@@ -78,7 +79,6 @@ export function launchSession(
  *  shell-command argument to a shell, same as every other launchSession
  *  call). Anchored, restricted to characters no shell gives special
  *  meaning to. */
-const SESSION_ID_SAFE = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** session:resume. Relaunches a Claude conversation from its session id and
  *  cwd alone, with no kill step and no pid to resolve from -- this is what a

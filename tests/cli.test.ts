@@ -17,6 +17,7 @@ describe('resolvePaths', () => {
   it('points at the provider directories the spec names', () => {
     const p = resolvePaths('/home/me');
     expect(p.claudeProjects).toBe('/home/me/.claude/projects');
+    expect(p.claudeLiveSessions).toBe('/home/me/.claude/sessions');
     expect(p.codexSessions).toBe('/home/me/.codex/sessions');
     expect(p.codexStateDb).toBe('/home/me/.codex/state_5.sqlite');
     expect(p.spool).toBe('/home/me/.llm-workspace/spool');

@@ -10,6 +10,7 @@ import { isOwnedHookCommand } from './hooks/install.ts';
 export interface Paths {
   claudeProjects: string;
   claudeSettings: string;
+  claudeLiveSessions: string;
   codexSessions: string;
   codexStateDb: string;
   codexHistoryDb: string;
@@ -21,6 +22,7 @@ export function resolvePaths(home: string): Paths {
   return {
     claudeProjects: join(home, '.claude/projects'),
     claudeSettings: join(home, '.claude/settings.json'),
+    claudeLiveSessions: join(home, '.claude/sessions'),
     codexSessions: join(home, '.codex/sessions'),
     codexStateDb: join(home, '.codex/state_5.sqlite'),
     codexHistoryDb: join(home, '.codex/thread_history_1.sqlite'),
