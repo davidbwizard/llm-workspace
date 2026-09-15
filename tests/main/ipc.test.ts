@@ -8,12 +8,15 @@ import {
   sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
-  killSession, ownProcessAncestry, revealSession, sendKeysFor,
+  killSession, ownProcessAncestry, revealSession, sendKeysFor, resolveReattachTarget,
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry, tmuxNameForPid } from '../../src/main/sessions.ts';
 import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { Blocker } from '../../src/store/signals.ts';
+import type { LiveProcess } from '../../src/discovery/parse.ts';
+import type { OpenSession } from '../../src/fleet/state.ts';
+import type { LiveSessionRead } from '../../src/providers/claude/liveSession.ts';
 
 function ev(o: Partial<NormalizedEvent>): NormalizedEvent {
   return { provider:'claude', sessionId:'s1', runId:'r1', agentId:null,
@@ -996,5 +999,48 @@ describe("session:launch / session:reattach -- Task 13's real handlers", () => {
     expect(ipc).toMatch(/import\s*\{[^}]*resumeSession[^}]*\}\s*from\s*'\.\/launch\.ts'/);
     const resumeHandler = ipc.match(/ipcMain\.handle\(\s*'session:resume',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
     expect(resumeHandler).toMatch(/resumeSession\(/);
+  });
+});
+
+describe('resolveReattachTarget', () => {
+  const STARTED = 1_789_000_000_000;
+  const proc = (o: Partial<LiveProcess> = {}): LiveProcess => ({
+    pid: 50, provider: 'claude', tty: null, cwd: '/repo/a', host: 'iterm2', ageSeconds: 60, rssBytes: null,
+    liveSession: { sessionId: 'before-clear', cwd: '/repo/a', startedAtMs: STARTED, status: 'idle' }, ...o,
+  });
+  const cached = [{ pid: 50, provider: 'claude', cwd: '/repo/a', sessionId: 'before-clear' } as OpenSession];
+  const fresh = (sessionId: string, startedAtMs = STARTED): LiveSessionRead =>
+    ({ ok: true, file: { sessionId, cwd: '/repo/a', startedAtMs, status: 'idle' } });
+
+  it('uses a fresh read when /clear changed the session since the last sweep', () => {
+    const r = resolveReattachTarget(50, { cached, processes: [proc()], read: () => fresh('after-clear') });
+    expect(r).toEqual({ sessionId: 'after-clear', provider: 'claude', cwd: '/repo/a' });
+  });
+
+  it('ignores a fresh read from a different process instance (start time changed)', () => {
+    const r = resolveReattachTarget(50, { cached, processes: [proc()], read: () => fresh('someone-else', STARTED + 60_000) });
+    expect(r).toEqual({ sessionId: 'before-clear', provider: 'claude', cwd: '/repo/a' });
+  });
+
+  it('falls back to the cache when the fresh read fails', () => {
+    const r = resolveReattachTarget(50, { cached, processes: [proc()], read: () => ({ ok: false, reason: 'missing' }) });
+    expect(r).toEqual({ sessionId: 'before-clear', provider: 'claude', cwd: '/repo/a' });
+  });
+
+  it('does not read at all for a process discovery never verified', () => {
+    const read = vi.fn((): LiveSessionRead => fresh('x'));
+    const { liveSession: _omit, ...unverified } = proc();
+    resolveReattachTarget(50, { cached, processes: [unverified], read });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('does not read for Codex', () => {
+    const read = vi.fn((): LiveSessionRead => fresh('x'));
+    resolveReattachTarget(50, { cached, processes: [proc({ provider: 'codex' })], read });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('returns null when nothing identifies the pid', () => {
+    expect(resolveReattachTarget(99, { cached, processes: [], read: () => ({ ok: false, reason: 'missing' }) })).toBeNull();
   });
 });

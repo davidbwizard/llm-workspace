@@ -13,9 +13,10 @@ import {
 import type { Blocker } from '../store/signals.ts';
 import { sanitizeForTerminal, parseProcessChainHop } from '../config.ts';
 import {
-  getCachedLiveProcesses, refreshLiveProcesses, execFileSoft, type ExecFn,
+  getCachedLiveProcesses, refreshLiveProcesses, execFileSoft, readLiveSession, type ExecFn,
 } from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
+import type { LiveSessionRead } from '../providers/claude/liveSession.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import { sendLiteral, sendKeyName, capturePane, setSessionOption, type TmuxResult } from './tmux.ts';
@@ -240,11 +241,35 @@ export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: num
  *  handing it in as an injected dependency. sessionId is only ever non-null
  *  on a UNIQUE cwd match (OpenSession's own doc comment, src/fleet/state.ts)
  *  -- an ambiguous or unmatched pid resolves to null here, which
- *  reattachSession treats as "cannot identify", never a guess. */
-function resolveSessionForReattach(pid: number): { sessionId: string; provider: Provider; cwd: string } | null {
-  const open = cachedPushOpenSessions.find(o => o.pid === pid);
+ *  reattachSession treats as "cannot identify", never a guess.
+ *
+ *  Exact identity first (spec 2026-09-15-exact-session-identity-design.md
+ *  §3.5): the enriched cache can be up to one sweep old, and a `/clear` in
+ *  that window changes the session id. For a Claude process discovery
+ *  already verified, the file is re-read now and trusted only if its
+ *  startedAt is the one discovery verified -- stable across `/clear`,
+ *  different for any other process. Anything else falls back to the cache
+ *  exactly as before. */
+export function resolveReattachTarget(
+  pid: number,
+  deps: { cached: OpenSession[]; processes: LiveProcess[]; read: (pid: number) => LiveSessionRead },
+): { sessionId: string; provider: Provider; cwd: string } | null {
+  const proc = deps.processes.find(p => p.pid === pid);
+  if (proc?.provider === 'claude' && proc.liveSession) {
+    const fresh = deps.read(pid);
+    if (fresh.ok && fresh.file.startedAtMs === proc.liveSession.startedAtMs) {
+      return { sessionId: fresh.file.sessionId, provider: 'claude', cwd: fresh.file.cwd };
+    }
+  }
+  const open = deps.cached.find(o => o.pid === pid);
   if (!open || open.sessionId === null || open.cwd === null) return null;
   return { sessionId: open.sessionId, provider: open.provider, cwd: open.cwd };
+}
+
+function resolveSessionForReattach(pid: number): { sessionId: string; provider: Provider; cwd: string } | null {
+  return resolveReattachTarget(pid, {
+    cached: cachedPushOpenSessions, processes: getCachedLiveProcesses(), read: readLiveSession,
+  });
 }
 
 function isProvider(v: unknown): v is Provider {
