@@ -82,4 +82,14 @@ describe('MainPane', () => {
     expect(screen.getByText(/several recorded sessions/i)).toBeTruthy();
     expect(screen.queryByText(/transcript can't be identified\.$/)).toBeNull();
   });
+
+  // The grid (FleetView) always wired reveal; the rail did not, so in the
+  // split view the host label rendered as plain text and clicking it did
+  // nothing. Proven at this level so the whole MainPane -> SessionRail ->
+  // OpenSessionCard -> window.fleet path is covered, not just the card.
+  it('lets a rail card bring its host terminal forward, same as the grid', () => {
+    render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    fireEvent.click(screen.getByRole('button', { name: /show this session in/i }));
+    expect((window as unknown as { fleet: { revealSession: ReturnType<typeof vi.fn> } }).fleet.revealSession).toHaveBeenCalledWith(1);
+  });
 });

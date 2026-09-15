@@ -76,11 +76,12 @@ function writeStoredRailWidth(w: number): void {
  *  place. ReplyPopover itself stays untouched -- keyed by pid, no rail-shaped
  *  prop -- this component owns only the "which pid, if any" state and the
  *  anchoring markup around it. */
-export function SessionRail({ sessions, selectedPid, onSelect, onKill, onReattach, onResume, side }: {
+export function SessionRail({ sessions, selectedPid, onSelect, onKill, onReveal, onReattach, onResume, side }: {
   sessions: OpenSession[];
   selectedPid: number | null;
   onSelect: (pid: number) => void;
   onKill: (pid: number) => Promise<KillResult>;
+  onReveal?: (pid: number) => Promise<unknown>;
   onReattach: (pid: number, cols: number, rows: number) => Promise<LaunchResult>;
   onResume: (sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
   side: 'left' | 'right';
@@ -205,7 +206,7 @@ export function SessionRail({ sessions, selectedPid, onSelect, onKill, onReattac
           const unread = isUnread(s);
           return (
             <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
-              <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill}
+              <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill} onReveal={onReveal}
                 onReattach={onReattach} onResume={onResume} unread={unread} />
               {waiting && (
                 // Named with project and pid, matching the neighbouring
