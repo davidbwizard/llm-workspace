@@ -5,3 +5,4 @@ out/
 data/
 *.log
 .DS_Store
+.claude/worktrees/
