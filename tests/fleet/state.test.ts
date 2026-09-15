@@ -454,6 +454,14 @@ describe('openSessions', () => {
     expect(open[0]!.match).toBe('unique');
   });
 
+  it('uses exact identity from a live session file even with no session list', () => {
+    const open = openSessions([], [proc({
+      pid:7, cwd:'/repo/x', ageSeconds:5,
+      liveSession: { sessionId:'exact-1', cwd:'/repo/x', startedAtMs:0, status:null },
+    })]);
+    expect(open[0]).toMatchObject({ match:'unique', sessionId:'exact-1' });
+  });
+
   it('shows pid, provider, host, cwd, project, age and memory for a process with no transcript match at all', () => {
     const open = openSessions([], [proc({
       pid:42, provider:'codex', cwd:'/Users/me/orphan', host:'iterm2', ageSeconds:120, rssBytes:50_000_000,
@@ -634,6 +642,57 @@ describe('openSessionsLive', () => {
   function proc(o: Partial<LiveProcess> & { pid: number }): LiveProcess {
     return { provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
   }
+
+  const live = (sessionId: string, cwd: string, status: 'idle' | 'busy' | 'waiting' | null = null) =>
+    ({ liveSession: { sessionId, cwd, startedAtMs: 0, status } });
+
+  describe('exact session identity', () => {
+    function twoSessionsOneFolder() {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ sessionId:'s1', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+        ev({ sessionId:'s1', kind:'prose', payload:{ text:'from s1' }, contentHash:'b', subIndex:1 }),
+        ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'c' }),
+        ev({ sessionId:'s2', kind:'prose', payload:{ text:'from s2' }, contentHash:'d', subIndex:1 }),
+      ]);
+      return db;
+    }
+
+    it('gives two live processes in one folder their own sessions', () => {
+      const db = twoSessionsOneFolder();
+      const open = openSessionsLive(db, [
+        proc({ pid:1, cwd:'/repo/shared', ageSeconds:60, ...live('s1', '/repo/shared') }),
+        proc({ pid:2, cwd:'/repo/shared', ageSeconds:60, ...live('s2', '/repo/shared') }),
+      ], NOW);
+      const byPid = new Map(open.map(o => [o.pid, o]));
+      expect(byPid.get(1)).toMatchObject({ match:'unique', sessionId:'s1', lastProse:'from s1' });
+      expect(byPid.get(2)).toMatchObject({ match:'unique', sessionId:'s2', lastProse:'from s2' });
+    });
+
+    it('stays ambiguous for the same setup without files (fallback pinned)', () => {
+      const db = twoSessionsOneFolder();
+      const open = openSessionsLive(db, [
+        proc({ pid:1, cwd:'/repo/shared', ageSeconds:60 }),
+        proc({ pid:2, cwd:'/repo/shared', ageSeconds:60 }),
+      ], NOW);
+      expect(open.map(o => [o.match, o.sessionId])).toEqual([['ambiguous', null], ['ambiguous', null]]);
+    });
+
+    it('resolves the neighbour of an exactly-matched process when one candidate remains', () => {
+      const db = twoSessionsOneFolder();
+      const open = openSessionsLive(db, [
+        proc({ pid:1, cwd:'/repo/shared', ageSeconds:60, ...live('s1', '/repo/shared') }),
+        proc({ pid:2, cwd:'/repo/shared', ageSeconds:60 }),
+      ], NOW);
+      expect(open.find(o => o.pid === 2)).toMatchObject({ match:'unique', sessionId:'s2' });
+    });
+
+    it('keeps the exact session id even before the index has any rows for it', () => {
+      const db = openDb(':memory:');
+      const [o] = openSessionsLive(db, [proc({ pid:1, cwd:'/repo/new', ageSeconds:5, ...live('just-launched', '/repo/new') })], NOW);
+      expect(o).toMatchObject({ match:'unique', sessionId:'just-launched', lastProse:null, events:null });
+    });
+  });
 
   it('lists one card per live process, regardless of transcript recency', () => {
     const db = openDb(':memory:');

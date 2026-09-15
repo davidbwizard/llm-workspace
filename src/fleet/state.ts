@@ -6,7 +6,7 @@ export { compareOpenSessions, compareRank } from './order.ts';
 import type { Db } from '../store/db.ts';
 import type { Provider } from '../core/types.ts';
 import { openBlockers, type Blocker } from '../store/signals.ts';
-import { classifyMatch, type MatchQuality, type MatchResult } from '../discovery/match.ts';
+import { classifyMatch, applyExactMatches, type MatchQuality, type MatchResult } from '../discovery/match.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
 
 /** Is this run reachable? (spec §9.2) */
@@ -607,7 +607,10 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
     ageSeconds: p.ageSeconds ?? null,
     rssBytes: p.rssBytes ?? null,
     match: m.quality,
-    sessionId: enrichment?.sessionId ?? null,
+    // A unique match with no enrichment yet is an exact live-session match
+    // whose transcript has not been ingested (right after launch or /clear).
+    // The id is still known and still true; only the enrichment is empty.
+    sessionId: enrichment?.sessionId ?? (m.quality === 'unique' ? m.sessionId : null),
     lastProse: enrichment?.lastProse ?? null,
     events: enrichment?.events ?? null,
     activity: enrichment?.activity ?? null,
@@ -672,7 +675,7 @@ export function openSessions(
 ): OpenSession[] {
   const isTmux = deps.isTmux ?? (() => false);
   const refs = sessions.map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
-  const matches = classifyMatch(processes, refs);
+  const matches = applyExactMatches(processes, classifyMatch(processes, refs));
   const byId = new Map(sessions.map(s => [s.sessionId, s]));
 
   // The real recency signal for compareOpenSessions' tiers 3/4: `sessions`
@@ -770,7 +773,7 @@ export function openSessionsLive(
   }
 
   const refs = [...cwdBySession.entries()].map(([sessionId, cwd]) => ({ sessionId, cwd }));
-  const matches = classifyMatch(processes, refs);
+  const matches = applyExactMatches(processes, classifyMatch(processes, refs));
 
   // Disambiguate an ambiguous match for a pid THIS APP launched: among the
   // several sessions sharing that cwd, the app's own session is the one
@@ -804,7 +807,9 @@ export function openSessionsLive(
   // must stay ambiguous under this rule.
   const pidCwdCounts = new Map<string, number>();
   for (const p of processes) {
-    if (p.cwd !== null) pidCwdCounts.set(p.cwd, (pidCwdCounts.get(p.cwd) ?? 0) + 1);
+    // An exactly-resolved process is not competing for this cwd's sessions,
+    // so it must not stop the one remaining process there from resolving.
+    if (p.cwd !== null && !p.liveSession) pidCwdCounts.set(p.cwd, (pidCwdCounts.get(p.cwd) ?? 0) + 1);
   }
   // classifyMatch returns one result per process, in the SAME order (see
   // the identical assumption in openSessions above) -- so `processes[i]`

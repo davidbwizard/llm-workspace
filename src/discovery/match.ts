@@ -38,3 +38,26 @@ export function classifyMatch(procs: LiveProcess[], sessions: SessionRef[]): Mat
     };
   });
 }
+
+/** Exact identity beats cwd matching (spec
+ *  2026-09-15-exact-session-identity-design.md §3.3). Runs AFTER
+ *  classifyMatch, which stays a pure cwd matcher. A process carrying a
+ *  verified live session file resolves to that session outright. Its id is
+ *  then removed from every other process's candidates, and those are
+ *  re-classified with classifyMatch's own length rule -- so a neighbour
+ *  left with one candidate resolves, and one left with several stays
+ *  ambiguous rather than guessed. One result per process, same order. */
+export function applyExactMatches(procs: LiveProcess[], matches: MatchResult[]): MatchResult[] {
+  const claimed = new Set(procs.flatMap(p => p.liveSession ? [p.liveSession.sessionId] : []));
+  if (claimed.size === 0) return matches;
+  // Annotated so the literal 'unique' is not widened to string.
+  return matches.map((m, i): MatchResult => {
+    const exact = procs[i]!.liveSession;
+    if (exact) return { ...m, quality: 'unique', sessionId: exact.sessionId, candidates: [exact.sessionId] };
+    const candidates = m.candidates.filter(id => !claimed.has(id));
+    if (candidates.length === m.candidates.length) return m;
+    const quality: MatchQuality =
+      candidates.length === 1 ? 'unique' : candidates.length > 1 ? 'ambiguous' : 'unknown';
+    return { ...m, candidates, quality, sessionId: quality === 'unique' ? candidates[0]! : null };
+  });
+}
