@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { conversationFor, unwrapSlashCommand } from '../../src/store/conversation.ts';
+import { conversationFor, unwrapSlashCommand, type ConversationTurn } from '../../src/store/conversation.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 
 let nextOffset = 0;
@@ -9,13 +9,16 @@ let nextOffset = 0;
 /** One prompt.submitted/prose row, unique enough to pass the events_identity
  *  UNIQUE index (source_file, source_offset, content_hash, sub_index)
  *  without every test having to think about that. */
-function turnEvent(sessionId: string, ts: string, kind: 'prompt.submitted' | 'prose', text: string): NormalizedEvent {
+function turnEvent(
+  sessionId: string, ts: string, kind: 'prompt.submitted' | 'prose', text: string,
+  agentId: string | null = null,
+): NormalizedEvent {
   const offset = nextOffset++;
   return {
     provider: 'claude',
     sessionId,
     runId: null,
-    agentId: null,
+    agentId,
     ts,
     kind,
     payload: { text },
@@ -26,6 +29,13 @@ function turnEvent(sessionId: string, ts: string, kind: 'prompt.submitted' | 'pr
     subIndex: 0,
     parserVersion: 1,
   };
+}
+
+/** Compact view of a page: "you: x" / "agent: y [a|b]" (steps in brackets). */
+function view(turns: ConversationTurn[]): string[] {
+  return turns.map(t => t.role === 'user'
+    ? `you: ${t.text}`
+    : `agent: ${t.text}${t.steps.length ? ` [${t.steps.map(s => s.text).join('|')}]` : ''}`);
 }
 
 describe('unwrapSlashCommand', () => {
@@ -59,14 +69,82 @@ describe('unwrapSlashCommand', () => {
 });
 
 describe('conversationFor', () => {
-  // Bug fix: this query used to be ORDER BY ts, id (ascending) with a LIMIT,
-  // which takes the FIRST `limit` turns of a session -- on the real index,
-  // 53 sessions exceed 500 turns (largest: 2,812), so the user saw the
-  // opening of a days-old conversation with the recent part unreachable.
-  // This test pins the fix hard: with a limit smaller than the session's
-  // turn count, the NEWEST turns must come back, not the oldest. Flipping
-  // the query's DESC back to ASC must fail this test by name.
-  it('returns the newest turns, not the oldest, when a session exceeds the limit', () => {
+  // Measured on session 92b09bc5: 82 of 246 "you" rows and 810 of 1,184
+  // "agent" rows came from subagents. They are not the conversation.
+  it('leaves out subagent prompts and prose', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'fix the bug'),
+      turnEvent('s1', '2026-09-01T00:00:01Z', 'prompt.submitted', 'You are a reviewer...', 'agent-1'),
+      turnEvent('s1', '2026-09-01T00:00:02Z', 'prose', 'Reviewing now.', 'agent-1'),
+      turnEvent('s1', '2026-09-01T00:00:03Z', 'prose', 'Fixed.'),
+    ]);
+
+    expect(view(conversationFor(db, 's1').turns)).toEqual(['agent: Fixed.', 'you: fix the bug']);
+  });
+
+  // The reply is the last prose before the next human prompt; everything the
+  // agent said earlier in that stretch was narration around tool calls.
+  it('groups narration under the reply it led up to, oldest step first', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'first ask'),
+      turnEvent('s1', '2026-09-01T00:00:01Z', 'prose', 'Reading the file.'),
+      turnEvent('s1', '2026-09-01T00:00:02Z', 'prose', 'Running tests.'),
+      turnEvent('s1', '2026-09-01T00:00:03Z', 'prose', 'All green.'),
+      turnEvent('s1', '2026-09-01T00:00:04Z', 'prompt.submitted', 'second ask'),
+      turnEvent('s1', '2026-09-01T00:00:05Z', 'prose', 'Done.'),
+    ]);
+
+    expect(view(conversationFor(db, 's1').turns)).toEqual([
+      'agent: Done.',
+      'you: second ask',
+      'agent: All green. [Reading the file.|Running tests.]',
+      'you: first ask',
+    ]);
+  });
+
+  it('shows a prompt with no reply yet on its own', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'a'),
+      turnEvent('s1', '2026-09-01T00:00:01Z', 'prose', 'b'),
+      turnEvent('s1', '2026-09-01T00:00:02Z', 'prompt.submitted', 'still thinking about this one'),
+    ]);
+
+    expect(view(conversationFor(db, 's1').turns)).toEqual([
+      'you: still thinking about this one', 'agent: b', 'you: a',
+    ]);
+  });
+
+  it('keeps prose recorded before the first prompt, grouped the same way', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prose', 'resumed narration'),
+      turnEvent('s1', '2026-09-01T00:00:01Z', 'prose', 'resumed reply'),
+      turnEvent('s1', '2026-09-01T00:00:02Z', 'prompt.submitted', 'thanks'),
+    ]);
+
+    expect(view(conversationFor(db, 's1').turns)).toEqual([
+      'you: thanks', 'agent: resumed reply [resumed narration]',
+    ]);
+  });
+
+  it('shows a slash command as the command typed, and drops a wrapper that names none', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', '<command-name>/clear</command-name><command-args></command-args>'),
+      turnEvent('s1', '2026-09-01T00:00:01Z', 'prompt.submitted', '<command-message>x</command-message>'),
+      turnEvent('s1', '2026-09-01T00:00:02Z', 'prose', 'ok'),
+    ]);
+
+    expect(view(conversationFor(db, 's1').turns)).toEqual(['agent: ok', 'you: /clear']);
+  });
+
+  // Bug fix (kept from the row-paged version): newest first, not the opening
+  // of a days-old conversation. Paging is now by human prompt, so `limit`
+  // counts exchanges.
+  it('returns the newest exchanges, not the oldest, when a session exceeds the limit', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'turn 0 (oldest)'),
@@ -75,22 +153,7 @@ describe('conversationFor', () => {
       turnEvent('s1', '2026-09-01T00:03:00Z', 'prose', 'turn 3 (newest)'),
     ]);
 
-    const { turns } = conversationFor(db, 's1', 2);
-
-    expect(turns.map(t => t.text)).toEqual(['turn 3 (newest)', 'turn 2']);
-  });
-
-  it('presents turns newest-first', () => {
-    const db = openDb(':memory:');
-    insertEvents(db, [
-      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'earliest'),
-      turnEvent('s1', '2026-09-01T00:01:00Z', 'prose', 'middle'),
-      turnEvent('s1', '2026-09-01T00:02:00Z', 'prompt.submitted', 'latest'),
-    ]);
-
-    const { turns } = conversationFor(db, 's1');
-
-    expect(turns.map(t => t.text)).toEqual(['latest', 'middle', 'earliest']);
+    expect(view(conversationFor(db, 's1', 1).turns)).toEqual(['agent: turn 3 (newest)', 'you: turn 2']);
   });
 
   it('returns a null nextCursor only once the session is exhausted, non-null while more remain', () => {
@@ -101,66 +164,64 @@ describe('conversationFor', () => {
       turnEvent('s1', '2026-09-01T00:02:00Z', 'prompt.submitted', 'c'),
     ]);
 
-    expect(conversationFor(db, 's1', 2).nextCursor).not.toBeNull();
-    expect(conversationFor(db, 's1', 3).nextCursor).toBeNull();
+    expect(conversationFor(db, 's1', 1).nextCursor).not.toBeNull();
+    expect(conversationFor(db, 's1', 2).nextCursor).toBeNull();
     expect(conversationFor(db, 's1', 10).nextCursor).toBeNull();
   });
 
-  it('does not leak the nextCursor lookahead row into turns', () => {
+  // The rule the brief called out: a page boundary never separates a reply
+  // from its steps. With one exchange per page, every page must carry its
+  // whole stretch of narration, however long.
+  it('never splits a reply from its steps across a page boundary', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
-      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'a'),
-      turnEvent('s1', '2026-09-01T00:01:00Z', 'prose', 'b'),
-      turnEvent('s1', '2026-09-01T00:02:00Z', 'prompt.submitted', 'c'),
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'p1'),
+      turnEvent('s1', '2026-09-01T00:00:01Z', 'prose', 's1'),
+      turnEvent('s1', '2026-09-01T00:00:02Z', 'prose', 's2'),
+      turnEvent('s1', '2026-09-01T00:00:03Z', 'prose', 's3'),
+      turnEvent('s1', '2026-09-01T00:00:04Z', 'prose', 'r1'),
+      turnEvent('s1', '2026-09-01T00:00:05Z', 'prompt.submitted', 'p2'),
+      turnEvent('s1', '2026-09-01T00:00:06Z', 'prose', 's4'),
+      turnEvent('s1', '2026-09-01T00:00:07Z', 'prose', 'r2'),
     ]);
 
-    const { turns, nextCursor } = conversationFor(db, 's1', 2);
-
-    expect(nextCursor).not.toBeNull();
-    expect(turns).toHaveLength(2);
+    const page1 = conversationFor(db, 's1', 1);
+    expect(view(page1.turns)).toEqual(['agent: r2 [s4]', 'you: p2']);
+    const page2 = conversationFor(db, 's1', 1, page1.nextCursor!);
+    expect(view(page2.turns)).toEqual(['agent: r1 [s1|s2|s3]', 'you: p1']);
+    expect(page2.nextCursor).toBeNull();
   });
 
-  // Keyset paging, not OFFSET (the brief's own rationale: the events table
-  // is appended to while the user reads, so OFFSET would skip or repeat
-  // rows as new events land between fetches -- a cursor names a specific
-  // row instead of a position). This walks the whole session two turns at
-  // a time and checks the pages tile exactly: every turn appears in
-  // exactly one page, in the same order conversationFor would return them
-  // in one call, with the last page correctly reporting exhaustion.
-  it('a cursor page returns the turns immediately older than it, with no overlap and no gap', () => {
+  // Keyset paging, not OFFSET: the events table is appended to while the
+  // user reads. Walks the whole session one exchange at a time and checks
+  // the pages tile exactly.
+  it('a cursor page returns the exchanges immediately older than it, with no overlap and no gap', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
-      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'turn 0'),
-      turnEvent('s1', '2026-09-01T00:01:00Z', 'prose', 'turn 1'),
-      turnEvent('s1', '2026-09-01T00:02:00Z', 'prompt.submitted', 'turn 2'),
-      turnEvent('s1', '2026-09-01T00:03:00Z', 'prose', 'turn 3'),
-      turnEvent('s1', '2026-09-01T00:04:00Z', 'prompt.submitted', 'turn 4 (newest)'),
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prose', 'pre-prompt reply'),
+      turnEvent('s1', '2026-09-01T00:01:00Z', 'prompt.submitted', 'turn 1'),
+      turnEvent('s1', '2026-09-01T00:02:00Z', 'prose', 'turn 2'),
+      turnEvent('s1', '2026-09-01T00:03:00Z', 'prompt.submitted', 'turn 3'),
+      turnEvent('s1', '2026-09-01T00:04:00Z', 'prose', 'turn 4'),
+      turnEvent('s1', '2026-09-01T00:05:00Z', 'prompt.submitted', 'turn 5 (newest)'),
     ]);
 
     const page1 = conversationFor(db, 's1', 2);
-    expect(page1.turns.map(t => t.text)).toEqual(['turn 4 (newest)', 'turn 3']);
+    expect(view(page1.turns)).toEqual(['you: turn 5 (newest)', 'agent: turn 4', 'you: turn 3']);
     expect(page1.nextCursor).not.toBeNull();
 
     const page2 = conversationFor(db, 's1', 2, page1.nextCursor!);
-    expect(page2.turns.map(t => t.text)).toEqual(['turn 2', 'turn 1']);
-    expect(page2.nextCursor).not.toBeNull();
-
-    const page3 = conversationFor(db, 's1', 2, page2.nextCursor!);
-    expect(page3.turns.map(t => t.text)).toEqual(['turn 0']);
-    // Exhausting history is handled: the session has nothing older than
-    // "turn 0", and the page says so rather than returning an empty page
-    // that looks the same as "try again".
-    expect(page3.nextCursor).toBeNull();
+    // Fewer than `limit` prompts remain, so this page also takes the prose
+    // recorded before the first prompt and reports exhaustion.
+    expect(view(page2.turns)).toEqual(['agent: turn 2', 'you: turn 1', 'agent: pre-prompt reply']);
+    expect(page2.nextCursor).toBeNull();
   });
 
-  // Mutation target named in the brief: dropping `id` from the cursor's
-  // tie-break (comparing on `ts` alone) either skips or duplicates a row
-  // whenever two events share a timestamp -- which happens on the real
-  // index (verified: two rows share a millisecond in one real session) --
-  // but is invisible on fixtures where every ts is unique. This fixture
-  // puts the page boundary AT a shared timestamp on purpose, walking the
-  // whole session one turn at a time so every tie is a page boundary.
-  it("breaks a timestamp tie by id, so paging through a shared timestamp neither skips nor repeats a row", () => {
+  // Dropping `id` from the cursor's tie-break (comparing on `ts` alone)
+  // skips or duplicates a row whenever two events share a timestamp, which
+  // happens on the real index. The page boundary sits AT the shared
+  // timestamp on purpose.
+  it('breaks a timestamp tie by id, so paging through a shared timestamp neither skips nor repeats a row', () => {
     const db = openDb(':memory:');
     const TIE = '2026-09-01T00:01:00Z';
     insertEvents(db, [
@@ -174,11 +235,14 @@ describe('conversationFor', () => {
     let cursor = undefined as Parameters<typeof conversationFor>[3];
     for (let i = 0; i < 10; i++) {
       const page = conversationFor(db, 's1', 1, cursor);
-      seen.push(...page.turns.map(t => t.text));
+      seen.push(...view(page.turns));
       if (page.nextCursor === null) break;
       cursor = page.nextCursor;
     }
 
-    expect(seen).toEqual(['d (newest)', 'c (newer half of the tie)', 'b (older half of the tie)', 'a (oldest)']);
+    expect(seen).toEqual([
+      'agent: d (newest)', 'you: c (newer half of the tie)',
+      'agent: b (older half of the tie)', 'you: a (oldest)',
+    ]);
   });
 });

@@ -18,10 +18,49 @@
 .turn .who { font-family:var(--f-mono); font-size:11px; color:var(--faint); }
 .turn.user .who { color:var(--accent); }
 .turn .when { font-family:var(--f-mono); font-size:10px; color:var(--faint); white-space:nowrap; }
-.turn .said { margin:0; font-size:13px; line-height:1.5; color:var(--ink-2);
+.turn .turn-text { margin:0; font-size:13px; line-height:1.5; color:var(--ink-2);
   white-space:pre-wrap; flex:1; min-width:0; }
-.turn.user .said { color:var(--ink); font-weight:600; }
-/* Lazy-loading (50 turns/page, newest-first): .conv-end marks a genuine
+.turn.user .turn-text { color:var(--ink); font-weight:600; }
+/* Agent replies render as markdown (.turn-text.md) inside .turn-body, which also
+   holds the collapsed steps. pre-wrap is off for markdown: react-markdown
+   emits newline text nodes between block elements, and pre-wrap would show
+   each one as a blank line. Code blocks keep their own white-space:pre and
+   scroll sideways rather than widening the pane; wide tables do the same. */
+.turn-body { flex:1; min-width:0; }
+.turn-text.md { white-space:normal; overflow-wrap:anywhere; }
+.turn-text.md > :first-child { margin-top:0; }
+.turn-text.md > :last-child { margin-bottom:0; }
+.turn-text.md p, .turn-text.md ul, .turn-text.md ol, .turn-text.md pre, .turn-text.md table, .turn-text.md blockquote { margin:0 0 8px; }
+.turn-text.md ul, .turn-text.md ol { padding-left:20px; }
+.turn-text.md h1, .turn-text.md h2, .turn-text.md h3, .turn-text.md h4, .turn-text.md h5, .turn-text.md h6 {
+  margin:10px 0 4px; font-size:13px; font-weight:700; color:var(--ink); }
+.turn-text.md a { color:var(--accent); }
+.turn-text.md blockquote { padding-left:8px; border-left:2px solid var(--line); color:var(--muted); }
+.turn-text.md code { font-family:var(--f-mono); font-size:12px; background:var(--raised);
+  border-radius:4px; padding:1px 4px; }
+.turn-text.md pre { font-family:var(--f-mono); font-size:12px; line-height:1.45; background:var(--raised);
+  border:1px solid var(--line-soft); border-radius:var(--r-sm); padding:8px 10px;
+  overflow-x:auto; white-space:pre; }
+.turn-text.md pre code { background:none; border-radius:0; padding:0; font-size:inherit; }
+.turn-text.md table { display:block; max-width:100%; overflow-x:auto; border-collapse:collapse; font-size:12px; }
+.turn-text.md th, .turn-text.md td { border:1px solid var(--line); padding:3px 8px; text-align:left; vertical-align:top; }
+.turn-text.md th { background:var(--raised); color:var(--ink); font-weight:600; }
+.turn-text.md .md-image { font-style:italic; color:var(--muted); }
+/* Steps: the narration before a reply. Collapsed behind a quiet mono toggle;
+   when open, dimmed (--muted) and set off by a hairline so the reply above
+   stays the thing a reader scans. */
+.steps { margin-top:4px; }
+.steps-toggle { font-family:var(--f-mono); font-size:11px; color:var(--faint); background:none;
+  border:0; padding:2px 0; cursor:pointer; }
+.steps-toggle:hover { color:var(--muted); }
+.steps-toggle:focus-visible { outline:1px solid var(--accent); outline-offset:2px; }
+.steps-list { list-style:none; margin:4px 0 0; padding-left:10px; border-left:1px solid var(--line-soft);
+  color:var(--muted); font-size:12px; line-height:1.45; }
+.steps-list .step + .step { margin-top:6px; }
+.steps-list .step p { margin:0; }
+.steps-list code, .steps-list pre { font-family:var(--f-mono); font-size:11px; }
+.steps-list pre { margin:4px 0; overflow-x:auto; white-space:pre; }
+/* Lazy-loading (50 exchanges/page, newest-first): .conv-end marks a genuine
    end-of-history fact once nextCursor runs out, replacing the old
    truncation notice this superseded -- nothing is hidden any more, so this
    reads as a fact, not an apology. .conv-loading-more is the brief,

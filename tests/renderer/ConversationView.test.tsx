@@ -3,8 +3,8 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ConversationView, nearOlderEdge } from '../../src/renderer/components/ConversationView.tsx';
 
 const turns = [
-  { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests', agentId: null },
-  { id: 2, ts: '2026-09-12T10:00:05Z', role: 'assistant', text: 'All green. Want me to commit?', agentId: null },
+  { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests', steps: [] },
+  { id: 2, ts: '2026-09-12T10:00:05Z', role: 'assistant', text: 'All green. Want me to commit?', steps: [] },
 ];
 
 // Same formula the component uses (ConversationView.tsx's formatDate /
@@ -117,16 +117,16 @@ describe('ConversationView', () => {
   // returns -- newest at index 0 -- and the component must not re-sort it).
   it('renders turns in the order they are given, newest first', async () => {
     const ordered = [
-      { id: 3, ts: '2026-09-12T10:00:10Z', role: 'assistant', text: 'newest reply', agentId: null },
-      { id: 2, ts: '2026-09-12T10:00:05Z', role: 'user', text: 'middle message', agentId: null },
-      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'oldest message', agentId: null },
+      { id: 3, ts: '2026-09-12T10:00:10Z', role: 'assistant', text: 'newest reply', steps: [] },
+      { id: 2, ts: '2026-09-12T10:00:05Z', role: 'user', text: 'middle message', steps: [] },
+      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'oldest message', steps: [] },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: ordered, nextCursor: null }),
     };
     const { container } = render(<ConversationView sessionId="s1" />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
-    const rendered = [...container.querySelectorAll('.turn .said')].map(el => el.textContent);
+    const rendered = [...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent);
     expect(rendered).toEqual(['newest reply', 'middle message', 'oldest message']);
   });
 
@@ -168,7 +168,7 @@ describe('ConversationView', () => {
         calls.push([sessionId, cursor]);
         if (cursor === undefined) return { turns, nextCursor: olderCursor };
         return {
-          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn', agentId: null }],
+          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn', steps: [] }],
           nextCursor: null,
         };
       },
@@ -183,7 +183,7 @@ describe('ConversationView', () => {
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
     // Appended after the existing turns, not prepended -- newest-first
     // means the older page continues at the bottom, not the top.
-    const said = [...container.querySelectorAll('.turn .said')].map(el => el.textContent);
+    const said = [...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent);
     expect(said).toEqual(['run the farm tests', 'All green. Want me to commit?', 'an older turn']);
     expect(calls).toEqual([['s1', undefined], ['s1', olderCursor]]);
     await waitFor(() => expect(screen.getByText(/beginning of this session/i)).toBeTruthy());
@@ -230,8 +230,8 @@ describe('ConversationView', () => {
 
   it('does not repeat the date on a second entry from the same day', async () => {
     const sameDay = [
-      { id: 1, ts: '2026-09-12T09:00:00Z', role: 'user', text: 'first', agentId: null },
-      { id: 2, ts: '2026-09-12T15:30:00Z', role: 'assistant', text: 'second', agentId: null },
+      { id: 1, ts: '2026-09-12T09:00:00Z', role: 'user', text: 'first', steps: [] },
+      { id: 2, ts: '2026-09-12T15:30:00Z', role: 'assistant', text: 'second', steps: [] },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: sameDay, nextCursor: null }),
@@ -246,8 +246,8 @@ describe('ConversationView', () => {
 
   it('shows the date again once the day changes', async () => {
     const twoDays = [
-      { id: 1, ts: '2026-09-11T09:00:00Z', role: 'user', text: 'day one', agentId: null },
-      { id: 2, ts: '2026-09-12T09:00:00Z', role: 'assistant', text: 'day two', agentId: null },
+      { id: 1, ts: '2026-09-11T09:00:00Z', role: 'user', text: 'day one', steps: [] },
+      { id: 2, ts: '2026-09-12T09:00:00Z', role: 'assistant', text: 'day two', steps: [] },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: twoDays, nextCursor: null }),
@@ -257,6 +257,124 @@ describe('ConversationView', () => {
     const [whenFirst, whenSecond] = [...container.querySelectorAll('.when')];
     expect(whenFirst!.textContent).toBe(`${fmtDate(twoDays[0]!.ts)} ${fmtTime(twoDays[0]!.ts)}`);
     expect(whenSecond!.textContent).toBe(`${fmtDate(twoDays[1]!.ts)} ${fmtTime(twoDays[1]!.ts)}`);
+  });
+});
+
+function showOne(turn: Record<string, unknown>) {
+  (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+    conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', steps: [], ...turn }], nextCursor: null }),
+  };
+  return render(<ConversationView sessionId="s1" />);
+}
+
+describe('ConversationView -- agent replies render as markdown', () => {
+  it('renders emphasis, lists, fenced code and GFM tables as real elements', async () => {
+    const md = [
+      'Done. **All green.**',
+      '',
+      '- one',
+      '- two',
+      '',
+      '```ts',
+      'const x = 1;',
+      '```',
+      '',
+      '| file | status |',
+      '| --- | --- |',
+      '| a.ts | ok |',
+    ].join('\n');
+    const { container } = showOne({ role: 'assistant', text: md });
+    await waitFor(() => expect(container.querySelector('.turn.assistant strong')).toBeTruthy());
+    expect(container.querySelector('.turn.assistant strong')!.textContent).toBe('All green.');
+    expect(container.querySelectorAll('.turn.assistant li')).toHaveLength(2);
+    expect(container.querySelector('.turn.assistant pre code')!.textContent).toContain('const x = 1;');
+    expect(container.querySelector('.turn.assistant table td')!.textContent).toBe('a.ts');
+  });
+
+  it('keeps raw HTML escaped: it shows as text and never becomes an element', async () => {
+    const { container } = showOne({
+      role: 'assistant', text: 'use <b>bold</b> here <script>alert(1)</script> <img src="https://x.example/p.png">',
+    });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    const turn = container.querySelector('.turn.assistant')!;
+    expect(turn.querySelector('b, script, img')).toBeNull();
+    expect(turn.textContent).toContain('<b>bold</b>');
+  });
+
+  // src/main/index.ts denies window.open (opening only https externally) and
+  // blocks will-navigate. target=_blank routes a click through the window-open
+  // handler so it never becomes a navigation of the app window.
+  it('renders links so a click opens outside the app window, never navigating it', async () => {
+    const { container } = showOne({ role: 'assistant', text: 'See [the docs](https://example.com/docs).' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant a')).toBeTruthy());
+    const a = container.querySelector('.turn.assistant a')!;
+    expect(a.getAttribute('href')).toBe('https://example.com/docs');
+    expect(a.getAttribute('target')).toBe('_blank');
+    expect(a.getAttribute('rel')).toMatch(/noopener/);
+    expect(a.getAttribute('rel')).toMatch(/noreferrer/);
+  });
+
+  it('strips a javascript: link target', async () => {
+    const { container } = showOne({ role: 'assistant', text: '[click](javascript:alert(1))' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant a')).toBeTruthy());
+    expect(container.querySelector('.turn.assistant a')!.getAttribute('href') ?? '').not.toMatch(/javascript/i);
+  });
+
+  it('never loads a markdown image -- it shows the alt text instead', async () => {
+    const { container } = showOne({ role: 'assistant', text: 'Look: ![the failing screen](https://tracker.example/pixel.png)' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('.turn.assistant')!.textContent).toContain('the failing screen');
+    expect(container.innerHTML).not.toContain('tracker.example');
+  });
+
+  it('leaves the human prompt as plain text, not markdown', async () => {
+    const { container } = showOne({ role: 'user', text: '**not bold** <b>x</b>' });
+    await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
+    expect(container.querySelector('.turn.user strong, .turn.user b')).toBeNull();
+    expect(container.querySelector('.turn.user .turn-text')!.textContent).toBe('**not bold** <b>x</b>');
+  });
+});
+
+describe('ConversationView -- steps under a reply', () => {
+  const steps = [
+    { id: 10, ts: '2026-09-12T09:59:00Z', text: 'Reading the file.' },
+    { id: 11, ts: '2026-09-12T09:59:30Z', text: 'Running `npm test`.' },
+  ];
+
+  it('collapses the narration behind a real button that says how many steps there are', async () => {
+    showOne({ role: 'assistant', text: 'All green.', steps });
+    const button = await screen.findByRole('button', { name: '+ 2 steps' });
+    expect(button.tagName).toBe('BUTTON');
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('Reading the file.')).toBeNull();
+  });
+
+  it('expands the steps, oldest first, and collapses them again', async () => {
+    const { container } = showOne({ role: 'assistant', text: 'All green.', steps });
+    const button = await screen.findByRole('button', { name: '+ 2 steps' });
+
+    fireEvent.click(button);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    const list = container.querySelector('.steps-list')!;
+    expect(button.getAttribute('aria-controls')).toBe(list.id);
+    expect([...list.querySelectorAll('.step')].map(s => s.textContent)).toEqual(['Reading the file.', 'Running npm test.']);
+    expect(list.querySelector('code')!.textContent).toBe('npm test');
+
+    fireEvent.click(button);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.steps-list')).toBeNull();
+  });
+
+  it('says "1 step" for a single step', async () => {
+    showOne({ role: 'assistant', text: 'ok', steps: [steps[0]] });
+    expect(await screen.findByRole('button', { name: '+ 1 step' })).toBeTruthy();
+  });
+
+  it('shows no steps button when the reply had no narration', async () => {
+    const { container } = showOne({ role: 'assistant', text: 'ok' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    expect(screen.queryByRole('button')).toBeNull();
   });
 });
 

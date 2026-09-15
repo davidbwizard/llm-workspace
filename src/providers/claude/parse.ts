@@ -6,7 +6,11 @@ import type { TailLine } from './tail.ts';
 // records parse to (silenced instead of unparsed), so existing files must be
 // reparsed (spec §6.1 / store/ingest.ts's reparseFile) rather than merely
 // tailed from their prior byte offset.
-export const CLAUDE_PARSER_VERSION = 2;
+// Bumped to 3: isHumanPrompt now drops wrapper records (teammate messages,
+// task notifications, command output) and queued_command attachments now
+// emit prompt.submitted. Both change already-ingested rows, so the same
+// reparse rule applies.
+export const CLAUDE_PARSER_VERSION = 3;
 
 /** Record types this parser understands. Anything else becomes `unparsed`
  *  so format drift surfaces instead of vanishing (spec §6.2). */
@@ -32,12 +36,70 @@ const KNOWN_UNMAPPED_TYPES = new Set([
  *  Measured on a real transcript: 58 of 73 `user` records were tool_result.
  *  Bounding beats on any `user` record produced ~73 beats where there were
  *  ~15 human turns. A record is a human prompt only if its content is a
- *  plain string, or an array containing NO tool_result block. */
+ *  plain string, or an array containing NO tool_result block.
+ *
+ *  That rule alone still let through everything else Claude Code writes as a
+ *  `user` record. Measured on session 92b09bc5: 246 prompt rows, 40 typed by
+ *  the human. The rest were teammate messages, task notifications, skill
+ *  bodies, command output and bash-mode echoes.
+ *
+ *  Two layers, in order:
+ *  1. `origin` label. Claude Code writes `origin: {kind}` on prompt records
+ *     ("human", "task-notification", "peer", "coordinator"). When present it
+ *     is authoritative. Measured on the on-disk corpus (1,179 transcripts):
+ *     the label is already on the OLDEST CLI version there (2.1.219, records
+ *     from 2026-08-04), so the version that introduced it is older than the
+ *     corpus and cannot be measured. It is also not a version cutoff in
+ *     practice: labelled-era records still arrive WITHOUT it -- every sdk-py
+ *     session (532 files), slash commands, bash mode, and a first prompt that
+ *     begins with a pasted path (typed by the human, no label). So a missing
+ *     label means "unknown", never "not human".
+ *  2. Fallback for unlabelled records: drop isMeta / compact summaries and
+ *     the known wrapper prefixes below. `<command-name>` wrappers are kept on
+ *     purpose; store/conversation.ts unwrapSlashCommand renders them. */
 export function isHumanPrompt(record: any): boolean {
   const c = record?.message?.content;
-  if (typeof c === 'string') return true;
-  if (!Array.isArray(c)) return false;
-  return !c.some((b: any) => b && b.type === 'tool_result');
+  if (typeof c !== 'string' && !Array.isArray(c)) return false;
+  if (Array.isArray(c) && c.some((b: any) => b && b.type === 'tool_result')) return false;
+  if (record.isMeta === true || record.isCompactSummary === true) return false;
+
+  const kind = record.origin?.kind;
+  if (typeof kind === 'string') return kind === 'human';
+
+  const text = textFromContent(c).trimStart();
+  return !NON_HUMAN_PREFIXES.some(p => text.startsWith(p));
+}
+
+/** Text Claude Code injects as a `user` record without an origin label.
+ *  Each one measured on the real corpus (counts are records on disk):
+ *  teammate messages (1,174 + 762), task notifications (684), command
+ *  output and caveats (163 + 111), bash mode (59 + 58), context usage (33),
+ *  skill bodies (165), interrupt markers (38). */
+const NON_HUMAN_PREFIXES = [
+  'Another Claude session sent a message:',
+  '<teammate-message',
+  '<task-notification>',
+  'Base directory for this skill:',
+  '## Context Usage',
+  '<bash-input>',
+  '<bash-stdout>',
+  '<bash-stderr>',
+  '<local-command-caveat>',
+  '<local-command-stdout>',
+  '<local-command-stderr>',
+  '[Request interrupted by user',
+];
+
+/** A message the human typed while the agent was busy is stored only as an
+ *  `attachment` record (attachment.type "queued_command"), never as a user
+ *  record. Measured across the corpus: 230 human-origin queued commands, 0
+ *  also written as a user record (no source_uuid match). Returns the prompt
+ *  text, or null when this record is not a human queued command. */
+function queuedHumanPrompt(record: any): string | null {
+  const a = record?.attachment;
+  if (!a || a.type !== 'queued_command' || a.origin?.kind !== 'human') return null;
+  const text = textFromContent(a.prompt);
+  return text === '' ? null : text;
 }
 
 function textFromContent(content: unknown): string {
@@ -105,7 +167,14 @@ export function parseClaudeLines(
     const ts = typeof rec.timestamp === 'string' ? rec.timestamp : new Date(0).toISOString();
     const agentId = typeof rec.agentId === 'string' ? rec.agentId : null;
 
-    if (KNOWN_UNMAPPED_TYPES.has(rec.type)) continue;
+    if (KNOWN_UNMAPPED_TYPES.has(rec.type)) {
+      const queued = rec.type === 'attachment' ? queuedHumanPrompt(rec) : null;
+      if (queued !== null) {
+        out.push(base(line, 'prompt.submitted', { text: queued }, agentId, ts,
+          typeof rec.uuid === 'string' ? rec.uuid : null));
+      }
+      continue;
+    }
 
     if (!KNOWN_TYPES.has(rec.type)) {
       out.push(base(line, 'unparsed', { reason: 'unknown-record-type', recordType: rec.type },

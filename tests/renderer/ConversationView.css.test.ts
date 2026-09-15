@@ -17,7 +17,7 @@ const css = readFileSync(CSS_PATH, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 /** The first `{ ... }` block following `selector`'s first real occurrence.
  *  Assumes no nested braces inside the block, true for every rule in this
  *  file. `selector` includes the trailing `{` so e.g. '.turn {' cannot
- *  match inside '.turn.user {' or '.turn .said {'. */
+ *  match inside '.turn.user {' or '.turn .turn-text {'. */
 function blockAfter(selector: string): string {
   const idx = css.indexOf(selector);
   expect(idx, `selector not found: ${selector}`).toBeGreaterThanOrEqual(0);
@@ -29,8 +29,8 @@ function blockAfter(selector: string): string {
 describe('ConversationView.css: user and assistant turns are visually distinguishable', () => {
   const base = blockAfter('.turn {');
   const user = blockAfter('.turn.user {');
-  const baseSaid = blockAfter('.turn .said {');
-  const userSaid = blockAfter('.turn.user .said {');
+  const baseSaid = blockAfter('.turn .turn-text {');
+  const userSaid = blockAfter('.turn.user .turn-text {');
 
   // The structural cue: a margin rule whose WIDTH (present vs absent), not
   // merely its colour, sets user turns apart -- still visible with colour
@@ -60,4 +60,49 @@ describe('ConversationView.css: user and assistant turns are visually distinguis
     expect(user).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(userSaid).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
+});
+
+describe('ConversationView.css: markdown replies and steps', () => {
+  it('turns pre-wrap off for markdown, so newlines between block elements do not become blank lines', () => {
+    expect(blockAfter('.turn-text.md {')).toMatch(/white-space:\s*normal/);
+  });
+
+  it('styles code blocks with the mono font and theme tokens, scrolling instead of overflowing', () => {
+    const pre = blockAfter('.turn-text.md pre {');
+    expect(pre).toMatch(/var\(--f-mono\)/);
+    expect(pre).toMatch(/background:\s*var\(--/);
+    expect(pre).toMatch(/overflow-x:\s*auto/);
+  });
+
+  it('styles tables with theme-token borders', () => {
+    expect(blockAfter('.turn-text.md th, .turn-text.md td {')).toMatch(/border:\s*1px solid var\(--line\)/);
+  });
+
+  it('dims expanded steps relative to the reply', () => {
+    expect(blockAfter('.steps-list {')).toMatch(/color:\s*var\(--muted\)/);
+  });
+
+  it('uses no hardcoded hex anywhere in the stylesheet', () => {
+    expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
+});
+
+// Stylesheets are global in this app. Every message here used class "said",
+// which SessionCard.css also styles with a 2-line clamp and overflow:hidden
+// -- so every reply longer than two lines was cut off in the real window,
+// while jsdom (no layout) passed every test. Guard the class names, since
+// the clipping itself cannot be observed here.
+describe('ConversationView.css: no class name shared with the card stylesheets', () => {
+  const classesIn = (path: string): Set<string> => {
+    const text = readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const selectors = [...text.matchAll(/([^{}]+)\{[^}]*\}/g)].map(m => m[1]!).join(' ');
+    return new Set([...selectors.matchAll(/\.([a-zA-Z][\w-]*)/g)].map(m => m[1]!));
+  };
+  const mine = classesIn(CSS_PATH);
+
+  for (const card of ['src/renderer/components/SessionCard.css', 'src/renderer/components/OpenSessionCard.css']) {
+    it(`shares no class with ${card}`, () => {
+      expect([...classesIn(card)].filter(c => mine.has(c))).toEqual([]);
+    });
+  }
 });

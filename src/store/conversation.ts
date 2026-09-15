@@ -1,13 +1,20 @@
 import type { Db } from './db.ts';
 
+/** Human prompts (exchanges) per page -- not rows. See conversationFor. */
 export const CONVERSATION_PAGE_SIZE = 50;
+
+/** Narration the agent wrote on its way to a reply (usually just before a
+ *  tool call). */
+export type ConversationStep = { id: number; ts: string; text: string };
 
 export type ConversationTurn = {
   id: number;
   ts: string;
   role: 'user' | 'assistant';
   text: string;
-  agentId: string | null;
+  /** Assistant turns: the earlier prose in the same stretch, oldest first.
+   *  Always empty for user turns. */
+  steps: ConversationStep[];
 };
 
 const NAME = /<command-name>([\s\S]*?)<\/command-name>/;
@@ -42,73 +49,110 @@ export type ConversationPage = {
   nextCursor: ConversationCursor | null;
 };
 
-/** Served entirely by events_session_ts(session_id, ts) -- src/store/schema.ts:50.
- *  Bug fix (this function's history): it used to be ORDER BY ts, id
- *  (oldest-first) with a single LIMIT, which took the FIRST `limit` turns of
- *  a session -- for the 53 real sessions over 500 turns (largest: 2,812),
- *  the user saw the opening of a conversation from days ago with the recent
- *  part unreachable. Ordering DESC takes the NEWEST turns first, which is
- *  also the order the UI renders in, so no re-reversal is needed here.
+type Row = { id: number; ts: string; kind: string; text: string | null };
+
+/** One stretch of the main thread: a human prompt (absent for prose recorded
+ *  before the first prompt) and the prose that followed it, oldest first. */
+type Stretch = { prompt: Row | null; prose: Row[] };
+
+/** Served by events_session_ts(session_id, ts) -- src/store/schema.ts.
  *
- *  Paging (keyset, not OFFSET): `before`, when given, asks for the `limit`
- *  turns strictly older than that cursor. OFFSET would be wrong here even
- *  though the query is otherwise identical -- the events table is appended
- *  to continuously while a session is read, so an OFFSET-based "page 2"
- *  would skip or repeat rows as new events land between fetches. The
- *  `(ts, id) < (@ts, @id)` row-value comparison is exact regardless of
- *  concurrent inserts, because it names a specific row, not a position.
+ *  What counts as the conversation:
+ *  - Main thread only (agent_id IS NULL). Measured on session 92b09bc5,
+ *    82 of 246 prompt rows and 810 of 1,184 prose rows were subagents. Safe
+ *    for Codex too: its parser sets agent_id only inside a subagent's own
+ *    rollout (real index: 3,406 of 3,459 Codex prompts and 48,342 of 48,529
+ *    Codex prose rows have agent_id NULL).
+ *  - Each stretch between human prompts collapses to ONE assistant turn: the
+ *    last prose before the next prompt is the reply, earlier prose in that
+ *    stretch becomes its `steps` (narration emitted before tool calls).
  *
- *  Over-fetches by one row (limit + 1) purely to compute `nextCursor`
- *  without a second COUNT query; the extra row, if present, is sliced off
- *  below and never reaches `turns`.
+ *  Order: newest first, which is also the order the UI renders in. The bug
+ *  this once had (ASC with a LIMIT showed a days-old opening and hid the
+ *  recent part) must not come back.
  *
- *  Re-verified with EXPLAIN QUERY PLAN against the real index, both without
- *  and with a cursor (including one at a real duplicate-ts boundary, to
- *  prove the tie-break neither skips nor repeats a row): both forms still
- *  read SEARCH events USING INDEX events_session_ts (session_id=? AND
- *  ts<?), not a SCAN, sub-millisecond on the busiest session (2,812
- *  matching events). The kind filter does not force a scan because
- *  session_id leads the index, so the missing events.kind index costs
- *  nothing here. Do not add one. */
+ *  Paging is keyset, by human prompt, not by row. OFFSET would skip or
+ *  repeat as events land between fetches; a row-count LIMIT would cut a
+ *  reply off from its steps. So:
+ *   1. find the newest `limit + 1` prompts older than `before` (the extra one
+ *      only tells us whether more remain);
+ *   2. if more remain, the page's lower bound is the oldest prompt it keeps,
+ *      and that prompt becomes nextCursor; otherwise there is no lower bound,
+ *      which also sweeps in any prose recorded before the first prompt;
+ *   3. read every main-thread prompt/prose row in [lower, before) and group.
+ *  Every stretch starts at a prompt, so a bound placed on a prompt can never
+ *  split one. `(ts, id)` row values break same-millisecond ties exactly.
+ *
+ *  Both reads run in one transaction so they see the same snapshot.
+ *
+ *  EXPLAIN QUERY PLAN re-run against the real index (session 92b09bc5,
+ *  9,995 events), for all six bound combinations: every one reads SEARCH
+ *  events USING INDEX events_session_ts, keyed (session_id=?) plus whichever
+ *  of ts<? / ts>? the bounds add, never a SCAN, and none needs a temp
+ *  B-tree for ORDER BY (the index is (session_id, ts) plus rowid = id). The
+ *  kind and agent_id filters do not force a scan because session_id leads
+ *  the index. Do not add an index for them. */
 export function conversationFor(
   db: Db,
   sessionId: string,
   limit = CONVERSATION_PAGE_SIZE,
   before?: ConversationCursor,
 ): ConversationPage {
-  const query = before
-    ? `SELECT id, ts, kind, agent_id, json_extract(payload,'$.text') AS text
-       FROM events
-       WHERE session_id = @sessionId AND kind IN ('prompt.submitted','prose')
-         AND (ts, id) < (@ts, @id)
+  const upper = before ? 'AND (ts, id) < (@ts, @id)' : '';
+  const read = db.transaction((): { rows: Row[]; nextCursor: ConversationCursor | null } => {
+    const prompts = db.prepare(
+      `SELECT id, ts FROM events
+       WHERE session_id = @sessionId AND kind = 'prompt.submitted' AND agent_id IS NULL ${upper}
        ORDER BY ts DESC, id DESC
-       LIMIT @fetchLimit`
-    : `SELECT id, ts, kind, agent_id, json_extract(payload,'$.text') AS text
-       FROM events
-       WHERE session_id = @sessionId AND kind IN ('prompt.submitted','prose')
-       ORDER BY ts DESC, id DESC
-       LIMIT @fetchLimit`;
+       LIMIT @fetchLimit`,
+    ).all({ sessionId, ts: before?.ts ?? null, id: before?.id ?? null, fetchLimit: limit + 1 }) as Array<{ id: number; ts: string }>;
 
-  const rows = db.prepare(query).all({
-    sessionId, ts: before?.ts ?? null, id: before?.id ?? null, fetchLimit: limit + 1,
-  }) as Array<{
-    id: number; ts: string; kind: string; agent_id: string | null; text: string | null;
-  }>;
+    const lowest = prompts.length > limit ? prompts[limit - 1] : undefined;
+    const lower = lowest ? 'AND (ts, id) >= (@lowTs, @lowId)' : '';
+    const rows = db.prepare(
+      `SELECT id, ts, kind, json_extract(payload,'$.text') AS text FROM events
+       WHERE session_id = @sessionId AND kind IN ('prompt.submitted','prose') AND agent_id IS NULL
+         ${lower} ${upper}
+       ORDER BY ts ASC, id ASC`,
+    ).all({
+      sessionId, ts: before?.ts ?? null, id: before?.id ?? null,
+      lowTs: lowest?.ts ?? null, lowId: lowest?.id ?? null,
+    }) as Row[];
 
-  const hasMore = rows.length > limit;
-  const windowRows = hasMore ? rows.slice(0, limit) : rows;
-  const oldestInWindow = windowRows[windowRows.length - 1];
-  const nextCursor = hasMore && oldestInWindow ? { ts: oldestInWindow.ts, id: oldestInWindow.id } : null;
+    return { rows, nextCursor: lowest ? { ts: lowest.ts, id: lowest.id } : null };
+  });
+  const { rows, nextCursor } = read();
 
+  const stretches: Stretch[] = [];
+  let current: Stretch = { prompt: null, prose: [] };
+  for (const r of rows) {
+    if (r.kind === 'prompt.submitted') {
+      if (current.prompt !== null || current.prose.length > 0) stretches.push(current);
+      current = { prompt: r, prose: [] };
+    } else if (r.text !== null && r.text !== '') {
+      current.prose.push(r);
+    }
+  }
+  if (current.prompt !== null || current.prose.length > 0) stretches.push(current);
+
+  // prompt.submitted = user, prose = assistant, in BOTH parsers. This is the
+  // provider-agnostic backbone; richer detail (tokens, tool payloads) is not.
   const turns: ConversationTurn[] = [];
-  for (const r of windowRows) {
-    if (r.text === null) continue;
-    // prompt.submitted = user, prose = assistant, in BOTH parsers. This is the
-    // provider-agnostic backbone; richer detail (tokens, tool payloads) is not.
-    const role = r.kind === 'prompt.submitted' ? 'user' as const : 'assistant' as const;
-    const text = role === 'user' ? unwrapSlashCommand(r.text) : r.text;
-    if (text === '') continue;
-    turns.push({ id: r.id, ts: r.ts, role, text, agentId: r.agent_id });
+  for (let i = stretches.length - 1; i >= 0; i--) {
+    const { prompt, prose } = stretches[i]!;
+    const reply = prose[prose.length - 1];
+    if (reply) {
+      turns.push({
+        id: reply.id, ts: reply.ts, role: 'assistant', text: reply.text!,
+        steps: prose.slice(0, -1).map(s => ({ id: s.id, ts: s.ts, text: s.text! })),
+      });
+    }
+    // A wrapper that names no command unwraps to '' and shows nothing, but
+    // it still bounds its stretch -- that keeps paging and grouping agreed.
+    const text = prompt?.text ? unwrapSlashCommand(prompt.text) : '';
+    if (prompt && text !== '') {
+      turns.push({ id: prompt.id, ts: prompt.ts, role: 'user', text, steps: [] });
+    }
   }
   return { turns, nextCursor };
 }

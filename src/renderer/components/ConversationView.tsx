@@ -1,7 +1,54 @@
-import { useEffect, useRef, useState } from 'react';
-import type { ConversationPage } from '../../store/conversation.ts';
+import { useEffect, useId, useRef, useState } from 'react';
+import Markdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import type { ConversationPage, ConversationStep } from '../../store/conversation.ts';
 import type { MatchQuality } from '../../discovery/match.ts';
 import './ConversationView.css';
+
+/** Transcript text is untrusted, so markdown rendering is locked down:
+ *  - No rehype-raw. react-markdown turns raw HTML into plain text, so it
+ *    shows escaped and never becomes an element.
+ *  - Links get target=_blank. A click then goes through the main process's
+ *    setWindowOpenHandler (src/main/index.ts), which opens only https links in
+ *    the browser and denies everything else; will-navigate is blocked there
+ *    too. The app window itself never navigates. react-markdown's default
+ *    urlTransform already blanks javascript: and other unsafe schemes.
+ *  - Images never load (no remote fetch, no tracking pixel). The alt text
+ *    stands in for them. */
+const MARKDOWN_COMPONENTS: Components = {
+  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+  img: ({ alt }) => <span className="md-image">{alt || 'image'}</span>,
+};
+
+function MarkdownText({ text }: { text: string }) {
+  return <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{text}</Markdown>;
+}
+
+/** The narration an agent wrote on its way to a reply, collapsed by default
+ *  so the reply is what a reader sees first. */
+function Steps({ steps }: { steps: ConversationStep[] }) {
+  const [open, setOpen] = useState(false);
+  const listId = useId();
+  const label = `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`;
+  return (
+    <div className="steps">
+      <button
+        type="button"
+        className="steps-toggle"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        onClick={() => setOpen(o => !o)}
+      >
+        {open ? `- ${label}` : `+ ${label}`}
+      </button>
+      {open && (
+        <ol id={listId} className="steps-list">
+          {steps.map(s => <li key={s.id} className="step"><MarkdownText text={s.text} /></li>)}
+        </ol>
+      )}
+    </div>
+  );
+}
 
 /** "Sep 12" -- no year, no weekday. Grouped with the time below rather than
  *  spelled out on every row (see showDate in the render loop). Pinned to
@@ -169,7 +216,14 @@ export function ConversationView({ sessionId, match }: { sessionId: string | nul
               <span className="who">{t.role === 'user' ? 'you' : 'agent'}</span>
               <span className="when">{showDate ? `${date} ${formatTime(t.ts)}` : formatTime(t.ts)}</span>
             </div>
-            <p className="said">{t.text}</p>
+            {t.role === 'user'
+              ? <p className="turn-text">{t.text}</p>
+              : (
+                <div className="turn-body">
+                  <div className="turn-text md"><MarkdownText text={t.text} /></div>
+                  {t.steps.length > 0 && <Steps steps={t.steps} />}
+                </div>
+              )}
           </article>
         );
       })}
