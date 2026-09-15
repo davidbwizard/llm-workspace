@@ -7,9 +7,15 @@ const turns = [
   { id: 2, ts: '2026-09-12T10:00:05Z', role: 'assistant', text: 'All green. Want me to commit?', agentId: null },
 ];
 
+// Same formula the component uses (ConversationView.tsx's formatDate /
+// formatTime), so these tests assert against whatever the local timezone
+// actually produces rather than a hardcoded clock string.
+const fmtDate = (ts: string) => new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+const fmtTime = (ts: string) => new Date(ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+
 beforeEach(() => {
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-    conversation: async () => turns,
+    conversation: async () => ({ turns, truncated: false }),
   };
 });
 
@@ -27,7 +33,9 @@ describe('ConversationView', () => {
   });
 
   it('says so plainly when a session has nothing to show', async () => {
-    (globalThis as never as { window: { fleet: unknown } }).window.fleet = { conversation: async () => [] };
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: [], truncated: false }),
+    };
     render(<ConversationView sessionId="empty" />);
     await waitFor(() => expect(screen.getByText(/no conversation/i)).toBeTruthy());
   });
@@ -78,11 +86,83 @@ describe('ConversationView', () => {
   it('never calls window.fleet.conversation when sessionId is null', async () => {
     let called = false;
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      conversation: async () => { called = true; return []; },
+      conversation: async () => { called = true; return { turns: [], truncated: false }; },
     };
     render(<ConversationView sessionId={null} />);
     // Give any accidental fetch a turn to run before asserting it didn't.
     await Promise.resolve();
     expect(called).toBe(false);
+  });
+
+  // Team-lead ruling: this is a catch-up review surface, so it renders
+  // newest-first (the fixture below is already in the order conversationFor
+  // returns -- newest at index 0 -- and the component must not re-sort it).
+  it('renders turns in the order they are given, newest first', async () => {
+    const ordered = [
+      { id: 3, ts: '2026-09-12T10:00:10Z', role: 'assistant', text: 'newest reply', agentId: null },
+      { id: 2, ts: '2026-09-12T10:00:05Z', role: 'user', text: 'middle message', agentId: null },
+      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'oldest message', agentId: null },
+    ];
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: ordered, truncated: false }),
+    };
+    const { container } = render(<ConversationView sessionId="s1" />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
+    const rendered = [...container.querySelectorAll('.turn .said')].map(el => el.textContent);
+    expect(rendered).toEqual(['newest reply', 'middle message', 'oldest message']);
+  });
+
+  it('shows a truncation notice only when the fetch reports truncated', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns, truncated: true }),
+    };
+    render(<ConversationView sessionId="s1" />);
+    await waitFor(() => expect(screen.getByText(/older turns/i)).toBeTruthy());
+  });
+
+  it('shows no truncation notice when the fetch reports not truncated', async () => {
+    render(<ConversationView sessionId="s1" />); // default mock: truncated: false
+    await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
+    expect(screen.queryByText(/older turns/i)).toBeNull();
+  });
+
+  it('renders a compact human timestamp on each turn', async () => {
+    const [first] = turns;
+    const { container } = render(<ConversationView sessionId="s1" />);
+    await waitFor(() => expect(container.querySelector('.when')).toBeTruthy());
+    // Lone/first entry always shows its date -- there is no prior entry to
+    // compare against.
+    expect(container.querySelector('.when')?.textContent).toBe(`${fmtDate(first!.ts)} ${fmtTime(first!.ts)}`);
+  });
+
+  it('does not repeat the date on a second entry from the same day', async () => {
+    const sameDay = [
+      { id: 1, ts: '2026-09-12T09:00:00Z', role: 'user', text: 'first', agentId: null },
+      { id: 2, ts: '2026-09-12T15:30:00Z', role: 'assistant', text: 'second', agentId: null },
+    ];
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: sameDay, truncated: false }),
+    };
+    const { container } = render(<ConversationView sessionId="s1" />);
+    await waitFor(() => expect(container.querySelectorAll('.when')).toHaveLength(2));
+    const [whenFirst, whenSecond] = [...container.querySelectorAll('.when')];
+    expect(whenFirst!.textContent).toBe(`${fmtDate(sameDay[0]!.ts)} ${fmtTime(sameDay[0]!.ts)}`);
+    // No date prefix on the second same-day entry -- just the time.
+    expect(whenSecond!.textContent).toBe(fmtTime(sameDay[1]!.ts));
+  });
+
+  it('shows the date again once the day changes', async () => {
+    const twoDays = [
+      { id: 1, ts: '2026-09-11T09:00:00Z', role: 'user', text: 'day one', agentId: null },
+      { id: 2, ts: '2026-09-12T09:00:00Z', role: 'assistant', text: 'day two', agentId: null },
+    ];
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: twoDays, truncated: false }),
+    };
+    const { container } = render(<ConversationView sessionId="s1" />);
+    await waitFor(() => expect(container.querySelectorAll('.when')).toHaveLength(2));
+    const [whenFirst, whenSecond] = [...container.querySelectorAll('.when')];
+    expect(whenFirst!.textContent).toBe(`${fmtDate(twoDays[0]!.ts)} ${fmtTime(twoDays[0]!.ts)}`);
+    expect(whenSecond!.textContent).toBe(`${fmtDate(twoDays[1]!.ts)} ${fmtTime(twoDays[1]!.ts)}`);
   });
 });
