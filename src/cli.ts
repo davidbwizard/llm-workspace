@@ -53,7 +53,8 @@ if (cmd === 'probe') {
   // matching process still lists, with match `unknown` -- it does not
   // disappear the way it would under a process-first enumeration.
   const db = open();
-  const procs = await discoverLiveProcesses();
+  // The CLI matches by cwd only (classifyMatch, via annotateSessionsWithProcesses) -- never exact identity -- so skip reading live session files entirely.
+  const procs = await discoverLiveProcesses(undefined, { readLiveSession: () => ({ ok: false, reason: 'missing' }) });
   const sessions = sessionRefs(db);
   const annotated = annotateSessionsWithProcesses(sessions, procs);
 
