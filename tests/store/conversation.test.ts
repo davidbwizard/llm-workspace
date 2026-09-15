@@ -93,7 +93,7 @@ describe('conversationFor', () => {
     expect(turns.map(t => t.text)).toEqual(['latest', 'middle', 'earliest']);
   });
 
-  it('reports truncated only when the session has more turns than the limit', () => {
+  it('returns a null nextCursor only once the session is exhausted, non-null while more remain', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'a'),
@@ -101,12 +101,12 @@ describe('conversationFor', () => {
       turnEvent('s1', '2026-09-01T00:02:00Z', 'prompt.submitted', 'c'),
     ]);
 
-    expect(conversationFor(db, 's1', 2).truncated).toBe(true);
-    expect(conversationFor(db, 's1', 3).truncated).toBe(false);
-    expect(conversationFor(db, 's1', 10).truncated).toBe(false);
+    expect(conversationFor(db, 's1', 2).nextCursor).not.toBeNull();
+    expect(conversationFor(db, 's1', 3).nextCursor).toBeNull();
+    expect(conversationFor(db, 's1', 10).nextCursor).toBeNull();
   });
 
-  it('does not leak the truncation lookahead row into turns', () => {
+  it('does not leak the nextCursor lookahead row into turns', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'a'),
@@ -114,9 +114,71 @@ describe('conversationFor', () => {
       turnEvent('s1', '2026-09-01T00:02:00Z', 'prompt.submitted', 'c'),
     ]);
 
-    const { turns, truncated } = conversationFor(db, 's1', 2);
+    const { turns, nextCursor } = conversationFor(db, 's1', 2);
 
-    expect(truncated).toBe(true);
+    expect(nextCursor).not.toBeNull();
     expect(turns).toHaveLength(2);
+  });
+
+  // Keyset paging, not OFFSET (the brief's own rationale: the events table
+  // is appended to while the user reads, so OFFSET would skip or repeat
+  // rows as new events land between fetches -- a cursor names a specific
+  // row instead of a position). This walks the whole session two turns at
+  // a time and checks the pages tile exactly: every turn appears in
+  // exactly one page, in the same order conversationFor would return them
+  // in one call, with the last page correctly reporting exhaustion.
+  it('a cursor page returns the turns immediately older than it, with no overlap and no gap', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'turn 0'),
+      turnEvent('s1', '2026-09-01T00:01:00Z', 'prose', 'turn 1'),
+      turnEvent('s1', '2026-09-01T00:02:00Z', 'prompt.submitted', 'turn 2'),
+      turnEvent('s1', '2026-09-01T00:03:00Z', 'prose', 'turn 3'),
+      turnEvent('s1', '2026-09-01T00:04:00Z', 'prompt.submitted', 'turn 4 (newest)'),
+    ]);
+
+    const page1 = conversationFor(db, 's1', 2);
+    expect(page1.turns.map(t => t.text)).toEqual(['turn 4 (newest)', 'turn 3']);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = conversationFor(db, 's1', 2, page1.nextCursor!);
+    expect(page2.turns.map(t => t.text)).toEqual(['turn 2', 'turn 1']);
+    expect(page2.nextCursor).not.toBeNull();
+
+    const page3 = conversationFor(db, 's1', 2, page2.nextCursor!);
+    expect(page3.turns.map(t => t.text)).toEqual(['turn 0']);
+    // Exhausting history is handled: the session has nothing older than
+    // "turn 0", and the page says so rather than returning an empty page
+    // that looks the same as "try again".
+    expect(page3.nextCursor).toBeNull();
+  });
+
+  // Mutation target named in the brief: dropping `id` from the cursor's
+  // tie-break (comparing on `ts` alone) either skips or duplicates a row
+  // whenever two events share a timestamp -- which happens on the real
+  // index (verified: two rows share a millisecond in one real session) --
+  // but is invisible on fixtures where every ts is unique. This fixture
+  // puts the page boundary AT a shared timestamp on purpose, walking the
+  // whole session one turn at a time so every tie is a page boundary.
+  it("breaks a timestamp tie by id, so paging through a shared timestamp neither skips nor repeats a row", () => {
+    const db = openDb(':memory:');
+    const TIE = '2026-09-01T00:01:00Z';
+    insertEvents(db, [
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'a (oldest)'),
+      turnEvent('s1', TIE, 'prose', 'b (older half of the tie)'),
+      turnEvent('s1', TIE, 'prompt.submitted', 'c (newer half of the tie)'),
+      turnEvent('s1', '2026-09-01T00:02:00Z', 'prose', 'd (newest)'),
+    ]);
+
+    const seen: string[] = [];
+    let cursor = undefined as Parameters<typeof conversationFor>[3];
+    for (let i = 0; i < 10; i++) {
+      const page = conversationFor(db, 's1', 1, cursor);
+      seen.push(...page.turns.map(t => t.text));
+      if (page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
+
+    expect(seen).toEqual(['d (newest)', 'c (newer half of the tie)', 'b (older half of the tie)', 'a (oldest)']);
   });
 });

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { ConversationCursor } from '../store/conversation.ts';
 
 /** The complete surface the renderer can reach. Every channel is named here
  *  and validated in main; there is deliberately no generic invoke, because one
@@ -30,7 +31,14 @@ const api = {
   // control bytes through, so it is only ever reachable from a focused
   // TerminalView, never from the popover.
   sendRaw: (pid: number, data: string) => ipcRenderer.invoke('session:raw', pid, data),
-  conversation: (sessionId: string) => ipcRenderer.invoke('session:conversation', sessionId),
+  // cursor pages backward (older) from a prior page's nextCursor; omitted
+  // for the first, newest page. Typed here for the renderer's own benefit
+  // only -- same as pid/text elsewhere in this file, main
+  // (parseConversationCursor) is what actually validates this, not this
+  // signature, since ipcRenderer.invoke is callable with any shape
+  // regardless of what TypeScript says here.
+  conversation: (sessionId: string, cursor?: ConversationCursor) =>
+    ipcRenderer.invoke('session:conversation', sessionId, cursor),
   attach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:attach', pid, cols, rows),
   detach: (pid: number) => ipcRenderer.invoke('session:detach', pid),
   resize: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:resize', pid, cols, rows),

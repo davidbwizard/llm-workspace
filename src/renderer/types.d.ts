@@ -1,5 +1,5 @@
 import type { FleetListPayload, FleetHistoryPayload, KillResult, KeysResult } from '../main/ipc.ts';
-import type { Conversation } from '../store/conversation.ts';
+import type { ConversationPage, ConversationCursor } from '../store/conversation.ts';
 import type { TerminalDataPayload } from '../main/stream.ts';
 import type { LaunchResult } from '../main/launch.ts';
 
@@ -20,7 +20,9 @@ declare global {
       // Main sanitises and revalidates pid and text on every call; this
       // typing narrows nothing at the trust boundary itself.
       sendKeys: (pid: number, text: string) => Promise<KeysResult>;
-      conversation: (sessionId: string) => Promise<Conversation>;
+      // cursor pages backward (older) from a prior page's nextCursor;
+      // omitted for the first, newest page.
+      conversation: (sessionId: string, cursor?: ConversationCursor) => Promise<ConversationPage>;
       // attach/detach/resize/sendRaw: Tasks 6b/10's streaming bridge. Left as
       // `unknown` here rather than guessed at when this file was written --
       // TerminalView.tsx (Task 10) narrows each with its own local cast

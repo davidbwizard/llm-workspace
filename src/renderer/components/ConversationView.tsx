@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
-import { CONVERSATION_LIMIT } from '../../store/conversation.ts';
-import type { Conversation } from '../../store/conversation.ts';
+import { useEffect, useRef, useState } from 'react';
+import type { ConversationPage } from '../../store/conversation.ts';
 import type { MatchQuality } from '../../discovery/match.ts';
 import './ConversationView.css';
 
@@ -17,6 +16,38 @@ function formatDate(ts: string): string {
  *  same reason. */
 function formatTime(ts: string): string {
   return new Date(ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+/** How close (in px) to the bottom of the scroll container counts as "close
+ *  enough to fetch the next page" -- a little slack so the fetch is already
+ *  in flight by the time the reader actually reaches the end, rather than
+ *  starting only once they hit bottom and have to wait staring at nothing. */
+const LOAD_MORE_THRESHOLD_PX = 150;
+
+/** Newest-first layout (this task's own earlier ruling): the OLDEST loaded
+ *  turn sits at the BOTTOM of the scrollable pane, not the top -- reading
+ *  further back in time means scrolling DOWN. "Running low on loaded
+ *  history" therefore means nearing the bottom, which is what this checks.
+ *
+ *  (The brief for this feature described the trigger as "scrolling near
+ *  the top (older end)" -- that phrasing fits an oldest-at-bottom layout,
+ *  the opposite of the newest-first one this task explicitly mandated
+ *  earlier, where the top is the NEWEST end. Implemented against the
+ *  actual layout rather than the literal wording; flagged in the report
+ *  rather than silently reconciled.)
+ *
+ *  Exported as a plain function over plain numbers, rather than inlined
+ *  against a live element, because jsdom does not compute real layout:
+ *  scrollHeight/clientHeight are hardcoded getters there with no setter
+ *  (assigning either throws) -- verified directly against this project's
+ *  jsdom. Testing the threshold math this way needs no jsdom workaround at
+ *  all; only the one integration test that fires a real scroll event
+ *  needs Object.defineProperty to stub those two. */
+export function nearOlderEdge(
+  metrics: { scrollTop: number; scrollHeight: number; clientHeight: number },
+  thresholdPx = LOAD_MORE_THRESHOLD_PX,
+): boolean {
+  return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight < thresholdPx;
 }
 
 /** The clean half of the toggle: what was said, not how it was rendered.
@@ -42,14 +73,25 @@ function formatTime(ts: string): string {
  *  written and ingested; and no match info at all (match omitted) falls
  *  back to a neutral message rather than asserting either specific claim. */
 export function ConversationView({ sessionId, match }: { sessionId: string | null; match?: MatchQuality }) {
-  const [conversation, setConversation] = useState<Conversation | null>(null);
+  const [page, setPage] = useState<ConversationPage | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // A ref, not just the `loadingMore` state, guards the actual fetch:
+  // scroll fires far faster than React re-renders commit, so a handler
+  // that only checked state could read a stale "not loading" on two scroll
+  // events back to back and fire two fetches. A ref is read and written
+  // synchronously, with no render in between, so it is the guard that
+  // actually holds under a real burst of scroll events, not just in a
+  // test that calls the handler once.
+  const loadingMoreRef = useRef(false);
 
   useEffect(() => {
     if (sessionId === null) return; // nothing to fetch -- see the doc comment above.
     let alive = true;
-    setConversation(null);
-    void window.fleet?.conversation(sessionId).then(c => {
-      if (alive) setConversation(c);
+    setPage(null);
+    loadingMoreRef.current = false;
+    setLoadingMore(false);
+    void window.fleet?.conversation(sessionId).then(p => {
+      if (alive) setPage(p);
     });
     return () => { alive = false; };
   }, [sessionId]);
@@ -79,9 +121,34 @@ export function ConversationView({ sessionId, match }: { sessionId: string | nul
     );
   }
 
-  if (conversation === null) return <div className="conv loading">Loading…</div>;
-  const { turns, truncated } = conversation;
+  if (page === null) return <div className="conv loading">Loading…</div>;
+  const { turns, nextCursor } = page;
   if (turns.length === 0) return <div className="conv empty">No conversation recorded for this session.</div>;
+
+  // Fetches the next OLDER page and appends it -- appends, never prepends,
+  // because newest-first puts the oldest-loaded turn at the bottom, so
+  // continuing the timeline further back means adding on there. That is
+  // also why this needs no scroll-position bookkeeping: content added
+  // below the visible viewport never moves what the reader is currently
+  // looking at (the classic "jump" only happens when content is inserted
+  // ABOVE the viewport, i.e. a prepend -- not the case here).
+  function loadMore() {
+    if (sessionId === null || nextCursor === null || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    void window.fleet?.conversation(sessionId, nextCursor).then(next => {
+      setPage(current => current === null
+        ? current
+        : { turns: [...current.turns, ...next.turns], nextCursor: next.nextCursor });
+    }).finally(() => {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    });
+  }
+
+  function handleScroll(e: React.UIEvent<HTMLDivElement>) {
+    if (nearOlderEdge(e.currentTarget)) loadMore();
+  }
 
   // Newest-first, per the team-lead ruling on this task: this is a catch-up
   // review surface, not a live chat transcript, so "what happened most
@@ -91,7 +158,7 @@ export function ConversationView({ sessionId, match }: { sessionId: string | nul
   // top-to-bottom order the reader sees, newest date first.
   let prevDate = '';
   return (
-    <div className="conv">
+    <div className="conv" onScroll={handleScroll}>
       {turns.map(t => {
         const date = formatDate(t.ts);
         const showDate = date !== prevDate;
@@ -106,13 +173,12 @@ export function ConversationView({ sessionId, match }: { sessionId: string | nul
           </article>
         );
       })}
-      {truncated && (
-        // Sits after the oldest turn shown, i.e. right at the point the cap
-        // cut the session off -- silently dropping the rest is the exact bug
-        // this notice exists to prevent.
-        <p className="conv-truncated">
-          Older turns aren't shown -- only the most recent {CONVERSATION_LIMIT} are loaded.
-        </p>
+      {loadingMore && <p className="conv-loading-more">Loading more…</p>}
+      {!loadingMore && nextCursor === null && (
+        // A genuine end-of-history fact, not an apology -- unlike the old
+        // truncation notice this replaces, nothing here is hidden; older
+        // turns just have not been fetched yet, and now there are none left.
+        <p className="conv-end">Beginning of this session's recorded conversation.</p>
       )}
     </div>
   );

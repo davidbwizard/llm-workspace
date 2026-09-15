@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
-import { ConversationView } from '../../src/renderer/components/ConversationView.tsx';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { ConversationView, nearOlderEdge } from '../../src/renderer/components/ConversationView.tsx';
 
 const turns = [
   { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests', agentId: null },
@@ -15,7 +15,7 @@ const fmtTime = (ts: string) => new Date(ts).toLocaleTimeString('en-US', { hour:
 
 beforeEach(() => {
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-    conversation: async () => ({ turns, truncated: false }),
+    conversation: async () => ({ turns, nextCursor: null }),
   };
 });
 
@@ -52,7 +52,7 @@ describe('ConversationView', () => {
 
   it('says so plainly when a session has nothing to show', async () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      conversation: async () => ({ turns: [], truncated: false }),
+      conversation: async () => ({ turns: [], nextCursor: null }),
     };
     render(<ConversationView sessionId="empty" />);
     await waitFor(() => expect(screen.getByText(/no conversation/i)).toBeTruthy());
@@ -104,7 +104,7 @@ describe('ConversationView', () => {
   it('never calls window.fleet.conversation when sessionId is null', async () => {
     let called = false;
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      conversation: async () => { called = true; return { turns: [], truncated: false }; },
+      conversation: async () => { called = true; return { turns: [], nextCursor: null }; },
     };
     render(<ConversationView sessionId={null} />);
     // Give any accidental fetch a turn to run before asserting it didn't.
@@ -122,7 +122,7 @@ describe('ConversationView', () => {
       { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'oldest message', agentId: null },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      conversation: async () => ({ turns: ordered, truncated: false }),
+      conversation: async () => ({ turns: ordered, nextCursor: null }),
     };
     const { container } = render(<ConversationView sessionId="s1" />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
@@ -130,18 +130,93 @@ describe('ConversationView', () => {
     expect(rendered).toEqual(['newest reply', 'middle message', 'oldest message']);
   });
 
-  it('shows a truncation notice only when the fetch reports truncated', async () => {
-    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      conversation: async () => ({ turns, truncated: true }),
-    };
-    render(<ConversationView sessionId="s1" />);
-    await waitFor(() => expect(screen.getByText(/older turns/i)).toBeTruthy());
+  // Lazy-loading (50 turns/page) supersedes the old truncation notice --
+  // nothing is hidden any more, so instead of an apology there is a plain
+  // end-of-history fact once nextCursor genuinely runs out.
+  it('shows an end-of-history marker once the fetch reports nextCursor null', async () => {
+    render(<ConversationView sessionId="s1" />); // default mock: nextCursor: null
+    await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
+    expect(screen.getByText(/beginning of this session/i)).toBeTruthy();
   });
 
-  it('shows no truncation notice when the fetch reports not truncated', async () => {
-    render(<ConversationView sessionId="s1" />); // default mock: truncated: false
+  it('does not show the end-of-history marker while more pages remain', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns, nextCursor: { ts: '2026-09-12T10:00:00Z', id: 1 } }),
+    };
+    render(<ConversationView sessionId="s1" />);
     await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
-    expect(screen.queryByText(/older turns/i)).toBeNull();
+    expect(screen.queryByText(/beginning of this session/i)).toBeNull();
+  });
+
+  // Scrolling near the bottom is the trigger (see nearOlderEdge's own doc
+  // comment on why bottom, not top, is the older end in this newest-first
+  // layout). jsdom computes no real layout, so scrollHeight/clientHeight
+  // are stubbed directly on the node (Object.defineProperty -- verified
+  // assigning them any other way throws, since jsdom exposes them as
+  // getter-only) and only scrollTop, which jsdom genuinely implements, is
+  // set through fireEvent's target.
+  function stubScrollGeometry(el: Element, { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number }) {
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: scrollHeight });
+    Object.defineProperty(el, 'clientHeight', { configurable: true, value: clientHeight });
+  }
+
+  it('fetches the next older page and appends it once the reader scrolls near the bottom', async () => {
+    const olderCursor = { ts: '2026-09-12T09:59:00Z', id: 0 };
+    const calls: Array<unknown[]> = [];
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        if (cursor === undefined) return { turns, nextCursor: olderCursor };
+        return {
+          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn', agentId: null }],
+          nextCursor: null,
+        };
+      },
+    };
+    const { container } = render(<ConversationView sessionId="s1" />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    const scroller = container.querySelector('.conv')!;
+    stubScrollGeometry(scroller, { scrollHeight: 1000, clientHeight: 500 });
+    fireEvent.scroll(scroller, { target: { scrollTop: 400 } }); // distance from bottom: 100, under the 150px threshold
+
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
+    // Appended after the existing turns, not prepended -- newest-first
+    // means the older page continues at the bottom, not the top.
+    const said = [...container.querySelectorAll('.turn .said')].map(el => el.textContent);
+    expect(said).toEqual(['run the farm tests', 'All green. Want me to commit?', 'an older turn']);
+    expect(calls).toEqual([['s1', undefined], ['s1', olderCursor]]);
+    await waitFor(() => expect(screen.getByText(/beginning of this session/i)).toBeTruthy());
+  });
+
+  it('does not fire a second fetch while one is already in flight', async () => {
+    const calls: Array<unknown[]> = [];
+    let resolveSecondCall: (page: unknown) => void = () => {};
+    const secondCallPromise = new Promise(resolve => { resolveSecondCall = resolve; });
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        if (cursor === undefined) return { turns, nextCursor: { ts: '2026-09-12T09:59:00Z', id: 0 } };
+        return secondCallPromise; // deliberately left unresolved
+      },
+    };
+    const { container } = render(<ConversationView sessionId="s1" />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    const scroller = container.querySelector('.conv')!;
+    stubScrollGeometry(scroller, { scrollHeight: 1000, clientHeight: 500 });
+    // Two scroll events in a row, both past the threshold, before the
+    // in-flight fetch has any chance to resolve -- exactly the burst a
+    // real trackpad or momentum scroll produces.
+    fireEvent.scroll(scroller, { target: { scrollTop: 400 } });
+    fireEvent.scroll(scroller, { target: { scrollTop: 420 } });
+    await waitFor(() => expect(screen.getByText(/loading more/i)).toBeTruthy());
+
+    // Exactly one loadMore call, not two, alongside the initial page-1 call.
+    expect(calls).toEqual([['s1', undefined], ['s1', { ts: '2026-09-12T09:59:00Z', id: 0 }]]);
+
+    resolveSecondCall({ turns: [], nextCursor: null });
+    await waitFor(() => expect(screen.getByText(/beginning of this session/i)).toBeTruthy());
   });
 
   it('renders a compact human timestamp on each turn', async () => {
@@ -159,7 +234,7 @@ describe('ConversationView', () => {
       { id: 2, ts: '2026-09-12T15:30:00Z', role: 'assistant', text: 'second', agentId: null },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      conversation: async () => ({ turns: sameDay, truncated: false }),
+      conversation: async () => ({ turns: sameDay, nextCursor: null }),
     };
     const { container } = render(<ConversationView sessionId="s1" />);
     await waitFor(() => expect(container.querySelectorAll('.when')).toHaveLength(2));
@@ -175,12 +250,30 @@ describe('ConversationView', () => {
       { id: 2, ts: '2026-09-12T09:00:00Z', role: 'assistant', text: 'day two', agentId: null },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      conversation: async () => ({ turns: twoDays, truncated: false }),
+      conversation: async () => ({ turns: twoDays, nextCursor: null }),
     };
     const { container } = render(<ConversationView sessionId="s1" />);
     await waitFor(() => expect(container.querySelectorAll('.when')).toHaveLength(2));
     const [whenFirst, whenSecond] = [...container.querySelectorAll('.when')];
     expect(whenFirst!.textContent).toBe(`${fmtDate(twoDays[0]!.ts)} ${fmtTime(twoDays[0]!.ts)}`);
     expect(whenSecond!.textContent).toBe(`${fmtDate(twoDays[1]!.ts)} ${fmtTime(twoDays[1]!.ts)}`);
+  });
+});
+
+describe('nearOlderEdge', () => {
+  it('is true once the distance from the bottom drops under the threshold', () => {
+    expect(nearOlderEdge({ scrollTop: 400, scrollHeight: 1000, clientHeight: 500 })).toBe(true); // 100px left
+  });
+
+  it('is false while comfortably far from the bottom', () => {
+    expect(nearOlderEdge({ scrollTop: 0, scrollHeight: 1000, clientHeight: 500 })).toBe(false); // 500px left
+  });
+
+  it('is true right at the exact bottom', () => {
+    expect(nearOlderEdge({ scrollTop: 500, scrollHeight: 1000, clientHeight: 500 })).toBe(true); // 0px left
+  });
+
+  it('respects a caller-supplied threshold rather than only the default', () => {
+    expect(nearOlderEdge({ scrollTop: 0, scrollHeight: 1000, clientHeight: 500 }, 600)).toBe(true); // 500 < 600
   });
 });

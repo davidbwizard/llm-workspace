@@ -20,7 +20,7 @@ import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import { sendLiteral, sendKeyName, capturePane, setSessionOption, type TmuxResult } from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
-import { conversationFor } from '../store/conversation.ts';
+import { conversationFor, type ConversationCursor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
 import { launchSession, reattachSession, resumeSession, type LaunchResult } from './launch.ts';
 
@@ -292,6 +292,23 @@ export function clampLimit(v: unknown): number {
   const n = typeof v === 'number' ? Math.trunc(v) : NaN;
   if (!Number.isFinite(n) || n <= 0) return HISTORY_DEFAULT_LIMIT;
   return Math.min(n, HISTORY_MAX_LIMIT);
+}
+
+/** session:conversation's paging cursor, crossing the IPC boundary the same
+ *  untrusted way offset/limit above do (spec S11.2). Anything that is not
+ *  exactly `{ ts: string, id: <finite integer> }` falls back to undefined
+ *  -- i.e. "no cursor", the safe default of just returning the first page
+ *  -- rather than throwing and taking the whole channel down over a
+ *  malformed or hostile renderer payload. There is no injection risk either
+ *  way (conversationFor binds both fields as query parameters, never
+ *  interpolates them into SQL text); this is purely about not crashing on
+ *  a shape we don't expect. */
+export function parseConversationCursor(v: unknown): ConversationCursor | undefined {
+  if (typeof v !== 'object' || v === null) return undefined;
+  const { ts, id } = v as { ts?: unknown; id?: unknown };
+  if (typeof ts !== 'string' || ts === '') return undefined;
+  if (typeof id !== 'number' || !Number.isInteger(id)) return undefined;
+  return { ts, id };
 }
 
 /** fleet:history -- one page of History, fetched only once History is
@@ -948,8 +965,10 @@ export function registerIpc(
     if (onSessionKill && result.status === 'killed') setImmediate(onSessionKill);
     return result;
   });
-  ipcMain.handle('session:conversation', (_event, sessionId: unknown) =>
-    typeof sessionId === 'string' ? conversationFor(db, sessionId) : { turns: [], truncated: false });
+  ipcMain.handle('session:conversation', (_event, sessionId: unknown, cursor: unknown) =>
+    typeof sessionId === 'string'
+      ? conversationFor(db, sessionId, undefined, parseConversationCursor(cursor))
+      : { turns: [], nextCursor: null });
   ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown) => sendKeysFor(pid, text));
 
   // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing

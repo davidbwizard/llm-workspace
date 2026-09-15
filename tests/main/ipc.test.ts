@@ -4,7 +4,7 @@ import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
 import {
   buildFleetListPayload, buildFleetHistoryPayload, pushFleet, refreshPushEnrichment,
-  clampOffset, clampLimit, HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT,
+  clampOffset, clampLimit, HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT, parseConversationCursor,
   sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
@@ -360,6 +360,42 @@ describe('clampOffset / clampLimit', () => {
 
   it('passes a valid limit within bounds through unchanged', () => {
     expect(clampLimit(25)).toBe(25);
+  });
+});
+
+describe('parseConversationCursor', () => {
+  // session:conversation's cursor crosses the IPC boundary the same
+  // untrusted way offset/limit above do -- a compromised or buggy renderer
+  // can call ipcRenderer.invoke with any shape at all, regardless of what
+  // the preload's TypeScript signature says.
+  it('passes through a well-formed cursor unchanged', () => {
+    expect(parseConversationCursor({ ts: '2026-09-12T10:00:00Z', id: 42 })).toEqual({ ts: '2026-09-12T10:00:00Z', id: 42 });
+  });
+
+  it('falls back to undefined -- "no cursor", the safe default -- for anything that is not an object', () => {
+    expect(parseConversationCursor(undefined)).toBeUndefined();
+    expect(parseConversationCursor(null)).toBeUndefined();
+    expect(parseConversationCursor('2026-09-12T10:00:00Z')).toBeUndefined();
+    expect(parseConversationCursor(42)).toBeUndefined();
+    expect(parseConversationCursor([])).toBeUndefined();
+  });
+
+  it('rejects a missing, non-string, or empty ts', () => {
+    expect(parseConversationCursor({ id: 42 })).toBeUndefined();
+    expect(parseConversationCursor({ ts: 12345, id: 42 })).toBeUndefined();
+    expect(parseConversationCursor({ ts: '', id: 42 })).toBeUndefined();
+  });
+
+  it('rejects a missing, non-numeric, or non-integer id -- never coerces a numeric string', () => {
+    expect(parseConversationCursor({ ts: '2026-09-12T10:00:00Z' })).toBeUndefined();
+    expect(parseConversationCursor({ ts: '2026-09-12T10:00:00Z', id: '42' })).toBeUndefined();
+    expect(parseConversationCursor({ ts: '2026-09-12T10:00:00Z', id: 42.5 })).toBeUndefined();
+    expect(parseConversationCursor({ ts: '2026-09-12T10:00:00Z', id: NaN })).toBeUndefined();
+  });
+
+  it('ignores extra fields rather than rejecting the whole cursor over them', () => {
+    expect(parseConversationCursor({ ts: '2026-09-12T10:00:00Z', id: 42, extra: 'whatever' }))
+      .toEqual({ ts: '2026-09-12T10:00:00Z', id: 42 });
   });
 });
 

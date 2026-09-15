@@ -21,5 +21,11 @@
 .turn .said { margin:0; font-size:13px; line-height:1.5; color:var(--ink-2);
   white-space:pre-wrap; flex:1; min-width:0; }
 .turn.user .said { color:var(--ink); font-weight:600; }
-.conv-truncated { margin:6px 0 0; padding-top:8px; border-top:1px solid var(--line-soft);
-  font-size:11px; color:var(--muted); }
+/* Lazy-loading (50 turns/page, newest-first): .conv-end marks a genuine
+   end-of-history fact once nextCursor runs out, replacing the old
+   truncation notice this superseded -- nothing is hidden any more, so this
+   reads as a fact, not an apology. .conv-loading-more is the brief,
+   between-pages state while the next page is in flight. Same quiet
+   treatment as each other: neither should compete with the turns above. */
+.conv-end, .conv-loading-more { margin:6px 0 0; padding-top:8px;
+  border-top:1px solid var(--line-soft); font-size:11px; color:var(--muted); }
