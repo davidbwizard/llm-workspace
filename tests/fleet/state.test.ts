@@ -678,13 +678,39 @@ describe('openSessionsLive', () => {
       expect(open.map(o => [o.match, o.sessionId])).toEqual([['ambiguous', null], ['ambiguous', null]]);
     });
 
-    it('resolves the neighbour of an exactly-matched process when one candidate remains', () => {
+    it('keeps the neighbour of an exactly-matched process ambiguous', () => {
       const db = twoSessionsOneFolder();
       const open = openSessionsLive(db, [
         proc({ pid:1, cwd:'/repo/shared', ageSeconds:60, ...live('s1', '/repo/shared') }),
         proc({ pid:2, cwd:'/repo/shared', ageSeconds:60 }),
       ], NOW);
-      expect(open.find(o => o.pid === 2)).toMatchObject({ match:'unique', sessionId:'s2' });
+      expect(open.find(o => o.pid === 2)).toMatchObject({ match:'ambiguous', sessionId:null });
+    });
+
+    // Probe (fix wave F1): P1 ran `/clear` after P2 started, so P1 still
+    // owns an OLDER id (s_old) from before the clear, alongside its CURRENT
+    // one (s_new, the only one its live-session file can ever show). Before
+    // the fix, two rules combined to hand P2 that stale conversation:
+    // pidCwdCounts excluded P1 (it had a file), so P2 looked alone in its
+    // cwd and the recency fallback ran for it -- and since s_old's last
+    // activity (just before the clear) is more recent than P2's own s2,
+    // the fallback picked s_old over P2's real session. Every timestamp
+    // below sits inside both processes' lifetimes, exactly like the
+    // measured case.
+    it("never lets P2 inherit P1's pre-clear session (probe scenario)", () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ sessionId:'s2', kind:'session.started', ts:at(28), payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+        ev({ sessionId:'s_old', kind:'session.started', ts:at(12), payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+        ev({ sessionId:'s_new', kind:'session.started', ts:at(10), payload:{ cwd:'/repo/shared' }, contentHash:'c' }),
+      ]);
+      const open = openSessionsLive(db, [
+        proc({ pid:1, cwd:'/repo/shared', ageSeconds:3600, ...live('s_new', '/repo/shared') }),
+        proc({ pid:2, cwd:'/repo/shared', ageSeconds:1800 }),
+      ], NOW);
+      const byPid = new Map(open.map(o => [o.pid, o]));
+      expect(byPid.get(1)).toMatchObject({ match:'unique', sessionId:'s_new' });
+      expect(byPid.get(2)).toMatchObject({ match:'ambiguous', sessionId:null });
     });
 
     it('keeps the exact session id even before the index has any rows for it', () => {

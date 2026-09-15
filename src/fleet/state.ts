@@ -829,9 +829,7 @@ export function openSessionsLive(
   // must stay ambiguous under this rule.
   const pidCwdCounts = new Map<string, number>();
   for (const p of processes) {
-    // An exactly-resolved process is not competing for this cwd's sessions,
-    // so it must not stop the one remaining process there from resolving.
-    if (p.cwd !== null && !p.liveSession) pidCwdCounts.set(p.cwd, (pidCwdCounts.get(p.cwd) ?? 0) + 1);
+    if (p.cwd !== null) pidCwdCounts.set(p.cwd, (pidCwdCounts.get(p.cwd) ?? 0) + 1);
   }
   // classifyMatch returns one result per process, in the SAME order (see
   // the identical assumption in openSessions above) -- so `processes[i]`

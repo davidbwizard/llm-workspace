@@ -67,7 +67,14 @@ describe('applyExactMatches', () => {
   it("removes a claimed id from a neighbour's candidates", () => {
     const procs = [p(1, '/r', 's1'), p(2, '/r')];
     const out = applyExactMatches(procs, classifyMatch(procs, refs));
-    expect(out[1]).toMatchObject({ quality: 'unique', sessionId: 's2', candidates: ['s2'] });
+    expect(out[1]).toMatchObject({ quality: 'ambiguous', sessionId: null, candidates: ['s2'] });
+  });
+
+  it("drops a neighbour to unknown when its only candidate is claimed", () => {
+    const single = [{ sessionId: 's1', cwd: '/r' }];
+    const procs = [p(1, '/r', 's1'), p(2, '/r')];
+    const out = applyExactMatches(procs, classifyMatch(procs, single));
+    expect(out[1]).toMatchObject({ quality: 'unknown', sessionId: null, candidates: [] });
   });
 
   it('keeps a neighbour ambiguous when more than one candidate remains', () => {

@@ -43,10 +43,15 @@ export function classifyMatch(procs: LiveProcess[], sessions: SessionRef[]): Mat
  *  2026-09-15-exact-session-identity-design.md §3.3). Runs AFTER
  *  classifyMatch, which stays a pure cwd matcher. A process carrying a
  *  verified live session file resolves to that session outright. Its id is
- *  then removed from every other process's candidates, and those are
- *  re-classified with classifyMatch's own length rule -- so a neighbour
- *  left with one candidate resolves, and one left with several stays
- *  ambiguous rather than guessed. One result per process, same order. */
+ *  then removed from every other process's candidates -- but that removal
+ *  never PROMOTES a neighbour's quality, only ever narrows or empties its
+ *  candidates: a claimed id proves which session the exactly-matched
+ *  process IS, not which one the neighbour is, since a process can own
+ *  several session ids across one or more `/clear`s and only its CURRENT
+ *  one is ever visible here. A neighbour whose candidates shrink to zero
+ *  becomes `unknown`; one left with any candidates stays `ambiguous`,
+ *  never guessed down to a single id by process of elimination. One result
+ *  per process, same order. */
 export function applyExactMatches(procs: LiveProcess[], matches: MatchResult[]): MatchResult[] {
   const claimed = new Set(procs.flatMap(p => p.liveSession ? [p.liveSession.sessionId] : []));
   if (claimed.size === 0) return matches;
@@ -56,8 +61,9 @@ export function applyExactMatches(procs: LiveProcess[], matches: MatchResult[]):
     if (exact) return { ...m, quality: 'unique', sessionId: exact.sessionId, candidates: [exact.sessionId] };
     const candidates = m.candidates.filter(id => !claimed.has(id));
     if (candidates.length === m.candidates.length) return m;
-    const quality: MatchQuality =
-      candidates.length === 1 ? 'unique' : candidates.length > 1 ? 'ambiguous' : 'unknown';
-    return { ...m, candidates, quality, sessionId: quality === 'unique' ? candidates[0]! : null };
+    // Never 'unique' here -- see the doc comment above for why a claimed id
+    // cannot stand in for this process's own identity.
+    const quality: MatchQuality = candidates.length === 0 ? 'unknown' : 'ambiguous';
+    return { ...m, candidates, quality, sessionId: null };
   });
 }

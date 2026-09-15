@@ -124,18 +124,15 @@ quality: 'unique', sessionId: liveSession.sessionId
 ```
 
 The existing disambiguation rules then run only for processes without one, with
-two adjustments so an exact match also helps its neighbours:
-
-- A session id claimed exactly by one process is removed from every other
-  process's `candidates`.
-- An exactly-resolved process is not counted in `pidCwdCounts`, so the
-  one-live-process-per-cwd fallback (`src/fleet/state.ts:805`) can still resolve
-  the remaining process.
-
-Example: two live processes share a cwd, only one has a file. The other's
-candidates shrink by one, and it is the only unresolved process at that cwd, so
-the existing timing rule can resolve it. If the existing rules still cannot, it
-stays `ambiguous`, never guessed.
+one adjustment: a claimed id is removed from every other process's
+`candidates`, but that removal never PROMOTES a neighbour's quality -- a
+neighbour left with zero candidates becomes `unknown`, and one left with any
+candidates stays `ambiguous`, never guessed down to a single id by process of
+elimination. Every live process still counts toward the one-live-process-per-cwd
+fallback (`src/fleet/state.ts:805`), an exactly-resolved one included. Both
+follow from the same fact: a process can own several session ids across one or
+more `/clear`s, and only its CURRENT one is ever visible here, so a claimed id
+proves which session that process is, never which one a neighbour is.
 `classifyMatch` itself stays a pure cwd matcher, per the existing ruling
 recorded at `src/fleet/state.ts:748`. The override happens in the builders,
 after `classifyMatch`, the same place the launch-time rule already lives.
@@ -231,8 +228,12 @@ id reaches a command line.
   same setup without files stays `ambiguous`, which is today's behaviour, pinned
   so the fallback cannot regress. A process with a file whose session has no
   index rows still resolves unique. When only one of two same-cwd processes has
-  a file, its session id is removed from the other's candidates, and the other
-  goes through the existing rules as the sole unresolved process at that cwd.
+  a file, its session id is removed from the other's candidates, but the other
+  stays `ambiguous` (dropping to `unknown` if that was its only candidate)
+  rather than being promoted by the removal alone. A pinning test also
+  reproduces the two-process `/clear` probe directly: the exactly-matched
+  process's superseded, pre-`/clear` session must never be handed to its
+  neighbour just because the neighbour has no file of its own.
 - `deriveActivity`: every row of the §3.4 table.
 - Reattach: a fresh file read wins over a stale cache entry. No file falls back
   to the cache.
