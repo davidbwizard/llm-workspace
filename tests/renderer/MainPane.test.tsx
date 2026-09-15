@@ -22,7 +22,7 @@ beforeEach(() => {
     resume: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
     // The split view's default 'conversation' pane (ConversationView) reaches
     // this directly for any selection whose session has a non-null sessionId.
-    conversation: vi.fn().mockResolvedValue([]),
+    conversation: vi.fn().mockResolvedValue({ turns: [], truncated: false }),
   };
 });
 

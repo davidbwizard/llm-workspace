@@ -949,7 +949,7 @@ export function registerIpc(
     return result;
   });
   ipcMain.handle('session:conversation', (_event, sessionId: unknown) =>
-    typeof sessionId === 'string' ? conversationFor(db, sessionId) : []);
+    typeof sessionId === 'string' ? conversationFor(db, sessionId) : { turns: [], truncated: false });
   ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown) => sendKeysFor(pid, text));
 
   // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing
