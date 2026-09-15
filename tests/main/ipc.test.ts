@@ -18,6 +18,22 @@ import type { LiveProcess } from '../../src/discovery/parse.ts';
 import type { OpenSession } from '../../src/fleet/state.ts';
 import type { LiveSessionRead } from '../../src/providers/claude/liveSession.ts';
 
+// Fix wave F3: about 9 refreshLiveProcesses calls below give Claude pids
+// with no reader stub of their own, so without this every one of them
+// would fall through discovery's own readLiveSession to the REAL
+// readLiveSessionFile, which opens files under ~/.claude/sessions -- this
+// test file must never depend on what happens to be on the machine running
+// it. Every other export from the module stays real (built from
+// importOriginal), so this changes nothing about how discovery classifies
+// a pid beyond making its live-session read report "missing"
+// unconditionally, exactly like a machine with no such directory.
+// resolveReattachTarget's own tests below inject `read` directly and never
+// go through discovery's real readLiveSession, so they are unaffected.
+vi.mock('../../src/providers/claude/liveSession.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/providers/claude/liveSession.ts')>();
+  return { ...actual, readLiveSessionFile: () => ({ ok: false, reason: 'missing' }) };
+});
+
 function ev(o: Partial<NormalizedEvent>): NormalizedEvent {
   return { provider:'claude', sessionId:'s1', runId:'r1', agentId:null,
     ts:'2026-09-10T12:00:00Z', kind:'prose', payload:{}, nativeId:null,
@@ -1009,12 +1025,15 @@ describe('resolveReattachTarget', () => {
     liveSession: { sessionId: 'before-clear', cwd: '/repo/a', startedAtMs: STARTED, status: 'idle' }, ...o,
   });
   const cached = [{ pid: 50, provider: 'claude', cwd: '/repo/a', sessionId: 'before-clear' } as OpenSession];
-  const fresh = (sessionId: string, startedAtMs = STARTED): LiveSessionRead =>
-    ({ ok: true, file: { sessionId, cwd: '/repo/a', startedAtMs, status: 'idle' } });
+  const fresh = (sessionId: string, startedAtMs = STARTED, cwd = '/repo/a'): LiveSessionRead =>
+    ({ ok: true, file: { sessionId, cwd, startedAtMs, status: 'idle' } });
 
   it('uses a fresh read when /clear changed the session since the last sweep', () => {
-    const r = resolveReattachTarget(50, { cached, processes: [proc()], read: () => fresh('after-clear') });
-    expect(r).toEqual({ sessionId: 'after-clear', provider: 'claude', cwd: '/repo/a' });
+    // cwd deliberately differs from the cached entry's '/repo/a' -- proves
+    // the returned cwd comes from the fresh read, not merely echoed from
+    // the stale cache alongside a fresh sessionId.
+    const r = resolveReattachTarget(50, { cached, processes: [proc()], read: () => fresh('after-clear', STARTED, '/repo/a-moved') });
+    expect(r).toEqual({ sessionId: 'after-clear', provider: 'claude', cwd: '/repo/a-moved' });
   });
 
   it('ignores a fresh read from a different process instance (start time changed)', () => {
