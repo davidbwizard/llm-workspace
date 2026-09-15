@@ -309,7 +309,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
 
   return (
     <article
-      className={`card ${blocked ? 'attn' : state.activity === 'working' ? 'live' : ''}`}
+      className={`card ${blocked ? 'attn' : showUnread ? 'unread' : state.activity === 'working' ? 'live' : ''}`}
       tabIndex={0}
       role="button"
       aria-label={label}

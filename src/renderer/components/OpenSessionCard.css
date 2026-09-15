@@ -29,6 +29,27 @@
 .unread-dot { position:absolute; top:16px; right:18px; width:8px; height:8px;
   border-radius:50%; background:var(--signal); }
 
+/* The whole-card unread treatment David asked for beyond the dot alone
+   ("maybe the box color should be different until I click on it") --
+   same --signal tone as the dot above, same shape SessionCard.css's own
+   .card.attn already uses (a tinted border plus a soft gradient fading
+   back to --ground), so it reads as a sibling of that pattern rather than
+   a third, unrelated style. Deliberately never combined with .attn in the
+   JSX (OpenSessionCard.tsx's classname picks one of attn/unread/live, in
+   that priority order, matching showUnread's own blocked-suppression) --
+   a blocked-and-unread card only ever gets .attn, so the two treatments
+   can never visually mix into an ambiguous third state.
+
+   The thicker left border is the STRUCTURAL half of the signal, not colour
+   alone: it survives grayscale or a colour-vision deficiency that flattens
+   --signal and --ground into indistinguishable tones, the same way the
+   dot's own presence/absence already does regardless of its fill colour. */
+.card.unread { border-color:color-mix(in srgb,var(--signal) 34%,transparent);
+               border-left-width:3px;
+               background:linear-gradient(var(--signal-soft),var(--ground) 70%); }
+.card.unread:hover { border-color:color-mix(in srgb,var(--signal) 60%,transparent); }
+.card.unread:hover .proj { color:var(--signal); }
+
 /* The kill affordance -- session:kill's UI. Its own row below .metrics
    rather than a corner icon layered over .crow/.badge: the app's first
    destructive action gets a real, unambiguous target to press, not

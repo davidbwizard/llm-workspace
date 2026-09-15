@@ -186,6 +186,46 @@ describe('OpenSessionCard', () => {
       const label = screen.getByRole('button', { name: /trellome/i }).getAttribute('aria-label') ?? '';
       expect(label).not.toMatch(/new output/i);
     });
+
+    // David: "maybe the box color should be different until I click on
+    // it" -- the whole card, not just the corner dot. .card.unread carries
+    // that (OpenSessionCard.css), styled with theme.css tokens only.
+    describe('the unread card treatment (whole-card, not just the dot)', () => {
+      it('gives the card its own unread class when unread and not blocked', () => {
+        const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={working} unread />);
+        const card = container.querySelector('.card')!;
+        expect(card.classList.contains('unread')).toBe(true);
+        expect(card.classList.contains('attn')).toBe(false);
+      });
+
+      it('carries no unread class when unread is false or omitted', () => {
+        const { container: withoutProp } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={working} />);
+        expect(withoutProp.querySelector('.card')!.classList.contains('unread')).toBe(false);
+
+        const { container: explicitFalse } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={working} unread={false} />);
+        expect(explicitFalse.querySelector('.card')!.classList.contains('unread')).toBe(false);
+      });
+
+      // Blocked must stay the stronger signal: a blocked+unread card reads
+      // as blocked (.attn), never as a third, mixed style -- mirrors the
+      // dot's own suppression above, at the whole-card level.
+      it('reads as blocked, not as a mixed state, when a card is both blocked and unread', () => {
+        const blockedState: OpenSession = { ...working, activity: 'waiting_permission' };
+        const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={blockedState} unread />);
+        const card = container.querySelector('.card')!;
+        expect(card.classList.contains('attn')).toBe(true);
+        expect(card.classList.contains('unread')).toBe(false);
+      });
+
+      it('does not carry the working "live" class while showing the unread treatment', () => {
+        const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={working} unread />);
+        // `working` fixture's own activity is 'working', which would
+        // otherwise earn .live -- unread must take precedence so the two
+        // signals never combine into a class list a screen reader or a
+        // colourblind user has no way to disambiguate visually.
+        expect(container.querySelector('.card')!.classList.contains('live')).toBe(false);
+      });
+    });
   });
 
   // The app's first destructive action. These prove: the signal is never
