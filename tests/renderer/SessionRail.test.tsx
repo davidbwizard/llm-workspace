@@ -173,6 +173,33 @@ describe('SessionRail', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  // Fix round 1 (in-app testing, 2026-09-15): the popover was passed
+  // choice={waiting}, re-evaluated on every render from the session's
+  // CURRENT activity -- so a momentary activity change while it was open
+  // (a fleet:update landing mid-answer) silently morphed it back into a
+  // text box. The main-side guard then refused the send and the picker was
+  // never reached; on a second try it correctly showed Open Terminal. The
+  // popover is only ever opened from the waiting-only Answer button, so
+  // once open it must stay in choice mode regardless of what the session's
+  // activity does afterwards.
+  it('keeps an open Answer popover in choice mode even if the session stops looking like it is waiting', () => {
+    const waitingTmux = [
+      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, tmux: true },
+    ] as never[];
+    const { rerender } = render(<SessionRail sessions={waitingTmux} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
+    fireEvent.click(screen.getByRole('button', { name: /answer game-viewer, pid 2/i }));
+    expect(screen.getByRole('button', { name: /open terminal/i })).toBeTruthy();
+
+    const idleTmux = [
+      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, tmux: true },
+    ] as never[];
+    rerender(<SessionRail sessions={idleTmux} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
+
+    const dialog = screen.getByRole('dialog', { name: /reply to session 2/i });
+    expect(within(dialog).queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('button', { name: /open terminal/i })).toBeTruthy();
+  });
+
   it('offers no reply trigger for a card that is not waiting on you', () => {
     render(<SessionRail sessions={[sessions[0]!]} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     expect(screen.queryByRole('button', { name: /answer/i })).toBeNull();

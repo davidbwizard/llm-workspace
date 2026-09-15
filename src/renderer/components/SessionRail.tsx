@@ -233,7 +233,15 @@ export function SessionRail({
                 </button>
               )}
               {replyPid === s.pid && (
-                <ReplyPopover pid={s.pid} prompt={s.lastProse} choice={waiting} tmux={s.tmux}
+                // choice is always true here, not `waiting` -- `waiting` is
+                // re-derived from `s.activity` on every render, and this
+                // popover is only ever opened from the waiting-only Answer
+                // button above. Passing `waiting` instead let a momentary
+                // activity change while the popover was open (a fleet:update
+                // landing mid-answer) silently morph it back into a text
+                // box -- see tests/renderer/SessionRail.test.tsx's "keeps an
+                // open Answer popover in choice mode" test.
+                <ReplyPopover pid={s.pid} prompt={s.lastProse} choice={true} tmux={s.tmux}
                   hostLabel={hostLabelFor(s.host)}
                   onOpenTerminal={() => onOpenTerminal?.(s.pid)}
                   onReveal={onReveal ? () => { void onReveal(s.pid); } : null}
