@@ -5,6 +5,8 @@
 // scope -- a test that imports and calls registerIpc directly will throw.
 import { app, ipcMain, BrowserWindow, dialog } from 'electron';
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { spawn as ptySpawn, type IPty } from 'node-pty';
 import type { Db } from '../store/db.ts';
 import {
@@ -17,6 +19,7 @@ import {
 } from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
 import type { LiveSessionRead } from '../providers/claude/liveSession.ts';
+import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import { sendLiteral, sendKeyName, capturePane, setSessionOption, type TmuxResult } from './tmux.ts';
@@ -1067,6 +1070,7 @@ export function registerIpc(
     if (!validSize(cols) || !validSize(rows)) return { status: 'failed', reason: 'invalid terminal size' };
     const result: LaunchResult = await reattachSession(pid, cols, rows, {
       kill: killSession, resolveSession: resolveSessionForReattach,
+      hasTranscript: (sessionId, cwd) => existsSync(join(projectDir(cwd), `${sessionId}.jsonl`)),
     });
     if (onSessionLaunch && result.status === 'launched') setImmediate(onSessionLaunch);
     return result;

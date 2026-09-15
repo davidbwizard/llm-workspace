@@ -105,6 +105,12 @@ type ReattachDeps = LaunchDeps & {
    *  "unidentifiable", the safe direction (refuse) rather than the unsafe
    *  one (guess which session, or assume Claude). */
   resolveSession?: (pid: number) => ResolvedSession | null;
+  /** Whether Claude Code has a saved conversation for this session id in
+   *  this cwd. `claude --resume` fails ("No conversation found") without
+   *  one, and a session has none until its first message. Checked BEFORE
+   *  the kill. Optional so existing callers keep today's behaviour; the
+   *  app (ipc.ts) always supplies it. */
+  hasTranscript?: (sessionId: string, cwd: string) => boolean;
 };
 
 /** session:reattach. Ends the existing process at `pid` and relaunches its
@@ -140,6 +146,9 @@ export async function reattachSession(
   }
   if (!SESSION_ID_SAFE.test(resolved.sessionId)) {
     return { status: 'failed', reason: 'this session id has an unexpected shape' };
+  }
+  if (deps.hasTranscript && !deps.hasTranscript(resolved.sessionId, resolved.cwd)) {
+    return { status: 'failed', reason: 'this session has no saved conversation yet -- send it a message first, then reattach' };
   }
   if (!deps.kill) {
     return { status: 'failed', reason: 'no way to end the existing session' };
