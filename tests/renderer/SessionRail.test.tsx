@@ -10,8 +10,8 @@ import { SessionRail } from '../../src/renderer/components/SessionRail.tsx';
 // preserved without adding a package.
 
 const sessions = [
-  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 
 // Same two sessions, pid 2's events bumped -- the "new output arrived
@@ -21,15 +21,15 @@ const sessions = [
 // showUnread is always false while blocked), so a card that is meant to
 // prove the UNREAD dot specifically must not also be the blocked one.
 const sessionsPid2Bumped = [
-  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'Overwrite?', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
 ] as never[];
 
 // Same two sessions, pid 1's events bumped instead -- the "own selected
 // session keeps producing output" case, which must never flag itself.
 const sessionsPid1Bumped = [
-  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
-  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 
 // Two-session fixture where NEITHER starts blocked (unlike `sessions`
@@ -37,41 +37,43 @@ const sessionsPid1Bumped = [
 // below can prove unread alone moves a card to the top, rather than
 // something already true at baseline because of blocked status.
 const sessionsPlain = [
-  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'ok', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'ok', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 const sessionsPlainPid2Bumped = [
-  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'ok', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'ok', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
 ] as never[];
 
 // Three-session fixture for the relevance-ordering tests below: one
 // blocked, one plain, and one that starts plain and gets bumped into
 // "unread" by a rerender, same technique as sessionsPid2Bumped above.
 const sessions3 = [
-  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 2, project: 'unread-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c2', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'unread-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c2', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 const sessions3Pid2Bumped = [
-  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 2, project: 'unread-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c2', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
-  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'unread-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c2', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 
 // Same shape, pid 2 given a genuine junk cwd (a real tmpdir() path, not
 // just a fixture label) -- compareOpenSessions decides junk from `cwd`
-// itself, so this has to be the real thing for the junk-last assertion
-// below to actually exercise that check rather than trivially passing.
+// itself. `junk` is now carried on OpenSession (derived in main, where
+// tmpdir() exists -- a sandboxed renderer has no node:os), so the fixture
+// sets it explicitly the way main would. The real tmpdir() cwd stays so the
+// row still looks like what it is claiming to be.
 const sessionsWithJunk = [
-  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 2, project: 'temp folder', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: tmpdir(), host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'temp folder', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: tmpdir(), junk: true, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 const sessionsWithJunkPid2Bumped = [
-  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 2, project: 'temp folder', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: tmpdir(), host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
-  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'temp folder', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: tmpdir(), junk: true, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 
 const noopKill = async () => ({ status: 'already_gone' as const });
@@ -164,8 +166,8 @@ describe('SessionRail', () => {
   // in the rail two indistinguishable buttons in the accessibility tree.
   it('gives two waiting sessions two distinguishable Reply buttons, not two identical ones', () => {
     const both = [
-      { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'waiting_permission', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+      { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'waiting_permission', lastProse: 'All green.', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
     ] as never[];
     render(<SessionRail sessions={both} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     expect(screen.getByRole('button', { name: /reply to llm-workspace, pid 1/i })).toBeTruthy();

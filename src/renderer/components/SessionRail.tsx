@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react';
-import { compareOpenSessions, type OpenSession } from '../../fleet/state.ts';
+// TYPE-only from state.ts: that module imports node:os and reaches the
+// database, neither of which exists in a sandboxed renderer. A type import is
+// erased at build so it costs nothing; the comparator itself comes from
+// order.ts, which is deliberately free of Node imports. Importing
+// compareOpenSessions from state.ts threw at module load and rendered the
+// whole window blank -- see order.ts's comment.
+import type { OpenSession } from '../../fleet/state.ts';
+import { compareOpenSessions } from '../../fleet/order.ts';
 import type { KillResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
@@ -179,6 +186,11 @@ export function SessionRail({ sessions, selectedPid, onSelect, onKill, onReattac
   }
   const rankByPid = new Map(sessions.map((s, i) => [s.pid, i]));
   const displaySessions = [...sessions].sort(compareOpenSessions(
+    // Sent across on OpenSession, not recomputed here: the check needs
+    // tmpdir() and this is a sandboxed renderer. It cannot be skipped either
+    // -- the unread tier below is checked before the rank tiers, so without
+    // it an unread junk card would be promoted above a real session.
+    s => s.junk,
     s => rankByPid.get(s.pid) ?? 0,
     () => 0, // no ties possible on the rank above (pid-unique indices), so no secondary signal is needed
     isUnread,

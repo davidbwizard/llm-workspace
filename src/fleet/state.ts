@@ -1,4 +1,8 @@
 import { tmpdir } from 'node:os';
+// Ordering lives in order.ts so the renderer can import it without dragging
+// this module's node:os and database imports along -- see that file's comment.
+import { compareOpenSessions, compareRank } from './order.ts';
+export { compareOpenSessions, compareRank } from './order.ts';
 import type { Db } from '../store/db.ts';
 import type { Provider } from '../core/types.ts';
 import { openBlockers, type Blocker } from '../store/signals.ts';
@@ -554,6 +558,16 @@ export interface OpenSession {
    *  would be pointless, not wrong, but the renderer has no other way to
    *  tell the two apart. */
   tmux: boolean;
+  /** Whether this process's working directory is not a real project -- a temp
+   *  directory or the filesystem root (see junkCwdKind). Derived in MAIN and
+   *  sent across rather than recomputed in the renderer, because that check
+   *  needs `tmpdir()` and a sandboxed renderer has no `node:os` at all.
+   *
+   *  The renderer genuinely needs it: SessionRail re-sorts with its own unread
+   *  tier, which is checked BEFORE the rank tiers, so without this an unread
+   *  junk card would be promoted above a real session -- defeating the
+   *  junk-last rule the sort exists to keep. */
+  junk: boolean;
 }
 
 /** One card per live process (discovery, spec §7.1a) -- "ALL OPEN
@@ -598,6 +612,7 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
     events: enrichment?.events ?? null,
     activity: enrichment?.activity ?? null,
     tmux: isTmux(p.pid),
+    junk: junkCwdKind(p.cwd) !== null,
   };
 }
 
@@ -641,31 +656,6 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
 // any rank function returns -- required for a stable sort (Array.sort is
 // only guaranteed stable for genuinely equal comparisons; two cards must
 // never compare inconsistently or cards would shuffle between renders).
-export function compareOpenSessions(
-  primaryRank: (o: OpenSession) => number | null,
-  secondaryRank: (o: OpenSession) => number | null,
-  isUnread: (o: OpenSession) => boolean = () => false,
-): (a: OpenSession, b: OpenSession) => number {
-  return (a, b) => {
-    const junkA = junkCwdKind(a.cwd) !== null;
-    const junkB = junkCwdKind(b.cwd) !== null;
-    if (junkA !== junkB) return junkA ? 1 : -1;
-
-    const blockedA = a.activity === 'waiting_permission' || a.activity === 'waiting_input';
-    const blockedB = b.activity === 'waiting_permission' || b.activity === 'waiting_input';
-    if (blockedA !== blockedB) return blockedA ? -1 : 1;
-
-    const unreadA = isUnread(a);
-    const unreadB = isUnread(b);
-    if (unreadA !== unreadB) return unreadA ? -1 : 1;
-
-    const primaryDiff = compareRank(primaryRank(a), primaryRank(b));
-    if (primaryDiff !== 0) return primaryDiff;
-    const secondaryDiff = compareRank(secondaryRank(a), secondaryRank(b));
-    if (secondaryDiff !== 0) return secondaryDiff;
-    return a.pid - b.pid;
-  };
-}
 
 // Smaller sorts first; `null` (no signal at all, on EITHER side) always
 // sorts after every real number and never gets subtracted against one --
@@ -676,12 +666,6 @@ export function compareOpenSessions(
 // file's "orders by process age" case, which stopped sorting at all once
 // both ranks below started returning a sentinel Infinity for "unknown"
 // instead of a real null.
-function compareRank(a: number | null, b: number | null): number {
-  if (a === b) return 0;
-  if (a === null) return 1;
-  if (b === null) return -1;
-  return a - b;
-}
 
 export function openSessions(
   sessions: SessionState[], processes: LiveProcess[], deps: { isTmux?: (pid: number) => boolean } = {},
@@ -708,6 +692,7 @@ export function openSessions(
     const matched = m.quality === 'unique' ? byId.get(m.sessionId!) ?? null : null;
     return buildOpenSession(p, m, matched, isTmux);
   }).sort(compareOpenSessions(
+    o => junkCwdKind(o.cwd) !== null,
     o => { const ms = lastActiveMs(o); return ms === null ? null : -ms; }, // newest known timestamp first; unknown (null) sorts last
     o => o.ageSeconds, // fallback tiebreak among unknown-timestamp cards; null (ps failed) sorts last too
   ));
@@ -956,6 +941,7 @@ export function openSessionsLive(
     const enrichment = m.quality === 'unique' ? enrichmentById.get(m.sessionId!) ?? null : null;
     return buildOpenSession(p, m, enrichment, isTmux);
   }).sort(compareOpenSessions(
+    o => junkCwdKind(o.cwd) !== null,
     o => { const ms = lastActiveMs(o); return ms === null ? null : -ms; }, // newest known timestamp first; unknown (null) sorts last
     o => o.ageSeconds, // fallback tiebreak among unknown-timestamp cards; null (ps failed) sorts last too
   ));

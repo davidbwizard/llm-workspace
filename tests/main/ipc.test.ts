@@ -476,6 +476,7 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
     expect(OPEN_SESSION_SANITISED_FIELDS).toEqual(['cwd', 'project', 'lastProse']);
     expect(OPEN_SESSION_STRUCTURAL_FIELDS).toEqual([
       'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity', 'tmux',
+      'junk',
     ]);
   });
 

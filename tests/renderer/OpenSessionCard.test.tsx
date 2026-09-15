@@ -15,7 +15,7 @@ import type { LaunchResult } from '../../src/main/launch.ts';
 const base: OpenSession = {
   pid: 4242, provider: 'claude', host: 'iterm2', cwd: '/Users/me/trellome', project: 'trellome',
   ageSeconds: 9 * 86_400, rssBytes: 206 * 1024 * 1024, match: 'unknown',
-  sessionId: null, lastProse: null, events: null, activity: null, tmux: true,
+  sessionId: null, lastProse: null, events: null, activity: null, tmux: true, junk: false,
 };
 
 // Every test below that isn't specifically about the kill flow needs SOME

@@ -29,7 +29,7 @@ const s = (o: Partial<SessionState>): SessionState => ({
 const o = (over: Partial<OpenSession>): OpenSession => ({
   pid:1, provider:'claude', host:'unknown', cwd:'/r', project:'proj', ageSeconds:60, rssBytes:null,
   match:'unknown', sessionId:null, lastProse:null, events:null,
-  activity:null, tmux:false, ...over,
+  activity:null, tmux:false, junk:false, ...over,
 });
 
 // Task 7 hoisted the fleet:list fetch/subscription out of FleetView into

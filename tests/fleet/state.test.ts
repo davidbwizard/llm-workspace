@@ -461,7 +461,7 @@ describe('openSessions', () => {
     expect(open).toEqual([{
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, lastProse:null, events:null, activity:null, tmux:false,
+      sessionId:null, lastProse:null, events:null, activity:null, tmux:false, junk:false,
     }]);
   });
 
@@ -657,7 +657,7 @@ describe('openSessionsLive', () => {
     expect(open).toEqual([{
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, lastProse:null, events:null, activity:null, tmux:false,
+      sessionId:null, lastProse:null, events:null, activity:null, tmux:false, junk:false,
     }]);
   });
 
@@ -1351,7 +1351,8 @@ describe('compareOpenSessions', () => {
   function open(o: Partial<OpenSession> & { pid: number }): OpenSession {
     return {
       provider:'claude', host:'unknown', cwd:'/repo/x', project:'x', ageSeconds:null, rssBytes:null,
-      match:'unknown', sessionId:null, lastProse:null, events:null, activity:null, tmux:false, ...o,
+      match:'unknown', sessionId:null, lastProse:null, events:null, activity:null, tmux:false,
+      junk:false, ...o,
     };
   }
 
@@ -1359,7 +1360,7 @@ describe('compareOpenSessions', () => {
   // entirely) would let rank decide instead, which this catches by giving
   // the blocked side the WORSE rank -- it must still win.
   it('ranks a blocked session first regardless of its recency rank', () => {
-    const cmp = compareOpenSessions(o => o.pid, () => 0); // rank == pid: blocked one is deliberately "worse"
+    const cmp = compareOpenSessions(() => false, o => o.pid, () => 0); // rank == pid: blocked one is deliberately "worse"
     const blocked = open({ pid:9, activity:'waiting_permission' });
     const recent = open({ pid:1 });
     expect(cmp(blocked, recent)).toBeLessThan(0);
@@ -1369,7 +1370,7 @@ describe('compareOpenSessions', () => {
   // Same mutation target, one tier down: unread must outrank a better
   // (numerically smaller) rank on the non-blocked side.
   it('ranks an unread session above a merely-recent one regardless of rank, but never above a blocked one', () => {
-    const cmp = compareOpenSessions(o => o.pid, () => 0, o => o.pid === 9);
+    const cmp = compareOpenSessions(() => false, o => o.pid, () => 0, o => o.pid === 9);
     const unread = open({ pid:9 });
     const recent = open({ pid:1 });
     const blocked = open({ pid:2, activity:'waiting_input' });
@@ -1381,8 +1382,12 @@ describe('compareOpenSessions', () => {
   // that is ALSO blocked and unread must still sort after a plain real
   // session, per the brief's "keep junk-last behaviour exactly".
   it('keeps a junk cwd last even when it is also blocked and unread', () => {
-    const cmp = compareOpenSessions(() => 0, () => 0, () => true);
-    const junkButUrgent = open({ pid:1, cwd:tmpdir(), activity:'waiting_permission' });
+    // Junk-ness is supplied rather than derived: the comparator lives in
+    // order.ts now, which deliberately cannot call tmpdir(). This test is
+    // about the junk TIER outranking every other signal; junkCwdKind's own
+    // detection has its own tests above.
+    const cmp = compareOpenSessions((o: OpenSession) => o.junk, () => 0, () => 0, () => true);
+    const junkButUrgent = open({ pid:1, cwd:tmpdir(), junk:true, activity:'waiting_permission' });
     const plain = open({ pid:2 });
     expect(cmp(junkButUrgent, plain)).toBeGreaterThan(0);
     expect(cmp(plain, junkButUrgent)).toBeLessThan(0);
@@ -1392,7 +1397,7 @@ describe('compareOpenSessions', () => {
   // signal" fallback tier must never let "no signal at all" outrank real
   // information on either side of the comparison.
   it('sorts a null rank after any real number, on either side of the comparison', () => {
-    const cmp = compareOpenSessions(() => null, () => null);
+    const cmp = compareOpenSessions(() => false, () => null, () => null);
     const a = open({ pid:1 });
     const b = open({ pid:2 });
     // Both null on the primary AND secondary rank -- falls all the way
@@ -1407,7 +1412,7 @@ describe('compareOpenSessions', () => {
   // inconsistent one is exactly what would make cards shuffle between
   // renders of the same data.
   it('is antisymmetric and reflexive -- a > b, b < a, a == a, always', () => {
-    const cmp = compareOpenSessions(o => o.pid, () => 0);
+    const cmp = compareOpenSessions(() => false, o => o.pid, () => 0);
     const a = open({ pid:1, activity:'waiting_permission' });
     const b = open({ pid:2, activity:'waiting_permission' });
     expect(cmp(a, b)).toBe(-cmp(b, a));
@@ -1428,7 +1433,7 @@ describe('compareOpenSessions', () => {
       open({ pid:4, activity:'waiting_input' }),
       open({ pid:5 }),
     ];
-    const cmp = compareOpenSessions(o => o.pid, () => 0);
+    const cmp = compareOpenSessions(() => false, o => o.pid, () => 0);
     const forward = [...items].sort(cmp).map(o => o.pid);
     const reversed = [...items].reverse().sort(cmp).map(o => o.pid);
     expect(reversed).toEqual(forward);

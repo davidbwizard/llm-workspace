@@ -141,6 +141,7 @@ export const OPEN_SESSION_SANITISED_FIELDS =
 // one card, one process, no guessing -- so it has to reach the renderer.
 export const OPEN_SESSION_STRUCTURAL_FIELDS = [
   'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity', 'tmux',
+  'junk',
 ] as const satisfies readonly (keyof OpenSession)[];
 
 /** Sanitises every field named in `fields` whose current value is a string
