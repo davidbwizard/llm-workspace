@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
-  discoverLiveProcesses, execFileSoft, resetLiveSessionWarnings, type ExecFn,
+  discoverLiveProcesses, execFileSoft, resetLiveSessionWarnings, type ExecFn, type DiscoveryDeps,
 } from '../../src/discovery/live.ts';
 import type { LiveSessionFile, LiveSessionRead } from '../../src/providers/claude/liveSession.ts';
 
@@ -11,6 +11,11 @@ import type { LiveSessionFile, LiveSessionRead } from '../../src/providers/claud
 function fakeExec(responses: Record<string, string>): ExecFn {
   return async (bin, args) => responses[[bin, ...args].join(' ')] ?? '';
 }
+
+// Stub to keep all tests off the real ~/.claude/sessions directory.
+const NO_SESSION_FILE: DiscoveryDeps = {
+  readLiveSession: () => ({ ok: false, reason: 'missing' }),
+};
 
 describe('discoverLiveProcesses', () => {
   it('finds processes for both providers concurrently and reports pid/provider/tty/cwd/host/age/memory', async () => {
@@ -28,7 +33,7 @@ describe('discoverLiveProcesses', () => {
       'ps -o ppid=,comm= -p 200': '1 codex\n',
     });
 
-    const procs = await discoverLiveProcesses(exec);
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
     expect(procs).toHaveLength(2);
     const byPid = new Map(procs.map(p => [p.pid, p]));
 
@@ -64,7 +69,7 @@ describe('discoverLiveProcesses', () => {
     it('still reports a pid pgrep found even when every per-pid lookup for it comes back empty', async () => {
       const exec: ExecFn = async (bin, args) =>
         bin === 'pgrep' && args[1] === 'claude' ? '100\n' : '';
-      const procs = await discoverLiveProcesses(exec);
+      const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
       expect(procs).toEqual([
         { pid: 100, provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null },
       ]);
@@ -83,7 +88,7 @@ describe('discoverLiveProcesses', () => {
       if (bin === 'pgrep') return '42\n';
       return '';
     };
-    await discoverLiveProcesses(exec);
+    await discoverLiveProcesses(exec, NO_SESSION_FILE);
     for (const call of calls) {
       if (call[0] === 'pgrep') continue;
       // The pid appears as its own array element (String(42) === '42'),
@@ -202,7 +207,7 @@ describe('process cache', () => {
     const exec = async (bin: string, args: string[]) =>
       bin === 'pgrep' && args[1] === 'claude' ? '100\n' : '';
 
-    const result = await mod.refreshLiveProcesses(exec);
+    const result = await mod.refreshLiveProcesses(exec, NO_SESSION_FILE);
     const expected = [
       { pid: 100, provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null },
     ];
@@ -214,7 +219,7 @@ describe('process cache', () => {
     vi.resetModules();
     const mod = await import('../../src/discovery/live.ts');
     await mod.refreshLiveProcesses(async (bin: string, args: string[]) =>
-      bin === 'pgrep' && args[1] === 'claude' ? '100\n' : '');
+      bin === 'pgrep' && args[1] === 'claude' ? '100\n' : '', NO_SESSION_FILE);
     expect(mod.getCachedLiveProcesses()).toHaveLength(1);
 
     await mod.refreshLiveProcesses(async () => ''); // nothing found this time
