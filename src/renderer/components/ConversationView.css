@@ -2,11 +2,24 @@
 .conv { padding:12px 14px; overflow-y:auto; flex:1; }
 .conv.empty, .conv.loading, .conv.unknown { color:var(--muted); }
 .turn { display:flex; gap:10px; margin-bottom:10px; align-items:flex-start; }
+/* User turns are the rarer ones and the landmarks when scanning back --
+   they get the app's one emphasis colour (theme.css: --accent, already
+   used everywhere else as a border/indicator, never a fill) as a rule in
+   the margin, never as a text or background fill, so it stays quiet.
+   That rule's WIDTH (3px vs none) is the real, colour-independent signal
+   -- a colourblind reader, or the rule rendered in greyscale, still sees
+   a turn set off from the margin; the accent hue is a second, redundant
+   cue layered on top, not the only one. font-weight is the third,
+   independent of colour entirely: Karla is a variable font (200-800,
+   see the @font-face rule in theme.css), so 600 here is a real heavier
+   cut, not a faked bold. */
+.turn.user { border-left:3px solid var(--accent); padding-left:7px; }
 .turn .meta { display:flex; flex-direction:column; gap:2px; width:56px; flex:none; padding-top:2px; }
 .turn .who { font-family:var(--f-mono); font-size:11px; color:var(--faint); }
+.turn.user .who { color:var(--accent); }
 .turn .when { font-family:var(--f-mono); font-size:10px; color:var(--faint); white-space:nowrap; }
 .turn .said { margin:0; font-size:13px; line-height:1.5; color:var(--ink-2);
   white-space:pre-wrap; flex:1; min-width:0; }
-.turn.user .said { color:var(--ink); }
+.turn.user .said { color:var(--ink); font-weight:600; }
 .conv-truncated { margin:6px 0 0; padding-top:8px; border-top:1px solid var(--line-soft);
   font-size:11px; color:var(--muted); }

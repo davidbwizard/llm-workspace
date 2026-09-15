@@ -32,6 +32,24 @@ describe('ConversationView', () => {
     expect(container.querySelector('.turn.assistant')).toBeTruthy();
   });
 
+  // The visual-distinction feature (a long conversation must not read as
+  // one undifferentiated wall) hangs entirely off this role class --
+  // ConversationView.css.test.ts proves the CSS keyed to it actually
+  // differs structurally, not just by colour. This proves the DOM side of
+  // that contract: the two roles carry genuinely different classes, not
+  // merely that a user turn and an assistant turn both rendered (that
+  // weaker claim is already covered by the "renders both sides" test
+  // above and would not catch a regression that rendered every turn with
+  // the same class).
+  it('gives user and assistant turns different classes -- the actual hook the CSS distinction depends on', async () => {
+    const { container } = render(<ConversationView sessionId="s1" />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+    const [userRow, assistantRow] = [...container.querySelectorAll('.turn')];
+    expect(userRow!.className).not.toBe(assistantRow!.className);
+    expect(userRow!.classList.contains('user')).toBe(true);
+    expect(assistantRow!.classList.contains('assistant')).toBe(true);
+  });
+
   it('says so plainly when a session has nothing to show', async () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: [], truncated: false }),
