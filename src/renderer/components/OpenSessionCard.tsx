@@ -371,145 +371,162 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
         )}
       </div>
 
-      {/* This is the first destructive action the app can take, so it gets
-          its own row rather than a corner icon: a real, visible button and
-          (once pressed) a real, visible confirmation, not something a
-          misclick over a crowded corner can trigger by accident.
+      {/* Close and Reattach share one row (.actionsrow) so two idle, single-
+          line pill buttons sit side by side instead of stacking into extra
+          card height for no reason -- David's own complaint. Each control
+          is still a genuine interactive element nested inside this card's
+          own role="button" wrapper above, and each row below still stops
+          its own click/keydown from bubbling (that's what stops pressing
+          Close, Cancel, End session, Reattach, etc. from ALSO firing the
+          card's onClick/onKeyDown) -- .actionsrow itself is a plain layout
+          box, nothing more. `wide` (added per-row, from this component's
+          own phase state) makes a row claim the FULL row's width the
+          moment it grows past a single button -- a confirm panel or a
+          status line reads properly at the card's own width regardless of
+          what its sibling is doing, and flex-wrap is what lets the other
+          row drop to its own line to make room, rather than the two being
+          squeezed to half-width side by side. */}
+      <div className="actionsrow">
+        {/* This is the first destructive action the app can take, so it gets
+            its own row rather than a corner icon: a real, visible button and
+            (once pressed) a real, visible confirmation, not something a
+            misclick over a crowded corner can trigger by accident.
 
-          Every control here is a genuine interactive element nested inside
-          this card's own role="button" wrapper above -- stopping
-          propagation on this row's click/keydown is what stops pressing
-          Close (or Cancel, or End session) from ALSO firing the card's own
-          onClick/onKeyDown and opening the session. */}
-      <div
-        className="killrow"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-      >
-        {phase === 'idle' && (
-          // Deliberately NOT labelled with project/host/age (unlike the
-          // confirmation below) -- this card's own role="button" wrapper
-          // already carries all of that in ITS accessible name, and giving
-          // this button the same text would make any name-based lookup for
-          // this card (by a screen reader's rotor, or by a test) match two
-          // elements at once. pid alone still disambiguates this button
-          // from the identical "Close" button on every other open card.
-          <button type="button" className="kill-btn" aria-label={`Close, pid ${state.pid}`}
-            onClick={() => setPhase('confirming')}>
-            Close
-          </button>
-        )}
-
-        {phase === 'confirming' && (
-          // The group's accessible name IS the confirm text itself
-          // (aria-labelledby, not a separate aria-label) -- a screen reader
-          // landing on either button below announces that text as the
-          // button's description (aria-describedby, same id), so "which
-          // session" is heard regardless of whether the AT announces group
-          // entry. Button names stay short and literal ("Cancel"/"End
-          // session") rather than repeating the whole description into
-          // each one.
-          <div className="kill-confirm" role="group" aria-labelledby={`killconfirm-${state.pid}`}>
-            <p className="kill-confirm-text" id={`killconfirm-${state.pid}`}>End {killTarget}?</p>
-            <div className="kill-confirm-actions">
-              {/* Cancel takes focus by default, not End session -- so an
-                  accidental second Enter/Space after the Close click above
-                  lands on the safe choice, not the destructive one. */}
-              <button type="button" className="kill-cancel" autoFocus
-                aria-describedby={`killconfirm-${state.pid}`}
-                onClick={() => setPhase('idle')}>
-                Cancel
-              </button>
-              <button type="button" className="kill-confirm-btn"
-                aria-describedby={`killconfirm-${state.pid}`}
-                onClick={() => { void doKill(); }}>
-                End session
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* aria-live, not a focus move -- the person just clicked "End
-            session" and their focus should stay put; the status change is
-            announced to them instead. */}
-        {phase === 'pending' && (
-          <p className="kill-status" aria-live="polite">Ending session…</p>
-        )}
-
-        {(phase === 'settled' || phase === 'error') && (
-          <p className={`kill-status${phase === 'error' ? ' error' : ''}`} aria-live="polite">
-            {message}{' '}
-            <button type="button" onClick={() => setPhase('idle')}>Dismiss</button>
-          </p>
-        )}
-      </div>
-
-      {/* The reattach affordance -- the payoff of removing AppleScript
-          keystroke injection (spec §5): this, not a typed reply, is how the
-          twelve sessions already running in plain iTerm become answerable
-          at all. Same nested-interactive-row treatment as killrow above. */}
-      {reattachEligible && (
+            Every control here is a genuine interactive element nested inside
+            this card's own role="button" wrapper above -- stopping
+            propagation on this row's click/keydown is what stops pressing
+            Close (or Cancel, or End session) from ALSO firing the card's own
+            onClick/onKeyDown and opening the session. */}
         <div
-          className="reattachrow"
+          className={`killrow${phase !== 'idle' ? ' wide' : ''}`}
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
         >
-          {reattachPhase === 'idle' && (
-            <button type="button" className="reattach-btn" aria-label={`Reattach in app, pid ${state.pid}`}
-              onClick={() => setReattachPhase('confirming')}>
-              Reattach in app
+          {phase === 'idle' && (
+            // Deliberately NOT labelled with project/host/age (unlike the
+            // confirmation below) -- this card's own role="button" wrapper
+            // already carries all of that in ITS accessible name, and giving
+            // this button the same text would make any name-based lookup for
+            // this card (by a screen reader's rotor, or by a test) match two
+            // elements at once. pid alone still disambiguates this button
+            // from the identical "Close" button on every other open card.
+            <button type="button" className="kill-btn" aria-label={`Close, pid ${state.pid}`}
+              onClick={() => setPhase('confirming')}>
+              Close
             </button>
           )}
 
-          {reattachPhase === 'confirming' && (
-            <div className="reattach-confirm" role="group" aria-labelledby={`reattachconfirm-${state.pid}`}>
-              <p className="reattach-confirm-text" id={`reattachconfirm-${state.pid}`}>
-                Reattach {killTarget}? The conversation is kept -- anything in flight is lost, and the
-                current process ends.
-              </p>
-              <div className="reattach-confirm-actions">
-                <button type="button" className="reattach-cancel" autoFocus
-                  aria-describedby={`reattachconfirm-${state.pid}`}
-                  onClick={() => setReattachPhase('idle')}>
+          {phase === 'confirming' && (
+            // The group's accessible name IS the confirm text itself
+            // (aria-labelledby, not a separate aria-label) -- a screen reader
+            // landing on either button below announces that text as the
+            // button's description (aria-describedby, same id), so "which
+            // session" is heard regardless of whether the AT announces group
+            // entry. Button names stay short and literal ("Cancel"/"End
+            // session") rather than repeating the whole description into
+            // each one.
+            <div className="kill-confirm" role="group" aria-labelledby={`killconfirm-${state.pid}`}>
+              <p className="kill-confirm-text" id={`killconfirm-${state.pid}`}>End {killTarget}?</p>
+              <div className="kill-confirm-actions">
+                {/* Cancel takes focus by default, not End session -- so an
+                    accidental second Enter/Space after the Close click above
+                    lands on the safe choice, not the destructive one. */}
+                <button type="button" className="kill-cancel" autoFocus
+                  aria-describedby={`killconfirm-${state.pid}`}
+                  onClick={() => setPhase('idle')}>
                   Cancel
                 </button>
-                <button type="button" className="reattach-confirm-btn"
-                  aria-describedby={`reattachconfirm-${state.pid}`}
-                  onClick={() => { void doReattach(); }}>
-                  Reattach
+                <button type="button" className="kill-confirm-btn"
+                  aria-describedby={`killconfirm-${state.pid}`}
+                  onClick={() => { void doKill(); }}>
+                  End session
                 </button>
               </div>
             </div>
           )}
 
-          {reattachPhase === 'pending' && (
-            <p className="reattach-status" aria-live="polite">Reattaching…</p>
+          {/* aria-live, not a focus move -- the person just clicked "End
+              session" and their focus should stay put; the status change is
+              announced to them instead. */}
+          {phase === 'pending' && (
+            <p className="kill-status" aria-live="polite">Ending session…</p>
           )}
 
-          {reattachPhase === 'failed' && (
-            <p className="reattach-status error" aria-live="polite">
-              {reattachMessage}{' '}
-              <button type="button" onClick={() => setReattachPhase('idle')}>Dismiss</button>
+          {(phase === 'settled' || phase === 'error') && (
+            <p className={`kill-status${phase === 'error' ? ' error' : ''}`} aria-live="polite">
+              {message}{' '}
+              <button type="button" onClick={() => setPhase('idle')}>Dismiss</button>
             </p>
           )}
-
-          {/* role="alert" (not aria-live="polite" like the states above):
-              this is the one state where the old process is confirmed gone
-              and nothing has replaced it yet -- worth interrupting for,
-              not just announcing at the next pause. */}
-          {reattachPhase === 'stranded' && strandedRetry && (
-            <div className="reattach-stranded" role="alert">
-              <p className="reattach-stranded-text">
-                The old session ended, but the new one did not start: {reattachMessage}
-              </p>
-              <button type="button" className="reattach-retry"
-                onClick={() => { void doResume(strandedRetry); }}>
-                Try again
-              </button>
-            </div>
-          )}
         </div>
-      )}
+
+        {/* The reattach affordance -- the payoff of removing AppleScript
+            keystroke injection (spec §5): this, not a typed reply, is how the
+            twelve sessions already running in plain iTerm become answerable
+            at all. Same nested-interactive-row treatment as killrow above. */}
+        {reattachEligible && (
+          <div
+            className={`reattachrow${reattachPhase !== 'idle' ? ' wide' : ''}`}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            {reattachPhase === 'idle' && (
+              <button type="button" className="reattach-btn" aria-label={`Reattach in app, pid ${state.pid}`}
+                onClick={() => setReattachPhase('confirming')}>
+                Reattach in app
+              </button>
+            )}
+
+            {reattachPhase === 'confirming' && (
+              <div className="reattach-confirm" role="group" aria-labelledby={`reattachconfirm-${state.pid}`}>
+                <p className="reattach-confirm-text" id={`reattachconfirm-${state.pid}`}>
+                  Reattach {killTarget}? The conversation is kept -- anything in flight is lost, and the
+                  current process ends.
+                </p>
+                <div className="reattach-confirm-actions">
+                  <button type="button" className="reattach-cancel" autoFocus
+                    aria-describedby={`reattachconfirm-${state.pid}`}
+                    onClick={() => setReattachPhase('idle')}>
+                    Cancel
+                  </button>
+                  <button type="button" className="reattach-confirm-btn"
+                    aria-describedby={`reattachconfirm-${state.pid}`}
+                    onClick={() => { void doReattach(); }}>
+                    Reattach
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {reattachPhase === 'pending' && (
+              <p className="reattach-status" aria-live="polite">Reattaching…</p>
+            )}
+
+            {reattachPhase === 'failed' && (
+              <p className="reattach-status error" aria-live="polite">
+                {reattachMessage}{' '}
+                <button type="button" onClick={() => setReattachPhase('idle')}>Dismiss</button>
+              </p>
+            )}
+
+            {/* role="alert" (not aria-live="polite" like the states above):
+                this is the one state where the old process is confirmed gone
+                and nothing has replaced it yet -- worth interrupting for,
+                not just announcing at the next pause. */}
+            {reattachPhase === 'stranded' && strandedRetry && (
+              <div className="reattach-stranded" role="alert">
+                <p className="reattach-stranded-text">
+                  The old session ended, but the new one did not start: {reattachMessage}
+                </p>
+                <button type="button" className="reattach-retry"
+                  onClick={() => { void doResume(strandedRetry); }}>
+                  Try again
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Say why rather than hiding the whole affordance silently or, worse,
           offering the same button and failing obscurely once pressed --

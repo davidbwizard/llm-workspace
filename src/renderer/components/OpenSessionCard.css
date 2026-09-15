@@ -50,11 +50,29 @@
 .card.unread:hover { border-color:color-mix(in srgb,var(--signal) 60%,transparent); }
 .card.unread:hover .proj { color:var(--signal); }
 
+/* Close and Reattach's shared row (OpenSessionCard.tsx's own doc comment
+   on .actionsrow covers why the two are grouped): flex-wrap, not a fixed
+   two-column grid, is what lets a lone Close button, a Close+Reattach
+   pair, AND a full-width confirm/status panel (via .wide below) all use
+   the same container without three different layouts -- two idle pill
+   buttons are narrow enough to sit on one line by default (a bare
+   <button> is inline content, so each row's own div shrinks to fit it),
+   and flex-wrap drops the second one to its own line the moment that
+   stops being true (a `.wide` sibling, or simply not enough room in the
+   rail's own resizable width, down to 140px). */
+.actionsrow { display:flex; flex-wrap:wrap; align-items:flex-start; gap:8px; margin-top:2px; }
+/* Forces a row to claim the FULL width of .actionsrow the moment it grows
+   past a single button (confirming/pending/settled/error/stranded, set
+   from OpenSessionCard.tsx's own phase state) -- a confirm panel or
+   status line reads at the card's own width regardless of what its
+   sibling row is doing, rather than being squeezed to half-width next to
+   an idle pill button. */
+.killrow.wide, .reattachrow.wide { flex:1 1 100%; }
+
 /* The kill affordance -- session:kill's UI. Its own row below .metrics
    rather than a corner icon layered over .crow/.badge: the app's first
    destructive action gets a real, unambiguous target to press, not
    something a misclick over a crowded corner can trigger. */
-.killrow { margin-top:2px; }
 .kill-btn { font-family:var(--f-mono); font-size:11px; color:var(--muted);
             background:none; border:1px solid var(--line); border-radius:20px;
             padding:4px 12px; cursor:pointer; }
@@ -86,7 +104,6 @@
 /* The reattach affordance -- same row/confirm/status shape as .killrow
    above, in the accent colour rather than critical: unlike Close, this is
    a recovery action, not a destructive one. */
-.reattachrow { margin-top:2px; }
 .reattach-btn, .reattach-na { font-family:var(--f-mono); font-size:11px; }
 .reattach-btn { color:var(--accent); background:none; border:1px solid var(--line);
                 border-radius:20px; padding:4px 12px; cursor:pointer; }

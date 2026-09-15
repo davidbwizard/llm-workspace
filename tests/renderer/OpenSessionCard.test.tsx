@@ -566,4 +566,77 @@ describe('OpenSessionCard', () => {
       expect(onOpen).not.toHaveBeenCalled();
     });
   });
+
+  // David: Close and Reattach were stacking one per line, making every
+  // eligible card noticeably taller for no reason. Both idle, single-line
+  // pill buttons now share one row (.actionsrow); each keeps its own
+  // confirm/status machinery untouched (proven above, in "closing a
+  // session" and "reattaching a session") -- this only proves the shared
+  // row itself, and that entering a wider phase doesn't corrupt the other
+  // row's own idle/confirm behaviour.
+  describe('the shared Close/Reattach actions row', () => {
+    const reattachable: OpenSession = { ...base, tmux: false }; // claude, not tmux -- Reattach offered
+
+    it('puts Close and Reattach on the same row when both are present', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={reattachable} />);
+      const row = container.querySelector('.actionsrow');
+      expect(row).not.toBeNull();
+      expect(row!.querySelector('.killrow')).not.toBeNull();
+      expect(row!.querySelector('.reattachrow')).not.toBeNull();
+    });
+
+    // `base` is tmux:true -- already interactive, so Reattach is not
+    // offered (see the "offers Reattach in app only for..." test above).
+    it('keeps just Close in the row when Reattach is not offered', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
+      const row = container.querySelector('.actionsrow')!;
+      expect(row.querySelector('.killrow')).not.toBeNull();
+      expect(row.querySelector('.reattachrow')).toBeNull();
+    });
+
+    it('keeps just Close in the row for a Codex session, with its explanation rendered outside the row', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={{ ...base, provider: 'codex' }} />);
+      const row = container.querySelector('.actionsrow')!;
+      expect(row.querySelector('.killrow')).not.toBeNull();
+      expect(row.querySelector('.reattachrow')).toBeNull();
+      const explanation = container.querySelector('.reattach-na');
+      expect(explanation).not.toBeNull();
+      expect(row.contains(explanation)).toBe(false);
+    });
+
+    // Mutation target: dropping the `wide` class (or applying it
+    // unconditionally) would either squeeze the confirm panel next to an
+    // idle Reattach button or force Reattach wide even while it's doing
+    // nothing.
+    it('marks its own row wide once Close enters confirmation, leaving an idle Reattach compact', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
+      expect(container.querySelector('.killrow')!.classList.contains('wide')).toBe(true);
+      expect(container.querySelector('.reattachrow')!.classList.contains('wide')).toBe(false);
+    });
+
+    it('marks the reattach row wide once it enters confirmation, leaving an idle Close compact', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /reattach in app/i }));
+      expect(container.querySelector('.reattachrow')!.classList.contains('wide')).toBe(true);
+      expect(container.querySelector('.killrow')!.classList.contains('wide')).toBe(false);
+    });
+
+    // The confirm flow end to end, in the one shape the "closing a session"
+    // block above never exercises: Reattach also present on the same row.
+    // Proves the restructuring didn't disturb Close's own confirm/cancel
+    // behaviour, or its focus safety net (Cancel takes focus first, so a
+    // stray Return lands on the safe choice, not the destructive one).
+    it('confirms and cancels Close correctly with Reattach also present, and Cancel holds focus', () => {
+      const onKill = neverKill();
+      render(<OpenSessionCard onOpen={() => {}} onKill={onKill} onReattach={neverReattach()} onResume={neverResume()} state={reattachable} />);
+      fireEvent.click(screen.getByRole('button', { name: /^Close/ }));
+      expect(screen.getByRole('group')).toBeTruthy();
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Cancel/ }));
+      fireEvent.click(screen.getByRole('button', { name: /^Cancel/ }));
+      expect(screen.getByRole('button', { name: /^Close/ })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /reattach in app/i })).toBeTruthy();
+      expect(onKill).not.toHaveBeenCalled();
+    });
+  });
 });
