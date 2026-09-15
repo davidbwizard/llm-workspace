@@ -311,9 +311,9 @@ describe('refreshLiveProcesses — in-flight sweep guard', () => {
       return '';
     };
 
-    const first = mod.refreshLiveProcesses(exec);
+    const first = mod.refreshLiveProcesses(exec, NO_SESSION_FILE);
     await new Promise(resolve => setImmediate(resolve));
-    const second = mod.refreshLiveProcesses(exec);
+    const second = mod.refreshLiveProcesses(exec, NO_SESSION_FILE);
 
     resolvePgrep!('100\n');
     const [firstResult, secondResult] = await Promise.all([first, second]);
