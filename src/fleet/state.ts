@@ -553,12 +553,14 @@ export interface OpenSession {
    *  reasoning as ageSeconds. */
   rssBytes: number | null;
   match: MatchQuality;
-  /** The one session this pid's cwd matches uniquely, or null -- both when
-   *  no session shares its cwd at all, and when several do (`ambiguous`,
-   *  ordinary on a shared-cwd repo). `lastProse`/`events`/`activity` below
-   *  are enrichment from THIS session and are null under the exact same
-   *  two conditions -- see the `alive` doc comment on SessionState for why
-   *  an ambiguous match may never be attributed to any one of the sessions
+  /** The one session this pid matches uniquely -- by cwd, or by an exact
+   *  live-session file (spec 2026-09-15-exact-session-identity-design.md
+   *  §3.3), whichever resolved it -- or null both when no session shares
+   *  its cwd at all, and when several do (`ambiguous`, ordinary on a
+   *  shared-cwd repo). `lastProse`/`events`/`activity` below are
+   *  enrichment from THIS session and are null under the exact same two
+   *  conditions -- see the `alive` doc comment on SessionState for why an
+   *  ambiguous match may never be attributed to any one of the sessions
    *  sharing it. */
   sessionId: string | null;
   lastProse: string | null;

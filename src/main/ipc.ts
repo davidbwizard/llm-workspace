@@ -188,11 +188,16 @@ function sanitizeSession(s: SessionState): SessionState {
  *  -- called here with an EMPTY session list: fleet:list must stay
  *  structurally incapable of touching the index (David's correction --
  *  "I wouldn't even defer. Let's just not load it unless I request it").
- *  match/sessionId/lastProse/events/activity therefore always come back
- *  'unknown'/null in THIS payload. That is no longer the whole story for
- *  an open card, though -- see pushFleet below, which sends the enriched
- *  version once fleet:update actually fires; the gap is only ever the
- *  moment between the window opening and the first push. */
+ *  match/sessionId come back 'unknown'/null in THIS payload for an
+ *  ordinary cwd match -- EXCEPT a process carrying a verified live session
+ *  file (spec 2026-09-15-exact-session-identity-design.md §3.3), which
+ *  still resolves to 'unique' and its own sessionId here, since that match
+ *  needs no session list at all. lastProse/events/activity stay null
+ *  either way -- both builders only ever attach those from an actual
+ *  transcript match, and this call is given none. That is no longer the
+ *  whole story for an open card, though -- see pushFleet below, which
+ *  sends the enriched version once fleet:update actually fires; the gap is
+ *  only ever the moment between the window opening and the first push. */
 function buildOpenSessions(processes: LiveProcess[]): OpenSession[] {
   return openSessions([], processes, { isTmux: pidIsTmux }).map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
 }
@@ -242,9 +247,11 @@ export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: num
  *  reattachSession (src/main/launch.ts) has no database or discovery access
  *  itself, by design, so this is the one place that resolves the pid before
  *  handing it in as an injected dependency. sessionId is only ever non-null
- *  on a UNIQUE cwd match (OpenSession's own doc comment, src/fleet/state.ts)
- *  -- an ambiguous or unmatched pid resolves to null here, which
- *  reattachSession treats as "cannot identify", never a guess.
+ *  on a `unique` match (OpenSession's own doc comment, src/fleet/state.ts)
+ *  -- unique now covers an exact live-session match as well as a unique cwd
+ *  match (spec §3.3) -- an ambiguous or unmatched pid still resolves to
+ *  null here, which reattachSession treats as "cannot identify", never a
+ *  guess.
  *
  *  Exact identity first (spec 2026-09-15-exact-session-identity-design.md
  *  §3.5): the enriched cache can be up to one sweep old, and a `/clear` in
