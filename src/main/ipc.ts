@@ -18,7 +18,7 @@ import {
   getCachedLiveProcesses, refreshLiveProcesses, execFileSoft, readLiveSession, type ExecFn,
 } from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
-import type { LiveSessionRead } from '../providers/claude/liveSession.ts';
+import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveSession.ts';
 import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
@@ -240,6 +240,20 @@ export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: num
   cachedPushOpenSessions = openSessionsLive(db, processes, now, { isTmux: pidIsTmux, launchedAtForPid });
 }
 
+/** The pid's live session file, re-read now, trusted only if its startedAt
+ *  is the one discovery verified (stable across `/clear`, different for any
+ *  other process). null for Codex, for a process discovery never verified,
+ *  and for a failed or mismatched read. Shared by Reattach and Reply so the
+ *  two cannot drift on what counts as a fresh, exact read. */
+export function freshLiveSession(
+  pid: number, processes: LiveProcess[], read: (pid: number) => LiveSessionRead,
+): LiveSessionFile | null {
+  const proc = processes.find(p => p.pid === pid);
+  if (proc?.provider !== 'claude' || !proc.liveSession) return null;
+  const fresh = read(pid);
+  return fresh.ok && fresh.file.startedAtMs === proc.liveSession.startedAtMs ? fresh.file : null;
+}
+
 /** session:reattach's session lookup: which session (id, provider, cwd) a
  *  live pid belongs to. Reads the exact same enriched cache pushFleet
  *  already maintains (cachedPushOpenSessions, refreshed by
@@ -255,25 +269,36 @@ export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: num
  *
  *  Exact identity first (spec 2026-09-15-exact-session-identity-design.md
  *  §3.5): the enriched cache can be up to one sweep old, and a `/clear` in
- *  that window changes the session id. For a Claude process discovery
- *  already verified, the file is re-read now and trusted only if its
- *  startedAt is the one discovery verified -- stable across `/clear`,
- *  different for any other process. Anything else falls back to the cache
- *  exactly as before. */
+ *  that window changes the session id. Uses freshLiveSession (above) for
+ *  that fresh, verified read -- the same helper Reply's promptOpenFor
+ *  (below) uses, so the two cannot drift on what counts as fresh. Anything
+ *  else falls back to the cache exactly as before. */
 export function resolveReattachTarget(
   pid: number,
   deps: { cached: OpenSession[]; processes: LiveProcess[]; read: (pid: number) => LiveSessionRead },
 ): { sessionId: string; provider: Provider; cwd: string } | null {
-  const proc = deps.processes.find(p => p.pid === pid);
-  if (proc?.provider === 'claude' && proc.liveSession) {
-    const fresh = deps.read(pid);
-    if (fresh.ok && fresh.file.startedAtMs === proc.liveSession.startedAtMs) {
-      return { sessionId: fresh.file.sessionId, provider: 'claude', cwd: fresh.file.cwd };
-    }
-  }
+  const fresh = freshLiveSession(pid, deps.processes, deps.read);
+  if (fresh) return { sessionId: fresh.sessionId, provider: 'claude', cwd: fresh.cwd };
+
   const open = deps.cached.find(o => o.pid === pid);
   if (!open || open.sessionId === null || open.cwd === null) return null;
   return { sessionId: open.sessionId, provider: open.provider, cwd: open.cwd };
+}
+
+/** Whether Claude is showing a choice (a question picker or a permission
+ *  prompt) for this pid right now. A typed reply cannot answer one: the
+ *  picker ignores the letters and Enter selects the highlighted option --
+ *  measured 2026-09-15, "blue" was recorded as "Red", and at a permission
+ *  prompt option 1 is "Yes". The exact status wins when there is one;
+ *  otherwise only a PermissionRequest hook blocker counts, because
+ *  hook-based waiting_input can be an ordinary text prompt. */
+export function promptOpenFor(
+  pid: number,
+  deps: { cached: OpenSession[]; processes: LiveProcess[]; read: (pid: number) => LiveSessionRead },
+): boolean {
+  const fresh = freshLiveSession(pid, deps.processes, deps.read);
+  if (fresh && fresh.status !== null) return fresh.status === 'waiting';
+  return deps.cached.find(o => o.pid === pid)?.activity === 'waiting_permission';
 }
 
 function resolveSessionForReattach(pid: number): { sessionId: string; provider: Provider; cwd: string } | null {
@@ -678,13 +703,14 @@ export async function revealSession(rawPid: unknown, opts: {
   return { status: 'revealed' };
 }
 
-export type KeysRefusalReason = 'not_tmux' | 'session_gone' | 'invalid_pid' | OutboundRefusal;
+export type KeysRefusalReason = 'not_tmux' | 'session_gone' | 'invalid_pid' | 'prompt_open' | OutboundRefusal;
 export type KeysResult = { status: 'sent' } | { status: 'refused'; reason: KeysRefusalReason };
 
 type KeysDeps = {
   has?: (n: string) => boolean;
   send?: (args: string[]) => TmuxResult;
   capture?: (args: string[]) => TmuxResult;
+  promptOpen?: (pid: number) => boolean;
 };
 
 /** The renderer sends a pid and text, never a session name. Refusals are
@@ -707,6 +733,13 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
   if (known === null) return { status: 'refused', reason: 'not_tmux' };
   const name = resolveLiveTmux(pid, { has: deps.has });
   if (name === null) return { status: 'refused', reason: 'session_gone' };
+
+  // A choice is open: typed text plus Enter would pick the highlighted
+  // option, not what was typed. Refuse; the Terminal view answers it.
+  const promptOpen = deps.promptOpen ?? (p => promptOpenFor(p, {
+    cached: cachedPushOpenSessions, processes: getCachedLiveProcesses(), read: readLiveSession,
+  }));
+  if (promptOpen(pid)) return { status: 'refused', reason: 'prompt_open' };
 
   // The session name resolving is not proof the pane is still there to
   // receive anything -- re-check the pane itself, immediately before

@@ -9,7 +9,7 @@ import type { OpenSession } from '../../fleet/state.ts';
 import { compareOpenSessions } from '../../fleet/order.ts';
 import type { KillResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
-import { OpenSessionCard } from './OpenSessionCard.tsx';
+import { OpenSessionCard, hostLabelFor } from './OpenSessionCard.tsx';
 import { ReplyPopover } from './ReplyPopover.tsx';
 import './SessionRail.css';
 
@@ -76,7 +76,9 @@ function writeStoredRailWidth(w: number): void {
  *  place. ReplyPopover itself stays untouched -- keyed by pid, no rail-shaped
  *  prop -- this component owns only the "which pid, if any" state and the
  *  anchoring markup around it. */
-export function SessionRail({ sessions, selectedPid, onSelect, onKill, onReveal, onReattach, onResume, side }: {
+export function SessionRail({
+  sessions, selectedPid, onSelect, onKill, onReveal, onReattach, onResume, onOpenTerminal, side,
+}: {
   sessions: OpenSession[];
   selectedPid: number | null;
   onSelect: (pid: number) => void;
@@ -84,6 +86,12 @@ export function SessionRail({ sessions, selectedPid, onSelect, onKill, onReveal,
   onReveal?: (pid: number) => Promise<unknown>;
   onReattach: (pid: number, cols: number, rows: number) => Promise<LaunchResult>;
   onResume: (sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
+  /** Reply guard: a waiting session's Answer routes here instead of a text
+   *  box -- selects the pid and switches the main pane to the Terminal view.
+   *  Optional so this component's own tests that never open the popover
+   *  need not wire it; ReplyPopover's Open Terminal button is unreachable
+   *  without a waiting, tmux-backed session in the fixture. */
+  onOpenTerminal?: (pid: number) => void;
   side: 'left' | 'right';
 }) {
   const [replyPid, setReplyPid] = useState<number | null>(null);
@@ -212,17 +220,24 @@ export function SessionRail({ sessions, selectedPid, onSelect, onKill, onReveal,
                 // Named with project and pid, matching the neighbouring
                 // Close button's own convention (OpenSessionCard.tsx's
                 // `Close, pid ${pid}`) -- with two waiting sessions in the
-                // rail, a bare "Reply" would put two indistinguishable
+                // rail, a bare "Answer" would put two indistinguishable
                 // buttons in the accessibility tree, defeating the rail's
-                // whole point of telling sessions apart.
+                // whole point of telling sessions apart. Renamed from Reply
+                // (Reply guard): a waiting session is a choice as far as
+                // this card can tell, and the popover this opens no longer
+                // offers a text box for one -- see ReplyPopover's `choice`.
                 <button type="button" className="railreply"
-                  aria-label={`Reply to ${s.project}, pid ${s.pid}`}
+                  aria-label={`Answer ${s.project}, pid ${s.pid}`}
                   onClick={() => setReplyPid(s.pid)}>
-                  Reply
+                  Answer
                 </button>
               )}
               {replyPid === s.pid && (
-                <ReplyPopover pid={s.pid} prompt={s.lastProse} onClose={() => setReplyPid(null)} />
+                <ReplyPopover pid={s.pid} prompt={s.lastProse} choice={waiting} tmux={s.tmux}
+                  hostLabel={hostLabelFor(s.host)}
+                  onOpenTerminal={() => onOpenTerminal?.(s.pid)}
+                  onReveal={onReveal ? () => { void onReveal(s.pid); } : null}
+                  onClose={() => setReplyPid(null)} />
               )}
             </div>
           );

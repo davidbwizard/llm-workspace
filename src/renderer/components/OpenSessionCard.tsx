@@ -32,6 +32,15 @@ const HOST_LABEL: Record<Host, string> = {
   'claude-app':'Claude', 'codex-app':'Codex', unknown:'unknown host',
 };
 
+/** Same "say nothing rather than guess" rule as below: unknown and null both
+ *  mean the same thing to the user. Exported so SessionRail's reply guard
+ *  (ReplyPopover's `hostLabel` prop) can reuse this exact map/rule instead
+ *  of a third copy -- SessionRail already imports this module for
+ *  OpenSessionCard itself, so this costs no new import. */
+export function hostLabelFor(host: OpenSession['host']): string | null {
+  return host && host !== 'unknown' ? HOST_LABEL[host] : null;
+}
+
 type Activity = NonNullable<OpenSession['activity']>;
 
 const ACTIVITY_WORD: Record<Activity, string> = {
@@ -126,9 +135,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
    *  (see `showUnread` below), so there's nothing a default would add. */
   unread?: boolean;
 }) {
-  // Same "say nothing rather than guess" rule as SessionCard's hostLabel --
-  // unknown and null both mean the same thing to the user.
-  const hostLabel = state.host && state.host !== 'unknown' ? HOST_LABEL[state.host] : undefined;
+  const hostLabel = hostLabelFor(state.host) ?? undefined;
   // Age and memory are NEVER gated on match quality here: the card IS the
   // process, so its own age/memory are always attributable, even when no
   // transcript session can be matched to it at all (see src/fleet/state.ts's
