@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { OpenSession } from '../../fleet/state.ts';
+import { compareOpenSessions, type OpenSession } from '../../fleet/state.ts';
 import type { KillResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
@@ -160,14 +160,37 @@ export function SessionRail({ sessions, selectedPid, onSelect, onKill, onReattac
     />
   );
 
+  // Unread is a per-viewer fact (has David actually looked at this card
+  // yet) that only this component tracks -- src/fleet/state.ts's own
+  // relevance sort (openSessions/openSessionsLive, run in the main
+  // process before `sessions` ever reaches here) has no visibility into
+  // it and so cannot rank by it. This layers that tier in on top of the
+  // order already baked into `sessions` (blocked first, then recency,
+  // junk last) by reusing the SAME comparator those two builders use,
+  // rather than a second, hand-rolled reordering that could drift from
+  // theirs: `isUnread` supplies the one signal only the rail has, and the
+  // received array's own index stands in for the recency rank neither
+  // builder exposes past this point (OpenSession carries no timestamp of
+  // its own -- see compareOpenSessions' doc comment) -- it already
+  // reflects that ordering correctly, so re-deriving it here would only
+  // risk disagreeing with it.
+  function isUnread(s: OpenSession): boolean {
+    return s.pid !== selectedPid && s.events != null && s.events > (seenEvents.get(s.pid) ?? s.events);
+  }
+  const rankByPid = new Map(sessions.map((s, i) => [s.pid, i]));
+  const displaySessions = [...sessions].sort(compareOpenSessions(
+    s => rankByPid.get(s.pid) ?? 0,
+    () => 0, // no ties possible on the rank above (pid-unique indices), so no secondary signal is needed
+    isUnread,
+  ));
+
   return (
     <nav className={`rail ${side}`} style={{ width }} aria-label="Open sessions">
       {side === 'right' && handle}
       <div className="railcards">
-        {sessions.map(s => {
+        {displaySessions.map(s => {
           const waiting = s.activity === 'waiting_permission' || s.activity === 'waiting_input';
-          const unread = s.pid !== selectedPid && s.events != null &&
-            s.events > (seenEvents.get(s.pid) ?? s.events);
+          const unread = isUnread(s);
           return (
             <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
               <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill}

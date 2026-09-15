@@ -2,9 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { fleetState, openSessions, openSessionsLive, fleetStatePage } from '../../src/fleet/state.ts';
+import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
+import type { OpenSession } from '../../src/fleet/state.ts';
 
 const NOW = Date.parse('2026-09-10T12:00:00Z');
 const at = (min: number) => new Date(NOW - min * 60_000).toISOString();
@@ -743,6 +744,59 @@ describe('openSessionsLive', () => {
     expect(open.map(o => o.pid)).toEqual([2, 4, 3, 1]);
   });
 
+  // Relevance order (replaces the old process-age-only sort, David's own
+  // question: "how are you sorting what's relevant?"). Three of its tiers
+  // live here (blocked, recency, junk-last) -- "unread" is a per-viewer
+  // fact only SessionRail tracks, layered in there (tests/renderer/
+  // SessionRail.test.tsx), not here.
+  it('sorts a blocked session above a merely-recent one, and keeps a junk cwd last even so', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'blocked', kind:'session.started', ts:at(30), payload:{ cwd:'/repo/blocked' }, contentHash:'a' }),
+      ev({ sessionId:'recent', kind:'session.started', ts:at(2), payload:{ cwd:'/repo/recent' }, contentHash:'b' }),
+      ev({ sessionId:'recent', kind:'prose', ts:at(1), payload:{ text:'hi' }, contentHash:'c', subIndex:1 }),
+    ]);
+    db.prepare(`INSERT INTO signal_events
+      (event_id, occurred_at, ingested_at, provider, session_id, tool_use_id, kind, payload)
+      VALUES (?,?,?,?,?,?,?,?)`).run('e1', at(1), at(1), 'claude', 'blocked', 't1',
+        'PermissionRequest', JSON.stringify({ tool_name:'Bash', tool_input:{ command:'rm -rf /tmp/x' } }));
+    const open = openSessionsLive(db, [
+      proc({ pid:1, cwd:'/repo/blocked', ageSeconds:100 }),
+      // The single newest PROCESS of the three (ageSeconds:1) -- under the
+      // old ageSeconds-ascending rule this would have won outright; here it
+      // must still lose to the blocked session above it.
+      proc({ pid:2, cwd:'/repo/recent', ageSeconds:1 }),
+      // Junk, and also the newest process -- must still sort last, exactly
+      // as the pre-existing junk tests above already prove for the
+      // no-session-match case; this proves it holds with a real blocked
+      // session and a real recency difference in the mix too.
+      proc({ pid:3, cwd:tmpdir(), ageSeconds:1 }),
+    ], NOW);
+    expect(open.map(o => o.pid)).toEqual([1, 2, 3]);
+  });
+
+  // The actual model correction, isolated from blocked/junk: two sessions
+  // whose PROCESS ages point one way and whose TRANSCRIPT recency points
+  // the other. The old rule (ageSeconds ascending) would have ranked the
+  // young process first; ranking by the session's own last activity
+  // instead must rank the old process -- still producing output a minute
+  // ago -- above the young one that has been silent for the better part
+  // of an hour.
+  it("ranks by the session's own last activity, not by how long its process has been running", () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'old-proc-active-now', kind:'session.started', ts:at(9 * 24 * 60), payload:{ cwd:'/repo/old-proc' }, contentHash:'a' }),
+      ev({ sessionId:'old-proc-active-now', kind:'prose', ts:at(1), payload:{ text:'still going' }, contentHash:'b', subIndex:1 }),
+      ev({ sessionId:'young-proc-gone-quiet', kind:'session.started', ts:at(60), payload:{ cwd:'/repo/young-proc' }, contentHash:'c' }),
+      ev({ sessionId:'young-proc-gone-quiet', kind:'turn.completed', ts:at(45), payload:{}, contentHash:'d', subIndex:1 }),
+    ]);
+    const open = openSessionsLive(db, [
+      proc({ pid:1, cwd:'/repo/old-proc', ageSeconds:9 * 86_400 }),
+      proc({ pid:2, cwd:'/repo/young-proc', ageSeconds:60 }),
+    ], NOW);
+    expect(open.map(o => o.pid)).toEqual([1, 2]);
+  });
+
   // Mirrors the openSessions block's own junk-cwd tests above: this path
   // shares projectName/byProcessAge with openSessions (see state.ts), so
   // the same title-and-sort behaviour must hold here too -- this is what
@@ -1285,5 +1339,98 @@ describe('fleetStatePage', () => {
     // of the id page1 didn't already return.
     const ids = [page1.sessions[0]!.sessionId, page2.sessions[0]!.sessionId];
     expect(ids.sort()).toEqual(['a', 'b']);
+  });
+});
+
+// compareOpenSessions is the shared relevance comparator openSessions/
+// openSessionsLive's own sorts are built on (both proven indirectly, via
+// real fixtures, above) -- exercised directly here for the properties a
+// fixture-driven test can't isolate cleanly: tier precedence regardless of
+// what the recency ranks say, and the total-order guarantee itself.
+describe('compareOpenSessions', () => {
+  function open(o: Partial<OpenSession> & { pid: number }): OpenSession {
+    return {
+      provider:'claude', host:'unknown', cwd:'/repo/x', project:'x', ageSeconds:null, rssBytes:null,
+      match:'unknown', sessionId:null, lastProse:null, events:null, activity:null, tmux:false, ...o,
+    };
+  }
+
+  // Mutation target: a flipped `blockedA ? -1 : 1` (or the check dropped
+  // entirely) would let rank decide instead, which this catches by giving
+  // the blocked side the WORSE rank -- it must still win.
+  it('ranks a blocked session first regardless of its recency rank', () => {
+    const cmp = compareOpenSessions(o => o.pid, () => 0); // rank == pid: blocked one is deliberately "worse"
+    const blocked = open({ pid:9, activity:'waiting_permission' });
+    const recent = open({ pid:1 });
+    expect(cmp(blocked, recent)).toBeLessThan(0);
+    expect(cmp(recent, blocked)).toBeGreaterThan(0);
+  });
+
+  // Same mutation target, one tier down: unread must outrank a better
+  // (numerically smaller) rank on the non-blocked side.
+  it('ranks an unread session above a merely-recent one regardless of rank, but never above a blocked one', () => {
+    const cmp = compareOpenSessions(o => o.pid, () => 0, o => o.pid === 9);
+    const unread = open({ pid:9 });
+    const recent = open({ pid:1 });
+    const blocked = open({ pid:2, activity:'waiting_input' });
+    expect(cmp(unread, recent)).toBeLessThan(0);
+    expect(cmp(blocked, unread)).toBeLessThan(0);
+  });
+
+  // Junk is checked FIRST and wins over every other tier -- a junk cwd
+  // that is ALSO blocked and unread must still sort after a plain real
+  // session, per the brief's "keep junk-last behaviour exactly".
+  it('keeps a junk cwd last even when it is also blocked and unread', () => {
+    const cmp = compareOpenSessions(() => 0, () => 0, () => true);
+    const junkButUrgent = open({ pid:1, cwd:tmpdir(), activity:'waiting_permission' });
+    const plain = open({ pid:2 });
+    expect(cmp(junkButUrgent, plain)).toBeGreaterThan(0);
+    expect(cmp(plain, junkButUrgent)).toBeLessThan(0);
+  });
+
+  // A known rank always beats an unknown (null) one -- the "best remaining
+  // signal" fallback tier must never let "no signal at all" outrank real
+  // information on either side of the comparison.
+  it('sorts a null rank after any real number, on either side of the comparison', () => {
+    const cmp = compareOpenSessions(() => null, () => null);
+    const a = open({ pid:1 });
+    const b = open({ pid:2 });
+    // Both null on the primary AND secondary rank -- falls all the way
+    // through to the pid tiebreak, still a defined (non-NaN) result.
+    expect(cmp(a, b)).toBe(-1);
+    expect(cmp(b, a)).toBe(1);
+  });
+
+  // The total-order guarantee itself: equal (or symmetric) inputs must
+  // never compare inconsistently in either direction -- Array.sort only
+  // promises stability when the comparator is well-behaved, and an
+  // inconsistent one is exactly what would make cards shuffle between
+  // renders of the same data.
+  it('is antisymmetric and reflexive -- a > b, b < a, a == a, always', () => {
+    const cmp = compareOpenSessions(o => o.pid, () => 0);
+    const a = open({ pid:1, activity:'waiting_permission' });
+    const b = open({ pid:2, activity:'waiting_permission' });
+    expect(cmp(a, b)).toBe(-cmp(b, a));
+    expect(cmp(a, a)).toBe(0);
+    expect(cmp(b, b)).toBe(0);
+  });
+
+  // A practical total-order check: sorting the exact same items, starting
+  // from opposite permutations, must converge on the identical final
+  // order -- if the comparator were only PARTIALLY consistent (e.g. a
+  // tier check that fires in one direction but not its mirror), different
+  // starting orders could settle into different "valid-looking" results.
+  it('converges to the same order regardless of the input array\'s starting permutation', () => {
+    const items = [
+      open({ pid:1, activity:'waiting_permission' }),
+      open({ pid:2, cwd:tmpdir() }),
+      open({ pid:3 }),
+      open({ pid:4, activity:'waiting_input' }),
+      open({ pid:5 }),
+    ];
+    const cmp = compareOpenSessions(o => o.pid, () => 0);
+    const forward = [...items].sort(cmp).map(o => o.pid);
+    const reversed = [...items].reverse().sort(cmp).map(o => o.pid);
+    expect(reversed).toEqual(forward);
   });
 });

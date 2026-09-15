@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { tmpdir } from 'node:os';
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { SessionRail } from '../../src/renderer/components/SessionRail.tsx';
 
@@ -29,6 +30,48 @@ const sessionsPid2Bumped = [
 const sessionsPid1Bumped = [
   { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
   { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+] as never[];
+
+// Two-session fixture where NEITHER starts blocked (unlike `sessions`
+// above, whose pid 2 is 'waiting_input') -- needed so the ordering test
+// below can prove unread alone moves a card to the top, rather than
+// something already true at baseline because of blocked status.
+const sessionsPlain = [
+  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'ok', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+] as never[];
+const sessionsPlainPid2Bumped = [
+  { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'All green.', cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'ok', cwd: '/b', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+] as never[];
+
+// Three-session fixture for the relevance-ordering tests below: one
+// blocked, one plain, and one that starts plain and gets bumped into
+// "unread" by a rerender, same technique as sessionsPid2Bumped above.
+const sessions3 = [
+  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'unread-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c2', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+] as never[];
+const sessions3Pid2Bumped = [
+  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'unread-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c2', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+] as never[];
+
+// Same shape, pid 2 given a genuine junk cwd (a real tmpdir() path, not
+// just a fixture label) -- compareOpenSessions decides junk from `cwd`
+// itself, so this has to be the real thing for the junk-last assertion
+// below to actually exercise that check rather than trivially passing.
+const sessionsWithJunk = [
+  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'temp folder', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: tmpdir(), host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+] as never[];
+const sessionsWithJunkPid2Bumped = [
+  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'temp folder', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: tmpdir(), host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+  { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 
 const noopKill = async () => ({ status: 'already_gone' as const });
@@ -289,6 +332,45 @@ describe('SessionRail', () => {
       rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={2} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
       rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={2} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
       expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
+    });
+  });
+
+  // Relevance ordering: unread is a fact only this component tracks, so
+  // it's the one caller that has to layer it into the display order
+  // itself (src/fleet/state.ts's own sort, which produced the `sessions`
+  // prop order, has no way to see it) -- these prove the layering actually
+  // reorders the rendered cards, not just the dot.
+  describe('relevance ordering', () => {
+    function projectOrder(container: HTMLElement): (string | null)[] {
+      return [...container.querySelectorAll('.proj')].map(el => el.textContent);
+    }
+
+    it('moves an unread card above a merely-recent one', () => {
+      const { rerender, container } = render(<SessionRail sessions={sessionsPlain} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      // Baseline order matches the prop as given -- neither card is blocked
+      // or unread yet.
+      expect(projectOrder(container)).toEqual(['llm-workspace', 'game-viewer']);
+      rerender(<SessionRail sessions={sessionsPlainPid2Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      // pid 2 (now unread) moves above pid 1, which is merely working.
+      expect(projectOrder(container)).toEqual(['game-viewer', 'llm-workspace']);
+    });
+
+    // Mutation target: the blocked check in compareOpenSessions running
+    // AFTER the unread check (instead of before) would let an unread,
+    // non-blocked card outrank a blocked one here.
+    it('keeps a blocked card above an unread one, which stays above a merely-recent one', () => {
+      const { rerender, container } = render(<SessionRail sessions={sessions3} selectedPid={3} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(<SessionRail sessions={sessions3Pid2Bumped} selectedPid={3} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(projectOrder(container)).toEqual(['blocked-proj', 'unread-proj', 'plain-proj']);
+    });
+
+    // Junk stays last even when it's the one card with new output --
+    // "keep junk-last behaviour exactly" holds under the unread layer too,
+    // not just in state.ts's own sort.
+    it('keeps a junk-cwd card last even when it becomes unread', () => {
+      const { rerender, container } = render(<SessionRail sessions={sessionsWithJunk} selectedPid={3} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(<SessionRail sessions={sessionsWithJunkPid2Bumped} selectedPid={3} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(projectOrder(container)).toEqual(['blocked-proj', 'plain-proj', 'temp folder']);
     });
   });
 });

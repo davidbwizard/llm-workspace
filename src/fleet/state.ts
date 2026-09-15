@@ -66,7 +66,7 @@ const ACTIVE_MS = 30 * 60_000;
  *  a tmpdir path): name-matching would also catch a real project directory
  *  that happens to be called that. Drives both an honest card title
  *  (projectName, below) and sorting these cards after every real project
- *  (byProcessAge, further down) instead of hiding them -- "ALL OPEN
+ *  (compareOpenSessions, further down) instead of hiding them -- "ALL OPEN
  *  SESSIONS should show... so I can close if they are actually dead"
  *  (Phase 3); a hidden card can't be closed from the app.
  *
@@ -601,22 +601,86 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
   };
 }
 
-// Newest-started process first (ageSeconds ascending) -- the most recently
-// opened session is the most likely one David just asked about. Unknown
-// age (ps failed) sorts last rather than first: it cannot honestly claim
-// to be the newest. pid breaks ties deterministically. Shared by
-// openSessions and openSessionsLive so both order cards the same way --
-// which is also why the junk-last tiebreak below lives HERE rather than as
-// a second sort layered on top of each call site: a junk cwd (junkCwdKind
-// above) sorts after every real project, but never reorders real projects
-// against each other -- the junk comparison only fires when exactly one
-// side is junk; two reals (or two junk cards) fall straight through to the
-// original ageSeconds/pid comparison, unchanged.
-function byProcessAge(a: OpenSession, b: OpenSession): number {
-  const junkA = junkCwdKind(a.cwd) !== null;
-  const junkB = junkCwdKind(b.cwd) !== null;
-  if (junkA !== junkB) return junkA ? 1 : -1;
-  return (a.ageSeconds ?? Infinity) - (b.ageSeconds ?? Infinity) || a.pid - b.pid;
+// RELEVANCE order -- replaces the old "newest process first" sort, which
+// answered "which process started most recently" and nothing about whether
+// the session actually needs David. David's own question ("how are you
+// sorting what's relevant?") had no good answer under that rule: a session
+// launched an hour ago and forgotten outranked one that asked a question
+// thirty seconds ago. Tiers, highest (most relevant) first:
+//
+//  1. Blocked on the user (`activity` waiting_permission/waiting_input) --
+//     David is what stands between this session and progress.
+//  2. Unread -- new output since he last looked. This module has no
+//     visibility into that: it is a per-viewer fact (has THIS person seen
+//     THIS card yet), tracked only by SessionRail (its own seenEvents map,
+//     keyed by pid, reset per app run). `isUnread` defaults to "never" so
+//     every caller here (this file's own two builders, and FleetView's grid
+//     indirectly) sorts as if this tier didn't exist; SessionRail is the
+//     one caller that supplies a real predicate, layering this tier in on
+//     top of the order below without this module ever inventing a signal
+//     it cannot actually see.
+//  3/4. Recency -- `primaryRank` ascending (smaller = more relevant), i.e.
+//     the session's own LAST ACTIVITY, not how long its process has been
+//     RUNNING: a process open for days but silent for hours must rank below
+//     one that just produced output. OpenSession itself carries no
+//     timestamp of its own (`activity` is a category, `events` a monotonic
+//     count, neither a clock) -- see openSessions/openSessionsLive below
+//     for where each gets a real one (from SessionState.lastActivityAt, or
+//     a fresh DB read) and converts it to this rank WITHOUT adding a field
+//     to OpenSession, since nothing outside the sort itself needs it.
+//     `secondaryRank` is the tiebreak for two cards with no attributable
+//     timestamp at all (an ambiguous/unknown match): the best signal left
+//     is process age (newest first) -- a real compromise, not a strong
+//     signal, since a process's own age says nothing about when it last
+//     did anything, only how long it has existed.
+//  5. A junk cwd (junkCwdKind above) always last -- checked FIRST, an
+//     unconditional override exactly as before, not a competing sort: it
+//     never reorders two reals (or two junk cards) against each other.
+//
+// pid is the final tiebreak, making this a total order regardless of what
+// any rank function returns -- required for a stable sort (Array.sort is
+// only guaranteed stable for genuinely equal comparisons; two cards must
+// never compare inconsistently or cards would shuffle between renders).
+export function compareOpenSessions(
+  primaryRank: (o: OpenSession) => number | null,
+  secondaryRank: (o: OpenSession) => number | null,
+  isUnread: (o: OpenSession) => boolean = () => false,
+): (a: OpenSession, b: OpenSession) => number {
+  return (a, b) => {
+    const junkA = junkCwdKind(a.cwd) !== null;
+    const junkB = junkCwdKind(b.cwd) !== null;
+    if (junkA !== junkB) return junkA ? 1 : -1;
+
+    const blockedA = a.activity === 'waiting_permission' || a.activity === 'waiting_input';
+    const blockedB = b.activity === 'waiting_permission' || b.activity === 'waiting_input';
+    if (blockedA !== blockedB) return blockedA ? -1 : 1;
+
+    const unreadA = isUnread(a);
+    const unreadB = isUnread(b);
+    if (unreadA !== unreadB) return unreadA ? -1 : 1;
+
+    const primaryDiff = compareRank(primaryRank(a), primaryRank(b));
+    if (primaryDiff !== 0) return primaryDiff;
+    const secondaryDiff = compareRank(secondaryRank(a), secondaryRank(b));
+    if (secondaryDiff !== 0) return secondaryDiff;
+    return a.pid - b.pid;
+  };
+}
+
+// Smaller sorts first; `null` (no signal at all, on EITHER side) always
+// sorts after every real number and never gets subtracted against one --
+// `Infinity - Infinity` (both unknown, the common case when nothing is
+// attributable) is `NaN`, which Array.sort's comparator contract treats as
+// "equal" and, worse, can leave the WHOLE sort silently unordered rather
+// than just that one pair -- caught by the very first test run of this
+// file's "orders by process age" case, which stopped sorting at all once
+// both ranks below started returning a sentinel Infinity for "unknown"
+// instead of a real null.
+function compareRank(a: number | null, b: number | null): number {
+  if (a === b) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return a - b;
 }
 
 export function openSessions(
@@ -627,11 +691,26 @@ export function openSessions(
   const matches = classifyMatch(processes, refs);
   const byId = new Map(sessions.map(s => [s.sessionId, s]));
 
+  // The real recency signal for compareOpenSessions' tiers 3/4: `sessions`
+  // already carries lastActivityAt (fleetState computed it from the
+  // transcript), so a uniquely-matched card's true last-activity time is
+  // right here -- read for the sort only, never copied onto the returned
+  // OpenSession, which has no field for it (see compareOpenSessions' own
+  // doc comment on why that stays this way).
+  function lastActiveMs(o: OpenSession): number | null {
+    if (!o.sessionId) return null;
+    const ts = byId.get(o.sessionId)?.lastActivityAt ?? null;
+    return ts ? Date.parse(ts) : null;
+  }
+
   return processes.map((p, i) => {
     const m = matches[i]!; // classifyMatch returns one result per process, same order
     const matched = m.quality === 'unique' ? byId.get(m.sessionId!) ?? null : null;
     return buildOpenSession(p, m, matched, isTmux);
-  }).sort(byProcessAge);
+  }).sort(compareOpenSessions(
+    o => { const ms = lastActiveMs(o); return ms === null ? null : -ms; }, // newest known timestamp first; unknown (null) sorts last
+    o => o.ageSeconds, // fallback tiebreak among unknown-timestamp cards; null (ps failed) sorts last too
+  ));
 }
 
 /** The targeted alternative to `openSessions(fleetState(db, ...), ...)`:
@@ -834,6 +913,11 @@ export function openSessionsLive(
   const enrichmentById = new Map<string, {
     sessionId: string; lastProse: string | null; events: number | null; activity: Activity;
   }>();
+  // The real recency signal for compareOpenSessions' tiers 3/4 -- read
+  // straight off the SAME query enrichmentById already runs (below), for
+  // the sort only: never copied onto the returned OpenSession, which has
+  // no field for it (see compareOpenSessions' own doc comment).
+  const lastActiveMsById = new Map<string, number>();
   if (uniqueIds.length > 0) {
     const hasLiveSignal = processes.length > 0;
     const blockers = new Map<string, Blocker>();
@@ -859,12 +943,20 @@ export function openSessionsLive(
       enrichmentById.set(r.session_id, {
         sessionId: r.session_id, lastProse: r.last_prose ?? null, events: r.events ?? 0, activity,
       });
+      if (r.last_ts) lastActiveMsById.set(r.session_id, Date.parse(r.last_ts));
     }
+  }
+
+  function lastActiveMs(o: OpenSession): number | null {
+    return o.sessionId ? lastActiveMsById.get(o.sessionId) ?? null : null;
   }
 
   return processes.map((p, i) => {
     const m = resolvedMatches[i]!;
     const enrichment = m.quality === 'unique' ? enrichmentById.get(m.sessionId!) ?? null : null;
     return buildOpenSession(p, m, enrichment, isTmux);
-  }).sort(byProcessAge);
+  }).sort(compareOpenSessions(
+    o => { const ms = lastActiveMs(o); return ms === null ? null : -ms; }, // newest known timestamp first; unknown (null) sorts last
+    o => o.ageSeconds, // fallback tiebreak among unknown-timestamp cards; null (ps failed) sorts last too
+  ));
 }
