@@ -63,3 +63,17 @@ describe('OpenSessionCard.css: the compact card clamps its message to three line
     expect(blockAfter('.compact-said.wait {')).toMatch(/color:\s*var\(--critical\)/);
   });
 });
+
+// David's own bug report against the real, running window: the card's
+// `...` menu opens downward and the NEXT card in the list paints over it
+// ("card action bar is hidden below the card"). jsdom computes no layout or
+// paint, so it cannot show one element covering another -- see
+// OpenSessionCard.test.tsx's own test for the DOM half of this fix (the
+// class tracks OpenSessionCard's menuOpen state exactly). This only pins
+// that the stylesheet actually gives the raised card a real, explicit
+// stacking order, not merely a class that exists and does nothing.
+describe('OpenSessionCard.css: a card with its menu open outranks its siblings', () => {
+  it('gives the raised card an explicit, non-auto z-index', () => {
+    expect(blockAfter('.card.menu-open {')).toMatch(/z-index:\s*\d+/);
+  });
+});

@@ -361,7 +361,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
 
   return (
     <article
-      className={`card${compact ? ' compact' : ''} ${blocked ? 'attn' : showUnread ? 'unread' : state.activity === 'working' ? 'live' : ''}`}
+      className={`card${compact ? ' compact' : ''} ${blocked ? 'attn' : showUnread ? 'unread' : state.activity === 'working' ? 'live' : ''}${menuOpen ? ' menu-open' : ''}`}
       tabIndex={0}
       role="button"
       aria-label={label}

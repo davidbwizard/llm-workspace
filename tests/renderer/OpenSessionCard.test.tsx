@@ -749,6 +749,23 @@ describe('OpenSessionCard', () => {
       expect(container.querySelector('.cardmenu-list')).toBeNull();
     });
 
+    // David's own bug report against the real, running window: the next
+    // card in the list painted over this one's open menu ("card action bar
+    // is hidden below the card"). jsdom computes no layout or paint, so
+    // this cannot prove one card visibly covers another -- see
+    // OpenSessionCard.css.test.ts for the stylesheet half of this fix. This
+    // only pins the DOM half: the raising class tracks menuOpen exactly,
+    // never lingering once the menu itself is gone.
+    it('marks the card raised only while its menu is open', () => {
+      const { container } = renderCompact();
+      const card = container.querySelector('.card')!;
+      expect(card.classList.contains('menu-open')).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      expect(card.classList.contains('menu-open')).toBe(true);
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(card.classList.contains('menu-open')).toBe(false);
+    });
+
     // Reuse, not a second implementation: Close opens the SAME confirm panel
     // the full card shows, naming the same session in the same words.
     it('routes Close session into the existing confirm flow, not straight to a kill', () => {

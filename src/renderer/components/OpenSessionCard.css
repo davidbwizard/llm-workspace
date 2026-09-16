@@ -161,6 +161,25 @@
   display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 .compact-said.wait { color:var(--critical); }
 
+/* David's own bug report against the real, running window: this card's
+   `...` menu opens downward, and the NEXT card in the list -- later in
+   document order, painted after this one at the SAME (default) stacking
+   level -- covered it ("card action bar is hidden below the card"). .card
+   is position:relative but its z-index is auto (SessionCard.css), so it
+   opens no stacking context of its own: a z-index set only on the nested
+   .cardmenu-list below escapes .card entirely and is placed against
+   whatever the nearest REAL stacking-context ancestor happens to be --
+   shared by every open card in the list, not scoped to "above this one
+   card". Raising .card itself while its menu is open, rather than only its
+   popover, keeps the whole card (popover included, since .card now hosts
+   a real local stacking context of its own) above its siblings as one
+   unit, with no dependency on how many non-stacking-context layers sit
+   between it and the page root. Scoped to .menu-open, toggled from this
+   component's own menuOpen state (OpenSessionCard.tsx's className
+   expression) -- never applied unconditionally, so cards overlap exactly
+   as they always have in every other state. */
+.card.menu-open { z-index:1; }
+
 /* The `...` menu. A popover anchored to this one card, not a shared
    overlay: .cardmenu is the positioned ancestor, so nothing here needs to
    know where on screen the card is. */
