@@ -1,7 +1,8 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
 import { MainPane } from './components/MainPane.tsx';
 import { LaunchBar } from './components/LaunchBar.tsx';
 import { useFleet } from './state/useFleet.ts';
+import { useSettings } from './state/settings.ts';
 
 interface ErrorBoundaryState { error: Error | null; componentStack: string | null }
 
@@ -72,6 +73,21 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
  *  branch inside MainPane instead of everything App rendered). */
 export function App() {
   const { payload, error, selection, select, setView, clear } = useFleet();
+  const settings = useSettings();
+
+  useEffect(() => {
+    const root = document.documentElement;
+    // 'system' means NO attribute at all: theme.css's light palette is
+    // guarded as :root:not([data-theme="dark"]) inside a
+    // prefers-color-scheme query, so the OS setting only wins while
+    // nothing explicit is stamped on the root.
+    if (settings.appearance === 'system') root.removeAttribute('data-theme');
+    else root.setAttribute('data-theme', settings.appearance);
+    // Best-effort, like every other bridge call in this tree: a missing
+    // preload leaves the page correctly themed and only the window chrome
+    // behind, which is better than throwing at mount.
+    void window.fleet?.setTheme(settings.appearance);
+  }, [settings.appearance]);
 
   // A freshly launched or reattached session answers the trust/resume
   // prompt in its OWN terminal (spec: no blind Enter, the person answers

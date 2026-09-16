@@ -107,7 +107,7 @@ const KILL_SETTLE_MS = 5_500;
 const REATTACH_COLS = 120;
 const REATTACH_ROWS = 40;
 
-export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume, unread }: {
+export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume, unread, compact = false }: {
   state: OpenSession; onOpen: (pid: number) => void;
   /** Sends session:kill for this card's pid. Always resolves to a
    *  KillResult (src/main/ipc.ts), never throws by contract -- but this
@@ -134,6 +134,17 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
    *  in a destructure: `undefined` and `false` mean the same thing here
    *  (see `showUnread` below), so there's nothing a default would add. */
   unread?: boolean;
+  /** The tidier card David chose as the default (spec §3.6): provider,
+   *  project, status, host, the unread dot, a `...` menu, and -- per David,
+   *  looking at the real, running window -- up to three lines of the last
+   *  message. Which places use it is one setting with four values
+   *  (src/renderer/state/settings.ts), read by SessionRail and FleetView,
+   *  never here: this component renders what it is told to, so a single
+   *  card can still be exercised either way in a test.
+   *
+   *  Optional and defaulted to false rather than required, so every
+   *  existing call site keeps rendering exactly what it rendered before. */
+  compact?: boolean;
 }) {
   const hostLabel = hostLabelFor(state.host) ?? undefined;
   // Age and memory are NEVER gated on match quality here: the card IS the
@@ -248,6 +259,35 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   const [reattachMessage, setReattachMessage] = useState<string | null>(null);
   const [strandedRetry, setStrandedRetry] = useState<{ sessionId: string; cwd: string } | null>(null);
 
+  // The `...` menu, compact cards only. A plain popover keyed to this one
+  // card -- Escape, a click anywhere else, or choosing an item closes it.
+  // Every item routes into a flow this card already has rather than a
+  // second implementation of it: Close opens the same confirm panel the
+  // full card shows, naming the same session in the same words.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
+    // mousedown, not click: a click listener registered during the very
+    // click that opened this menu fires again as that same event finishes
+    // bubbling to the window, closing the menu before it is ever seen.
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('mousedown', onDown);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onDown);
+    };
+  }, [menuOpen]);
+
+  // In compact mode the two idle buttons live in the menu instead -- but
+  // every NON-idle state (both confirm panels, the status lines, the
+  // stranded alert) renders exactly as it does on a full card.
+  const showActions = !compact || phase !== 'idle' || reattachPhase !== 'idle';
+
   async function doReattach(): Promise<void> {
     setReattachPhase('pending');
     setReattachMessage(null);
@@ -300,11 +340,16 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
 
   // Same reasoning as SessionCard's label: role="button" replaces this
   // element's content with its accessible name, so every signal rendered
-  // below has to be carried in the name too. pid is included -- it is
-  // this card's actual identity (two open sessions can share a project
-  // name), the same job sessionId/provider do in SessionCard's label.
+  // below has to be carried in the name too.
+  //
+  // The pid is NOT here any more (spec §2: no pid on any card). It was
+  // never a signal a person acts on -- it was bookkeeping for the close
+  // action, which the code performs from `state.pid` regardless. The
+  // NESTED controls (Close, Reattach, the compact menu) do keep it, and
+  // must: those are otherwise-identical buttons repeated once per card,
+  // and two open sessions can share a project name.
   const label = [
-    `Open ${state.project} (${providerLabel}), pid ${state.pid}`,
+    `Open ${state.project} (${providerLabel})`,
     activityWord,
     // Placed right after activityWord, before lastProse -- "there is new
     // output" is a fact about the session's state, the same category as
@@ -316,7 +361,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
 
   return (
     <article
-      className={`card ${blocked ? 'attn' : showUnread ? 'unread' : state.activity === 'working' ? 'live' : ''}`}
+      className={`card${compact ? ' compact' : ''} ${blocked ? 'attn' : showUnread ? 'unread' : state.activity === 'working' ? 'live' : ''}${menuOpen ? ' menu-open' : ''}`}
       tabIndex={0}
       role="button"
       aria-label={label}
@@ -331,7 +376,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
           <ProviderMark provider={state.provider} size={11} />
           {providerLabel}
         </span>
-        {(hostLabel || procMeta) && (
+        {(hostLabel || (!compact && procMeta)) && (
           <span className="crow-meta">
             {hostLabel && (onReveal
               ? <button type="button" className="host host-btn"
@@ -340,7 +385,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
                   {hostLabel}
                 </button>
               : <span className="host">{hostLabel}</span>)}
-            {procMeta && <span className="procmeta">{procMeta}</span>}
+            {!compact && procMeta && <span className="procmeta">{procMeta}</span>}
           </span>
         )}
       </div>
@@ -354,27 +399,85 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
             than threading a second "am I in the rail" prop through just
             for this. */}
         <p className="proj display" title={state.project}>{state.project}</p>
-        <p className="path">{state.cwd ?? 'no working directory'}</p>
+        {!compact && <p className="path">{state.cwd ?? 'no working directory'}</p>}
       </div>
 
       {/* No fallback text (unlike SessionCard's "No output yet"): a blank
           last-message is honest on an ambiguous or unmatched card, where
-          there is no session to say anything came from. */}
-      {state.lastProse && (
+          there is no session to say anything came from. The compact card
+          keeps this too -- David, looking at the real window, mid-task:
+          "compact cards must still show some of the message text, clamped
+          to three lines max" -- but through this card's OWN .compact-said
+          rule (OpenSessionCard.css), never SessionCard.css's .said. That
+          class carries a two-line clamp built for the History card: the
+          conversation pane once reused it for exactly this purpose and
+          silently cut off every reply past two lines in the real window
+          while jsdom -- which computes no layout -- passed every test. A
+          card this component doesn't own is not where this clamp lives. */}
+      {!compact && state.lastProse && (
         <p className={`said ${blocked ? 'wait' : ''}`}>{state.lastProse}</p>
+      )}
+      {compact && state.lastProse && (
+        <p className={`compact-said ${blocked ? 'wait' : ''}`}>{state.lastProse}</p>
       )}
 
       <div className="metrics">
-        {/* Always present -- pid is what makes a future close action safe
-            (one card, one process, no guessing), so it stays visible even
-            when nothing else on the card is known. */}
-        <span className="pid">pid {state.pid}</span>
-        {state.events != null && <span>{state.events.toLocaleString()}</span>}
+        {!compact && state.events != null && <span>{state.events.toLocaleString()}</span>}
         {activityWord && (
           <span className={`state ${state.activity}`}>
             <span className="dot" aria-hidden="true" />
             {activityWord}
           </span>
+        )}
+        {compact && (
+          <div
+            className="cardmenu"
+            ref={menuRef}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="cardmenu-btn"
+              aria-haspopup="true"
+              aria-expanded={menuOpen}
+              // Named with the pid for the same reason the Close button is:
+              // with several cards in the rail, a bare "Session actions"
+              // would put indistinguishable buttons in the accessibility
+              // tree, which is the one thing the rail exists to prevent.
+              aria-label={`Session actions, pid ${state.pid}`}
+              onClick={() => setMenuOpen(o => !o)}
+            >
+              <span aria-hidden="true">…</span>
+            </button>
+            {/* Plain buttons, not role="menu"/"menuitem": that ARIA pattern
+                promises arrow-key roving focus and Home/End navigation this
+                popover doesn't implement (only Escape and click-outside,
+                same as the rest of this app's few popovers -- ReplyPopover
+                included). A half-implemented menu role is worse for
+                assistive tech than a plain button list, so each item keeps
+                its ordinary, fully-supported button semantics. */}
+            {menuOpen && (
+              <div className="cardmenu-list">
+                {hostLabel && onReveal && (
+                  <button type="button" className="cardmenu-item"
+                    onClick={() => { setMenuOpen(false); void onReveal(state.pid); }}>
+                    Show in {hostLabel}
+                  </button>
+                )}
+                {reattachEligible && (
+                  <button type="button" className="cardmenu-item"
+                    onClick={() => { setMenuOpen(false); setReattachPhase('confirming'); }}>
+                    Reattach in app
+                  </button>
+                )}
+                <button type="button" className="cardmenu-item cardmenu-danger"
+                  onClick={() => { setMenuOpen(false); setPhase('confirming'); }}>
+                  Close session
+                </button>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -393,7 +496,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
           what its sibling is doing, and flex-wrap is what lets the other
           row drop to its own line to make room, rather than the two being
           squeezed to half-width side by side. */}
-      <div className="actionsrow">
+      {showActions && <div className="actionsrow">
         {/* This is the first destructive action the app can take, so it gets
             its own row rather than a corner icon: a real, visible button and
             (once pressed) a real, visible confirmation, not something a
@@ -409,7 +512,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
         >
-          {phase === 'idle' && (
+          {phase === 'idle' && !compact && (
             // Deliberately NOT labelled with project/host/age (unlike the
             // confirmation below) -- this card's own role="button" wrapper
             // already carries all of that in ITS accessible name, and giving
@@ -477,7 +580,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
           >
-            {reattachPhase === 'idle' && (
+            {reattachPhase === 'idle' && !compact && (
               <button type="button" className="reattach-btn" aria-label={`Reattach in app, pid ${state.pid}`}
                 onClick={() => setReattachPhase('confirming')}>
                 Reattach in app
@@ -533,12 +636,12 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
             )}
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Say why rather than hiding the whole affordance silently or, worse,
           offering the same button and failing obscurely once pressed --
           Codex resume is unprobed on this machine (spec §3). */}
-      {state.provider === 'codex' && (
+      {!compact && state.provider === 'codex' && (
         <p className="reattach-na">Reattach in app isn't available for Codex sessions yet.</p>
       )}
     </article>

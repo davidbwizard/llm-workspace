@@ -26,43 +26,98 @@ function blockAfter(selector: string): string {
   return css.slice(open + 1, close);
 }
 
-describe('ConversationView.css: user and assistant turns are visually distinguishable', () => {
+describe('ConversationView.css: user and agent turns are visually distinguishable', () => {
   const base = blockAfter('.turn {');
-  const user = blockAfter('.turn.user {');
+  const assistant = blockAfter('.turn.assistant {');
   const baseSaid = blockAfter('.turn .turn-text {');
   const userSaid = blockAfter('.turn.user .turn-text {');
 
-  // The structural cue: a margin rule whose WIDTH (present vs absent), not
-  // merely its colour, sets user turns apart -- still visible with colour
-  // removed entirely (greyscale, or a colourblind viewer).
-  it('gives user turns a margin rule that the shared/assistant rule does not have', () => {
-    expect(user).toMatch(/border-left:\s*[1-9]/); // a real, nonzero width
-    expect(base).not.toMatch(/border-left/); // absent from the rule assistant turns fall back to
+  // Style A, the default David picked against the rendered mockup: the
+  // accent rule runs down the AGENT's replies, never the user's. The
+  // structural cue is the rule's WIDTH (present vs absent), so it survives
+  // greyscale and a colour-vision deficiency; the accent hue is a second,
+  // redundant cue layered on top.
+  it('gives agent turns a margin rule that the shared/user rule does not have', () => {
+    expect(assistant).toMatch(/border-left:\s*[1-9]/); // a real, nonzero width
+    expect(base).not.toMatch(/border-left/); // absent from the rule user turns fall back to
   });
 
-  // The second, independent-of-colour cue: Karla is a variable font
-  // (200-800, see the @font-face rule in theme.css), so a heavier
-  // font-weight here is a real cut change, not a faked bold.
-  it('gives user turns a heavier weight than assistant turns, independent of colour', () => {
-    expect(userSaid).toMatch(/font-weight:\s*[5-9]\d\d/); // heavier than normal (400)
+  // Per the Sep 2026 design artifact, text weight is not a cue at all any
+  // more -- neither side is bold. The colour-independent cue for the
+  // user's side is the border-left rule's absence here (style A) or the
+  // bubble/border/right-alignment (style C), not a heavier text cut.
+  it('gives neither turn a font-weight -- style A and C carry the colour-independent cue instead', () => {
+    expect(userSaid).not.toMatch(/font-weight/);
     expect(baseSaid).not.toMatch(/font-weight/);
   });
 
-  // Colour layered on TOP of the structural cues above, not instead of
-  // them -- this only proves the color rules still exist, never on its own.
+  // The artifact emphasises the AGENT's replies, not the user's prompts as
+  // this pane had it before: the agent's text runs at full strength
+  // (--ink), the user's dimmer (--ink-2).
   it('backs the structural cues with the app\'s existing ink/ink-2 pair and its one emphasis colour', () => {
-    expect(user).toMatch(/var\(--accent\)/);
-    expect(userSaid).toMatch(/color:\s*var\(--ink\)\s*;/);
-    expect(baseSaid).toMatch(/color:\s*var\(--ink-2\)\s*;/);
+    expect(assistant).toMatch(/var\(--accent\)/);
+    expect(baseSaid).toMatch(/color:\s*var\(--ink\)\s*;/);
+    expect(userSaid).toMatch(/color:\s*var\(--ink-2\)\s*;/);
   });
 
   it('uses theme tokens for every colour here, never a hardcoded hex', () => {
-    expect(user).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(assistant).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(userSaid).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });
 
-describe('ConversationView.css: markdown replies and steps', () => {
+describe('ConversationView.css: one text size drives the whole pane', () => {
+  // Spec §3.5: conversation text size is a CSS variable on the
+  // conversation root, and every message-level size is expressed relative
+  // to it -- so changing it in Settings moves the meta lines and code
+  // blocks with the body text instead of leaving them behind.
+  it('declares --conv-size on the conversation root, defaulting to 16px', () => {
+    expect(blockAfter('.conv {')).toMatch(/--conv-size:\s*16px/);
+  });
+
+  it('sizes the meta line, code and tables off that variable, not off a fixed px', () => {
+    for (const selector of ['.turn .who, .turn .when {', '.turn-text.md code {',
+                            '.turn-text.md pre {', '.turn-text.md table {']) {
+      expect(blockAfter(selector), selector).toMatch(/font-size:\s*calc\(var\(--conv-size\)/);
+    }
+  });
+
+  it('offers style C as well as the default style A, keyed off data-style', () => {
+    expect(css).toMatch(/\.conv\[data-style="c"\]/);
+  });
+});
+
+describe('ConversationView.css: a short conversation sits at the bottom, not the top', () => {
+  it('makes .conv a flex column so the turns stack can be pinned to its bottom edge', () => {
+    const rule = blockAfter('.conv {');
+    expect(rule).toMatch(/display:\s*flex/);
+    expect(rule).toMatch(/flex-direction:\s*column/);
+  });
+
+  // margin-top:auto, not justify-content:flex-end: on a scrollable flex
+  // container, flex-end has a long-standing cross-engine bug -- once
+  // content overflows, the overflowing top portion becomes unreachable.
+  it('pins the turns stack to the bottom via margin-top:auto', () => {
+    expect(blockAfter('.convstack {')).toMatch(/margin-top:\s*auto/);
+  });
+
+  it('does not bottom-align the scroller itself with justify-content', () => {
+    expect(blockAfter('.conv {')).not.toMatch(/justify-content/);
+  });
+});
+
+describe('ConversationView.css: the history markers separate from the content below them', () => {
+  it('puts the separating border and spacing on the markers\' bottom edge, not their top', () => {
+    const rule = blockAfter('.conv-end, .conv-loading-more {');
+    expect(rule).toMatch(/border-bottom:\s*1px solid var\(--line-soft\)/);
+    expect(rule).toMatch(/padding-bottom:\s*8px/);
+    expect(rule).toMatch(/margin:\s*0 0 6px/);
+    expect(rule).not.toMatch(/border-top/);
+    expect(rule).not.toMatch(/padding-top/);
+  });
+});
+
+describe('ConversationView.css: markdown replies', () => {
   it('turns pre-wrap off for markdown, so newlines between block elements do not become blank lines', () => {
     expect(blockAfter('.turn-text.md {')).toMatch(/white-space:\s*normal/);
   });
@@ -78,12 +133,31 @@ describe('ConversationView.css: markdown replies and steps', () => {
     expect(blockAfter('.turn-text.md th, .turn-text.md td {')).toMatch(/border:\s*1px solid var\(--line\)/);
   });
 
-  it('dims expanded steps relative to the reply', () => {
-    expect(blockAfter('.steps-list {')).toMatch(/color:\s*var\(--muted\)/);
-  });
-
   it('uses no hardcoded hex anywhere in the stylesheet', () => {
     expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
+});
+
+describe('ConversationView.css: the message box\'s length counter', () => {
+  it('is quiet under the cap -- same muted tone as the rest of the box\'s status copy', () => {
+    expect(blockAfter('.convcount {')).toMatch(/color:\s*var\(--muted\)/);
+  });
+
+  // --signal, not --critical: OpenSessionCard.css's own comment on its
+  // unread dot is explicit that --critical is reserved for "waiting on
+  // you" alone and must stay unambiguous. --signal is the "deliberately
+  // less urgent" warning tone already used for refusal copy elsewhere
+  // (LaunchBar.css's .launchmsg, ReplyPopover.css's .replymsg).
+  it('takes the app\'s existing warning colour, not the more severe one, at or over the cap', () => {
+    expect(blockAfter('.convcount-warn {')).toMatch(/color:\s*var\(--signal\)/);
+    expect(blockAfter('.convcount-warn {')).not.toMatch(/var\(--critical\)/);
+  });
+
+  it('hides the over-cap announcement visually while keeping it readable to assistive tech', () => {
+    const rule = blockAfter('.convannounce {');
+    expect(rule).toMatch(/position:\s*absolute/);
+    expect(rule).toMatch(/clip-path:\s*inset\(50%\)/);
+    expect(rule).not.toMatch(/display:\s*none/);
   });
 });
 

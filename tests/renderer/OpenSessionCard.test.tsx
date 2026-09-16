@@ -41,7 +41,7 @@ function neverResume() {
 }
 
 describe('OpenSessionCard', () => {
-  it('shows pid, provider, project, cwd, host, age and memory even with no transcript match at all', () => {
+  it('shows provider, project, cwd, host, age and memory even with no transcript match at all', () => {
     render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
     expect(screen.getByText('trellome')).toBeTruthy();
     expect(screen.getByText('/Users/me/trellome')).toBeTruthy();
@@ -49,7 +49,9 @@ describe('OpenSessionCard', () => {
     expect(screen.getByText('iTerm2')).toBeTruthy();
     expect(screen.getByText(/9d/)).toBeTruthy();
     expect(screen.getByText(/206 MB/)).toBeTruthy();
-    expect(screen.getByText(/pid 4242/)).toBeTruthy();
+    // Gone from every card (spec §2). It was bookkeeping, and the app
+    // already knows which process a card is without printing it.
+    expect(screen.queryByText(/pid 4242/)).toBeNull();
   });
 
   it('is operable by keyboard and mouse, passing pid to onOpen every time', () => {
@@ -126,14 +128,24 @@ describe('OpenSessionCard', () => {
       expect(screen.getByText(/waiting on you/)).toBeTruthy();
     });
 
-    it('includes pid, project, provider, activity and last prose in the accessible name', () => {
+    it('includes project, provider, activity and last prose in the accessible name, and no pid', () => {
       render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={enriched} />);
       const card = screen.getByRole('button', { name: /trellome/i });
       const label = card.getAttribute('aria-label') ?? '';
-      expect(label).toMatch(/pid 4242/);
       expect(label).toMatch(/Claude/);
       expect(label).toMatch(/working/);
       expect(label).toMatch(/Reused the JWT helper/);
+      expect(label).not.toMatch(/pid/i);
+    });
+
+    // The nested controls keep it, and must: with two cards open, "Close"
+    // and "Close" are indistinguishable in a screen reader's rotor or a
+    // test's own lookup, and two sessions can share a project name. This
+    // is a different string from the card's own name, on a different
+    // element, and it is the only thing telling those buttons apart.
+    it('keeps the pid on the nested controls, which have nothing else to tell them apart', () => {
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={enriched} />);
+      expect(screen.getByRole('button', { name: 'Close, pid 4242' })).toBeTruthy();
     });
   });
 
@@ -637,6 +649,171 @@ describe('OpenSessionCard', () => {
       expect(screen.getByRole('button', { name: /^Close/ })).toBeTruthy();
       expect(screen.getByRole('button', { name: /reattach in app/i })).toBeTruthy();
       expect(onKill).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('OpenSessionCard -- the compact variant', () => {
+    const enrichedCompact: OpenSession = {
+      ...base, match: 'unique', sessionId: 's1', lastProse: 'Reused the JWT helper',
+      events: 9129, activity: 'working', tmux: false,
+    };
+    const renderCompact = (over: Partial<OpenSession> = {}, props: Record<string, unknown> = {}) =>
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
+        onResume={neverResume()} compact state={{ ...enrichedCompact, ...over }} {...props} />);
+
+    it('keeps the provider, the project, the status, the host and some of the message, and drops the rest', () => {
+      const { container } = renderCompact();
+      expect(container.querySelector('.card')!.classList.contains('compact')).toBe(true);
+      expect(screen.getByText('trellome')).toBeTruthy();
+      expect(screen.getByText('Claude')).toBeTruthy();
+      expect(screen.getByText('iTerm2')).toBeTruthy();
+      expect(screen.getByText('working')).toBeTruthy();
+      // Kept, per David (looking at the real, running window, mid-task):
+      // some of the message text, clamped to three lines by this card's own
+      // .compact-said CSS rule -- see OpenSessionCard.css.test.ts for the
+      // clamp itself; jsdom computes no layout, so this only proves the
+      // element renders, never that the clamp visually holds.
+      expect(screen.getByText('Reused the JWT helper')).toBeTruthy();
+      // Dropped: the path, the age/memory line and the event count -- still
+      // too tall for a compact card even with the message text kept.
+      expect(screen.queryByText('/Users/me/trellome')).toBeNull();
+      expect(screen.queryByText(/206 MB/)).toBeNull();
+      expect(screen.queryByText('9,129')).toBeNull();
+    });
+
+    it('renders the message through its own class, never SessionCard.css\'s two-line .said', () => {
+      // The regression this guards against: the conversation pane once
+      // reused .said for exactly this purpose and silently clipped every
+      // reply past two lines in the real window while jsdom -- which
+      // computes no layout -- kept passing. Pinning the exact class name
+      // here is what would catch a future edit that reaches for .said
+      // again, since jsdom can't catch the clamp count itself.
+      const { container } = renderCompact();
+      const msg = container.querySelector('.compact-said');
+      expect(msg).not.toBeNull();
+      expect(msg!.classList.contains('said')).toBe(false);
+      expect(msg!.textContent).toBe('Reused the JWT helper');
+    });
+
+    it('shows no message element on a compact card with nothing to say', () => {
+      // Same "blank is honest, not a placeholder" rule the full card's own
+      // .said follows -- extended to the compact card's .compact-said.
+      const { container } = renderCompact({ lastProse: null });
+      expect(container.querySelector('.compact-said')).toBeNull();
+    });
+
+    it('keeps the unread dot, which is the whole point of glancing at the rail', () => {
+      const { container } = renderCompact({}, { unread: true });
+      expect(container.querySelector('.unread-dot')).not.toBeNull();
+    });
+
+    it('keeps the blocked badge and its wording', () => {
+      const { container } = renderCompact({ activity: 'waiting_permission' });
+      expect(container.querySelector('.badge')).not.toBeNull();
+      expect(screen.getByText(/waiting on you/)).toBeTruthy();
+    });
+
+    it('offers no bare Close or Reattach button -- they live in the menu', () => {
+      renderCompact();
+      expect(screen.queryByRole('button', { name: /^Close, pid/ })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^Reattach in app, pid/ })).toBeNull();
+      expect(screen.getByRole('button', { name: /session actions/i })).toBeTruthy();
+    });
+
+    it('opens the menu with the three documented items', () => {
+      const { container } = renderCompact({}, { onReveal: vi.fn(async () => {}) });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
+        .toEqual(['Show in iTerm2', 'Reattach in app', 'Close session']);
+    });
+
+    it('omits Reattach for a session that is already tmux-backed, and Show in host with no host', () => {
+      // 'unknown', not null: OpenSession.host (src/fleet/state.ts) is
+      // LiveProcess['host'] with no null in its union -- classifyHost's own
+      // sentinel for "no host" is the string 'unknown', the same value the
+      // non-compact card's own "renders no host text" test already uses.
+      const { container } = renderCompact({ tmux: true, host: 'unknown' });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
+        .toEqual(['Close session']);
+    });
+
+    it.each([
+      ['Escape', () => fireEvent.keyDown(window, { key: 'Escape' })],
+      ['a click elsewhere', () => fireEvent.mouseDown(document.body)],
+    ])('closes the menu on %s', (_label, act) => {
+      const { container } = renderCompact();
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      expect(container.querySelector('.cardmenu-list')).not.toBeNull();
+      act();
+      expect(container.querySelector('.cardmenu-list')).toBeNull();
+    });
+
+    // David's own bug report against the real, running window: the next
+    // card in the list painted over this one's open menu ("card action bar
+    // is hidden below the card"). jsdom computes no layout or paint, so
+    // this cannot prove one card visibly covers another -- see
+    // OpenSessionCard.css.test.ts for the stylesheet half of this fix. This
+    // only pins the DOM half: the raising class tracks menuOpen exactly,
+    // never lingering once the menu itself is gone.
+    it('marks the card raised only while its menu is open', () => {
+      const { container } = renderCompact();
+      const card = container.querySelector('.card')!;
+      expect(card.classList.contains('menu-open')).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      expect(card.classList.contains('menu-open')).toBe(true);
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(card.classList.contains('menu-open')).toBe(false);
+    });
+
+    // Reuse, not a second implementation: Close opens the SAME confirm panel
+    // the full card shows, naming the same session in the same words.
+    it('routes Close session into the existing confirm flow, not straight to a kill', () => {
+      const onKill = neverKill();
+      const { container } = renderCompact({}, { onKill });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Close session' }));
+      expect(container.querySelector('.kill-confirm')).not.toBeNull();
+      expect(screen.getByText(/^End the Claude session in trellome/)).toBeTruthy();
+      expect(onKill).not.toHaveBeenCalled();
+      expect(container.querySelector('.cardmenu-list')).toBeNull();
+    });
+
+    it('routes Reattach in app into the existing confirm flow too', () => {
+      const onReattach = neverReattach();
+      const { container } = renderCompact({}, { onReattach });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Reattach in app' }));
+      expect(container.querySelector('.reattach-confirm')).not.toBeNull();
+      expect(onReattach).not.toHaveBeenCalled();
+    });
+
+    it('brings the host forward from the menu', () => {
+      const onReveal = vi.fn(async () => {});
+      renderCompact({}, { onReveal });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Show in iTerm2' }));
+      expect(onReveal).toHaveBeenCalledWith(4242);
+    });
+
+    // Every control on this card is nested inside the card's own
+    // role="button" wrapper, so each must stop its own click from also
+    // opening the session -- the same rule .killrow and .reattachrow already
+    // follow.
+    it('never opens the session when the menu or one of its items is clicked', () => {
+      const onOpen = vi.fn();
+      renderCompact({}, { onOpen, onReveal: vi.fn(async () => {}) });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Show in iTerm2' }));
+      expect(onOpen).not.toHaveBeenCalled();
+    });
+
+    it('still renders the full card by default, with nothing opted in', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+        onReattach={neverReattach()} onResume={neverResume()} state={enrichedCompact} />);
+      expect(container.querySelector('.card')!.classList.contains('compact')).toBe(false);
+      expect(screen.getByText('/Users/me/trellome')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /session actions/i })).toBeNull();
     });
   });
 });

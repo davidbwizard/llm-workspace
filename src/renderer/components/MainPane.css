@@ -10,10 +10,17 @@
    terminal canvas extend the scroll area instead of being constrained by it --
    which is the other half of the clipping the min-width:0 rules above fix. */
 .mainpane.split { flex-direction:row; overflow:hidden; }
-.pane { display:flex; flex-direction:column; flex:1; min-width:0; order:1; }
+/* min-height:0 so .convwrap's own bounded column resolves against
+   something: without it a flex child's implicit min-height:auto lets the
+   conversation grow the pane instead of scrolling inside it. */
+.pane { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; order:1; }
 .panehead { display:flex; gap:10px; align-items:center; padding:7px 12px;
   border-bottom:1px solid var(--line); background:var(--surface); }
-.panetitle { font-family:var(--f-display); font-size:14px; }
+/* A path, not a name: mono, quiet, and truncated from the right rather
+   than wrapping the header onto a second line. min-width:0 is what lets it
+   shrink inside the flex header at all. */
+.panetitle { font-family:var(--f-mono); font-size:11px; color:var(--muted);
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .paneback { background:none; border:0; color:var(--muted); font-size:11px; cursor:pointer; }
 .seg { margin-left:auto; display:inline-flex; border:1px solid var(--line);
   border-radius:6px; overflow:hidden; }

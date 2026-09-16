@@ -11,6 +11,7 @@ import type { KillResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { OpenSessionCard, hostLabelFor } from './OpenSessionCard.tsx';
 import { ReplyPopover } from './ReplyPopover.tsx';
+import { compactIn, useSettings } from '../state/settings.ts';
 import './SessionRail.css';
 
 // Sensible bounds for a drag-resized rail: narrow enough to reclaim real
@@ -95,6 +96,11 @@ export function SessionRail({
   side: 'left' | 'right';
 }) {
   const [replyPid, setReplyPid] = useState<number | null>(null);
+
+  // Which places use compact cards is one setting with four values, so
+  // "Both on but Fleet off" is not a state that can exist -- the rail reads
+  // its own half of it and nothing more.
+  const compact = compactIn(useSettings(), 'sidebar');
 
   const [width, setWidth] = useState<number>(() => readStoredRailWidth() ?? RAIL_DEFAULT_WIDTH);
   useEffect(() => { writeStoredRailWidth(width); }, [width]);
@@ -215,7 +221,7 @@ export function SessionRail({
           return (
             <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
               <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill} onReveal={onReveal}
-                onReattach={onReattach} onResume={onResume} unread={unread} />
+                onReattach={onReattach} onResume={onResume} unread={unread} compact={compact} />
               {waiting && (
                 // Named with project and pid, matching the neighbouring
                 // Close button's own convention (OpenSessionCard.tsx's

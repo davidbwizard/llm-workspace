@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MainPane } from '../../src/renderer/components/MainPane.tsx';
 
 // @testing-library/user-event is not a project dependency (see
 // tests/renderer/SessionRail.test.tsx) -- fireEvent.click substitutes for
 // userEvent.click, matching every other renderer test file.
 
-const sessions = [{ pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'x', cwd: '/a', host: 'iterm2', ageSeconds: 1, rssBytes: 1, events: 1, sessionId: 's1' }] as never[];
+const sessions = [{ pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'x', cwd: '/a', host: 'iterm2', ageSeconds: 1, rssBytes: 1, events: 1, sessionId: 's1', tmux: true }] as never[];
 
 // The selection===null branch renders FleetView, which reaches
 // window.fleet directly for History's own paging and each open card's
@@ -104,6 +104,57 @@ describe('MainPane', () => {
     fireEvent.click(screen.getByRole('button', { name: /answer llm-workspace, pid 1/i }));
     fireEvent.click(screen.getByRole('button', { name: /open terminal/i }));
     expect(onSelect).toHaveBeenCalledWith(1);
+    expect(onSetView).toHaveBeenCalledWith('terminal');
+  });
+
+  // Spec §3.7: the rail already names the project, so the pane header
+  // carries the session's FOLDER PATH instead -- with a title for the
+  // untruncated value, since a deep path will not fit.
+  it('shows the session folder path in the header, not the project name, with a full-value title', () => {
+    const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    const title = container.querySelector('.panetitle')!;
+    expect(title.textContent).toBe('/a');
+    expect(title.getAttribute('title')).toBe('/a');
+  });
+
+  it('hands the conversation the session provider, so the agent glyph is that session\'s own', () => {
+    const codex = [{ ...(sessions[0] as unknown as object), provider: 'codex' }] as never[];
+    (window as unknown as { fleet: { conversation: ReturnType<typeof vi.fn> } }).fleet.conversation =
+      vi.fn().mockResolvedValue({
+        turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'assistant', text: 'ok', steps: [] }],
+        nextCursor: null,
+      });
+    render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={codex} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    return waitFor(() => expect(screen.getByText('Codex')).toBeTruthy());
+  });
+
+  // Live updates (spec §3.3): the pane refetches on the one signal the app
+  // already pushes. MainPane is the only component that holds it.
+  it('hands the conversation the session\'s events count, so the pane can refresh itself', async () => {
+    const api = (window as unknown as { fleet: { conversation: ReturnType<typeof vi.fn> } }).fleet;
+    api.conversation = vi.fn()
+      .mockResolvedValueOnce({ turns: [], nextCursor: null })
+      .mockResolvedValue({
+        turns: [{ id: 9, ts: '2026-09-12T10:00:00Z', role: 'assistant', text: 'live', steps: [] }],
+        nextCursor: null,
+      });
+    const bumped = [{ ...(sessions[0] as unknown as object), events: 2 }] as never[];
+    const { rerender } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    await waitFor(() => expect(api.conversation).toHaveBeenCalledTimes(1));
+    rerender(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={bumped} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    await waitFor(() => expect(screen.getByText('live')).toBeTruthy());
+  });
+
+  it('lets the conversation message its own session, and routes a choice to the terminal', async () => {
+    const api = (window as unknown as { fleet: Record<string, ReturnType<typeof vi.fn>> }).fleet;
+    api.sendKeys = vi.fn().mockResolvedValue({ status: 'refused', reason: 'prompt_open' });
+    const onSetView = vi.fn();
+    render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={onSetView} onClear={() => {}} railSide="left" />);
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'go' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(api.sendKeys).toHaveBeenCalledWith(1, 'go'));
+    fireEvent.click(screen.getByRole('button', { name: /^open terminal$/i }));
     expect(onSetView).toHaveBeenCalledWith('terminal');
   });
 });

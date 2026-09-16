@@ -21,6 +21,7 @@ describe('resolvePaths', () => {
     expect(p.codexSessions).toBe('/home/me/.codex/sessions');
     expect(p.codexStateDb).toBe('/home/me/.codex/state_5.sqlite');
     expect(p.spool).toBe('/home/me/.llm-workspace/spool');
+    expect(p.appearance).toBe('/home/me/.llm-workspace/appearance.json');
     expect(p.db).toBe('/home/me/.llm-workspace/index.sqlite');
   });
 });

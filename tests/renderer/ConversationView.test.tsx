@@ -1,10 +1,17 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { ConversationView, nearOlderEdge } from '../../src/renderer/components/ConversationView.tsx';
+import React from 'react';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop, mergeNewest, clearDrafts,
+  messageCounter, MAX_REPLY_CHARS as CONV_MAX_REPLY_CHARS } from '../../src/renderer/components/ConversationView.tsx';
+// The main-process cap, imported here ONLY because this is a test, not
+// renderer code -- src/renderer/** itself must never import a value out of
+// src/main/**. See the drift test below.
+import { MAX_REPLY_CHARS as MAIN_MAX_REPLY_CHARS } from '../../src/main/outbound.ts';
+import { reloadSettings, setSettings } from '../../src/renderer/state/settings.ts';
 
 const turns = [
-  { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests', steps: [] },
-  { id: 2, ts: '2026-09-12T10:00:05Z', role: 'assistant', text: 'All green. Want me to commit?', steps: [] },
+  { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests' },
+  { id: 2, ts: '2026-09-12T10:00:05Z', role: 'assistant', text: 'All green. Want me to commit?' },
 ];
 
 // Same formula the component uses (ConversationView.tsx's formatDate /
@@ -13,7 +20,24 @@ const turns = [
 const fmtDate = (ts: string) => new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 const fmtTime = (ts: string) => new Date(ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
+// Every test renders the pane for a Claude session unless it says
+// otherwise. One helper, so the component's required props live in one
+// place rather than in twenty-odd render calls.
+function renderConv(props: Partial<React.ComponentProps<typeof ConversationView>> = {}) {
+  return render(
+    <ConversationView sessionId="s1" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} {...props} />,
+  );
+}
+
 beforeEach(() => {
+  // Drafts are module state in the component, kept there deliberately so
+  // they survive unmount (see the `drafts` comment there). That also means
+  // they survive between tests: without this reset, a test that types
+  // without sending leaves its text in the next test's box, which is a
+  // demonstrated failure, not a theoretical one -- running the Shift+Enter
+  // test and the empty-box test together makes the latter send.
+  clearDrafts();
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
     conversation: async () => ({ turns, nextCursor: null }),
   };
@@ -21,13 +45,13 @@ beforeEach(() => {
 
 describe('ConversationView', () => {
   it('renders both sides of the conversation', async () => {
-    render(<ConversationView sessionId="s1" />);
+    renderConv();
     await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
     expect(screen.getByText('All green. Want me to commit?')).toBeTruthy();
   });
 
   it('labels who said what, since prose alone never showed the user', async () => {
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
     expect(container.querySelector('.turn.assistant')).toBeTruthy();
   });
@@ -42,7 +66,7 @@ describe('ConversationView', () => {
   // above and would not catch a regression that rendered every turn with
   // the same class).
   it('gives user and assistant turns different classes -- the actual hook the CSS distinction depends on', async () => {
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
     const [userRow, assistantRow] = [...container.querySelectorAll('.turn')];
     expect(userRow!.className).not.toBe(assistantRow!.className);
@@ -54,7 +78,7 @@ describe('ConversationView', () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: [], nextCursor: null }),
     };
-    render(<ConversationView sessionId="empty" />);
+    renderConv({ sessionId: 'empty' });
     await waitFor(() => expect(screen.getByText(/no conversation/i)).toBeTruthy());
   });
 
@@ -76,20 +100,20 @@ describe('ConversationView', () => {
   // one session open and the ambiguity is against HISTORY, not open
   // sessions).
   it('says several RECORDED sessions share the cwd when the match is ambiguous, never "open sessions"', () => {
-    render(<ConversationView sessionId={null} match="ambiguous" />);
+    renderConv({ sessionId: null, match: 'ambiguous' });
     expect(screen.getByText(/several recorded sessions/i)).toBeTruthy();
     expect(screen.queryByText(/no conversation/i)).toBeNull();
     expect(screen.queryByText(/open session/i)).toBeNull();
   });
 
   it('says no transcript has been found yet when the match is unknown, distinct from the ambiguous message', () => {
-    render(<ConversationView sessionId={null} match="unknown" />);
+    renderConv({ sessionId: null, match: 'unknown' });
     expect(screen.getByText(/no transcript has been found/i)).toBeTruthy();
     expect(screen.queryByText(/several recorded sessions/i)).toBeNull();
   });
 
   it('falls back to a neutral message, distinct from both above, when sessionId is null with no match info', () => {
-    render(<ConversationView sessionId={null} />);
+    renderConv({ sessionId: null });
     expect(screen.getByText(/transcript can't be identified/i)).toBeTruthy();
     expect(screen.queryByText(/several recorded sessions/i)).toBeNull();
     expect(screen.queryByText(/no transcript has been found/i)).toBeNull();
@@ -99,6 +123,7 @@ describe('ConversationView', () => {
     // is what actually catches that regression.
     expect(screen.queryByText(/open session/i)).toBeNull();
     expect(screen.queryByText(/^Several/i)).toBeNull();
+    expect(screen.getByText(/transcript can't be identified/i).className).toBe('convnote');
   });
 
   it('never calls window.fleet.conversation when sessionId is null', async () => {
@@ -106,35 +131,35 @@ describe('ConversationView', () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => { called = true; return { turns: [], nextCursor: null }; },
     };
-    render(<ConversationView sessionId={null} />);
+    renderConv({ sessionId: null });
     // Give any accidental fetch a turn to run before asserting it didn't.
     await Promise.resolve();
     expect(called).toBe(false);
   });
 
-  // Team-lead ruling: this is a catch-up review surface, so it renders
-  // newest-first (the fixture below is already in the order conversationFor
-  // returns -- newest at index 0 -- and the component must not re-sort it).
-  it('renders turns in the order they are given, newest first', async () => {
+  // Chat order (spec §3.1): oldest at the top, newest at the bottom, with
+  // the message box underneath. conversationFor already returns each page
+  // in that order, so the component must not re-sort it.
+  it('renders turns in the order they are given, oldest first', async () => {
     const ordered = [
-      { id: 3, ts: '2026-09-12T10:00:10Z', role: 'assistant', text: 'newest reply', steps: [] },
-      { id: 2, ts: '2026-09-12T10:00:05Z', role: 'user', text: 'middle message', steps: [] },
-      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'oldest message', steps: [] },
+      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'oldest message' },
+      { id: 2, ts: '2026-09-12T10:00:05Z', role: 'user', text: 'middle message' },
+      { id: 3, ts: '2026-09-12T10:00:10Z', role: 'assistant', text: 'newest reply' },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: ordered, nextCursor: null }),
     };
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
     const rendered = [...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent);
-    expect(rendered).toEqual(['newest reply', 'middle message', 'oldest message']);
+    expect(rendered).toEqual(['oldest message', 'middle message', 'newest reply']);
   });
 
   // Lazy-loading (50 turns/page) supersedes the old truncation notice --
   // nothing is hidden any more, so instead of an apology there is a plain
   // end-of-history fact once nextCursor genuinely runs out.
   it('shows an end-of-history marker once the fetch reports nextCursor null', async () => {
-    render(<ConversationView sessionId="s1" />); // default mock: nextCursor: null
+    renderConv(); // default mock: nextCursor: null
     await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
     expect(screen.getByText(/beginning of this session/i)).toBeTruthy();
   });
@@ -143,24 +168,69 @@ describe('ConversationView', () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns, nextCursor: { ts: '2026-09-12T10:00:00Z', id: 1 } }),
     };
-    render(<ConversationView sessionId="s1" />);
+    renderConv();
     await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
     expect(screen.queryByText(/beginning of this session/i)).toBeNull();
   });
 
-  // Scrolling near the bottom is the trigger (see nearOlderEdge's own doc
-  // comment on why bottom, not top, is the older end in this newest-first
-  // layout). jsdom computes no real layout, so scrollHeight/clientHeight
-  // are stubbed directly on the node (Object.defineProperty -- verified
-  // assigning them any other way throws, since jsdom exposes them as
-  // getter-only) and only scrollTop, which jsdom genuinely implements, is
-  // set through fireEvent's target.
-  function stubScrollGeometry(el: Element, { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number }) {
-    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: scrollHeight });
-    Object.defineProperty(el, 'clientHeight', { configurable: true, value: clientHeight });
-  }
+  // Bug fix: Task 1 flipped the render loop to oldest-first but left this
+  // marker where the old newest-first layout put it -- below the turns,
+  // where a "beginning of history" line reads as a page footer under the
+  // NEWEST message. A text-presence check alone would have passed against
+  // that bug, so this asserts actual DOM order, the way the meta-row test
+  // above does.
+  it('renders the end-of-history line above the oldest turn, not below the newest', async () => {
+    const { container } = renderConv(); // default mock: nextCursor: null
+    await waitFor(() => expect(screen.getByText(/beginning of this session/i)).toBeTruthy());
+    const marker = screen.getByText(/beginning of this session/i);
+    const oldestTurn = container.querySelector('.turn')!;
+    expect(marker.compareDocumentPosition(oldestTurn)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
 
-  it('fetches the next older page and appends it once the reader scrolls near the bottom', async () => {
+  // Older pages PREPEND -- they arrive at the top -- so the spinner
+  // announcing one must be where the content will appear, not where the
+  // old newest-first layout put it.
+  it('renders "Loading more..." above the turns while an older page is in flight', async () => {
+    let resolveOlder: (page: unknown) => void = () => {};
+    const olderPromise = new Promise(resolve => { resolveOlder = resolve; });
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (_sessionId: string, cursor?: unknown) => {
+        if (cursor === undefined) return { turns, nextCursor: { ts: '2026-09-12T09:59:00Z', id: 0 } };
+        return olderPromise;
+      },
+    };
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    const scroller = container.querySelector('.conv')!;
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } });
+
+    const loadingMarker = await screen.findByText(/loading more/i);
+    const oldestTurn = container.querySelector('.turn')!;
+    expect(loadingMarker.compareDocumentPosition(oldestTurn)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+    resolveOlder({ turns: [], nextCursor: null }); // let the pending fetch settle
+    await waitFor(() => expect(screen.queryByText(/loading more/i)).toBeNull());
+  });
+
+  // Bug fix: a conversation shorter than the pane must sit at the bottom,
+  // not float at the top with empty space below -- but the notes branch
+  // (loading, empty, "cannot identify this session") must NOT be pinned: a
+  // one-line status floating at the bottom of an empty pane reads as
+  // broken, not as a chat.
+  it('wraps the turns stack in the bottom-pinning element', async () => {
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+    expect(container.querySelector('.turn')!.closest('.convstack')).toBeTruthy();
+  });
+
+  it('does not wrap a notes message in the bottom-pinning element', () => {
+    const { container } = renderConv({ sessionId: null });
+    const note = container.querySelector('.convnote')!;
+    expect(note.closest('.convstack')).toBeNull();
+  });
+
+  it('fetches the next older page and PREPENDS it once the reader scrolls near the top', async () => {
     const olderCursor = { ts: '2026-09-12T09:59:00Z', id: 0 };
     const calls: Array<unknown[]> = [];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
@@ -168,23 +238,23 @@ describe('ConversationView', () => {
         calls.push([sessionId, cursor]);
         if (cursor === undefined) return { turns, nextCursor: olderCursor };
         return {
-          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn', steps: [] }],
+          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn' }],
           nextCursor: null,
         };
       },
     };
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
 
     const scroller = container.querySelector('.conv')!;
-    stubScrollGeometry(scroller, { scrollHeight: 1000, clientHeight: 500 });
-    fireEvent.scroll(scroller, { target: { scrollTop: 400 } }); // distance from bottom: 100, under the 150px threshold
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } }); // inside the 150px top threshold
 
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
-    // Appended after the existing turns, not prepended -- newest-first
-    // means the older page continues at the bottom, not the top.
+    // Prepended, not appended: oldest-at-top means the older page
+    // continues at the TOP. This is the exact direction the old
+    // append-only trick got right for the old layout and wrong for this one.
     const said = [...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent);
-    expect(said).toEqual(['run the farm tests', 'All green. Want me to commit?', 'an older turn']);
+    expect(said).toEqual(['an older turn', 'run the farm tests', 'All green. Want me to commit?']);
     expect(calls).toEqual([['s1', undefined], ['s1', olderCursor]]);
     await waitFor(() => expect(screen.getByText(/beginning of this session/i)).toBeTruthy());
   });
@@ -200,16 +270,15 @@ describe('ConversationView', () => {
         return secondCallPromise; // deliberately left unresolved
       },
     };
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
 
     const scroller = container.querySelector('.conv')!;
-    stubScrollGeometry(scroller, { scrollHeight: 1000, clientHeight: 500 });
     // Two scroll events in a row, both past the threshold, before the
     // in-flight fetch has any chance to resolve -- exactly the burst a
     // real trackpad or momentum scroll produces.
-    fireEvent.scroll(scroller, { target: { scrollTop: 400 } });
-    fireEvent.scroll(scroller, { target: { scrollTop: 420 } });
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } });
+    fireEvent.scroll(scroller, { target: { scrollTop: 20 } });
     await waitFor(() => expect(screen.getByText(/loading more/i)).toBeTruthy());
 
     // Exactly one loadMore call, not two, alongside the initial page-1 call.
@@ -219,9 +288,185 @@ describe('ConversationView', () => {
     await waitFor(() => expect(screen.getByText(/beginning of this session/i)).toBeTruthy());
   });
 
+  // Regression: switching sessions must not let a slow older-page fetch for
+  // the OLD session land on whatever session is open now. Without a
+  // staleness guard in loadMore, resolving session A's older-page fetch
+  // AFTER session B's own page has loaded would prepend A's turn onto B's
+  // page and silently overwrite B's nextCursor with A's.
+  it('drops a stale older-page fetch if the reader switches sessions before it resolves', async () => {
+    let resolveOlderA: (page: unknown) => void = () => {};
+    const olderAPromise = new Promise(resolve => { resolveOlderA = resolve; });
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        if (sessionId === 's1' && cursor === undefined) {
+          return { turns, nextCursor: { ts: '2026-09-12T09:59:00Z', id: 0 } };
+        }
+        if (sessionId === 's1') return olderAPromise; // s1's older page, held pending
+        if (sessionId === 's2' && cursor === undefined) {
+          return {
+            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn' }],
+            // Session B genuinely has more history -- if the stale fetch's
+            // nextCursor:null below clobbers this, the end-of-history
+            // marker would wrongly appear for a session that has one.
+            nextCursor: { ts: '2026-09-13T09:00:00Z', id: 4 },
+          };
+        }
+        throw new Error(`unexpected fetch: ${sessionId} ${String(cursor)}`);
+      },
+    };
+    const { container, rerender } = renderConv({ sessionId: 's1' });
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    const scroller = container.querySelector('.conv')!;
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } }); // starts s1's older-page fetch, left pending
+
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(screen.getByText('session B turn')).toBeTruthy());
+
+    // Let session A's older-page fetch resolve well after session B has
+    // landed -- exactly the ordering a slow network response can produce.
+    await act(async () => {
+      resolveOlderA({
+        turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn from session A' }],
+        nextCursor: null,
+      });
+      // A real macrotask tick: the JS event loop always drains every
+      // pending microtask -- including the async-function and .then/.finally
+      // hops between the mock resolving and loadMore's callback running --
+      // before running a timer callback, so this is enough to guarantee the
+      // stale continuation, guarded or not, has already run by the time we
+      // assert below.
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    const said = [...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent);
+    expect(said).toEqual(['session B turn']);
+    expect(screen.queryByText(/beginning of this session/i)).toBeNull();
+  });
+
+  // Out-of-plan fix, task-catch-brief.md: a rejected mount fetch used to
+  // leave `page` at null forever, which the render's page===null branch
+  // reads as "Loading..." -- a lie, since nothing is loading and nothing
+  // ever will. This is the one call site where a rejection must become
+  // visible UI, not just a log line.
+  it('shows an error note instead of "Loading..." forever when the mount fetch rejects', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => { throw new Error('fetch failed'); },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderConv();
+    await waitFor(() => expect(screen.getByText(/could not be loaded/i)).toBeTruthy());
+    expect(screen.queryByText(/loading/i)).toBeNull();
+    expect(consoleError).toHaveBeenCalledWith('Conversation mount fetch failed:', expect.any(Error));
+    consoleError.mockRestore();
+  });
+
+  // The alive guard: a slow mount fetch for a session the reader has
+  // already left must not put the NEW session's pane into an error state.
+  // Same controlled-promise technique as the stale-older-page-fetch
+  // regression above, applied to the mount fetch instead of loadMore's.
+  it('does not leak an error onto the newly-selected session when an old mount fetch rejects after the switch', async () => {
+    let rejectA: (err: unknown) => void = () => {};
+    const pendingA = new Promise((_resolve, reject) => { rejectA = reject; });
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string) => {
+        if (sessionId === 's1') return pendingA; // s1's mount fetch, held pending
+        if (sessionId === 's2') {
+          return {
+            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn' }],
+            nextCursor: null,
+          };
+        }
+        throw new Error(`unexpected fetch: ${sessionId}`);
+      },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { rerender } = renderConv({ sessionId: 's1' });
+
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(screen.getByText('session B turn')).toBeTruthy());
+
+    // Let session A's mount fetch reject well after session B has landed.
+    await act(async () => {
+      rejectA(new Error('s1 fetch failed'));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+    expect(screen.getByText('session B turn')).toBeTruthy();
+    // Still logged -- an old fetch failing is real information even when
+    // it can no longer act on the screen -- unlike the state it's guarded
+    // out of, the log itself isn't scoped to "alive".
+    expect(consoleError).toHaveBeenCalledWith('Conversation mount fetch failed:', expect.any(Error));
+    consoleError.mockRestore();
+  });
+
+  it('clears a previous session\'s error once the reader switches to a session that loads fine', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string) => {
+        if (sessionId === 's1') throw new Error('s1 fetch failed');
+        return { turns, nextCursor: null };
+      },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { rerender } = renderConv({ sessionId: 's1' });
+    await waitFor(() => expect(screen.getByText(/could not be loaded/i)).toBeTruthy());
+
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  // loadMore's existing .finally() clears loadingMoreRef and setLoadingMore
+  // regardless of outcome -- that's what makes this path self-heal on the
+  // reader's next scroll, so the retry below must succeed with no other
+  // recovery logic.
+  it('keeps its turns and clears the loading indicator when loadMore rejects, then retries on the next scroll', async () => {
+    const olderCursor = { ts: '2026-09-12T09:59:00Z', id: 0 };
+    const calls: Array<unknown[]> = [];
+    let attempt = 0;
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        if (cursor === undefined) return { turns, nextCursor: olderCursor };
+        attempt += 1;
+        if (attempt === 1) throw new Error('network blip');
+        return {
+          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn' }],
+          nextCursor: null,
+        };
+      },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    const scroller = container.querySelector('.conv')!;
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } });
+
+    await waitFor(() => expect(consoleError).toHaveBeenCalledWith(
+      'Conversation load-more fetch failed:', expect.any(Error)));
+    await waitFor(() => expect(screen.queryByText(/loading more/i)).toBeNull());
+    expect([...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent))
+      .toEqual(['run the farm tests', 'All green. Want me to commit?']);
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+
+    // Retry: scrolling near the top again fires another fetch, proving
+    // loadingMoreRef was cleared by .finally() despite the rejection.
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } });
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
+    expect(calls).toEqual([['s1', undefined], ['s1', olderCursor], ['s1', olderCursor]]);
+
+    consoleError.mockRestore();
+  });
+
   it('renders a compact human timestamp on each turn', async () => {
     const [first] = turns;
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelector('.when')).toBeTruthy());
     // Lone/first entry always shows its date -- there is no prior entry to
     // compare against.
@@ -230,13 +475,13 @@ describe('ConversationView', () => {
 
   it('does not repeat the date on a second entry from the same day', async () => {
     const sameDay = [
-      { id: 1, ts: '2026-09-12T09:00:00Z', role: 'user', text: 'first', steps: [] },
-      { id: 2, ts: '2026-09-12T15:30:00Z', role: 'assistant', text: 'second', steps: [] },
+      { id: 1, ts: '2026-09-12T09:00:00Z', role: 'user', text: 'first' },
+      { id: 2, ts: '2026-09-12T15:30:00Z', role: 'assistant', text: 'second' },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: sameDay, nextCursor: null }),
     };
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.when')).toHaveLength(2));
     const [whenFirst, whenSecond] = [...container.querySelectorAll('.when')];
     expect(whenFirst!.textContent).toBe(`${fmtDate(sameDay[0]!.ts)} ${fmtTime(sameDay[0]!.ts)}`);
@@ -246,13 +491,13 @@ describe('ConversationView', () => {
 
   it('shows the date again once the day changes', async () => {
     const twoDays = [
-      { id: 1, ts: '2026-09-11T09:00:00Z', role: 'user', text: 'day one', steps: [] },
-      { id: 2, ts: '2026-09-12T09:00:00Z', role: 'assistant', text: 'day two', steps: [] },
+      { id: 1, ts: '2026-09-11T09:00:00Z', role: 'user', text: 'day one' },
+      { id: 2, ts: '2026-09-12T09:00:00Z', role: 'assistant', text: 'day two' },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: twoDays, nextCursor: null }),
     };
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.when')).toHaveLength(2));
     const [whenFirst, whenSecond] = [...container.querySelectorAll('.when')];
     expect(whenFirst!.textContent).toBe(`${fmtDate(twoDays[0]!.ts)} ${fmtTime(twoDays[0]!.ts)}`);
@@ -262,9 +507,9 @@ describe('ConversationView', () => {
 
 function showOne(turn: Record<string, unknown>) {
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-    conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', steps: [], ...turn }], nextCursor: null }),
+    conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', ...turn }], nextCursor: null }),
   };
-  return render(<ConversationView sessionId="s1" />);
+  return renderConv();
 }
 
 describe('ConversationView -- agent replies render as markdown', () => {
@@ -336,62 +581,936 @@ describe('ConversationView -- agent replies render as markdown', () => {
   });
 });
 
-describe('ConversationView -- steps under a reply', () => {
-  const steps = [
-    { id: 10, ts: '2026-09-12T09:59:00Z', text: 'Reading the file.' },
-    { id: 11, ts: '2026-09-12T09:59:30Z', text: 'Running `npm test`.' },
-  ];
-
-  it('collapses the narration behind a real button that says how many steps there are', async () => {
-    showOne({ role: 'assistant', text: 'All green.', steps });
-    const button = await screen.findByRole('button', { name: '+ 2 steps' });
-    expect(button.tagName).toBe('BUTTON');
-    expect(button.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByText('Reading the file.')).toBeNull();
+// Every number below is asserted as a number, never through a rendered
+// element: jsdom computes no layout, so scrollHeight/clientHeight are
+// getter-only there and no real scroll position exists to measure. Keeping
+// the arithmetic in exported pure functions is what makes it testable at
+// all -- the same shape nearOlderEdge already had before this change.
+describe('nearOlderEdge -- the older end is now the TOP', () => {
+  it('is true once the reader is within the threshold of the top', () => {
+    expect(nearOlderEdge({ scrollTop: 100 })).toBe(true);
   });
 
-  it('expands the steps, oldest first, and collapses them again', async () => {
-    const { container } = showOne({ role: 'assistant', text: 'All green.', steps });
-    const button = await screen.findByRole('button', { name: '+ 2 steps' });
-
-    fireEvent.click(button);
-    expect(button.getAttribute('aria-expanded')).toBe('true');
-    const list = container.querySelector('.steps-list')!;
-    expect(button.getAttribute('aria-controls')).toBe(list.id);
-    expect([...list.querySelectorAll('.step')].map(s => s.textContent)).toEqual(['Reading the file.', 'Running npm test.']);
-    expect(list.querySelector('code')!.textContent).toBe('npm test');
-
-    fireEvent.click(button);
-    expect(button.getAttribute('aria-expanded')).toBe('false');
-    expect(container.querySelector('.steps-list')).toBeNull();
+  it('is true at the exact top', () => {
+    expect(nearOlderEdge({ scrollTop: 0 })).toBe(true);
   });
 
-  it('says "1 step" for a single step', async () => {
-    showOne({ role: 'assistant', text: 'ok', steps: [steps[0]] });
-    expect(await screen.findByRole('button', { name: '+ 1 step' })).toBeTruthy();
+  it('is false while comfortably below the top', () => {
+    expect(nearOlderEdge({ scrollTop: 400 })).toBe(false);
   });
 
-  it('shows no steps button when the reply had no narration', async () => {
-    const { container } = showOne({ role: 'assistant', text: 'ok' });
-    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
-    expect(screen.queryByRole('button')).toBeNull();
-  });
-});
-
-describe('nearOlderEdge', () => {
-  it('is true once the distance from the bottom drops under the threshold', () => {
-    expect(nearOlderEdge({ scrollTop: 400, scrollHeight: 1000, clientHeight: 500 })).toBe(true); // 100px left
-  });
-
-  it('is false while comfortably far from the bottom', () => {
-    expect(nearOlderEdge({ scrollTop: 0, scrollHeight: 1000, clientHeight: 500 })).toBe(false); // 500px left
-  });
-
-  it('is true right at the exact bottom', () => {
-    expect(nearOlderEdge({ scrollTop: 500, scrollHeight: 1000, clientHeight: 500 })).toBe(true); // 0px left
+  // The regression this replaces: with oldest-at-bottom, being near the
+  // BOTTOM used to mean "running low on loaded history". It no longer does,
+  // and a view that still fired there would page backwards at exactly the
+  // moment the reader reached the newest message.
+  it('is false at the bottom of a long pane, however far down that is', () => {
+    expect(nearOlderEdge({ scrollTop: 100_000 })).toBe(false);
   });
 
   it('respects a caller-supplied threshold rather than only the default', () => {
-    expect(nearOlderEdge({ scrollTop: 0, scrollHeight: 1000, clientHeight: 500 }, 600)).toBe(true); // 500 < 600
+    expect(nearOlderEdge({ scrollTop: 400 }, 600)).toBe(true);
+  });
+});
+
+describe('nearBottom', () => {
+  it('is true within the sticky threshold of the bottom', () => {
+    expect(nearBottom({ scrollTop: 460, scrollHeight: 1000, clientHeight: 500 })).toBe(true); // 40px left
+  });
+
+  it('is true at the exact bottom', () => {
+    expect(nearBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 500 })).toBe(true);
+  });
+
+  it('is false once the reader has scrolled up past the threshold', () => {
+    expect(nearBottom({ scrollTop: 300, scrollHeight: 1000, clientHeight: 500 })).toBe(false); // 200px left
+  });
+
+  // A pane shorter than its viewport has nothing to scroll, so the reader
+  // is always at the bottom of it -- new messages must follow, not offer a
+  // Jump to latest button that would do nothing.
+  it('is true when there is nothing to scroll at all', () => {
+    expect(nearBottom({ scrollTop: 0, scrollHeight: 300, clientHeight: 500 })).toBe(true);
+  });
+});
+
+describe('restoredScrollTop', () => {
+  // The whole point of a prepend: content inserted ABOVE the viewport
+  // pushes everything down by exactly the height it added, so the reader's
+  // eye stays on the message they were reading.
+  it('adds exactly the height the prepended page introduced', () => {
+    expect(restoredScrollTop(200, 1000, 2600)).toBe(1800);
+  });
+
+  it('is a no-op when nothing was added', () => {
+    expect(restoredScrollTop(200, 1000, 1000)).toBe(200);
+  });
+
+  // Defensive, not hypothetical: a page that replaces taller content with
+  // shorter (a re-render between the measurement and the commit) must not
+  // produce a negative scrollTop, which the browser clamps silently and
+  // jsdom stores verbatim.
+  it('never returns a negative position', () => {
+    expect(restoredScrollTop(50, 1000, 600)).toBe(0);
+  });
+});
+
+describe('ConversationView -- who said it', () => {
+  it('marks the agent with the provider glyph and a readable name, never the word "agent"', async () => {
+    const { container } = showOne({ role: 'assistant', text: 'ok' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    const who = container.querySelector('.turn.assistant .who')!;
+    expect(who.querySelector('svg')).toBeTruthy();
+    expect(who.textContent).toBe('Claude');
+    expect(who.textContent).not.toMatch(/agent/i);
+  });
+
+  it('names the Codex provider on a Codex session rather than assuming Claude', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({
+        turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'assistant', text: 'ok' }],
+        nextCursor: null,
+      }),
+    };
+    const { container } = renderConv({ provider: 'codex' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    expect(container.querySelector('.turn.assistant .who')!.textContent).toBe('Codex');
+  });
+
+  it('still says "you" for a human turn, with no glyph', async () => {
+    const { container } = showOne({ role: 'user', text: 'hi' });
+    await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
+    const who = container.querySelector('.turn.user .who')!;
+    expect(who.textContent).toBe('you');
+    expect(who.querySelector('svg')).toBeNull();
+  });
+
+  // Spec §2: the name and the time sit on ONE line above the message,
+  // replacing the 56px left gutter. The two spans being siblings inside
+  // .meta is the DOM half of that; the CSS half is in
+  // ConversationView.css.test.ts.
+  it('puts the name and the time in one meta row above the message text', async () => {
+    const { container } = showOne({ role: 'user', text: 'hi' });
+    await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
+    const turn = container.querySelector('.turn.user')!;
+    const meta = turn.querySelector('.meta')!;
+    expect(meta.querySelector('.who')).toBeTruthy();
+    expect(meta.querySelector('.when')).toBeTruthy();
+    // The meta row precedes the text, not beside it.
+    expect(meta.compareDocumentPosition(turn.querySelector('.turn-text')!))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+});
+
+describe('ConversationView -- the sticky bottom and Jump to latest', () => {
+  const page = (rest: Array<Record<string, unknown>>) => ({
+    turns: [
+      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'first' },
+      ...rest,
+    ],
+    nextCursor: null,
+  });
+
+  it('offers no Jump to latest on a pane that has only just opened', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => page([]),
+    };
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelector('.turn')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+
+  // Scrolling alone must never conjure the button: it appears only when
+  // new content LANDS while the reader is away from the bottom. Nothing in
+  // this task can deliver new content to an open pane -- Task 3's refetch
+  // is the only thing that can -- so the behaviour under new content is
+  // tested there, against the signal that actually drives it, rather than
+  // faked here with a remount that would reset the pane's own bookkeeping.
+  it('does not offer Jump to latest merely because the reader scrolled up', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => page([]),
+    };
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    fireEvent.scroll(scroller, { target: { scrollTop: 100 } }); // 3400px from the bottom
+
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+
+  // The other direction: a prepend adds a whole page ABOVE the reader and
+  // must not be mistaken for new content at the bottom.
+  it('does not offer Jump to latest when an older page is prepended', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (_sessionId: string, cursor?: unknown) => cursor === undefined
+        ? { ...page([]), nextCursor: { ts: '2026-09-12T09:00:00Z', id: 0 } }
+        : {
+          turns: [{ id: 0, ts: '2026-09-12T09:30:00Z', role: 'user', text: 'older' }],
+          nextCursor: null,
+        },
+    };
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+});
+
+describe('mergeNewest', () => {
+  const t = (id: number, text: string) =>
+    ({ id, ts: '2026-09-12T10:00:00Z', role: 'assistant' as const, text });
+
+  it('appends turns the pane has not seen, in the order they arrived', () => {
+    expect(mergeNewest([t(1, 'a')], [t(1, 'a'), t(2, 'b'), t(3, 'c')]).map(x => x.text))
+      .toEqual(['a', 'b', 'c']);
+  });
+
+  // The streaming case, and the whole reason this is a merge rather than an
+  // append: the last assistant turn GROWS as its reply arrives, keeping the
+  // same row id. Appending would show the same reply twice, once truncated.
+  it('replaces a turn that already exists, in place, rather than duplicating it', () => {
+    const merged = mergeNewest([t(1, 'a'), t(2, 'half a rep')], [t(2, 'half a reply, now whole')]);
+    expect(merged.map(x => x.text)).toEqual(['a', 'half a reply, now whole']);
+  });
+
+  // Older pages the reader deliberately loaded sit ABOVE the newest page
+  // and are not in it. A merge that trusted the incoming page alone would
+  // throw them away the first time a message arrived.
+  it('leaves older loaded pages exactly where they are', () => {
+    const merged = mergeNewest([t(0, 'much older'), t(1, 'a')], [t(1, 'a'), t(2, 'b')]);
+    expect(merged.map(x => x.text)).toEqual(['much older', 'a', 'b']);
+  });
+
+  it('changes nothing when the newest page is empty', () => {
+    const current = [t(1, 'a')];
+    expect(mergeNewest(current, [])).toBe(current);
+  });
+});
+
+describe('ConversationView -- live refresh from the events count', () => {
+  function fleetReturning(pages: Array<{ turns: unknown[]; nextCursor: unknown }>) {
+    const calls: Array<unknown[]> = [];
+    let next = 0;
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        return pages[Math.min(next++, pages.length - 1)];
+      },
+    };
+    return calls;
+  }
+  const first = {
+    turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'go on then' }],
+    nextCursor: { ts: '2026-09-12T09:00:00Z', id: 0 },
+  };
+  const second = {
+    turns: [
+      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'go on then' },
+      { id: 2, ts: '2026-09-12T10:00:09Z', role: 'assistant', text: 'arrived while you watched' },
+    ],
+    nextCursor: { ts: '2026-09-12T09:00:00Z', id: 0 },
+  };
+
+  it('refetches the newest page and shows the new turn when the events count changes', async () => {
+    const calls = fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(screen.getByText('arrived while you watched')).toBeTruthy());
+    // The refetch takes NO cursor -- it is the newest page, not a page walk.
+    expect(calls).toEqual([['s1', undefined], ['s1', undefined]]);
+  });
+
+  it('does not refetch on the very first render, which the mount fetch already covered', async () => {
+    const calls = fleetReturning([first]);
+    const { container } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not refetch when the events count is unchanged', async () => {
+    const calls = fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+    rerender(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await Promise.resolve();
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not refetch for a session whose events count is unknown', async () => {
+    const calls = fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+    rerender(<ConversationView sessionId="s1" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await Promise.resolve();
+    expect(calls).toHaveLength(1);
+  });
+
+  // A refetch of the NEWEST page carries the newest page's own cursor,
+  // which points at a page the reader may already have loaded above. Taking
+  // it would walk backwards through history the reader already has.
+  it('keeps the cursor it was already paging from, never the refetched page\'s own', async () => {
+    const olderCursor = { ts: '2026-09-12T08:00:00Z', id: -1 };
+    const calls: Array<unknown[]> = [];
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        if (cursor !== undefined) {
+          return {
+            turns: [{ id: 0, ts: '2026-09-12T09:30:00Z', role: 'user', text: 'older' }],
+            nextCursor: olderCursor,
+          };
+        }
+        return calls.length === 1 ? first : second;
+      },
+    };
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(screen.getByText('arrived while you watched')).toBeTruthy());
+
+    // Scrolling to the top again pages from the OLDER cursor the prepend
+    // established, not from the newest page's cursor the refetch carried.
+    fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+    await waitFor(() => expect(calls.at(-1)).toEqual(['s1', olderCursor]));
+  });
+
+  // seenEventsRef is updated BEFORE the fetch fires (so a rejection still
+  // consumes that events value and a later events bump can refetch), which
+  // is exactly why a failed background refresh must never destroy what the
+  // pane already has -- there's no error UI here, only the existing turns.
+  it('keeps its existing turns unchanged and shows no error note when the refetch rejects', async () => {
+    let call = 0;
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => {
+        call += 1;
+        if (call === 1) return first;
+        throw new Error('refresh blip');
+      },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(consoleError).toHaveBeenCalledWith(
+      'Conversation refresh fetch failed:', expect.any(Error)));
+
+    expect([...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent))
+      .toEqual(['go on then']);
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+
+    consoleError.mockRestore();
+  });
+
+  // The unconditional-logging ruling (fix round 1) has no coverage without
+  // this: the test above never switches sessions while the refresh is in
+  // flight, so it would pass identically whether the removed `if (!alive)
+  // return;` guard were still there or not. Same controlled-promise and
+  // macrotask-tick technique as the mount-fetch alive test above (search
+  // "does not leak an error onto the newly-selected session") -- applied to
+  // the live-refresh fetch instead of the mount fetch.
+  it('logs a rejected refresh fetch even for a session the reader has since left', async () => {
+    let rejectRefresh: (err: unknown) => void = () => {};
+    const pendingRefresh = new Promise((_resolve, reject) => { rejectRefresh = reject; });
+    let s1Calls = 0;
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string) => {
+        if (sessionId === 's1') {
+          s1Calls += 1;
+          if (s1Calls === 1) return first; // the mount fetch
+          return pendingRefresh; // the live-refresh fetch, held pending
+        }
+        if (sessionId === 's2') {
+          return {
+            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn' }],
+            nextCursor: null,
+          };
+        }
+        throw new Error(`unexpected fetch: ${sessionId}`);
+      },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    // Bump events on session s1 -- fires the live-refresh fetch, held pending.
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+
+    // Switch sessions before that refresh resolves.
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(screen.getByText('session B turn')).toBeTruthy());
+
+    // Let session s1's live-refresh fetch reject well after s2 has landed.
+    await act(async () => {
+      rejectRefresh(new Error('s1 refresh failed'));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByText('session B turn')).toBeTruthy();
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+    // The point of the ruling: logged even though the reader has moved on.
+    expect(consoleError).toHaveBeenCalledWith('Conversation refresh fetch failed:', expect.any(Error));
+
+    consoleError.mockRestore();
+  });
+
+  // Task 2 built the sticky bottom; this is the first task that can
+  // actually deliver new content to an open pane, so the two halves of
+  // spec §3.2's rule are pinned here, against the signal that drives them.
+  //
+  // jsdom reports scrollTop 0 and scrollHeight 0 for an unstubbed element,
+  // which nearBottom reads as "at the bottom" -- correct, and why the
+  // following case needs no stub while the staying-put case does.
+  it('follows the newest message while the reader is at the bottom', async () => {
+    fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(screen.getByText('arrived while you watched')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+
+  it('stays put and offers Jump to latest when the reader has scrolled up', async () => {
+    fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    // 200px, not 100: comfortably away from the bottom AND outside
+    // nearOlderEdge's own 150px-from-the-top threshold. first/second (this
+    // describe block's fixture) carry a non-null nextCursor, on purpose,
+    // for the cursor-preservation test below -- so a scrollTop inside that
+    // threshold would also fire the pre-existing loadMore() here, and the
+    // cursor-agnostic fleetReturning mock would hand it the wrong page.
+    fireEvent.scroll(scroller, { target: { scrollTop: 200 } }); // 3300px from the bottom
+
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy());
+    // The view did not move itself.
+    expect(scroller.scrollTop).toBe(200);
+  });
+
+  it('clears Jump to latest once the reader is back at the bottom', async () => {
+    fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    fireEvent.scroll(scroller, { target: { scrollTop: 200 } }); // see note above
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy());
+
+    fireEvent.scroll(scroller, { target: { scrollTop: 3500 } }); // at the bottom
+    await waitFor(() => expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull());
+  });
+
+  it('jumps to the newest message when the button is pressed, and hides itself', async () => {
+    fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    fireEvent.scroll(scroller, { target: { scrollTop: 200 } }); // see note above
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+
+    const jump = await screen.findByRole('button', { name: /jump to latest/i });
+    fireEvent.click(jump);
+    expect(scroller.scrollTop).toBe(4000);
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+});
+
+// Module-scoped (not local to the "message box" describe below) so the
+// length-counter tests further down can set up the same sendKeys mock
+// without a second, drifting copy of it.
+function withSendKeys(result: unknown) {
+  const sendKeys = vi.fn(async () => result);
+  (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+    conversation: async () => ({ turns, nextCursor: null }),
+    sendKeys,
+  };
+  return sendKeys;
+}
+
+describe('ConversationView -- the message box', () => {
+  it('sends what was typed through sendKeys, and clears the box', async () => {
+    const sendKeys = withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, 'commit it'));
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(''));
+  });
+
+  // Spec §7.2: Enter sends, with no confirmation, however long the message.
+  // Shift+Enter is the newline, so a multi-line message is typed, not pasted
+  // in from somewhere else.
+  it('inserts a newline on Shift+Enter rather than sending', async () => {
+    const sendKeys = withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'line one' } });
+    fireEvent.keyDown(box, { key: 'Enter', shiftKey: true });
+    expect(sendKeys).not.toHaveBeenCalled();
+    expect((box as HTMLTextAreaElement).value).toBe('line one');
+  });
+
+  it('sends a multi-line message as one message', async () => {
+    const sendKeys = withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'one\ntwo\nthree' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledTimes(1));
+    expect(sendKeys).toHaveBeenCalledWith(4821, 'one\ntwo\nthree');
+  });
+
+  it('sends nothing at all for an empty box', async () => {
+    const sendKeys = withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  // A chat box that drops the caret on every send is unusable for two
+  // messages in a row: disabling the textarea while the send is in flight
+  // makes the browser blur it, and re-enabling does not put focus back, so
+  // the person has to click in again between every message.
+  //
+  // These assert the END state -- focused once the send has settled -- on
+  // purpose, and deliberately do NOT focus the box first. jsdom's own
+  // blur-on-disable behaviour is then irrelevant to the result: the box
+  // starts unfocused either way, so the assertion can only pass if
+  // something actively puts focus back, which is exactly the property
+  // being pinned.
+  it('puts focus back in the box after a send, so the next message can just be typed', async () => {
+    const sendKeys = withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalled());
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(''));
+    expect(document.activeElement).toBe(box);
+  });
+
+  // A refusal is the case where focus matters MOST: the text is still
+  // there and the whole point is to edit it and try again.
+  it('puts focus back after a refusal too, with the typed text still there to retry', async () => {
+    withSendKeys({ status: 'refused', reason: 'session_gone' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByText('That session has ended.')).toBeTruthy());
+    expect(document.activeElement).toBe(box);
+    expect((box as HTMLTextAreaElement).value).toBe('commit it');
+  });
+
+  // The other half of the restore: it must fire on the send-settled
+  // transition and nowhere else. An effect that simply focused whenever it
+  // ran would steal the caret every time a session is opened.
+  it('does not grab focus on mount -- opening a session must not steal the caret', async () => {
+    withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    expect(document.activeElement).not.toBe(box);
+  });
+
+  // The popover's wording, not a second copy of it -- part 1 settled these
+  // strings against a real misfire (typed text answering a picker).
+  it('shows the popover\'s own refusal wording, and keeps the text so it can be retried', async () => {
+    withSendKeys({ status: 'refused', reason: 'session_gone' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByText('That session has ended.')).toBeTruthy());
+    expect((box as HTMLTextAreaElement).value).toBe('commit it');
+  });
+
+  // Part 1's guard stands: this box does not answer choices. A typed reply
+  // to a picker is ignored and Enter selects whatever is highlighted --
+  // measured 2026-09-15, "blue" recorded as "Red".
+  it('offers Open Terminal when a choice is open, rather than only saying no', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const onOpenTerminal = vi.fn();
+    renderConv({ onOpenTerminal });
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'blue' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByText(/showing a choice/i)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /open terminal/i }));
+    expect(onOpenTerminal).toHaveBeenCalled();
+  });
+
+  // The draft outliving the component is the whole point, not a nicety.
+  // The box's only remedy for prompt_open is Open Terminal, and MainPane
+  // renders the conversation as a ternary branch -- so following the UI's
+  // own instruction UNMOUNTS the component holding what was typed. Without
+  // a store outside the component, answering the choice and coming back
+  // loses the message.
+  it('keeps the draft across an unmount, so Open Terminal cannot destroy what was typed', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const first = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'the message I do not want to lose' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByText(/showing a choice/i)).toBeTruthy());
+    first.unmount();
+
+    renderConv();
+    const again = await screen.findByLabelText('Message this session');
+    expect((again as HTMLTextAreaElement).value).toBe('the message I do not want to lose');
+  });
+
+  it('drops the draft once the message actually goes out', async () => {
+    withSendKeys({ status: 'sent' });
+    const first = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(''));
+    first.unmount();
+
+    renderConv();
+    const again = await screen.findByLabelText('Message this session');
+    expect((again as HTMLTextAreaElement).value).toBe('');
+  });
+
+  // The invariant: a draft must never appear in a box belonging to a
+  // different session than the one it was typed in. A pid alone does not
+  // establish that, because the OS reuses pids -- a long-running app can
+  // outlive a session and see its number handed to a new process. One
+  // Enter would then send the old session's message to the new one.
+  it('never shows a draft from a different session, even at the same pid', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const first = renderConv({ pid: 777, sessionId: 'session-a' });
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'meant for session A' } });
+    first.unmount();
+
+    // Same pid number, different session behind it.
+    renderConv({ pid: 777, sessionId: 'session-b' });
+    const reused = await screen.findByLabelText('Message this session');
+    expect((reused as HTMLTextAreaElement).value).toBe('');
+  });
+
+  // The honest consequence of keying on session identity: a process whose
+  // transcript the app cannot pin down has no identity to check a draft
+  // against, so it does not keep one across unmount. Losing a draft is a
+  // far better outcome than delivering it to the wrong session, and this
+  // is the behaviour such sessions had before drafts existed at all.
+  it('does not hold a draft across unmount for a session it cannot identify', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const first = renderConv({ pid: 888, sessionId: null });
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'unidentified session' } });
+    expect((box as HTMLTextAreaElement).value).toBe('unidentified session');
+    first.unmount();
+
+    renderConv({ pid: 888, sessionId: null });
+    const again = await screen.findByLabelText('Message this session');
+    expect((again as HTMLTextAreaElement).value).toBe('');
+  });
+
+  // The other half of the identity check, and the reason the store is
+  // module-scoped at all: a draft must still come BACK when the reader
+  // returns to the session that owns it. Switching away and back is the
+  // ordinary case; the checks above must not have turned it into a loss.
+  it('brings a draft back when the reader returns to that session', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const props = (pid: number, sessionId: string) => (
+      <ConversationView sessionId={sessionId} provider="claude" events={null}
+        pid={pid} tmux={true} onOpenTerminal={() => {}} />
+    );
+    const { rerender } = render(props(101, 's-a'));
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'half written' } });
+
+    rerender(props(202, 's-b'));
+    const other = await screen.findByLabelText('Message this session');
+    expect((other as HTMLTextAreaElement).value).toBe('');
+
+    rerender(props(101, 's-a'));
+    const back = await screen.findByLabelText('Message this session');
+    expect((back as HTMLTextAreaElement).value).toBe('half written');
+  });
+
+  // Drafts are per-pid. A store keyed wrongly would leak one session's
+  // half-written message into another session's box.
+  it('keeps each session\'s draft to itself', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const first = renderConv({ pid: 111 });
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'meant for 111' } });
+    first.unmount();
+
+    renderConv({ pid: 222 });
+    const other = await screen.findByLabelText('Message this session');
+    expect((other as HTMLTextAreaElement).value).toBe('');
+  });
+
+  // The catch in send() exists precisely so a rejected sendKeys cannot
+  // leave the box looking like the message went out. Without a test, the
+  // thing it protects against is exactly what a refactor would reintroduce.
+  it('surfaces a rejected send instead of letting the box look like it went out', async () => {
+    const sendKeys = vi.fn(async () => { throw new Error('bridge gone'); });
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns, nextCursor: null }),
+      sendKeys,
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByText('Could not reach the app.')).toBeTruthy());
+    // Not cleared: a cleared box is what "it went out" looks like.
+    expect((box as HTMLTextAreaElement).value).toBe('commit it');
+    // And the box is usable again rather than stuck disabled mid-send.
+    expect((box as HTMLTextAreaElement).disabled).toBe(false);
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  // Spec §7.1: never hidden. A box that vanishes reads as a missing
+  // feature; a disabled one reads as a state.
+  it('shows the box disabled, with a reason, for a session that is not tmux-backed', async () => {
+    withSendKeys({ status: 'sent' });
+    renderConv({ tmux: false });
+    const box = await screen.findByLabelText('Message this session');
+    expect((box as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.getByText(/not running inside tmux/i)).toBeTruthy();
+  });
+
+  it('shows the box disabled, with a reason, for a session with no live process', async () => {
+    withSendKeys({ status: 'sent' });
+    renderConv({ pid: null });
+    const box = await screen.findByLabelText('Message this session');
+    expect((box as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.getByText('This session is not running.')).toBeTruthy();
+  });
+
+  it('still shows the box when the session has no conversation to show', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: [], nextCursor: null }),
+      sendKeys: vi.fn(),
+    };
+    renderConv();
+    expect(await screen.findByLabelText('Message this session')).toBeTruthy();
+  });
+});
+
+// A reviewer suggested `maxLength` on the textarea; rejected because
+// maxLength silently truncates a paste -- 5,000 characters in, 4,000 shown,
+// with no sign the rest was dropped. This counter is the alternative: the
+// cap becomes visible before it's hit, and the server-side cap in
+// sanitizeOutbound (src/main/outbound.ts) remains the only thing that ever
+// refuses a send.
+describe('messageCounter', () => {
+  it('reads nothing at all comfortably under the cap', () => {
+    expect(messageCounter(3599)).toBeNull();
+  });
+
+  it('appears once the length reaches 90% of the cap, reading the remaining budget', () => {
+    expect(messageCounter(3600)).toEqual({ label: '400 left', warn: false });
+  });
+
+  it('reads "0 left", styled as a warning, at exactly the cap', () => {
+    expect(messageCounter(4000)).toEqual({ label: '0 left', warn: true });
+  });
+
+  it('reads how much to cut, not a clamped zero, once past the cap', () => {
+    expect(messageCounter(5000)).toEqual({ label: '1,000 over', warn: true });
+  });
+
+  it('accepts a caller-supplied cap rather than only the default', () => {
+    expect(messageCounter(90, 100)).toEqual({ label: '10 left', warn: false });
+  });
+
+  // The one thing this whole feature exists to keep true: the renderer's
+  // idea of the cap and the main process's actual enforcement
+  // (sanitizeOutbound, src/main/outbound.ts) must never silently drift
+  // apart. This is a value import into a TEST, not renderer code, so it
+  // does not run into the "no src/main value imports in the renderer"
+  // constraint that keeps this constant redeclared rather than imported in
+  // ConversationView.tsx itself.
+  it('keeps its cap equal to the main process enforcement it mirrors', () => {
+    expect(CONV_MAX_REPLY_CHARS).toBe(MAIN_MAX_REPLY_CHARS);
+  });
+});
+
+describe('ConversationView -- the message box\'s length counter', () => {
+  it('shows no counter element at all while the message is comfortably short', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(3599) } });
+    expect(container.querySelector('.convcount')).toBeNull();
+  });
+
+  it('appears at the 3,600-character threshold reading the remaining budget', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(3600) } });
+    expect(container.querySelector('.convcount')?.textContent).toBe('400 left');
+    expect(container.querySelector('.convcount')?.classList.contains('convcount-warn')).toBe(false);
+  });
+
+  it('reads "0 left" and takes the warning styling at exactly the cap', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(4000) } });
+    const counter = container.querySelector('.convcount')!;
+    expect(counter.textContent).toBe('0 left');
+    expect(counter.classList.contains('convcount-warn')).toBe(true);
+  });
+
+  it('shows the over-by amount, not a clamped "0 left", once past the cap', async () => {
+    withSendKeys({ status: 'refused', reason: 'too_long' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(5000) } });
+    const counter = container.querySelector('.convcount')!;
+    expect(counter.textContent).toBe('1,000 over');
+    expect(counter.classList.contains('convcount-warn')).toBe(true);
+  });
+
+  // The counter is visibility only. maxLength, clamping, truncating and
+  // disabling the send are all explicitly out of scope -- the server-side
+  // refusal in sanitizeOutbound remains the sole enforcement, and the
+  // person must still be able to try.
+  it('still attempts to send an over-cap message, untruncated -- the refusal is what stops it', async () => {
+    const sendKeys = withSendKeys({ status: 'refused', reason: 'too_long' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session') as HTMLTextAreaElement;
+    const over = 'a'.repeat(4500);
+    fireEvent.change(box, { target: { value: over } });
+    expect(box.disabled).toBe(false);
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, over));
+    await waitFor(() => expect(screen.getByText('That reply is too long to send. Shorten it and try again.')).toBeTruthy());
+    expect(box.disabled).toBe(false);
+    expect(box.value).toBe(over); // kept whole, not truncated -- same as any other refusal
+  });
+
+  // The counter's own text must never be an aria-live region: it changes on
+  // every keystroke while visible, and a screen reader announcing that
+  // continuously would be unusable.
+  it('carries no aria-live attribute on the visible counter itself', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(4500) } });
+    expect(container.querySelector('.convcount')?.getAttribute('aria-live')).toBeNull();
+    expect(container.querySelector('.convcount')?.getAttribute('role')).toBeNull();
+  });
+
+  // The separate, screen-reader-only announcement: fires once on the
+  // transition into being over the cap, not on every keystroke below it.
+  it('says nothing in the live region while comfortably under the cap', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(3700) } });
+    expect(container.querySelector('.convannounce')?.textContent).toBe('');
+  });
+
+  it('announces once on crossing over the cap, and does not keep re-announcing while still over', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(4001) } });
+    const region = container.querySelector('.convannounce')!;
+    await waitFor(() => expect(region.textContent).not.toBe(''));
+    const firstAnnouncement = region.textContent;
+
+    fireEvent.change(box, { target: { value: 'a'.repeat(4800) } });
+    expect(container.querySelector('.convannounce')!.textContent).toBe(firstAnnouncement);
+  });
+
+  it('does not announce merely for reaching the cap exactly, only for going past it', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(4000) } });
+    expect(container.querySelector('.convannounce')?.textContent).toBe('');
+  });
+
+  it('clears the announcement once the message drops back under the cap', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(4500) } });
+    await waitFor(() => expect(container.querySelector('.convannounce')?.textContent).not.toBe(''));
+    fireEvent.change(box, { target: { value: 'a'.repeat(100) } });
+    await waitFor(() => expect(container.querySelector('.convannounce')?.textContent).toBe(''));
+  });
+});
+
+describe('ConversationView -- the reading settings', () => {
+  beforeEach(() => { localStorage.clear(); reloadSettings(); });
+
+  it('renders at the stored text size, as a variable the whole pane is built from', async () => {
+    setSettings({ textSize: 14 });
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelector('.conv')).toBeTruthy());
+    expect((container.querySelector('.conv') as HTMLElement).style.getPropertyValue('--conv-size')).toBe('14px');
+  });
+
+  it('renders the stored message style, defaulting to A', async () => {
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelector('.conv')).toBeTruthy());
+    expect(container.querySelector('.conv')!.getAttribute('data-style')).toBe('a');
+    setSettings({ messageStyle: 'c' });
+    await waitFor(() => expect(container.querySelector('.conv')!.getAttribute('data-style')).toBe('c'));
   });
 });

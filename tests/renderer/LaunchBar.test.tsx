@@ -63,4 +63,13 @@ describe('LaunchBar', () => {
     await waitFor(() => expect(chooseDirectory).toHaveBeenCalledTimes(1));
     expect((screen.getByLabelText('Working directory') as HTMLInputElement).value).toBe('/tmp/typed');
   });
+
+  it('opens settings from a gear beside Launch, and returns focus to it on close', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    const gear = screen.getByRole('button', { name: /^settings$/i });
+    fireEvent.click(gear);
+    expect(screen.getByLabelText('Appearance')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^done$/i }));
+    expect(document.activeElement).toBe(gear);
+  });
 });

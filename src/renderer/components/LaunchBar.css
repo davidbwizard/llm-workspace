@@ -5,8 +5,28 @@
    reliable window-drag handle regardless of selection (same
    -webkit-app-region convention as FleetView.css's .fleetbar; the window's
    titleBarStyle is 'hiddenInset', so nothing is draggable without an
-   explicit region somewhere). */
+   explicit region somewhere).
+
+   padding-left keeps the row's first control clear of the native macOS
+   traffic lights, which titleBarStyle:'hiddenInset' draws over the
+   window's own top-left corner (src/main/index.ts sets no
+   trafficLightPosition, so this is Electron's own default placement, not
+   something this stylesheet controls). The design artifact
+   (artifact-1548711f-1789482469-8494.html) works this out as
+   padding:10px 12px 10px 78px on its own .launchbar, measured from the
+   WINDOW edge in that standalone mockup. This app's .launchbar is not at
+   the window edge: it is a child of <main class="shell"> (theme.css),
+   which already applies padding:20px on every side. So the 78px the
+   artifact wants from the window edge is 78 - 20 = 58px of ADDITIONAL
+   left padding here, on top of what .shell already contributes -- pasting
+   the artifact's 78px verbatim would have pushed the first control 20px
+   too far right. Top/bottom/right padding are taken directly from the
+   artifact (nothing between .shell and here consumes any of those), which
+   also gives the row real height instead of shrinking to its shortest
+   child, so the lights sit beside the row's content rather than
+   overhanging above a too-short one. */
 .launchbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:10px 12px 10px 58px;
   -webkit-app-region:drag; }
 .launchbar select, .launchbar input, .launchbar button { -webkit-app-region:no-drag; }
 .launchprovider { font-family:var(--f-mono); font-size:11px; color:var(--ink);
@@ -23,3 +43,7 @@
   padding:6px 14px; cursor:pointer; }
 .launchgo:disabled { opacity:.6; cursor:default; }
 .launchmsg { margin:0; font-size:11px; color:var(--signal); flex-basis:100%; }
+.launchgear { display:inline-flex; align-items:center; line-height:1; color:var(--muted);
+  background:none; border:1px solid var(--line-soft); border-radius:6px;
+  padding:5px 9px; cursor:pointer; }
+.launchgear:hover { color:var(--ink); border-color:var(--line); }

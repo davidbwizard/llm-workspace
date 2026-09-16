@@ -1,0 +1,152 @@
+/* src/renderer/components/SettingsModal.css
+   Tokens only -- theme.css owns every colour. */
+
+/* LaunchBar.css makes .launchbar a window-drag region, and this dialog
+   renders inside it, so without this opt-out every control in here would
+   be a drag handle instead of a control. Same trap FleetView.css's
+   .fleetbar documents. */
+.settingsdlg { -webkit-app-region:no-drag; border:0; padding:0; background:none;
+  color:var(--ink); max-width:min(460px, calc(100vw - 32px)); }
+.settingsdlg::backdrop { background:rgb(0 0 0 / 46%); }
+.settingspanel { display:flex; flex-direction:column; gap:20px;
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+  box-shadow:var(--shadow-pop); padding:20px 22px 18px;
+  /* The modal's own scrolling stays inside it: overscroll-behavior stops a
+     wheel that reaches this panel's end from chaining out to whatever is
+     behind (spec §3.5). */
+  max-height:80vh; overflow-y:auto; overscroll-behavior:contain; }
+.settingshead { display:flex; align-items:center; gap:12px; }
+/* The artifact's own .settings h2 sets no font-family, i.e. the body face
+   -- but theme.css's global `h1, h2, h3 { font-family:var(--f-display) }`
+   rule would otherwise win here (this h2 is more specific and would still
+   inherit that rule's declaration if this one left font-family unset), so
+   the body face is named explicitly rather than merely dropping the old
+   display-face line. */
+.settingshead h2 { margin:0; font-family:var(--f-body); font-size:17px; font-weight:700; }
+/* An icon-only button (a small "x"), not the old pill reading "Close": its
+   accessible name still comes from aria-label on the button itself, so the
+   glyph inside is aria-hidden rather than announced on top of it. */
+.settingsclose { margin-left:auto; width:26px; height:26px; display:inline-flex;
+  align-items:center; justify-content:center; font-size:17px; line-height:1;
+  color:var(--muted); background:none; border:0; border-radius:6px; padding:0; cursor:pointer; }
+.settingsclose:hover { color:var(--ink); background:var(--raised); }
+
+/* One labelled group of controls (General / Sessions / Conversation). */
+.settingssection { display:flex; flex-direction:column; gap:14px; }
+/* The artifact's own .section-label is a plain <p> with no font-weight set,
+   which renders unbolded. This is an <h3> instead (a deliberate addition
+   over the artifact, for heading-navigation accessibility the artifact's
+   flat <p> doesn't offer), and headings are bold by the browser's own
+   default stylesheet -- so font-weight:400 is named explicitly to reach
+   the same unbolded look, rather than left unset. */
+.settingssectitle { margin:0; font-family:var(--f-mono); font-size:11px; font-weight:400;
+  letter-spacing:.07em; text-transform:uppercase; color:var(--muted); }
+/* One control and its bold label, e.g. "Appearance" over its segmented row. */
+.settingsfield { display:flex; flex-direction:column; gap:8px; }
+.settingslabel { font-family:var(--f-body); font-size:14px; font-weight:600; color:var(--ink); }
+.settingshelp { margin:0; font-size:11px; line-height:1.5; color:var(--muted); }
+
+/* The segmented control replacing three of the four old <select>s: a
+   full-width, equal-width row of buttons inside one hairline-bordered pill.
+   The selected button is filled and brighter; the rest are transparent and
+   muted -- aria-pressed carries the same state for assistive tech, since a
+   plain colour change is not itself an accessible signal. */
+.settingsseg { display:flex; width:100%; border:1px solid var(--line);
+  border-radius:var(--r-sm); overflow:hidden; }
+/* Body face, not mono: the artifact's .seg-face is a <span> with no
+   font-family set, so it inherits the body face by ordinary CSS
+   inheritance -- a <button> has no such inheritance (the browser's own
+   button font wins unless overridden), so the body face is named
+   explicitly here to reach the same result. tabular-nums keeps "14 px"
+   through "17 px" from jittering against each other as the pressed one
+   goes bold. */
+.settingssegbtn { flex:1; min-width:0; font-family:var(--f-body); font-size:13px;
+  font-variant-numeric:tabular-nums; color:var(--ink-2); background:transparent; border:0;
+  padding:8px 6px; cursor:pointer; text-align:center; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.settingssegbtn + .settingssegbtn { border-left:1px solid var(--line); }
+.settingssegbtn[aria-pressed="true"] { background:var(--raised); color:var(--ink); font-weight:600; }
+
+/* The two message-style option cards, replacing the fourth <select>. Each is
+   a real <button> so aria-pressed carries its selected state the same way
+   the segmented rows above do; the selected card is marked with an accent
+   border rather than a fill, per the mockup. */
+.settingsstyles { display:flex; gap:10px; }
+/* background:transparent named explicitly, not merely left unset: the
+   artifact's .style-face has no background of its own (a <label>, showing
+   the dialog's own surface through it), but a <button> carries the
+   browser's own default button-face background unless told otherwise. */
+.settingsstylecard { flex:1 1 0; min-width:0; display:flex; flex-direction:column; gap:8px;
+  text-align:left; background:transparent; border:1px solid var(--line);
+  border-radius:var(--r-sm); padding:10px; cursor:pointer; }
+.settingsstylecard[aria-pressed="true"] { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+.settingsstyletitle { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;
+  font-family:var(--f-body); font-size:13px; font-weight:700; color:var(--ink); }
+.settingsstyledefault { font-family:var(--f-mono); font-size:10px; font-weight:400; color:var(--muted); }
+
+/* Abstract wireframe previews inside each style card -- grey bars standing
+   in for text, an accent rule or bubble standing in for the style itself.
+   Purely decorative (StyleWireframe renders them aria-hidden): the card's
+   own title and aria-pressed state are what a screen reader needs.
+   .settingswire carries what both variants share (they are both flex
+   containers); the two variant classes hold what actually differs
+   (direction, gap, alignment) rather than repeating the shared rule. */
+.settingswire { display:flex; }
+.settingswire-a { align-items:stretch; gap:8px; }
+.settingswirerule { flex:none; width:3px; border-radius:2px; background:var(--accent); }
+.settingswirebars { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:5px; }
+.settingswirebar { height:6px; border-radius:3px; background:var(--line); }
+.settingswirebar-short { width:65%; }
+.settingswire-c { flex-direction:column; gap:6px; }
+.settingswire-c .settingswirebubble { align-self:flex-end; width:60%; height:10px;
+  border-radius:6px; background:var(--accent); }
+.settingswire-c .settingswirebar { width:100%; }
+
+/* The live sample conversation, rendered at the CURRENTLY selected text size
+   (--prev-size) and message style (data-style) -- SettingsModal.tsx sets
+   both from the live settings object, so this changes the moment either
+   control does. Mirrors ConversationView.css's own turn/bubble rules under
+   its own class names, since this file's classes must not collide with it. */
+.settingsprev { display:flex; flex-direction:column; gap:12px; font-size:var(--prev-size,16px);
+  line-height:1.5; background:var(--ground); border:1px solid var(--line-soft);
+  border-radius:var(--r-sm); padding:12px 14px; }
+.settingsprevturn { display:block; }
+.settingsprevturn-assistant { border-left:3px solid var(--accent); padding-left:11px; }
+.settingsprevmeta { display:flex; align-items:center; gap:8px; margin:0 0 4px; }
+.settingsprevwho { font-family:var(--f-mono); font-size:calc(var(--prev-size,16px) * .6875);
+  color:var(--muted); display:inline-flex; align-items:center; }
+.settingsprevturn-assistant .settingsprevwho { color:var(--accent); }
+.settingsprevwhen { font-family:var(--f-mono); font-size:calc(var(--prev-size,16px) * .6875); color:var(--faint); }
+/* Mirrors ConversationView.css's own .turn-text / .turn.user .turn-text
+   rule (check that file, not this comment, before trusting the colours
+   below): the agent's replies render at full strength (--ink) and the
+   user's dimmer (--ink-2), with no font-weight difference between the two.
+   That is the opposite of what this preview showed before -- it was built
+   against an earlier design mockup that gave the USER the brighter ink and
+   a font-weight:600 cue, and was never updated when 262b793 flipped the
+   real pane to match the Sep 2026 design artifact instead. A preview that
+   contradicts the pane it previews is worse than no preview, so if the real
+   pane's emphasis changes again, this must follow it, not the mockup. */
+.settingsprevtext { margin:0; color:var(--ink); }
+.settingsprevturn-user .settingsprevtext { color:var(--ink-2); }
+/* Style c: the user's turn moves into a neutral, right-aligned bubble --
+   neutral rather than accent, matching ConversationView.css's own reasoning
+   (the accent is style a's agent cue; reusing it here would put two
+   differently-meant accent marks in one pane). */
+.settingsprev[data-style="c"] .settingsprevturn-user { margin-left:auto; max-width:78%;
+  background:var(--raised); border:1px solid var(--line-soft); border-radius:var(--r-md); padding:8px 12px; }
+.settingsprev[data-style="c"] .settingsprevturn-user .settingsprevmeta { justify-content:flex-end; }
+
+.settingsfoot { display:flex; align-items:center; justify-content:space-between; gap:12px;
+  border-top:1px solid var(--line-soft); }
+.settingscaption { margin:0; font-size:11px; color:var(--muted); }
+.settingsdone { font-family:var(--f-mono); font-size:11px; font-weight:600; color:var(--ground);
+  background:var(--accent); border:0; border-radius:var(--r-sm); padding:6px 16px; cursor:pointer; }
+
+/* The background scroll lock (SettingsModal.tsx's LOCK_CLASS). Body's own
+   overflow does nothing here -- this app's scrolling lives in these three
+   elements, each of which manages its own (see MainPane.css,
+   ConversationView.css, SessionRail.css) -- so the lock names them. */
+:root.modal-open .mainpane,
+:root.modal-open .conv,
+:root.modal-open .railcards { overflow:hidden; }

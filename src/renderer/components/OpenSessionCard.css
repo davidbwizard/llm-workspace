@@ -11,11 +11,6 @@
    (for the open-sessions tier). Only what is genuinely new to this card
    lives here. */
 
-/* pid, shown in .metrics -- same quiet mono treatment as the counts beside
-   it, since it is bookkeeping (and what a future close action targets),
-   not the card's headline. */
-.pid { font-family:var(--f-mono); font-size:11px; color:var(--faint); }
-
 /* The unread indicator (SessionRail's own doc comment on `unread` covers
    how it's computed) -- same corner .badge already occupies, since the
    two are mutually exclusive (OpenSessionCard.tsx's showUnread is always
@@ -135,3 +130,77 @@
 /* Codex's explanation in place of the button -- plain text, not styled as
    an interactive control, since it isn't one. */
 .reattach-na { color:var(--faint); margin:2px 0 0; }
+
+/* The compact card (spec §3.6). Additive only: every rule here is scoped
+   to .card.compact, so SessionCard.css's base .card/.proj/.said rules --
+   which this component and the History card BOTH rely on globally -- keep
+   the exact values they have today. The compact card's own message text
+   uses .compact-said below, never .said -- see that rule's own comment. */
+.card.compact { padding:10px 12px 11px; gap:7px; }
+.card.compact .proj { font-size:15px; }
+.card.compact .badge { top:9px; right:11px; }
+.card.compact .unread-dot { top:12px; right:14px; }
+.card.compact .metrics { margin-top:0; }
+/* .state carries margin-left:auto in SessionCard.css, which would push the
+   status to the far right and strand the menu beyond it. On a compact card
+   the menu is what claims that edge. */
+.card.compact .state { margin-left:0; }
+
+/* The compact card's own message text -- David, looking at the real
+   window, mid-task: "compact cards must still show some of the message
+   text, clamped to three lines max." This is a rule of its OWN, not an
+   override of SessionCard.css's .said (which clamps to two lines, for the
+   History card): the conversation pane once reused .said for this exact
+   purpose and silently cut off every reply past two lines in the real
+   window, because jsdom -- which computes no layout -- has no way to catch
+   a clamp count that only ever mattered once real text ran long enough to
+   hit it. Every property the clamp needs (display/orient/overflow) is
+   declared here, not borrowed, so nothing about this card's text depends on
+   a stylesheet it does not own. */
+.compact-said { font-size:12px; color:var(--ink-2); line-height:1.4; margin:0;
+  display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.compact-said.wait { color:var(--critical); }
+
+/* David's own bug report against the real, running window: this card's
+   `...` menu opens downward, and the NEXT card in the list -- later in
+   document order -- covered it ("card action bar is hidden below the
+   card"). At rest .card is position:relative with z-index:auto
+   (SessionCard.css), which opens no stacking context of its own, so
+   .cardmenu-list's z-index:5 below would ordinarily escape .card cleanly.
+   But this card is never at rest while its own menu is open: the pointer
+   is sitting on it to have clicked the "..." button in the first place,
+   which is exactly SessionCard.css's `.card:hover` (its transform, not its
+   colour/shadow changes) -- and a transform other than none DOES open a
+   stacking context. Once hovered, THIS card becomes the stacking context
+   .cardmenu-list is trapped inside, unable to escape past it any more; the
+   NEXT card, still untransformed and at the default level, then paints
+   after this one in plain document order and covers it, menu included.
+   Raising .card itself while its menu is open -- rather than only its
+   popover, which could never have escaped an ancestor stacking context no
+   matter its own z-index -- gives THIS card an explicit, non-auto z-index
+   of its own, so it (and everything painted inside it, popover included)
+   outranks the next card's default level regardless of which of the two
+   is hovered. Scoped to .menu-open, toggled from this component's own
+   menuOpen state (OpenSessionCard.tsx's className expression) -- never
+   applied unconditionally, so cards overlap exactly as they always have in
+   every other state. */
+.card.menu-open { z-index:1; }
+
+/* The `...` menu. A popover anchored to this one card, not a shared
+   overlay: .cardmenu is the positioned ancestor, so nothing here needs to
+   know where on screen the card is. */
+.cardmenu { position:relative; margin-left:auto; }
+.cardmenu-btn { font-family:var(--f-mono); font-size:13px; line-height:1; color:var(--muted);
+  background:none; border:1px solid transparent; border-radius:6px;
+  padding:1px 6px 3px; cursor:pointer; }
+.cardmenu-btn:hover { color:var(--ink); border-color:var(--line); }
+.cardmenu-list { position:absolute; right:0; top:calc(100% + 4px); z-index:5;
+  display:flex; flex-direction:column; min-width:150px;
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-sm);
+  box-shadow:var(--shadow-pop); padding:4px; }
+.cardmenu-item { text-align:left; font-family:var(--f-mono); font-size:11px; color:var(--ink-2);
+  background:none; border:0; border-radius:5px; padding:6px 9px; cursor:pointer; white-space:nowrap; }
+.cardmenu-item:hover { background:var(--raised); color:var(--ink); }
+/* Close is the one destructive item, and it still only opens the confirm
+   panel -- the colour marks which item it is, not what pressing it does. */
+.cardmenu-danger:hover { color:var(--critical); }

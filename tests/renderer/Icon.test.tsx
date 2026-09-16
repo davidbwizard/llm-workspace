@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
-import { Bell, CircleNotch, Terminal, Warning } from '@phosphor-icons/react';
+import { Bell, CircleNotch, Gear, Terminal, Warning } from '@phosphor-icons/react';
 import { Icon, type IconName } from '../../src/renderer/components/Icon.tsx';
 
 /** The Phosphor component each name is expected to resolve to, imported
@@ -10,9 +10,9 @@ import { Icon, type IconName } from '../../src/renderer/components/Icon.tsx';
  *  the same component with the same props are byte-identical, and two
  *  different icons are never byte-identical. This catches a name pointing at
  *  the wrong glyph, not just two names collapsing onto the same one. */
-const EXPECTED = { bell: Bell, spinner: CircleNotch, terminal: Terminal, warning: Warning } as const;
+const EXPECTED = { bell: Bell, gear: Gear, spinner: CircleNotch, terminal: Terminal, warning: Warning } as const;
 
-const NAMES: readonly IconName[] = ['bell', 'spinner', 'terminal', 'warning'];
+const NAMES: readonly IconName[] = ['bell', 'gear', 'spinner', 'terminal', 'warning'];
 
 describe('Icon', () => {
   it.each(NAMES)('renders an svg element for "%s"', (name) => {

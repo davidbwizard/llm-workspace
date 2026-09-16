@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { ErrorBoundary } from '../../src/renderer/App.tsx';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import { App, ErrorBoundary } from '../../src/renderer/App.tsx';
+import { reloadSettings, setSettings } from '../../src/renderer/state/settings.ts';
 
 function Boom(): never {
   throw new Error('kaboom');
@@ -40,5 +41,37 @@ describe('ErrorBoundary', () => {
     expect(stack!.textContent).toMatch(/at Boom/);  // the component stack
 
     consoleError.mockRestore();
+  });
+});
+
+describe('App -- appearance', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    reloadSettings();
+    document.documentElement.removeAttribute('data-theme');
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      listFleet: vi.fn().mockResolvedValue({ version: 1, generatedAt: '', openSessions: [] }),
+      listHistory: vi.fn().mockResolvedValue({ version: 1, generatedAt: '', sessions: [], total: 0 }),
+      onFleet: vi.fn(() => () => {}),
+      setTheme: vi.fn().mockResolvedValue({ status: 'set', theme: 'system' }),
+    };
+  });
+
+  // 'system' must set NO attribute: theme.css's light block is guarded as
+  // :root:not([data-theme="dark"]) inside a prefers-color-scheme query, so
+  // the OS setting only wins while nothing explicit is on the root.
+  it('sets no data-theme for System, and tells main the same thing', async () => {
+    render(<App />);
+    await waitFor(() => expect(document.documentElement.hasAttribute('data-theme')).toBe(false));
+    expect((window as unknown as { fleet: { setTheme: ReturnType<typeof vi.fn> } }).fleet.setTheme)
+      .toHaveBeenCalledWith('system');
+  });
+
+  it('stamps an explicit choice on the root element and tells main', async () => {
+    setSettings({ appearance: 'light' });
+    render(<App />);
+    await waitFor(() => expect(document.documentElement.getAttribute('data-theme')).toBe('light'));
+    expect((window as unknown as { fleet: { setTheme: ReturnType<typeof vi.fn> } }).fleet.setTheme)
+      .toHaveBeenCalledWith('light');
   });
 });

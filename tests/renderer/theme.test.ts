@@ -153,4 +153,37 @@ describe('theme tokens', () => {
     expect(popover).not.toContain('#0009');
     expect(card).not.toContain('rgba(0,0,0,.22)');
   });
+
+  // src/main/index.ts paints the window's very first frame before any CSS
+  // exists, so it hardcodes the two --ground values rather than reading
+  // them. That is the one place a token is duplicated outside this file,
+  // and drift there is invisible to every renderer test: a light user would
+  // simply get a dark flash on every launch.
+  it('paints the window\'s first frame from the same --ground values declared here', () => {
+    const main = readFileSync('src/main/index.ts', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '');
+    const dark = parseTokens(css.slice(0, css.search(/@media|:root\[data-theme/)))['--ground'];
+    const light = parseTokens(blockAfter(':root[data-theme="light"]'))['--ground'];
+    expect(main, 'the dark first-paint colour must be --ground').toContain(dark);
+    expect(main, 'the light first-paint colour must be the light --ground').toContain(light);
+  });
+});
+
+// Every real scroll surface in this app already manages its own overflow
+// (.mainpane, .conv, .rail -- see MainPane.css, ConversationView.css,
+// SessionRail.css, and SettingsModal.css's background-lock comment, which
+// already says body's own overflow does nothing for this app's scrolling).
+// But nothing stopped the DOCUMENT itself from scrolling -- a focus restore
+// or scrollIntoView call is enough -- and since .shell is bounded to
+// height:100%, a scrolled document strands .shell above an empty strip of
+// window with nothing painted in it (reported as "a massive empty footer";
+// DevTools showed .shell itself at the right height, only the document's
+// own scrollTop was wrong). jsdom computes no real layout and has no real
+// scrolling, so no test can reproduce the bug directly -- this pins the
+// rule that prevents it, so a future edit cannot drop it as cosmetic.
+describe('theme.css: the document itself never scrolls', () => {
+  it('sets overflow:hidden on html and body so the document cannot scroll', () => {
+    const rule = blockAfter('html, body, #root');
+    expect(rule).toMatch(/overflow:\s*hidden/);
+  });
 });

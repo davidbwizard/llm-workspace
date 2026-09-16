@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, shell, nativeTheme } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -9,6 +9,7 @@ import { resolvePaths } from '../config.ts';
 import { registerIpc, pushFleet, refreshPushEnrichment } from './ipc.ts';
 import { refreshLiveProcesses } from '../discovery/live.ts';
 import { adoptRunningSessions } from './sessions.ts';
+import { readStoredTheme } from './appearance.ts';
 
 let db: Db | null = null;
 let watcher: Watcher | null = null;
@@ -40,11 +41,18 @@ function roots(): WatchRoot[] {
   ].filter(r => existsSync(r.dir));
 }
 
+/** The window's very first frame is painted before any stylesheet exists,
+ *  so these two are theme.css's own --ground values, duplicated here of
+ *  necessity. tests/renderer/theme.test.ts pins them to the tokens so they
+ *  cannot drift unnoticed -- drift here is invisible to every renderer
+ *  test and shows up only as a flash of the wrong colour on launch. */
+const FIRST_PAINT_BG = { dark: '#1a1918', light: '#f6f5f3' } as const;
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1180, height: 820, minWidth: 720, minHeight: 480,
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#1a1918',   // --ground, so the first paint is not white
+    backgroundColor: nativeTheme.shouldUseDarkColors ? FIRST_PAINT_BG.dark : FIRST_PAINT_BG.light,
     show: false,
     webPreferences: {
       preload: join(import.meta.dirname, '../preload/index.cjs'),
@@ -123,6 +131,11 @@ function startBackgroundWork(): void {
 app.whenReady().then(() => {
   mkdirSync(join(homedir(), '.llm-workspace'), { recursive: true });
   db = openDb(paths.db);
+
+  // Before createWindow, not after: backgroundColor below is read once, at
+  // construction. shouldUseDarkColors then reflects this choice for an
+  // explicit Light or Dark, and the OS setting for 'system'.
+  nativeTheme.themeSource = readStoredTheme(paths.appearance);
 
   // startBackgroundWork (above) is passed through so the fleet:list handler
   // can trigger it itself, strictly after answering -- the primary trigger

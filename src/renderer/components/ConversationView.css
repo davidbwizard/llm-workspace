@@ -1,31 +1,81 @@
 /* src/renderer/components/ConversationView.css */
-.conv { padding:12px 14px; overflow-y:auto; flex:1; }
-.conv.empty, .conv.loading, .conv.unknown { color:var(--muted); }
-.turn { display:flex; gap:10px; margin-bottom:10px; align-items:flex-start; }
-/* User turns are the rarer ones and the landmarks when scanning back --
-   they get the app's one emphasis colour (theme.css: --accent, already
-   used everywhere else as a border/indicator, never a fill) as a rule in
-   the margin, never as a text or background fill, so it stays quiet.
-   That rule's WIDTH (3px vs none) is the real, colour-independent signal
-   -- a colourblind reader, or the rule rendered in greyscale, still sees
-   a turn set off from the margin; the accent hue is a second, redundant
-   cue layered on top, not the only one. font-weight is the third,
-   independent of colour entirely: Karla is a variable font (200-800,
-   see the @font-face rule in theme.css), so 600 here is a real heavier
-   cut, not a faked bold. */
-.turn.user { border-left:3px solid var(--accent); padding-left:7px; }
-.turn .meta { display:flex; flex-direction:column; gap:2px; width:56px; flex:none; padding-top:2px; }
-.turn .who { font-family:var(--f-mono); font-size:11px; color:var(--faint); }
-.turn.user .who { color:var(--accent); }
-.turn .when { font-family:var(--f-mono); font-size:10px; color:var(--faint); white-space:nowrap; }
-.turn .turn-text { margin:0; font-size:13px; line-height:1.5; color:var(--ink-2);
-  white-space:pre-wrap; flex:1; min-width:0; }
-.turn.user .turn-text { color:var(--ink); font-weight:600; }
-/* Agent replies render as markdown (.turn-text.md) inside .turn-body, which also
-   holds the collapsed steps. pre-wrap is off for markdown: react-markdown
-   emits newline text nodes between block elements, and pre-wrap would show
-   each one as a blank line. Code blocks keep their own white-space:pre and
-   scroll sideways rather than widening the pane; wide tables do the same. */
+/* --conv-size is the ONE size the whole pane is built from: every
+   message-level rule below is expressed relative to it, so the Settings
+   slider moves the meta lines and code blocks with the body text
+   instead of leaving them behind (spec §3.5). 16px is the default David
+   chose against the rendered mockup, up from the 13px this pane shipped
+   with; SettingsModal writes 14-17 over it as an inline style. */
+/* display:flex + flex-direction:column turns .conv itself into a column,
+   so .convstack below can use margin-top:auto to pin a short conversation
+   to the bottom -- NOT justify-content:flex-end here, which has a
+   long-standing cross-engine bug on a scrollable flex container: once
+   content overflows, the overflowing top portion becomes unreachable. */
+.conv { --conv-size:16px; font-size:var(--conv-size); line-height:1.55;
+  padding:14px 18px; overflow-y:auto; flex:1; display:flex; flex-direction:column; }
+/* The scroller and everything pinned below it (the Jump to latest button,
+   and the message box) are siblings in a bounded column, so the pinned
+   parts stay put while only the turns scroll. min-height:0 on both is what
+   stops a long conversation from pushing the column past its parent
+   instead of scrolling inside it. */
+.convwrap { display:flex; flex-direction:column; flex:1; min-height:0; }
+.conv { min-height:0; }
+/* Wraps the markers and turns.map (never .convnote below, the notes
+   branch): margin-top:auto on this flex child is what pushes a
+   conversation shorter than .conv down to the bottom edge instead of
+   floating at the top, while a taller one just scrolls as normal. */
+.convstack { margin-top:auto; }
+/* Whatever the pane is saying instead of turns: loading, empty, or one of
+   the three "we cannot identify this session" messages. */
+.convnote { margin:0; color:var(--muted); }
+/* Offered only when new content landed while the reader was scrolled away
+   from the bottom -- so it is never a button that would do nothing. Sits
+   between the scroller and the message box, as in the mockup. */
+.convjump { align-self:center; margin:6px 0 0; font-family:var(--f-mono); font-size:11px;
+  color:var(--ground); background:var(--accent); border:0; border-radius:20px;
+  padding:5px 14px; cursor:pointer; }
+.convjump:hover { background:color-mix(in srgb,var(--accent) 85%,black); }
+.turn { display:block; margin-bottom:16px; }
+/* Style A, the default: the accent rule runs down the AGENT's replies.
+   David chose it against rendered options, and chose the agent rather than
+   the user deliberately -- the replies are the bulk of the pane, and
+   accenting them is what makes the two sides read apart while scrolling.
+   The rule's WIDTH (3px vs none) is the real, colour-independent signal: a
+   colourblind reader, or the pane in greyscale, still sees a turn set off
+   from the margin. The accent hue on .who below is a second, redundant
+   cue on top. (There is no font-weight cue any more -- see .turn-text
+   below, updated to match the Sep 2026 design artifact, which puts the
+   text-colour emphasis on the agent's replies instead of the user's.) */
+.turn.assistant { border-left:3px solid var(--accent); padding-left:11px; }
+/* Name and time on ONE line above the message (spec §2), replacing the
+   56px left gutter this pane used to reserve for them. */
+.turn .meta { display:flex; align-items:center; gap:8px; margin:0 0 4px; }
+.turn .who { font-family:var(--f-mono); color:var(--muted);
+  display:inline-flex; align-items:center; }
+.turn.assistant .who { color:var(--accent); }
+.turn .who, .turn .when { font-size:calc(var(--conv-size) * 0.6875); }
+.turn .when { font-family:var(--f-mono); color:var(--faint); white-space:nowrap; }
+/* The provider's name, for assistive tech only: ProviderMark's svg is
+   aria-hidden, so without this the agent's turns would announce with no
+   speaker at all. Not `display:none`, which removes it from the
+   accessibility tree as well as the page. */
+.wholabel { position:absolute; width:1px; height:1px; margin:-1px; padding:0;
+  overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+/* Text colour is the OTHER cue telling the two sides apart, on top of the
+   border-left rule above: the agent's replies render at full strength
+   (var(--ink)) and the user's dimmer (var(--ink-2)) -- matching the design
+   artifact, which emphasises the agent's replies since they're the bulk of
+   what's read, not the user's prompts as this pane had it before. No
+   font-weight difference between the two any more: the colour-independent
+   cue for the user's side is the border-left rule's absence here (style A)
+   or the bubble/border/right-alignment below (style C), not a heavier cut. */
+.turn .turn-text { margin:0; font-size:1em; line-height:inherit; color:var(--ink);
+  white-space:pre-wrap; min-width:0; }
+.turn.user .turn-text { color:var(--ink-2); }
+/* Agent replies render as markdown (.turn-text.md) inside .turn-body.
+   pre-wrap is off for markdown: react-markdown emits newline text nodes
+   between block elements, and pre-wrap would show each one as a blank line.
+   Code blocks keep their own white-space:pre and scroll sideways rather
+   than widening the pane; wide tables do the same. */
 .turn-body { flex:1; min-width:0; }
 .turn-text.md { white-space:normal; overflow-wrap:anywhere; }
 .turn-text.md > :first-child { margin-top:0; }
@@ -33,38 +83,78 @@
 .turn-text.md p, .turn-text.md ul, .turn-text.md ol, .turn-text.md pre, .turn-text.md table, .turn-text.md blockquote { margin:0 0 8px; }
 .turn-text.md ul, .turn-text.md ol { padding-left:20px; }
 .turn-text.md h1, .turn-text.md h2, .turn-text.md h3, .turn-text.md h4, .turn-text.md h5, .turn-text.md h6 {
-  margin:10px 0 4px; font-size:13px; font-weight:700; color:var(--ink); }
+  margin:12px 0 5px; font-size:1em; font-weight:700; color:var(--ink); }
 .turn-text.md a { color:var(--accent); }
 .turn-text.md blockquote { padding-left:8px; border-left:2px solid var(--line); color:var(--muted); }
-.turn-text.md code { font-family:var(--f-mono); font-size:12px; background:var(--raised);
-  border-radius:4px; padding:1px 4px; }
-.turn-text.md pre { font-family:var(--f-mono); font-size:12px; line-height:1.45; background:var(--raised);
-  border:1px solid var(--line-soft); border-radius:var(--r-sm); padding:8px 10px;
+.turn-text.md code { font-family:var(--f-mono); font-size:calc(var(--conv-size) * 0.8125);
+  background:var(--raised); border-radius:4px; padding:1px 4px; }
+.turn-text.md pre { font-family:var(--f-mono); font-size:calc(var(--conv-size) * 0.8125); line-height:1.45;
+  background:var(--raised); border:1px solid var(--line-soft); border-radius:var(--r-sm); padding:8px 10px;
   overflow-x:auto; white-space:pre; }
 .turn-text.md pre code { background:none; border-radius:0; padding:0; font-size:inherit; }
-.turn-text.md table { display:block; max-width:100%; overflow-x:auto; border-collapse:collapse; font-size:12px; }
+.turn-text.md table { display:block; max-width:100%; overflow-x:auto; border-collapse:collapse;
+  font-size:calc(var(--conv-size) * 0.8125); }
 .turn-text.md th, .turn-text.md td { border:1px solid var(--line); padding:3px 8px; text-align:left; vertical-align:top; }
 .turn-text.md th { background:var(--raised); color:var(--ink); font-weight:600; }
 .turn-text.md .md-image { font-style:italic; color:var(--muted); }
-/* Steps: the narration before a reply. Collapsed behind a quiet mono toggle;
-   when open, dimmed (--muted) and set off by a hairline so the reply above
-   stays the thing a reader scans. */
-.steps { margin-top:4px; }
-.steps-toggle { font-family:var(--f-mono); font-size:11px; color:var(--faint); background:none;
-  border:0; padding:2px 0; cursor:pointer; }
-.steps-toggle:hover { color:var(--muted); }
-.steps-toggle:focus-visible { outline:1px solid var(--accent); outline-offset:2px; }
-.steps-list { list-style:none; margin:4px 0 0; padding-left:10px; border-left:1px solid var(--line-soft);
-  color:var(--muted); font-size:12px; line-height:1.45; }
-.steps-list .step + .step { margin-top:6px; }
-.steps-list .step p { margin:0; }
-.steps-list code, .steps-list pre { font-family:var(--f-mono); font-size:11px; }
-.steps-list pre { margin:4px 0; overflow-x:auto; white-space:pre; }
-/* Lazy-loading (50 exchanges/page, newest-first): .conv-end marks a genuine
-   end-of-history fact once nextCursor runs out, replacing the old
-   truncation notice this superseded -- nothing is hidden any more, so this
-   reads as a fact, not an apology. .conv-loading-more is the brief,
-   between-pages state while the next page is in flight. Same quiet
-   treatment as each other: neither should compete with the turns above. */
-.conv-end, .conv-loading-more { margin:6px 0 0; padding-top:8px;
-  border-top:1px solid var(--line-soft); font-size:11px; color:var(--muted); }
+/* Lazy-loading (50 exchanges/page, oldest-first): both markers sit ABOVE
+   the turns.map they describe (ConversationView.tsx), so the separating
+   rule goes on their BOTTOM edge, not their top -- otherwise it would read
+   as a rule between the marker and the turn above it, when there is no
+   turn above it. .conv-end marks a genuine end-of-history fact once
+   nextCursor runs out, replacing the old truncation notice this
+   superseded -- nothing is hidden any more, so this reads as a fact, not
+   an apology. .conv-loading-more is the brief, between-pages state while
+   the next (older) page is in flight. Same quiet treatment as each other:
+   neither should compete with the turns below. */
+.conv-end, .conv-loading-more { margin:0 0 6px; padding-bottom:8px;
+  border-bottom:1px solid var(--line-soft); font-size:11px; color:var(--muted); }
+/* Style C, the alternative David asked to keep available: YOUR messages in
+   a neutral bubble on the right, the agent's left-aligned and unaccented.
+   Selected by data-style on the conversation root (SettingsModal); style A
+   above is what renders with no attribute or data-style="a". Neutral, not
+   accent: the accent is style A's agent cue and reusing it here would put
+   two differently-meant accent marks in one pane. */
+.conv[data-style="c"] .turn.assistant { border-left:0; padding-left:0; }
+.conv[data-style="c"] .turn.user { margin-left:auto; max-width:78%;
+  background:var(--raised); border:1px solid var(--line-soft);
+  border-radius:var(--r-md); padding:8px 12px; }
+.conv[data-style="c"] .turn.user .meta { justify-content:flex-end; }
+/* The message box, pinned under the scroller rather than inside it, so it
+   stays put while the conversation moves. Fixed at the app's own body size
+   rather than --conv-size: this is a control, not part of the transcript,
+   and it should not resize when the reading size does. */
+.convbox { flex:none; border-top:1px solid var(--line); padding:10px 18px 12px;
+  background:var(--surface); }
+.convinput { display:block; width:100%; resize:vertical; min-height:44px; max-height:30vh;
+  font-family:var(--f-body); font-size:13px; line-height:1.5; color:var(--ink);
+  background:var(--ground); border:1px solid var(--line); border-radius:var(--r-sm);
+  padding:8px 10px; }
+.convinput:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.convinput:disabled { color:var(--muted); cursor:default; }
+.convmsg { margin:6px 0 0; font-size:11px; color:var(--muted); }
+/* The length counter (David's middle option against a reviewer's maxLength
+   suggestion: maxLength silently truncates a paste -- 5,000 characters in,
+   4,000 shown, with no sign the rest was dropped -- so instead the cap
+   becomes visible before it's hit, and nothing typed is ever discarded).
+   Quiet under the cap, same size and tone as .convmsg above; .convcount-warn
+   is a second class layered on top, not a rewrite, so this rule still
+   applies underneath it. */
+.convcount { margin:6px 0 0; font-size:11px; color:var(--muted); }
+/* --signal, not --critical: OpenSessionCard.css's own comment on its unread
+   dot is explicit that --critical is the "waiting on you" colour and must
+   stay unambiguous. --signal is the same "deliberately less urgent" warning
+   tone already used for refusal copy elsewhere (LaunchBar.css's .launchmsg,
+   ReplyPopover.css's .replymsg). */
+.convcount-warn { color:var(--signal); }
+/* Screen-reader-only: announces the one-time transition into being over the
+   cap (ConversationView.tsx), kept off the visible counter above so that
+   element never carries aria-live and announces on every keystroke. Same
+   visually-hidden technique as .wholabel above, duplicated rather than
+   shared -- a class reused across two differently-purposed elements is easy
+   to break by editing one and not the other. */
+.convannounce { position:absolute; width:1px; height:1px; margin:-1px; padding:0;
+  overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+.convsend { margin-left:8px; font-family:var(--f-mono); font-size:11px; color:var(--accent);
+  background:none; border:1px solid var(--line); border-radius:20px; padding:3px 10px; cursor:pointer; }
+.convsend:hover { border-color:color-mix(in srgb,var(--accent) 40%,transparent); }

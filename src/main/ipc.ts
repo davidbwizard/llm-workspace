@@ -3,9 +3,10 @@
 // binds ipcMain to undefined rather than throwing. That stays harmless only
 // because ipcMain is dereferenced inside registerIpc's body, never at module
 // scope -- a test that imports and calls registerIpc directly will throw.
-import { app, ipcMain, BrowserWindow, dialog } from 'electron';
+import { app, ipcMain, BrowserWindow, dialog, nativeTheme } from 'electron';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn as ptySpawn, type IPty } from 'node-pty';
 import type { Db } from '../store/db.ts';
@@ -13,7 +14,8 @@ import {
   openSessions, openSessionsLive, fleetStatePage, type SessionState, type OpenSession,
 } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
-import { sanitizeForTerminal, parseProcessChainHop } from '../config.ts';
+import { sanitizeForTerminal, parseProcessChainHop, resolvePaths } from '../config.ts';
+import { writeStoredTheme, type ThemeChoice } from './appearance.ts';
 import {
   getCachedLiveProcesses, refreshLiveProcesses, execFileSoft, readLiveSession, type ExecFn,
 } from '../discovery/live.ts';
@@ -22,7 +24,10 @@ import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveS
 import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
-import { sendLiteral, sendKeyName, capturePane, setSessionOption, type TmuxResult } from './tmux.ts';
+import {
+  sendLiteral, sendKeyName, capturePane, setSessionOption, loadBuffer, pasteBuffer, deleteBuffer,
+  type TmuxResult, type TmuxExec,
+} from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
 import { conversationFor, type ConversationCursor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
@@ -708,10 +713,113 @@ export type KeysResult = { status: 'sent' } | { status: 'refused'; reason: KeysR
 
 type KeysDeps = {
   has?: (n: string) => boolean;
-  send?: (args: string[]) => TmuxResult;
+  /** The tmux exec for every outbound call this function makes -- the
+   *  keystroke pair AND the three-call paste path -- so a test captures all
+   *  of them, in order, through one mock. Widened to TmuxExec because
+   *  load-buffer takes its text on stdin; a mock written as
+   *  `(args: string[]) => TmuxResult` is still assignable, so every existing
+   *  test keeps compiling unchanged. */
+  send?: TmuxExec;
   capture?: (args: string[]) => TmuxResult;
   promptOpen?: (pid: number) => boolean;
+  /** Injectable in place of the real between-attempt wait
+   *  waitForPasteToSettle (below) uses -- see defaultSleep's doc comment.
+   *  The one production caller never passes this. */
+  sleep?: (ms: number) => void;
 };
+
+/** Counter behind nextPasteBuffer, below. */
+let pasteBufferSeq = 0;
+
+/** A fresh buffer name for one send. Never a fixed literal, and this is a
+ *  correctness requirement rather than tidiness: tmux REPLACES a named
+ *  buffer instead of creating a second one, and the buffer namespace is
+ *  shared by every client of a tmux server. Two instances of this app on
+ *  one server (an orphaned dev build alongside a fresh one, which has
+ *  happened) would interleave as A.load, B.load, A.paste -- and A would
+ *  deliver B's text into A's session AND submit it, reporting success.
+ *
+ *  The pid separates instances; the counter separates sends within one.
+ *  Not random: there is nothing to make unguessable here, and a readable
+ *  name stays greppable in `tmux list-buffers`. Checked against
+ *  TMUX_BUFFER (tmux.ts) before it can become a tmux target. */
+function nextPasteBuffer(): string {
+  pasteBufferSeq += 1;
+  return `llmws-p${process.pid}-${pasteBufferSeq}`;
+}
+
+/** The `-S` backward count passed to tmux capture-pane, NOT the total number
+ *  of lines it returns: capture-pane -S -N walks N lines into scrollback ON
+ *  TOP OF the entire visible pane, not instead of it (verified against a
+ *  real tmux server: -S -8 returns 32 lines against a 24-line default
+ *  visible pane, i.e. 24 + 8, never 8 alone). Used both for the pre-send
+ *  liveness check and, for a multi-line send, as the "before" snapshot
+ *  waitForPasteToSettle (below) compares against. Wider than a bare
+ *  liveness probe needs: the input box a paste lands in can span more than
+ *  one line, and a change confined to line 2 or 3 would be invisible to a
+ *  single-line capture. Exported only so tests can size their own fixtures
+ *  against it, not to make it configurable. */
+export const PASTE_SETTLE_CAPTURE_LINES = 8;
+
+/** Bounds for the settle-poll between a successful paste and sending Enter
+ *  (waitForPasteToSettle below). tmux reporting paste-buffer as successful
+ *  only means it delivered the bytes -- it says nothing about whether the
+ *  receiving program has finished acting on them. Claude Code is an Ink
+ *  TUI: it accumulates a bracketed paste until the closing marker and can
+ *  still be mid-ingest when the next command reaches the pane, which is
+ *  what swallows the Enter that follows too closely behind. 10 attempts of
+ *  30ms give ~300ms of budget for a slow run while returning almost
+ *  immediately once a change is actually observed on a fast one. Exported
+ *  only so tests can size their own fixtures against them, not to make
+ *  either one configurable. */
+export const PASTE_SETTLE_ATTEMPTS = 10;
+export const PASTE_SETTLE_INTERVAL_MS = 30;
+
+/** Real between-attempt wait for waitForPasteToSettle below. This send path
+ *  is fully synchronous end to end (every tmux call is execFileSync), so
+ *  there is no async context to await a delay from -- Atomics.wait on a
+ *  throwaway SharedArrayBuffer is Node's ordinary way to block the current
+ *  thread for a bounded time without one. Injectable (KeysDeps.sleep) so
+ *  tests can drive the settle loop deterministically, including its
+ *  timeout path, without ever waiting in real time; the one production
+ *  caller never passes a replacement. */
+function defaultSleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Blocks this (synchronous) send path until the pane's content differs
+ *  from `before`, or the budget above elapses -- whichever comes first.
+ *  Compares for ANY change, never for the pasted text itself: Claude Code
+ *  collapses a large paste in its input box into a placeholder like
+ *  "[Pasted text #1 +12 lines]" rather than echoing it literally, so there
+ *  is no substring of the original message to look for even when the paste
+ *  landed exactly as sent. Returns whether a change was observed; the
+ *  caller sends Enter either way regardless of the result -- see the call
+ *  site in sendKeysFor for why a timeout here must never become a refusal.
+ *
+ *  A failed capture breaks the loop immediately rather than being retried
+ *  like an ordinary "no change yet" result: capturePane's own exec is
+ *  execFileSync with a 5s timeout, so a wedged tmux server would otherwise
+ *  cost up to PASTE_SETTLE_ATTEMPTS * 5s -- ~50s -- of this (synchronous,
+ *  Atomics.wait-based) main process blocked, freezing the whole window. A
+ *  settle loop that cannot capture the pane cannot do its job either way,
+ *  so nothing is gained by finishing out the budget. */
+function waitForPasteToSettle(
+  name: string, before: string,
+  capture: ((args: string[]) => TmuxResult) | undefined,
+  sleep: (ms: number) => void,
+): boolean {
+  for (let attempt = 0; attempt < PASTE_SETTLE_ATTEMPTS; attempt++) {
+    if (attempt > 0) sleep(PASTE_SETTLE_INTERVAL_MS);
+    const now = capturePane(name, PASTE_SETTLE_CAPTURE_LINES, capture);
+    if (!now.ok) {
+      console.error('tmux capture-pane failed during paste settle, giving up on the settle:', now.error);
+      return false;
+    }
+    if (now.stdout !== before) return true;
+  }
+  return false;
+}
 
 /** The renderer sends a pid and text, never a session name. Refusals are
  *  returned, not thrown: the card has to be able to say WHY nothing happened,
@@ -721,8 +829,10 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
     return { status: 'refused', reason: 'invalid_pid' };
   }
   // Sanitise BEFORE resolving, so malformed text never reaches tmux even
-  // momentarily, and the cheap check runs first.
-  const clean = sanitizeOutbound(raw);
+  // momentarily, and the cheap check runs first. Multi-line is allowed
+  // here, but ONLY because the branch below routes it to a bracketed paste
+  // -- the keystroke path never sees a newline (see the send block).
+  const clean = sanitizeOutbound(raw, { multiline: true });
   if (!clean.ok) return { status: 'refused', reason: clean.reason };
 
   // tmuxNameForPid distinguishes "never registered" (an ordinary iTerm
@@ -743,14 +853,78 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
 
   // The session name resolving is not proof the pane is still there to
   // receive anything -- re-check the pane itself, immediately before
-  // sending, rather than trusting a name that was live a moment ago.
-  const captured = capturePane(name, 1, deps.capture);
+  // sending, rather than trusting a name that was live a moment ago. For a
+  // multi-line send this same capture doubles as the "before" snapshot
+  // waitForPasteToSettle compares against below, which is why it captures
+  // PASTE_SETTLE_CAPTURE_LINES rather than just one.
+  const captured = capturePane(name, PASTE_SETTLE_CAPTURE_LINES, deps.capture);
   if (!captured.ok) return { status: 'refused', reason: 'session_gone' };
+
+  if (clean.text.includes('\n')) {
+    // Bracketed paste (spec 2026-09-15-conversation-pane-design.md §3.4).
+    // Three calls, never concatenated: load the text into a buffer of our
+    // own, paste it as bracketed text and delete the buffer in the same
+    // command, then send Enter as a key name our code chose. A failed load
+    // or paste refuses BEFORE any Enter goes out, so a half-delivered
+    // message is never submitted.
+    //
+    // What makes the embedded newlines safe to send at all is that the
+    // pasted text cannot break out of its own brackets -- which holds only
+    // because sanitizeOutbound stripped ESC and 8-bit CSI above. See the
+    // doc comment on pasteBuffer (src/main/tmux.ts) for the full argument.
+    const buffer = nextPasteBuffer();
+    const loaded = loadBuffer(name, buffer, clean.text, deps.send);
+    if (!loaded.ok) {
+      // The user is shown a generic "That session has ended."; the actual
+      // tmux error would otherwise be discarded entirely.
+      console.error('tmux load-buffer failed:', loaded.error);
+      return { status: 'refused', reason: 'session_gone' };
+    }
+    const pasted = pasteBuffer(name, buffer, deps.send);
+    if (!pasted.ok) {
+      console.error('tmux paste-buffer failed:', pasted.error);
+      // -d only deletes the buffer on a paste that happened. Buffer names
+      // are per-send, so nothing later overwrites this one and it would sit
+      // on the tmux server for as long as the server lives.
+      const dropped = deleteBuffer(buffer, deps.send);
+      if (!dropped.ok) console.error('tmux delete-buffer failed:', dropped.error);
+      return { status: 'refused', reason: 'session_gone' };
+    }
+    // The paste has landed as far as tmux is concerned, but the receiving
+    // program (an Ink TUI) may still be mid-ingest of the bracketed-paste
+    // sequence -- an Enter that arrives too soon gets swallowed along with
+    // it. Give it a bounded chance to visibly react before sending Enter.
+    // A timeout is logged, never turned into a refusal: the paste has
+    // already landed either way, and refusing would invite a retry that
+    // duplicates text already sitting in the pane's input line.
+    if (!waitForPasteToSettle(name, captured.stdout, deps.capture, deps.sleep ?? defaultSleep)) {
+      console.error('tmux paste settle timed out, sending Enter anyway:', { pid, name });
+    }
+    // The paste has already landed in the session by this point, so a
+    // failed Enter is logged, not refused: refusing here would tell the
+    // user the send failed and invite a retry, which would submit a
+    // duplicate of text that is already sitting in the pane's input line.
+    const entered = sendKeyName(name, 'Enter', deps.send);
+    if (!entered.ok) console.error('tmux send-keys (Enter) failed:', entered.error);
+    return { status: 'sent' };
+  }
 
   // Two calls, always. Text with -l; Enter as a key name our code chose.
   // Concatenating them would let a reply of "Enter" become a keypress.
-  sendLiteral(name, clean.text, deps.send);
-  sendKeyName(name, 'Enter', deps.send);
+  // Reached only when the text has no newline at all, which is exactly what
+  // the strict sanitiser would have required of it.
+  const typed = sendLiteral(name, clean.text, deps.send);
+  // A failed keystroke send is logged, not turned into a refusal: the text
+  // may already have reached the pane (tmux applies -l as one call, but the
+  // pane side is out of our control), and a false refusal here would tell
+  // the user the send failed and invite a retry, duplicating a message
+  // that is already sitting in a live session.
+  if (!typed.ok) console.error('tmux send-keys (literal) failed:', typed.error);
+  // As above: the text is already typed into the pane, so a failed Enter is
+  // logged rather than turned into a refusal, which would invite a retry
+  // and duplicate the typed text on next send.
+  const entered = sendKeyName(name, 'Enter', deps.send);
+  if (!entered.ok) console.error('tmux send-keys (Enter) failed:', entered.error);
   return { status: 'sent' };
 }
 
@@ -989,6 +1163,36 @@ export function sendRawFor(
   return { status: 'sent' };
 }
 
+export type ThemeResult = { status: 'set'; theme: ThemeChoice } | { status: 'refused' };
+
+type ThemeDeps = {
+  setSource?: (theme: ThemeChoice) => void;
+  persist?: (theme: ThemeChoice) => void;
+};
+
+/** app:theme -- the renderer's appearance choice, reaching the WINDOW.
+ *
+ *  data-theme on the root element only restyles the page; native
+ *  scrollbars, the folder picker and the title bar follow nativeTheme,
+ *  which only main can set. The value is checked against the three
+ *  literals HERE, before it reaches nativeTheme or the file: the renderer
+ *  can call any exposed channel with any argument, whatever the preload's
+ *  TypeScript says, so this is the boundary, not the typing.
+ *
+ *  Both effects are injectable because under plain-Node vitest the electron
+ *  import is a stub and `nativeTheme` binds to undefined (see this file's
+ *  own note on ipcMain at the top). The defaults are built lazily inside
+ *  the call, so nothing dereferences the stub at module scope. */
+export function applyThemeChoice(raw: unknown, deps: ThemeDeps = {}): ThemeResult {
+  if (raw !== 'system' && raw !== 'light' && raw !== 'dark') return { status: 'refused' };
+  const theme: ThemeChoice = raw;
+  (deps.setSource ?? ((t: ThemeChoice) => { nativeTheme.themeSource = t; }))(theme);
+  // Mirrored for the next launch's first frame only -- see
+  // src/main/appearance.ts's doc comment.
+  (deps.persist ?? ((t: ThemeChoice) => writeStoredTheme(resolvePaths(homedir()).appearance, t)))(theme);
+  return { status: 'set', theme };
+}
+
 /** The complete set of channels main answers. Adding one means adding it to
  *  the preload's enumerated list as well; tests/main/ipc.test.ts asserts
  *  they match.
@@ -1039,6 +1243,7 @@ export function registerIpc(
       ? conversationFor(db, sessionId, undefined, parseConversationCursor(cursor))
       : { turns: [], nextCursor: null });
   ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown) => sendKeysFor(pid, text));
+  ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
 
   // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing
   // Task 6's TEMPORARY not_implemented stubs in place -- not a second

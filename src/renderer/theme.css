@@ -113,8 +113,22 @@
    the grid alone never needed a bounded viewport (the page just grew and
    the window scrolled), but a live terminal does -- TerminalView's
    ResizeObserver/FitAddon need a real, bounded parent to fit against, not
-   an ever-growing document. */
-html, body, #root { height:100%; }
+   an ever-growing document.
+
+   overflow:hidden too: the document itself must never scroll. Every real
+   scroll surface in this app already manages its own overflow instead
+   (.mainpane, .conv, .rail -- SettingsModal.css's background-lock comment
+   already says as much: "body's own overflow does nothing here -- this
+   app's scrolling lives in these three elements"). But nothing PREVENTED
+   the document from scrolling -- a focus restore or scrollIntoView call
+   is enough to scroll it -- and since .shell is bounded to height:100%,
+   a scrolled document leaves .shell sitting above an empty strip of
+   document with nothing painted in it (reported as "a massive empty
+   footer"; DevTools confirmed .shell itself measured at the right height,
+   with the document's own scrollTop offset the only thing wrong).
+   Blocking the scroll at its source kills the whole bug class instead of
+   chasing whichever call happens to trigger it. */
+html, body, #root { height:100%; overflow:hidden; }
 body {
   margin:0; background:var(--ground); color:var(--ink);
   font-family:var(--f-body); font-size:15px; line-height:1.6;

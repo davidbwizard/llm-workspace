@@ -1,15 +1,36 @@
 import { execFileSync } from 'node:child_process';
 
 export type TmuxResult = { ok: true; stdout: string } | { ok: false; error: string };
-export type TmuxExec = (args: string[]) => TmuxResult;
+/** `input`, when given, is written to the command's stdin. Only load-buffer
+ *  uses it, and it is the reason the message text never appears in an argv:
+ *  argv is world-readable through `ps` for as long as the process lives. */
+export type TmuxExec = (args: string[], input?: string) => TmuxResult;
 
 /** Only names this app generates. Anchored, and deliberately excludes ':'
  *  and '.', which tmux's own target grammar uses for window.pane. */
 export const TMUX_NAME = /^llmws-(claude|codex)-[A-Za-z0-9_-]{1,64}$/;
 
-function defaultExec(args: string[]): TmuxResult {
+/** Buffer names this app may touch. A buffer name reaches tmux's own target
+ *  grammar the same way a session name does, so it gets the same treatment:
+ *  anchored, and only ever a name this code generated -- never anything
+ *  derived from the message text.
+ *
+ *  The shape is `llmws-p<process pid>-<counter>`: two fixed literal
+ *  segments around digits only. Deliberately tighter than a general
+ *  alphanumeric class -- with no letters, no ':' or '.' (tmux's own
+ *  window.pane target grammar) and no shell metacharacter able to appear at
+ *  all, the only strings that pass are ones ipc.ts's own generator
+ *  produces. */
+export const TMUX_BUFFER = /^llmws-p[0-9]{1,10}-[0-9]{1,10}$/;
+
+function defaultExec(args: string[], input?: string): TmuxResult {
   try {
-    return { ok: true, stdout: execFileSync('tmux', args, { timeout: 5000 }).toString() };
+    return {
+      ok: true,
+      stdout: execFileSync('tmux', args, {
+        timeout: 5000, ...(input === undefined ? {} : { input }),
+      }).toString(),
+    };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'tmux failed' };
   }
@@ -34,6 +55,10 @@ function target(name: string): string {
 
 function guard(name: string): void {
   if (!TMUX_NAME.test(name)) throw new Error('refusing a tmux name this app did not generate');
+}
+
+function guardBuffer(buffer: string): void {
+  if (!TMUX_BUFFER.test(buffer)) throw new Error('refusing a tmux buffer name this app did not generate');
 }
 
 export function hasSession(name: string, exec: TmuxExec = defaultExec): boolean {
@@ -111,10 +136,16 @@ export function sendKeyName(name: string, key: KeyName, exec: TmuxExec = default
 }
 
 /** `lines: null` omits -S entirely, which makes tmux capture only the
- *  currently-visible pane instead of walking back through scrollback.
- *  Still used by sendKeysFor (ipc.ts) as a freshness check immediately
- *  before sending a reply -- `lines: 1` there, since it only cares whether
- *  the pane is still there to receive anything, not what it contains. */
+ *  currently-visible pane instead of walking back through scrollback. A
+ *  non-null `lines` is the -S backward count, not the total returned: -S -N
+ *  adds N lines of scrollback ON TOP OF the whole visible pane, so e.g. -S
+ *  -8 against a 24-line default pane returns 32 lines, not 8 (see
+ *  PASTE_SETTLE_CAPTURE_LINES, ipc.ts, for where that number comes from).
+ *  Used by sendKeysFor (ipc.ts) both as a freshness check immediately
+ *  before sending a reply and, for a multi-line send, as the "before"
+ *  snapshot its post-paste settle loop compares against -- 8 lines there,
+ *  not 1, since a change confined to line 2 or 3 of a multi-line input box
+ *  must still be visible to that comparison. */
 export function capturePane(name: string, lines: number | null, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
   return exec(lines === null
@@ -174,4 +205,49 @@ export function listSessionNames(exec: TmuxExec = defaultExec): string[] {
   const r = exec(['list-sessions', '-F', '#{session_name}']);
   if (!r.ok) return [];
   return r.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+}
+
+/** Reads `text` into a private tmux buffer from STDIN, so a multi-line
+ *  message never appears in an argv. Paired with pasteBuffer below, which
+ *  is what actually delivers it -- loading a buffer on its own sends
+ *  nothing anywhere. */
+export function loadBuffer(name: string, buffer: string, text: string, exec: TmuxExec = defaultExec): TmuxResult {
+  guard(name);
+  guardBuffer(buffer);
+  return exec(['load-buffer', '-b', buffer, '-'], text);
+}
+
+/** Delivers a buffer to the pane as a BRACKETED paste (-p) and deletes the
+ *  buffer as it goes (-d).
+ *
+ *  Bracketed paste is the whole mechanism: the foreground program is told
+ *  "this is pasted text", so Claude Code takes the embedded newlines as
+ *  part of one message instead of submitting on each of them the way it
+ *  would for typed ones (measured 2026-09-15). It is delivery, not
+ *  interpretation, which is why it is the one path where the outbound
+ *  sanitiser's newline refusal can be relaxed.
+ *
+ *  That relaxation is safe for a narrower and more fragile reason than
+ *  "a paste executes nothing", and it is worth being precise about: the
+ *  text between the markers is inert ONLY while the message cannot write
+ *  the END marker itself. It cannot, because sanitizeOutbound
+ *  (src/main/outbound.ts) strips ESC and 8-bit CSI, the only two bytes that
+ *  can begin one. Relax that stripping and a message containing
+ *  ESC [ 2 0 1 ~ closes the paste early, and its remainder arrives as live
+ *  keystrokes. See the "strips the escape bytes" test in
+ *  tests/main/outbound.test.ts. */
+export function pasteBuffer(name: string, buffer: string, exec: TmuxExec = defaultExec): TmuxResult {
+  guard(name);
+  guardBuffer(buffer);
+  return exec(['paste-buffer', '-p', '-d', '-b', buffer, '-t', target(name)]);
+}
+
+/** Drops a buffer this app loaded. Only needed when a paste FAILED -- a
+ *  successful paste already deletes it via -d. Server-scoped, so unlike
+ *  every other command here it takes no session target at all; the buffer
+ *  name is the only thing reaching tmux's grammar, and it is still
+ *  guarded. */
+export function deleteBuffer(buffer: string, exec: TmuxExec = defaultExec): TmuxResult {
+  guardBuffer(buffer);
+  return exec(['delete-buffer', '-b', buffer]);
 }

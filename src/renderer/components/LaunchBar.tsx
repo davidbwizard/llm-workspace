@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { LaunchResult } from '../../main/launch.ts';
+import { Icon } from './Icon.tsx';
+import { SettingsModal } from './SettingsModal.tsx';
 import './LaunchBar.css';
 
 // A live terminal only exists once TerminalView actually mounts, and it
@@ -24,6 +26,11 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
   const [cwd, setCwd] = useState('');
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Focus returns here when the modal closes, by whichever route -- Escape,
+  // the close button, Done or the backdrop. A person who opened settings
+  // from the keyboard must not be dropped back at the top of the document.
+  const gearRef = useRef<HTMLButtonElement | null>(null);
 
   async function launch(): Promise<void> {
     const dir = cwd.trim();
@@ -65,6 +72,19 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
       <button type="submit" className="launchgo" disabled={pending}>
         {pending ? 'Launching…' : 'Launch'}
       </button>
+      {/* Beside Launch, per the mockup. A real button, so it is reachable
+          by keyboard and carries a real accessible name -- "Settings", not
+          the glyph, which Icon renders aria-hidden. Phosphor's Gear, not a
+          Unicode gear character: U+2699 renders as a colour emoji on macOS
+          in some fonts, and this app uses none. */}
+      <button type="button" className="launchgear" aria-label="Settings" ref={gearRef}
+        onClick={() => setSettingsOpen(true)}>
+        <Icon name="gear" size={14} />
+      </button>
+      <SettingsModal open={settingsOpen} onClose={() => {
+        setSettingsOpen(false);
+        gearRef.current?.focus();
+      }} />
       {message && <p className="launchmsg" role="status">{message}</p>}
     </form>
   );
