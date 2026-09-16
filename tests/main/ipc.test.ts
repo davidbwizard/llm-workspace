@@ -977,6 +977,27 @@ describe('session:keys', () => {
     ]);
   });
 
+  // The single-line path used to discard sendLiteral's result outright, so
+  // a failed keystroke send returned 'sent' with nothing logged -- the same
+  // defect fixed for the Enter key below, left in place here. A false
+  // refusal would tell the user the send failed and invite a retry, which
+  // could duplicate text that already landed in a live session, so this is
+  // logged rather than refused, same as the Enter path.
+  it('logs, but does not refuse, when the single-line keystroke send itself fails', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = sendKeysFor(4821, 'yes', {
+      has: () => true,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: (args: string[]) => (args.includes('-l')
+        ? { ok: false, error: 'no pane' }
+        : { ok: true, stdout: '' }),
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(errs).toHaveBeenCalledWith('tmux send-keys (literal) failed:', 'no pane');
+    errs.mockRestore();
+  });
+
   // The text is already typed into the pane by the time Enter runs, so a
   // failed Enter is logged, not turned into a refusal -- refusing here
   // would tell the user the send failed and invite a retry, which would

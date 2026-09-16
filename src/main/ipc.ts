@@ -897,7 +897,13 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
   // Concatenating them would let a reply of "Enter" become a keypress.
   // Reached only when the text has no newline at all, which is exactly what
   // the strict sanitiser would have required of it.
-  sendLiteral(name, clean.text, deps.send);
+  const typed = sendLiteral(name, clean.text, deps.send);
+  // A failed keystroke send is logged, not turned into a refusal: the text
+  // may already have reached the pane (tmux applies -l as one call, but the
+  // pane side is out of our control), and a false refusal here would tell
+  // the user the send failed and invite a retry, duplicating a message
+  // that is already sitting in a live session.
+  if (!typed.ok) console.error('tmux send-keys (literal) failed:', typed.error);
   // As above: the text is already typed into the pane, so a failed Enter is
   // logged rather than turned into a refusal, which would invite a retry
   // and duplicate the typed text on next send.
