@@ -925,11 +925,74 @@ describe('session:keys', () => {
     })).toEqual({ status: 'refused', reason: 'session_gone' });
   });
 
-  it('refuses multi-line text before it reaches tmux', () => {
+  // Multi-line is delivered as a BRACKETED PASTE, not as keystrokes
+  // (measured 2026-09-15: Claude Code receives a bracketed paste as one
+  // message and does not submit on the embedded newlines). Three calls, in
+  // this order, and send-keys -l is never one of them.
+  it('delivers multi-line text as a bracketed paste, never as send-keys -l', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const calls: Array<{ args: string[]; input?: string }> = [];
+    const r = sendKeysFor(4821, 'line one\nline two', {
+      has: () => true,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: (args: string[], input?: string) => { calls.push({ args, input }); return { ok: true, stdout: '' }; },
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(calls.map(c => c.args)).toEqual([
+      ['load-buffer', '-b', 'llmws-paste', '-'],
+      ['paste-buffer', '-p', '-d', '-b', 'llmws-paste', '-t', '=llmws-claude-abc:'],
+      ['send-keys', '-t', '=llmws-claude-abc:', 'Enter'],
+    ]);
+    expect(calls[0]!.input).toBe('line one\nline two');
+    // The keystroke path never sees a newline. This is the assertion that
+    // keeps the relaxation confined to the paste path.
+    for (const c of calls) {
+      if (c.args.includes('-l')) expect(c.args.at(-1)).not.toMatch(/\n/);
+    }
+  });
+
+  it('keeps single-line text on the unchanged send-keys -l path, with no buffer involved', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'yes', {
+      has: () => true,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(calls).toEqual([
+      ['send-keys', '-t', '=llmws-claude-abc:', '-l', 'yes'],
+      ['send-keys', '-t', '=llmws-claude-abc:', 'Enter'],
+    ]);
+  });
+
+  it('refuses, and sends no Enter, when the buffer cannot be loaded', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: (args: string[]) => {
+        calls.push(args);
+        return args[0] === 'load-buffer' ? { ok: false, error: 'no server' } : { ok: true, stdout: '' };
+      },
+    });
+    expect(r).toEqual({ status: 'refused', reason: 'session_gone' });
+    expect(calls).toEqual([['load-buffer', '-b', 'llmws-paste', '-']]);
+  });
+
+  // The choice guard is not path-specific: a multi-line message must be
+  // refused while a picker is open exactly as a single-line one is.
+  it('still refuses a multi-line message with prompt_open, and touches no buffer', () => {
     registerSession(4821, 'llmws-claude-abc');
     let called = false;
-    const r = sendKeysFor(4821, 'a\nb', { has: () => true, send: () => { called = true; return { ok: true, stdout: '' }; } });
-    expect(r).toEqual({ status: 'refused', reason: 'contains_newline' });
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: () => { called = true; return { ok: true, stdout: '' }; },
+      promptOpen: () => true,
+    });
+    expect(r).toEqual({ status: 'refused', reason: 'prompt_open' });
     expect(called).toBe(false);
   });
 

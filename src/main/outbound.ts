@@ -18,13 +18,30 @@ const C1_CONTROLS = /[\x80-\x9f]/g;
 const NEWLINE = /[\r\n]/;
 
 /** A newline typed into a pane submits the current line, so multi-line text
- *  becomes several submissions -- a way to smuggle a second message past what
- *  the UI showed as one reply. Refuse; do not silently collapse. */
-export function sanitizeOutbound(raw: unknown): OutboundResult {
+ *  typed with `send-keys -l` becomes several submissions -- a way to smuggle
+ *  a second message past what the UI showed as one reply. That is why the
+ *  default here refuses rather than silently collapsing, and it stays the
+ *  default.
+ *
+ *  `multiline` is the one opt-in, used by exactly one caller: sendKeysFor's
+ *  bracketed-paste path (src/main/ipc.ts), which does not type the text at
+ *  all -- tmux loads it into a buffer and pastes it, and the foreground
+ *  program is told it is pasted text, so the embedded newlines do not
+ *  submit (measured 2026-09-15). Every other rule is identical on both
+ *  paths: non-empty, the 4,000 character cap, and control-character
+ *  stripping, all applied before the text reaches tmux. */
+export function sanitizeOutbound(raw: unknown, opts: { multiline?: boolean } = {}): OutboundResult {
   if (typeof raw !== 'string' || raw.length === 0) return { ok: false, reason: 'empty' };
-  if (NEWLINE.test(raw)) return { ok: false, reason: 'contains_newline' };
+  if (!opts.multiline && NEWLINE.test(raw)) return { ok: false, reason: 'contains_newline' };
   if (raw.length > MAX_REPLY_CHARS) return { ok: false, reason: 'too_long' };
-  const text = raw.replace(C0_EXCEPT_TAB_NEWLINE, '').replace(C1_CONTROLS, '');
-  if (text.length === 0) return { ok: false, reason: 'empty' };
+  const stripped = raw.replace(C0_EXCEPT_TAB_NEWLINE, '').replace(C1_CONTROLS, '');
+  // One newline convention reaches tmux: a pasted CRLF would otherwise
+  // arrive as a stray carriage return inside the buffer.
+  const text = opts.multiline ? stripped.replace(/\r\n?/g, '\n') : stripped;
+  // A message that is nothing but line breaks has nothing to deliver. On
+  // the single-line path this is just the length check it always was.
+  if ((opts.multiline ? text.replace(/\n/g, '') : text).length === 0) {
+    return { ok: false, reason: 'empty' };
+  }
   return { ok: true, text };
 }

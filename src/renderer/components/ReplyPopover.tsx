@@ -7,7 +7,11 @@ import './ReplyPopover.css';
  *  takes no position or rail-shaped prop at all, only pid/prompt/onClose --
  *  the caller decides where to render it (anchoring is its job, not this
  *  component's). */
-const REFUSAL_TEXT: Record<KeysRefusalReason, string> = {
+/** One message per refusal reason. Exported so the conversation's own
+ *  message box says the same thing this popover does rather than keeping a
+ *  second, drifting copy -- these strings were settled against a real
+ *  misfire during part 1 and are not casual wording. */
+export const REFUSAL_TEXT: Record<KeysRefusalReason, string> = {
   not_tmux: 'This session is not running inside tmux, so it cannot be typed into. Reattach it to reply.',
   session_gone: 'That session has ended.',
   invalid_pid: 'Could not reach that session.',

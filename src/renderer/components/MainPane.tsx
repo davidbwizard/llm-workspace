@@ -109,7 +109,15 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
               provider={session?.provider ?? 'claude'}
               // The refresh signal (spec §3.3). Null whenever this process
               // matches no session uniquely -- there is nothing to refresh.
-              events={session?.events ?? null} />}
+              events={session?.events ?? null}
+              // null once the selected pid has left the fleet -- the box is
+              // then disabled with a reason rather than removed (spec §7.1).
+              pid={session ? selection.pid : null}
+              tmux={session?.tmux ?? false}
+              // The pid is already the selection, so this only has to flip
+              // the view -- unlike the rail's Answer, which must select
+              // first (see onOpenTerminal on SessionRail above).
+              onOpenTerminal={() => onSetView('terminal')} />}
       </section>
     </div>
   );

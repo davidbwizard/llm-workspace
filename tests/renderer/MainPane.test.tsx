@@ -6,7 +6,7 @@ import { MainPane } from '../../src/renderer/components/MainPane.tsx';
 // tests/renderer/SessionRail.test.tsx) -- fireEvent.click substitutes for
 // userEvent.click, matching every other renderer test file.
 
-const sessions = [{ pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'x', cwd: '/a', host: 'iterm2', ageSeconds: 1, rssBytes: 1, events: 1, sessionId: 's1' }] as never[];
+const sessions = [{ pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'x', cwd: '/a', host: 'iterm2', ageSeconds: 1, rssBytes: 1, events: 1, sessionId: 's1', tmux: true }] as never[];
 
 // The selection===null branch renders FleetView, which reaches
 // window.fleet directly for History's own paging and each open card's
@@ -143,5 +143,18 @@ describe('MainPane', () => {
     await waitFor(() => expect(api.conversation).toHaveBeenCalledTimes(1));
     rerender(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={bumped} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
     await waitFor(() => expect(screen.getByText('live')).toBeTruthy());
+  });
+
+  it('lets the conversation message its own session, and routes a choice to the terminal', async () => {
+    const api = (window as unknown as { fleet: Record<string, ReturnType<typeof vi.fn>> }).fleet;
+    api.sendKeys = vi.fn().mockResolvedValue({ status: 'refused', reason: 'prompt_open' });
+    const onSetView = vi.fn();
+    render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={onSetView} onClear={() => {}} railSide="left" />);
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'go' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(api.sendKeys).toHaveBeenCalledWith(1, 'go'));
+    fireEvent.click(screen.getByRole('button', { name: /^open terminal$/i }));
+    expect(onSetView).toHaveBeenCalledWith('terminal');
   });
 });

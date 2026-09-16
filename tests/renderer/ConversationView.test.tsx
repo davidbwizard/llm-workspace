@@ -18,7 +18,10 @@ const fmtTime = (ts: string) => new Date(ts).toLocaleTimeString('en-US', { hour:
 // otherwise. One helper, so the component's required props live in one
 // place rather than in twenty-odd render calls.
 function renderConv(props: Partial<React.ComponentProps<typeof ConversationView>> = {}) {
-  return render(<ConversationView sessionId="s1" provider="claude" events={null} {...props} />);
+  return render(
+    <ConversationView sessionId="s1" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} {...props} />,
+  );
 }
 
 beforeEach(() => {
@@ -304,7 +307,8 @@ describe('ConversationView', () => {
     const scroller = container.querySelector('.conv')!;
     fireEvent.scroll(scroller, { target: { scrollTop: 40 } }); // starts s1's older-page fetch, left pending
 
-    rerender(<ConversationView sessionId="s2" provider="claude" events={null} />);
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(screen.getByText('session B turn')).toBeTruthy());
 
     // Let session A's older-page fetch resolve well after session B has
@@ -367,7 +371,8 @@ describe('ConversationView', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { rerender } = renderConv({ sessionId: 's1' });
 
-    rerender(<ConversationView sessionId="s2" provider="claude" events={null} />);
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(screen.getByText('session B turn')).toBeTruthy());
 
     // Let session A's mount fetch reject well after session B has landed.
@@ -396,7 +401,8 @@ describe('ConversationView', () => {
     const { rerender } = renderConv({ sessionId: 's1' });
     await waitFor(() => expect(screen.getByText(/could not be loaded/i)).toBeTruthy());
 
-    rerender(<ConversationView sessionId="s2" provider="claude" events={null} />);
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
     expect(screen.queryByText(/could not be loaded/i)).toBeNull();
     consoleError.mockRestore();
@@ -844,10 +850,12 @@ describe('ConversationView -- live refresh from the events count', () => {
 
   it('refetches the newest page and shows the new turn when the events count changes', async () => {
     const calls = fleetReturning([first, second]);
-    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
 
-    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(screen.getByText('arrived while you watched')).toBeTruthy());
     // The refetch takes NO cursor -- it is the newest page, not a page walk.
     expect(calls).toEqual([['s1', undefined], ['s1', undefined]]);
@@ -855,25 +863,30 @@ describe('ConversationView -- live refresh from the events count', () => {
 
   it('does not refetch on the very first render, which the mount fetch already covered', async () => {
     const calls = fleetReturning([first]);
-    const { container } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    const { container } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
     expect(calls).toHaveLength(1);
   });
 
   it('does not refetch when the events count is unchanged', async () => {
     const calls = fleetReturning([first, second]);
-    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
-    rerender(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await Promise.resolve();
     expect(calls).toHaveLength(1);
   });
 
   it('does not refetch for a session whose events count is unknown', async () => {
     const calls = fleetReturning([first, second]);
-    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={null} />);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
-    rerender(<ConversationView sessionId="s1" provider="claude" events={null} />);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await Promise.resolve();
     expect(calls).toHaveLength(1);
   });
@@ -896,14 +909,16 @@ describe('ConversationView -- live refresh from the events count', () => {
         return calls.length === 1 ? first : second;
       },
     };
-    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
 
     const scroller = container.querySelector('.conv')!;
     fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
 
-    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(screen.getByText('arrived while you watched')).toBeTruthy());
 
     // Scrolling to the top again pages from the OLDER cursor the prepend
@@ -926,10 +941,12 @@ describe('ConversationView -- live refresh from the events count', () => {
       },
     };
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
 
-    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(consoleError).toHaveBeenCalledWith(
       'Conversation refresh fetch failed:', expect.any(Error)));
 
@@ -968,14 +985,17 @@ describe('ConversationView -- live refresh from the events count', () => {
       },
     };
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
 
     // Bump events on session s1 -- fires the live-refresh fetch, held pending.
-    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
 
     // Switch sessions before that refresh resolves.
-    rerender(<ConversationView sessionId="s2" provider="claude" events={null} />);
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(screen.getByText('session B turn')).toBeTruthy());
 
     // Let session s1's live-refresh fetch reject well after s2 has landed.
@@ -1001,16 +1021,19 @@ describe('ConversationView -- live refresh from the events count', () => {
   // following case needs no stub while the staying-put case does.
   it('follows the newest message while the reader is at the bottom', async () => {
     fleetReturning([first, second]);
-    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
-    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(screen.getByText('arrived while you watched')).toBeTruthy());
     expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
   });
 
   it('stays put and offers Jump to latest when the reader has scrolled up', async () => {
     fleetReturning([first, second]);
-    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
 
     const scroller = container.querySelector('.conv')!;
@@ -1024,7 +1047,8 @@ describe('ConversationView -- live refresh from the events count', () => {
     // cursor-agnostic fleetReturning mock would hand it the wrong page.
     fireEvent.scroll(scroller, { target: { scrollTop: 200 } }); // 3300px from the bottom
 
-    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy());
     // The view did not move itself.
     expect(scroller.scrollTop).toBe(200);
@@ -1032,14 +1056,16 @@ describe('ConversationView -- live refresh from the events count', () => {
 
   it('clears Jump to latest once the reader is back at the bottom', async () => {
     fleetReturning([first, second]);
-    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
 
     const scroller = container.querySelector('.conv')!;
     Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
     Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
     fireEvent.scroll(scroller, { target: { scrollTop: 200 } }); // see note above
-    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy());
 
     fireEvent.scroll(scroller, { target: { scrollTop: 3500 } }); // at the bottom
@@ -1048,18 +1074,126 @@ describe('ConversationView -- live refresh from the events count', () => {
 
   it('jumps to the newest message when the button is pressed, and hides itself', async () => {
     fleetReturning([first, second]);
-    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
 
     const scroller = container.querySelector('.conv')!;
     Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
     Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
     fireEvent.scroll(scroller, { target: { scrollTop: 200 } }); // see note above
-    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
 
     const jump = await screen.findByRole('button', { name: /jump to latest/i });
     fireEvent.click(jump);
     expect(scroller.scrollTop).toBe(4000);
     expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+});
+
+describe('ConversationView -- the message box', () => {
+  function withSendKeys(result: unknown) {
+    const sendKeys = vi.fn(async () => result);
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns, nextCursor: null }),
+      sendKeys,
+    };
+    return sendKeys;
+  }
+
+  it('sends what was typed through sendKeys, and clears the box', async () => {
+    const sendKeys = withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, 'commit it'));
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(''));
+  });
+
+  // Spec §7.2: Enter sends, with no confirmation, however long the message.
+  // Shift+Enter is the newline, so a multi-line message is typed, not pasted
+  // in from somewhere else.
+  it('inserts a newline on Shift+Enter rather than sending', async () => {
+    const sendKeys = withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'line one' } });
+    fireEvent.keyDown(box, { key: 'Enter', shiftKey: true });
+    expect(sendKeys).not.toHaveBeenCalled();
+    expect((box as HTMLTextAreaElement).value).toBe('line one');
+  });
+
+  it('sends a multi-line message as one message', async () => {
+    const sendKeys = withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'one\ntwo\nthree' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledTimes(1));
+    expect(sendKeys).toHaveBeenCalledWith(4821, 'one\ntwo\nthree');
+  });
+
+  it('sends nothing at all for an empty box', async () => {
+    const sendKeys = withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  // The popover's wording, not a second copy of it -- part 1 settled these
+  // strings against a real misfire (typed text answering a picker).
+  it('shows the popover\'s own refusal wording, and keeps the text so it can be retried', async () => {
+    withSendKeys({ status: 'refused', reason: 'session_gone' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByText('That session has ended.')).toBeTruthy());
+    expect((box as HTMLTextAreaElement).value).toBe('commit it');
+  });
+
+  // Part 1's guard stands: this box does not answer choices. A typed reply
+  // to a picker is ignored and Enter selects whatever is highlighted --
+  // measured 2026-09-15, "blue" recorded as "Red".
+  it('offers Open Terminal when a choice is open, rather than only saying no', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const onOpenTerminal = vi.fn();
+    renderConv({ onOpenTerminal });
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'blue' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByText(/showing a choice/i)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /open terminal/i }));
+    expect(onOpenTerminal).toHaveBeenCalled();
+  });
+
+  // Spec §7.1: never hidden. A box that vanishes reads as a missing
+  // feature; a disabled one reads as a state.
+  it('shows the box disabled, with a reason, for a session that is not tmux-backed', async () => {
+    withSendKeys({ status: 'sent' });
+    renderConv({ tmux: false });
+    const box = await screen.findByLabelText('Message this session');
+    expect((box as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.getByText(/not running inside tmux/i)).toBeTruthy();
+  });
+
+  it('shows the box disabled, with a reason, for a session with no live process', async () => {
+    withSendKeys({ status: 'sent' });
+    renderConv({ pid: null });
+    const box = await screen.findByLabelText('Message this session');
+    expect((box as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.getByText('This session is not running.')).toBeTruthy();
+  });
+
+  it('still shows the box when the session has no conversation to show', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: [], nextCursor: null }),
+      sendKeys: vi.fn(),
+    };
+    renderConv();
+    expect(await screen.findByLabelText('Message this session')).toBeTruthy();
   });
 });

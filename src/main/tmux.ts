@@ -1,15 +1,29 @@
 import { execFileSync } from 'node:child_process';
 
 export type TmuxResult = { ok: true; stdout: string } | { ok: false; error: string };
-export type TmuxExec = (args: string[]) => TmuxResult;
+/** `input`, when given, is written to the command's stdin. Only load-buffer
+ *  uses it, and it is the reason the message text never appears in an argv:
+ *  argv is world-readable through `ps` for as long as the process lives. */
+export type TmuxExec = (args: string[], input?: string) => TmuxResult;
 
 /** Only names this app generates. Anchored, and deliberately excludes ':'
  *  and '.', which tmux's own target grammar uses for window.pane. */
 export const TMUX_NAME = /^llmws-(claude|codex)-[A-Za-z0-9_-]{1,64}$/;
 
-function defaultExec(args: string[]): TmuxResult {
+/** Buffer names this app may touch. A buffer name reaches tmux's own target
+ *  grammar the same way a session name does, so it gets the same treatment:
+ *  anchored, and only ever a literal this code chose -- never anything
+ *  derived from the message text. */
+export const TMUX_BUFFER = /^llmws-[a-z]{1,16}$/;
+
+function defaultExec(args: string[], input?: string): TmuxResult {
   try {
-    return { ok: true, stdout: execFileSync('tmux', args, { timeout: 5000 }).toString() };
+    return {
+      ok: true,
+      stdout: execFileSync('tmux', args, {
+        timeout: 5000, ...(input === undefined ? {} : { input }),
+      }).toString(),
+    };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'tmux failed' };
   }
@@ -34,6 +48,10 @@ function target(name: string): string {
 
 function guard(name: string): void {
   if (!TMUX_NAME.test(name)) throw new Error('refusing a tmux name this app did not generate');
+}
+
+function guardBuffer(buffer: string): void {
+  if (!TMUX_BUFFER.test(buffer)) throw new Error('refusing a tmux buffer name this app did not generate');
 }
 
 export function hasSession(name: string, exec: TmuxExec = defaultExec): boolean {
@@ -174,4 +192,29 @@ export function listSessionNames(exec: TmuxExec = defaultExec): string[] {
   const r = exec(['list-sessions', '-F', '#{session_name}']);
   if (!r.ok) return [];
   return r.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+}
+
+/** Reads `text` into a private tmux buffer from STDIN, so a multi-line
+ *  message never appears in an argv. Paired with pasteBuffer below, which
+ *  is what actually delivers it -- loading a buffer on its own sends
+ *  nothing anywhere. */
+export function loadBuffer(name: string, buffer: string, text: string, exec: TmuxExec = defaultExec): TmuxResult {
+  guard(name);
+  guardBuffer(buffer);
+  return exec(['load-buffer', '-b', buffer, '-'], text);
+}
+
+/** Delivers a buffer to the pane as a BRACKETED paste (-p) and deletes the
+ *  buffer as it goes (-d).
+ *
+ *  Bracketed paste is the whole mechanism: the foreground program is told
+ *  "this is pasted text", so Claude Code takes the embedded newlines as
+ *  part of one message instead of submitting on each of them the way it
+ *  would for typed ones (measured 2026-09-15). It executes nothing -- it is
+ *  delivery, not interpretation -- which is why it is the one path where
+ *  the outbound sanitiser's newline refusal can be relaxed. */
+export function pasteBuffer(name: string, buffer: string, exec: TmuxExec = defaultExec): TmuxResult {
+  guard(name);
+  guardBuffer(buffer);
+  return exec(['paste-buffer', '-p', '-d', '-b', buffer, '-t', target(name)]);
 }

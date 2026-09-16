@@ -4,7 +4,9 @@ import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationStep, ConversationTurn } from '../../store/conversation.ts';
 import type { MatchQuality } from '../../discovery/match.ts';
 import type { Provider } from '../../core/types.ts';
+import type { KeysResult } from '../../main/ipc.ts';
 import { ProviderMark } from './ProviderMark.tsx';
+import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import './ConversationView.css';
 
 /** Transcript text is untrusted, so markdown rendering is locked down:
@@ -155,6 +157,89 @@ export function mergeNewest(current: ConversationTurn[], incoming: ConversationT
   return merged;
 }
 
+/** The message box under the conversation (spec §3.4). Never hidden, only
+ *  ever disabled with a reason: a box that vanishes reads as a missing
+ *  feature, a disabled one reads as a state (spec §7.1, David's own
+ *  ruling).
+ *
+ *  Sends through the same session:keys channel the rail's popover uses, so
+ *  every guard part 1 established still applies -- including the one that
+ *  matters most: this box does not answer choices. A typed reply to a
+ *  picker is ignored and Enter selects whatever option is highlighted
+ *  (measured 2026-09-15, "blue" recorded as "Red"), so a prompt_open
+ *  refusal offers the Terminal view instead of a retry. */
+function MessageBox({ pid, tmux, onOpenTerminal }: {
+  pid: number | null;
+  tmux: boolean;
+  onOpenTerminal: () => void;
+}) {
+  const [text, setText] = useState('');
+  const [message, setMessage] = useState<string | null>(null);
+  const [choiceOpen, setChoiceOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  const disabledReason = pid === null
+    ? 'This session is not running.'
+    : !tmux ? REFUSAL_TEXT.not_tmux : null;
+
+  async function send(): Promise<void> {
+    if (pid === null || text.trim() === '' || sending) return;
+    setSending(true);
+    setMessage(null);
+    setChoiceOpen(false);
+    try {
+      const r: KeysResult | undefined = await window.fleet?.sendKeys(pid, text);
+      if (r?.status === 'sent') { setText(''); return; }
+      // The text is deliberately KEPT on a refusal: the person can fix
+      // whatever was wrong (answer the choice, reattach) and press Enter
+      // again, rather than retyping what they already wrote.
+      setMessage(r ? REFUSAL_TEXT[r.reason] : 'Could not reach the app.');
+      setChoiceOpen(r?.status === 'refused' && r.reason === 'prompt_open');
+    } catch (err) {
+      // A rejected sendKeys means the message did NOT go out, and the one
+      // thing that must never happen is the box looking like it did. Narrow
+      // (it wraps a single await, so it cannot swallow a render error) and
+      // never silent: the cause is logged, the person is told, and the text
+      // is kept for a retry exactly as on a returned refusal above.
+      console.error('Conversation message send failed:', err);
+      setMessage('Could not reach the app.');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="convbox">
+      <textarea
+        className="convinput"
+        aria-label="Message this session"
+        rows={2}
+        value={text}
+        disabled={disabledReason !== null || sending}
+        placeholder={disabledReason ?? 'Message this session'}
+        onChange={e => setText(e.target.value)}
+        // Enter sends, with no confirmation, however long the message
+        // (spec §7.2). Shift+Enter is the line break, which is what makes
+        // a multi-line message typeable at all.
+        onKeyDown={e => {
+          if (e.key !== 'Enter' || e.shiftKey) return;
+          e.preventDefault();
+          void send();
+        }}
+      />
+      {disabledReason !== null && <p className="convmsg">{disabledReason}</p>}
+      {message !== null && (
+        <p className="convmsg" role="status">
+          {message}
+          {choiceOpen && tmux && (
+            <button type="button" className="convsend" onClick={onOpenTerminal}>Open Terminal</button>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** The clean half of the toggle: what was said, not how it was rendered.
  *  This is the only view a non-tmux session can have, and it is still a real
  *  upgrade on the card -- the card shows one line.
@@ -177,7 +262,7 @@ export function mergeNewest(current: ConversationTurn[], incoming: ConversationT
  *  in the moment right after it launches, before its first events are
  *  written and ingested; and no match info at all (match omitted) falls
  *  back to a neutral message rather than asserting either specific claim. */
-export function ConversationView({ sessionId, match, provider, events }: {
+export function ConversationView({ sessionId, match, provider, events, pid, tmux, onOpenTerminal }: {
   sessionId: string | null;
   match?: MatchQuality;
   /** Which CLI this session is, so the agent's meta line carries that
@@ -188,6 +273,16 @@ export function ConversationView({ sessionId, match, provider, events }: {
    *  fleet:update push MainPane already receives. Null when this process
    *  matches no session uniquely -- there is nothing to refresh then. */
   events: number | null;
+  /** The live process behind this pane, or null when the selected pid has
+   *  left the fleet. Null is what disables the box with "This session is
+   *  not running." rather than removing it. */
+  pid: number | null;
+  /** Whether that process is tmux-backed. Only a tmux-backed session can be
+   *  typed into at all (src/main/ipc.ts's sendKeysFor refuses not_tmux). */
+  tmux: boolean;
+  /** Switches the pane to the Terminal view -- the only way to answer a
+   *  choice, which this box deliberately cannot do. */
+  onOpenTerminal: () => void;
 }) {
   const [page, setPage] = useState<ConversationPage | null>(null);
   /** True once the mount fetch (below) has rejected. This is the one call
@@ -467,6 +562,7 @@ export function ConversationView({ sessionId, match, provider, events }: {
       {missedLatest && (
         <button type="button" className="convjump" onClick={jumpToLatest}>Jump to latest</button>
       )}
+      <MessageBox pid={pid} tmux={tmux} onOpenTerminal={onOpenTerminal} />
     </div>
   );
 }

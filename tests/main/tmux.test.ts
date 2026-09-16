@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   sendLiteral, sendKeyName, hasSession, capturePane, pipePane, paneSize, TMUX_NAME,
-  listSessionNames, setSessionOption, type KeyName,
+  listSessionNames, setSessionOption, loadBuffer, pasteBuffer, TMUX_BUFFER, type KeyName,
 } from '../../src/main/tmux.ts';
 
 function spy() {
@@ -177,5 +177,38 @@ describe('listSessionNames', () => {
   // "nothing to adopt", not a thrown exception or a caller-visible failure.
   it('returns an empty array, not an error, when tmux has no server running', () => {
     expect(listSessionNames(() => ({ ok: false, error: 'no server running on ...' }))).toEqual([]);
+  });
+});
+
+describe('bracketed paste', () => {
+  it('loads the text on stdin, never in an argv a ps on this machine could read', () => {
+    const calls: Array<{ args: string[]; input?: string }> = [];
+    const exec = (args: string[], input?: string) => { calls.push({ args, input }); return { ok: true as const, stdout: '' }; };
+    expect(loadBuffer('llmws-claude-abc', 'llmws-paste', 'line one\nline two', exec).ok).toBe(true);
+    expect(calls[0]!.args).toEqual(['load-buffer', '-b', 'llmws-paste', '-']);
+    expect(calls[0]!.input).toBe('line one\nline two');
+    expect(calls[0]!.args.join(' ')).not.toContain('line one');
+  });
+
+  it('pastes with -p (bracketed) and -d (delete the buffer), at this session\'s pane', () => {
+    const calls: string[][] = [];
+    const exec = (args: string[]) => { calls.push(args); return { ok: true as const, stdout: '' }; };
+    expect(pasteBuffer('llmws-claude-abc', 'llmws-paste', exec).ok).toBe(true);
+    expect(calls[0]).toEqual(['paste-buffer', '-p', '-d', '-b', 'llmws-paste', '-t', '=llmws-claude-abc:']);
+  });
+
+  it('refuses a session name this app did not generate, same guard as every other command here', () => {
+    expect(() => loadBuffer('someone-elses', 'llmws-paste', 'x')).toThrow(/refusing a tmux name/);
+    expect(() => pasteBuffer('someone-elses', 'llmws-paste')).toThrow(/refusing a tmux name/);
+  });
+
+  // The buffer name reaches tmux's own target grammar, so it gets the same
+  // treatment the session name does: anchored, and app-generated. Nothing
+  // derived from the message text may ever get there.
+  it('refuses a buffer name this app did not generate', () => {
+    expect(() => loadBuffer('llmws-claude-abc', 'default', 'x')).toThrow(/refusing a tmux buffer name/);
+    expect(() => pasteBuffer('llmws-claude-abc', '../x', )).toThrow(/refusing a tmux buffer name/);
+    expect(TMUX_BUFFER.test('llmws-paste')).toBe(true);
+    expect(TMUX_BUFFER.test('llmws-paste; rm -rf ~')).toBe(false);
   });
 });

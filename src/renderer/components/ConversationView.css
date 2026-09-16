@@ -125,3 +125,19 @@
   background:var(--raised); border:1px solid var(--line-soft);
   border-radius:var(--r-md); padding:8px 12px; }
 .conv[data-style="c"] .turn.user .meta { justify-content:flex-end; }
+/* The message box, pinned under the scroller rather than inside it, so it
+   stays put while the conversation moves. Fixed at the app's own body size
+   rather than --conv-size: this is a control, not part of the transcript,
+   and it should not resize when the reading size does. */
+.convbox { flex:none; border-top:1px solid var(--line); padding:10px 18px 12px;
+  background:var(--surface); }
+.convinput { display:block; width:100%; resize:vertical; min-height:44px; max-height:30vh;
+  font-family:var(--f-body); font-size:13px; line-height:1.5; color:var(--ink);
+  background:var(--ground); border:1px solid var(--line); border-radius:var(--r-sm);
+  padding:8px 10px; }
+.convinput:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.convinput:disabled { color:var(--muted); cursor:default; }
+.convmsg { margin:6px 0 0; font-size:11px; color:var(--muted); }
+.convsend { margin-left:8px; font-family:var(--f-mono); font-size:11px; color:var(--accent);
+  background:none; border:1px solid var(--line); border-radius:20px; padding:3px 10px; cursor:pointer; }
+.convsend:hover { border-color:color-mix(in srgb,var(--accent) 40%,transparent); }

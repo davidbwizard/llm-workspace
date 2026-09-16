@@ -22,7 +22,10 @@ import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveS
 import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
-import { sendLiteral, sendKeyName, capturePane, setSessionOption, type TmuxResult } from './tmux.ts';
+import {
+  sendLiteral, sendKeyName, capturePane, setSessionOption, loadBuffer, pasteBuffer,
+  type TmuxResult, type TmuxExec,
+} from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
 import { conversationFor, type ConversationCursor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
@@ -708,10 +711,22 @@ export type KeysResult = { status: 'sent' } | { status: 'refused'; reason: KeysR
 
 type KeysDeps = {
   has?: (n: string) => boolean;
-  send?: (args: string[]) => TmuxResult;
+  /** The tmux exec for every outbound call this function makes -- the
+   *  keystroke pair AND the three-call paste path -- so a test captures all
+   *  of them, in order, through one mock. Widened to TmuxExec because
+   *  load-buffer takes its text on stdin; a mock written as
+   *  `(args: string[]) => TmuxResult` is still assignable, so every existing
+   *  test keeps compiling unchanged. */
+  send?: TmuxExec;
   capture?: (args: string[]) => TmuxResult;
   promptOpen?: (pid: number) => boolean;
 };
+
+/** The one buffer this app ever writes. A fixed literal, checked by
+ *  tmux.ts's own TMUX_BUFFER before it becomes a tmux target -- never
+ *  derived from the message, never per-session (each paste deletes the
+ *  buffer as it lands, so there is nothing to collide over). */
+const PASTE_BUFFER = 'llmws-paste';
 
 /** The renderer sends a pid and text, never a session name. Refusals are
  *  returned, not thrown: the card has to be able to say WHY nothing happened,
@@ -721,8 +736,10 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
     return { status: 'refused', reason: 'invalid_pid' };
   }
   // Sanitise BEFORE resolving, so malformed text never reaches tmux even
-  // momentarily, and the cheap check runs first.
-  const clean = sanitizeOutbound(raw);
+  // momentarily, and the cheap check runs first. Multi-line is allowed
+  // here, but ONLY because the branch below routes it to a bracketed paste
+  // -- the keystroke path never sees a newline (see the send block).
+  const clean = sanitizeOutbound(raw, { multiline: true });
   if (!clean.ok) return { status: 'refused', reason: clean.reason };
 
   // tmuxNameForPid distinguishes "never registered" (an ordinary iTerm
@@ -747,8 +764,25 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
   const captured = capturePane(name, 1, deps.capture);
   if (!captured.ok) return { status: 'refused', reason: 'session_gone' };
 
+  if (clean.text.includes('\n')) {
+    // Bracketed paste (spec 2026-09-15-conversation-pane-design.md §3.4).
+    // Three calls, never concatenated: load the text into our own buffer,
+    // paste it as bracketed text and delete the buffer in the same command,
+    // then send Enter as a key name our code chose. A failed load or paste
+    // refuses BEFORE any Enter goes out, so a half-delivered message is
+    // never submitted.
+    const loaded = loadBuffer(name, PASTE_BUFFER, clean.text, deps.send);
+    if (!loaded.ok) return { status: 'refused', reason: 'session_gone' };
+    const pasted = pasteBuffer(name, PASTE_BUFFER, deps.send);
+    if (!pasted.ok) return { status: 'refused', reason: 'session_gone' };
+    sendKeyName(name, 'Enter', deps.send);
+    return { status: 'sent' };
+  }
+
   // Two calls, always. Text with -l; Enter as a key name our code chose.
   // Concatenating them would let a reply of "Enter" become a keypress.
+  // Reached only when the text has no newline at all, which is exactly what
+  // the strict sanitiser would have required of it.
   sendLiteral(name, clean.text, deps.send);
   sendKeyName(name, 'Enter', deps.send);
   return { status: 'sent' };
