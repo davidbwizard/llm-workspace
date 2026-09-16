@@ -117,18 +117,18 @@
   color:var(--muted); display:inline-flex; align-items:center; }
 .settingsprevturn-assistant .settingsprevwho { color:var(--accent); }
 .settingsprevwhen { font-family:var(--f-mono); font-size:calc(var(--prev-size,16px) * .6875); color:var(--faint); }
-/* Deliberately NOT matching the design mockup's own turn-text colours here.
-   The mockup gives the AGENT the brighter ink and the user ink-2; the real,
-   shipped ConversationView.css does the opposite on purpose (user's text is
-   ink + font-weight:600, agent's is ink-2) because the human's own prompts
-   are what a reader scans for when following a transcript back. This
-   preview mirrors the real, running pane -- not the mockup, which predates
-   other already-shipped changes on this branch -- so it stays ink-2/ink
-   here even though the mockup disagrees. Do not "fix" this back toward the
-   mockup; the mismatch is a real, open question about the CONVERSATION
-   pane itself, not a bug in this preview. */
-.settingsprevtext { margin:0; color:var(--ink-2); }
-.settingsprevturn-user .settingsprevtext { color:var(--ink); font-weight:600; }
+/* Mirrors ConversationView.css's own .turn-text / .turn.user .turn-text
+   rule (check that file, not this comment, before trusting the colours
+   below): the agent's replies render at full strength (--ink) and the
+   user's dimmer (--ink-2), with no font-weight difference between the two.
+   That is the opposite of what this preview showed before -- it was built
+   against an earlier design mockup that gave the USER the brighter ink and
+   a font-weight:600 cue, and was never updated when 262b793 flipped the
+   real pane to match the Sep 2026 design artifact instead. A preview that
+   contradicts the pane it previews is worse than no preview, so if the real
+   pane's emphasis changes again, this must follow it, not the mockup. */
+.settingsprevtext { margin:0; color:var(--ink); }
+.settingsprevturn-user .settingsprevtext { color:var(--ink-2); }
 /* Style c: the user's turn moves into a neutral, right-aligned bubble --
    neutral rather than accent, matching ConversationView.css's own reasoning
    (the accent is style a's agent cue; reusing it here would put two
