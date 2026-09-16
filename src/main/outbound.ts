@@ -49,12 +49,19 @@ const NEWLINE = /[\r\n]/;
  *
  *  That newline-safety depends on the foreground program having requested
  *  bracketed paste mode (xterm mode 2004); only a program that asked for it
- *  gets told the text is pasted at all. Claude Code was measured doing so
- *  on 2026-09-15. Codex has never been measured on this path -- if it (or
- *  any other foreground program) has not requested mode 2004, tmux's paste
- *  degrades to raw text with the newlines still embedded, and lines 2..n
- *  each run as their own submission, which is the exact failure this
- *  refusal exists to prevent. */
+ *  gets told the text is pasted at all. If a program has not requested it,
+ *  tmux's paste degrades to raw text with the newlines still embedded, and
+ *  lines 2..n each run as their own submission, which is the exact failure
+ *  this refusal exists to prevent.
+ *
+ *  Claude Code was measured requesting it on 2026-09-15, and Codex on
+ *  2026-09-16 -- both report `bracket_paste_flag=1`. tmux DOES expose this
+ *  per pane, contrary to what an earlier version of this comment said:
+ *  `tmux display-message -p -t <target> '#{bracket_paste_flag}'` on tmux
+ *  3.7c. Nothing reads it before sending today, and adding that check is
+ *  not obviously right -- a program that has not asked for bracketed paste
+ *  is one this app cannot safely send multi-line text to at all, so the
+ *  question it raises is what to do instead, not how to detect it. */
 export function sanitizeOutbound(raw: unknown, opts: { multiline?: boolean } = {}): OutboundResult {
   if (typeof raw !== 'string' || raw.length === 0) return { ok: false, reason: 'empty' };
   if (!opts.multiline && NEWLINE.test(raw)) return { ok: false, reason: 'contains_newline' };
