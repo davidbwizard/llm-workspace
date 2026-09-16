@@ -140,6 +140,29 @@ describe('ConversationView.css: markdown replies and steps', () => {
   });
 });
 
+describe('ConversationView.css: the message box\'s length counter', () => {
+  it('is quiet under the cap -- same muted tone as the rest of the box\'s status copy', () => {
+    expect(blockAfter('.convcount {')).toMatch(/color:\s*var\(--muted\)/);
+  });
+
+  // --signal, not --critical: OpenSessionCard.css's own comment on its
+  // unread dot is explicit that --critical is reserved for "waiting on
+  // you" alone and must stay unambiguous. --signal is the "deliberately
+  // less urgent" warning tone already used for refusal copy elsewhere
+  // (LaunchBar.css's .launchmsg, ReplyPopover.css's .replymsg).
+  it('takes the app\'s existing warning colour, not the more severe one, at or over the cap', () => {
+    expect(blockAfter('.convcount-warn {')).toMatch(/color:\s*var\(--signal\)/);
+    expect(blockAfter('.convcount-warn {')).not.toMatch(/var\(--critical\)/);
+  });
+
+  it('hides the over-cap announcement visually while keeping it readable to assistive tech', () => {
+    const rule = blockAfter('.convannounce {');
+    expect(rule).toMatch(/position:\s*absolute/);
+    expect(rule).toMatch(/clip-path:\s*inset\(50%\)/);
+    expect(rule).not.toMatch(/display:\s*none/);
+  });
+});
+
 // Stylesheets are global in this app. Every message here used class "said",
 // which SessionCard.css also styles with a 2-line clamp and overflow:hidden
 // -- so every reply longer than two lines was cut off in the real window,

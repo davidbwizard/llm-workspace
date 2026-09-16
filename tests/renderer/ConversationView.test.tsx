@@ -1,7 +1,12 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
-import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop, mergeNewest, clearDrafts } from '../../src/renderer/components/ConversationView.tsx';
+import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop, mergeNewest, clearDrafts,
+  messageCounter, MAX_REPLY_CHARS as CONV_MAX_REPLY_CHARS } from '../../src/renderer/components/ConversationView.tsx';
+// The main-process cap, imported here ONLY because this is a test, not
+// renderer code -- src/renderer/** itself must never import a value out of
+// src/main/**. See the drift test below.
+import { MAX_REPLY_CHARS as MAIN_MAX_REPLY_CHARS } from '../../src/main/outbound.ts';
 
 const turns = [
   { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests', steps: [] },
@@ -1099,16 +1104,19 @@ describe('ConversationView -- live refresh from the events count', () => {
   });
 });
 
-describe('ConversationView -- the message box', () => {
-  function withSendKeys(result: unknown) {
-    const sendKeys = vi.fn(async () => result);
-    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      conversation: async () => ({ turns, nextCursor: null }),
-      sendKeys,
-    };
-    return sendKeys;
-  }
+// Module-scoped (not local to the "message box" describe below) so the
+// length-counter tests further down can set up the same sendKeys mock
+// without a second, drifting copy of it.
+function withSendKeys(result: unknown) {
+  const sendKeys = vi.fn(async () => result);
+  (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+    conversation: async () => ({ turns, nextCursor: null }),
+    sendKeys,
+  };
+  return sendKeys;
+}
 
+describe('ConversationView -- the message box', () => {
   it('sends what was typed through sendKeys, and clears the box', async () => {
     const sendKeys = withSendKeys({ status: 'sent' });
     renderConv();
@@ -1377,5 +1385,154 @@ describe('ConversationView -- the message box', () => {
     };
     renderConv();
     expect(await screen.findByLabelText('Message this session')).toBeTruthy();
+  });
+});
+
+// A reviewer suggested `maxLength` on the textarea; rejected because
+// maxLength silently truncates a paste -- 5,000 characters in, 4,000 shown,
+// with no sign the rest was dropped. This counter is the alternative: the
+// cap becomes visible before it's hit, and the server-side cap in
+// sanitizeOutbound (src/main/outbound.ts) remains the only thing that ever
+// refuses a send.
+describe('messageCounter', () => {
+  it('reads nothing at all comfortably under the cap', () => {
+    expect(messageCounter(3599)).toBeNull();
+  });
+
+  it('appears once the length reaches 90% of the cap, reading the remaining budget', () => {
+    expect(messageCounter(3600)).toEqual({ label: '400 left', warn: false });
+  });
+
+  it('reads "0 left", styled as a warning, at exactly the cap', () => {
+    expect(messageCounter(4000)).toEqual({ label: '0 left', warn: true });
+  });
+
+  it('reads how much to cut, not a clamped zero, once past the cap', () => {
+    expect(messageCounter(5000)).toEqual({ label: '1,000 over', warn: true });
+  });
+
+  it('accepts a caller-supplied cap rather than only the default', () => {
+    expect(messageCounter(90, 100)).toEqual({ label: '10 left', warn: false });
+  });
+
+  // The one thing this whole feature exists to keep true: the renderer's
+  // idea of the cap and the main process's actual enforcement
+  // (sanitizeOutbound, src/main/outbound.ts) must never silently drift
+  // apart. This is a value import into a TEST, not renderer code, so it
+  // does not run into the "no src/main value imports in the renderer"
+  // constraint that keeps this constant redeclared rather than imported in
+  // ConversationView.tsx itself.
+  it('keeps its cap equal to the main process enforcement it mirrors', () => {
+    expect(CONV_MAX_REPLY_CHARS).toBe(MAIN_MAX_REPLY_CHARS);
+  });
+});
+
+describe('ConversationView -- the message box\'s length counter', () => {
+  it('shows no counter element at all while the message is comfortably short', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(3599) } });
+    expect(container.querySelector('.convcount')).toBeNull();
+  });
+
+  it('appears at the 3,600-character threshold reading the remaining budget', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(3600) } });
+    expect(container.querySelector('.convcount')?.textContent).toBe('400 left');
+    expect(container.querySelector('.convcount')?.classList.contains('convcount-warn')).toBe(false);
+  });
+
+  it('reads "0 left" and takes the warning styling at exactly the cap', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(4000) } });
+    const counter = container.querySelector('.convcount')!;
+    expect(counter.textContent).toBe('0 left');
+    expect(counter.classList.contains('convcount-warn')).toBe(true);
+  });
+
+  it('shows the over-by amount, not a clamped "0 left", once past the cap', async () => {
+    withSendKeys({ status: 'refused', reason: 'too_long' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(5000) } });
+    const counter = container.querySelector('.convcount')!;
+    expect(counter.textContent).toBe('1,000 over');
+    expect(counter.classList.contains('convcount-warn')).toBe(true);
+  });
+
+  // The counter is visibility only. maxLength, clamping, truncating and
+  // disabling the send are all explicitly out of scope -- the server-side
+  // refusal in sanitizeOutbound remains the sole enforcement, and the
+  // person must still be able to try.
+  it('still attempts to send an over-cap message, untruncated -- the refusal is what stops it', async () => {
+    const sendKeys = withSendKeys({ status: 'refused', reason: 'too_long' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session') as HTMLTextAreaElement;
+    const over = 'a'.repeat(4500);
+    fireEvent.change(box, { target: { value: over } });
+    expect(box.disabled).toBe(false);
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, over));
+    await waitFor(() => expect(screen.getByText('That reply is too long to send as keystrokes.')).toBeTruthy());
+    expect(box.disabled).toBe(false);
+    expect(box.value).toBe(over); // kept whole, not truncated -- same as any other refusal
+  });
+
+  // The counter's own text must never be an aria-live region: it changes on
+  // every keystroke while visible, and a screen reader announcing that
+  // continuously would be unusable.
+  it('carries no aria-live attribute on the visible counter itself', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(4500) } });
+    expect(container.querySelector('.convcount')?.getAttribute('aria-live')).toBeNull();
+    expect(container.querySelector('.convcount')?.getAttribute('role')).toBeNull();
+  });
+
+  // The separate, screen-reader-only announcement: fires once on the
+  // transition into being over the cap, not on every keystroke below it.
+  it('says nothing in the live region while comfortably under the cap', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(3700) } });
+    expect(container.querySelector('.convannounce')?.textContent).toBe('');
+  });
+
+  it('announces once on crossing over the cap, and does not keep re-announcing while still over', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(4001) } });
+    const region = container.querySelector('.convannounce')!;
+    await waitFor(() => expect(region.textContent).not.toBe(''));
+    const firstAnnouncement = region.textContent;
+
+    fireEvent.change(box, { target: { value: 'a'.repeat(4800) } });
+    expect(container.querySelector('.convannounce')!.textContent).toBe(firstAnnouncement);
+  });
+
+  it('does not announce merely for reaching the cap exactly, only for going past it', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(4000) } });
+    expect(container.querySelector('.convannounce')?.textContent).toBe('');
+  });
+
+  it('clears the announcement once the message drops back under the cap', async () => {
+    withSendKeys({ status: 'sent' });
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'a'.repeat(4500) } });
+    await waitFor(() => expect(container.querySelector('.convannounce')?.textContent).not.toBe(''));
+    fireEvent.change(box, { target: { value: 'a'.repeat(100) } });
+    await waitFor(() => expect(container.querySelector('.convannounce')?.textContent).toBe(''));
   });
 });

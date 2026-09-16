@@ -138,6 +138,28 @@
 .convinput:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .convinput:disabled { color:var(--muted); cursor:default; }
 .convmsg { margin:6px 0 0; font-size:11px; color:var(--muted); }
+/* The length counter (David's middle option against a reviewer's maxLength
+   suggestion: maxLength silently truncates a paste -- 5,000 characters in,
+   4,000 shown, with no sign the rest was dropped -- so instead the cap
+   becomes visible before it's hit, and nothing typed is ever discarded).
+   Quiet under the cap, same size and tone as .convmsg above; .convcount-warn
+   is a second class layered on top, not a rewrite, so this rule still
+   applies underneath it. */
+.convcount { margin:6px 0 0; font-size:11px; color:var(--muted); }
+/* --signal, not --critical: OpenSessionCard.css's own comment on its unread
+   dot is explicit that --critical is the "waiting on you" colour and must
+   stay unambiguous. --signal is the same "deliberately less urgent" warning
+   tone already used for refusal copy elsewhere (LaunchBar.css's .launchmsg,
+   ReplyPopover.css's .replymsg). */
+.convcount-warn { color:var(--signal); }
+/* Screen-reader-only: announces the one-time transition into being over the
+   cap (ConversationView.tsx), kept off the visible counter above so that
+   element never carries aria-live and announces on every keystroke. Same
+   visually-hidden technique as .wholabel above, duplicated rather than
+   shared -- a class reused across two differently-purposed elements is easy
+   to break by editing one and not the other. */
+.convannounce { position:absolute; width:1px; height:1px; margin:-1px; padding:0;
+  overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
 .convsend { margin-left:8px; font-family:var(--f-mono); font-size:11px; color:var(--accent);
   background:none; border:1px solid var(--line); border-radius:20px; padding:3px 10px; cursor:pointer; }
 .convsend:hover { border-color:color-mix(in srgb,var(--accent) 40%,transparent); }

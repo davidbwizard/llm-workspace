@@ -205,6 +205,45 @@ export function clearDrafts(): void {
   drafts.clear();
 }
 
+/** Mirrors MAX_REPLY_CHARS in src/main/outbound.ts, the actual enforcement
+ *  for what a message can send. Redeclared here rather than imported:
+ *  src/renderer/** must never import a VALUE out of src/main/** -- doing so
+ *  blanks the whole window at runtime with no error any test would catch
+ *  (a type-only import would be fine but carries no number to compute
+ *  with). This constant only drives what the counter below DISPLAYS;
+ *  sanitizeOutbound in outbound.ts remains the sole place the cap is
+ *  enforced. tests/renderer/ConversationView.test.tsx pins this equal to
+ *  the main process's own constant, so the two cannot drift apart
+ *  unnoticed. */
+export const MAX_REPLY_CHARS = 4000;
+
+/** What fraction of the cap the counter stays quiet for -- appears once the
+ *  length reaches this share of it (90%: 3,600 of the default 4,000). */
+const COUNTER_THRESHOLD_FRACTION = 0.9;
+
+/** What the message box's length counter should show, or null to render
+ *  nothing (spec: quiet while the message is comfortably short, below 90%
+ *  of `max`). Reads as a budget ("400 left"), not a used-count -- a budget
+ *  is what a person needs to know at the moment they're approaching a cap.
+ *  `warn` turns true from the cap onward (0 left and beyond), which is what
+ *  selects the app's existing warning colour (--signal) in
+ *  ConversationView.css -- never --critical, which OpenSessionCard.css's
+ *  own comment on its unread dot reserves for "waiting on you" alone.
+ *
+ *  Past the cap this reports how much to CUT ("1,000 over"), never a
+ *  clamped "0 left": someone who pasted 5,000 characters needs to know the
+ *  size of the problem, not just that there is one. This function only
+ *  decides what the counter SAYS; sanitizeOutbound (src/main/outbound.ts)
+ *  is unaffected either way and remains what actually refuses a send. */
+export function messageCounter(length: number, max: number = MAX_REPLY_CHARS):
+  { label: string; warn: boolean } | null {
+  if (length < Math.floor(max * COUNTER_THRESHOLD_FRACTION)) return null;
+  const remaining = max - length;
+  return remaining < 0
+    ? { label: `${(-remaining).toLocaleString()} over`, warn: true }
+    : { label: `${remaining.toLocaleString()} left`, warn: remaining === 0 };
+}
+
 /** The message box under the conversation (spec §3.4). Never hidden, only
  *  ever disabled with a reason: a box that vanishes reads as a missing
  *  feature, a disabled one reads as a state (spec §7.1, David's own
@@ -237,6 +276,34 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal }: {
   /** Whether the previous render was mid-send, so the effect below can tell
    *  the send-settled transition from every other reason it runs. */
   const wasSendingRef = useRef(false);
+
+  const counter = messageCounter(text.length);
+  /** Strictly past the cap -- not merely at it, which still sends fine.
+   *  Drives only the one-time screen-reader announcement below; the
+   *  visible counter's warning styling uses counter.warn instead, which
+   *  also covers exactly-at-the-cap. */
+  const isOverCap = text.length > MAX_REPLY_CHARS;
+  const wasOverCapRef = useRef(false);
+  const [overAnnouncement, setOverAnnouncement] = useState('');
+
+  /** Announces exactly once, on the transition into being over the cap --
+   *  never on every keystroke, which would make the visible counter
+   *  unusable with a screen reader, and never merely for reaching the cap
+   *  exactly, which still sends fine. The sentence is fixed rather than
+   *  carrying the live "over by" count: that count keeps changing as
+   *  someone keeps typing, and re-announcing it on every change would be
+   *  exactly the noise this exists to avoid. A sighted person still sees
+   *  the live number in the ordinary, non-live counter below. Clearing it
+   *  once back under the cap lets the same announcement fire again on a
+   *  second overshoot. */
+  useEffect(() => {
+    if (isOverCap && !wasOverCapRef.current) {
+      setOverAnnouncement(`Message is over the ${MAX_REPLY_CHARS.toLocaleString()} character limit.`);
+    } else if (!isOverCap) {
+      setOverAnnouncement('');
+    }
+    wasOverCapRef.current = isOverCap;
+  }, [isOverCap]);
 
   /** Put the caret back after a send settles. Disabling the textarea while
    *  the send is in flight makes the browser blur it, and re-enabling does
@@ -314,6 +381,16 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal }: {
           void send();
         }}
       />
+      {counter && (
+        <p className={`convcount${counter.warn ? ' convcount-warn' : ''}`}>{counter.label}</p>
+      )}
+      {/* Always mounted, even empty: a live region a screen reader only
+          learns about once it already has content is unreliable across
+          screen readers, unlike the counter above (which renders nothing
+          at all below the threshold, by design). Visually hidden via
+          ConversationView.css's .convannounce, never `display:none`, which
+          would also drop it from the accessibility tree. */}
+      <p className="convannounce" role="status">{overAnnouncement}</p>
       {disabledReason !== null && <p className="convmsg">{disabledReason}</p>}
       {message !== null && (
         <p className="convmsg" role="status">
