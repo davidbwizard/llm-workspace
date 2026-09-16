@@ -6,26 +6,103 @@
    be a drag handle instead of a control. Same trap FleetView.css's
    .fleetbar documents. */
 .settingsdlg { -webkit-app-region:no-drag; border:0; padding:0; background:none;
-  color:var(--ink); max-width:min(440px,92vw); }
+  color:var(--ink); max-width:min(480px,92vw); }
 .settingsdlg::backdrop { background:rgb(0 0 0 / 46%); }
-.settingspanel { display:flex; flex-direction:column; gap:12px;
+.settingspanel { display:flex; flex-direction:column; gap:20px;
   background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
-  box-shadow:var(--shadow-pop); padding:18px 20px 16px;
+  box-shadow:var(--shadow-pop); padding:20px 22px 18px;
   /* The modal's own scrolling stays inside it: overscroll-behavior stops a
      wheel that reaches this panel's end from chaining out to whatever is
      behind (spec §3.5). */
   max-height:80vh; overflow-y:auto; overscroll-behavior:contain; }
 .settingshead { display:flex; align-items:center; gap:12px; }
 .settingshead h2 { margin:0; font-family:var(--f-display); font-size:18px; font-weight:600; }
-.settingsclose { margin-left:auto; font-family:var(--f-mono); font-size:11px; color:var(--muted);
-  background:none; border:1px solid var(--line-soft); border-radius:20px; padding:4px 12px; cursor:pointer; }
-.settingsclose:hover { color:var(--ink); border-color:var(--line); }
-.settingsrow { display:flex; align-items:center; gap:12px; font-size:13px; }
-.settingsrow > span { flex:1; min-width:0; }
-.settingsrow select { flex:none; max-width:56%; font-family:var(--f-mono); font-size:11px;
-  color:var(--ink); background:var(--ground); border:1px solid var(--line);
-  border-radius:6px; padding:5px 8px; }
-.settingsfoot { display:flex; justify-content:flex-end; }
+/* An icon-only button (a small "x"), not the old pill reading "Close": its
+   accessible name still comes from aria-label on the button itself, so the
+   glyph inside is aria-hidden rather than announced on top of it. */
+.settingsclose { margin-left:auto; width:26px; height:26px; display:inline-flex;
+  align-items:center; justify-content:center; font-size:17px; line-height:1;
+  color:var(--muted); background:none; border:0; border-radius:var(--r-sm); padding:0; cursor:pointer; }
+.settingsclose:hover { color:var(--ink); background:var(--raised); }
+
+/* One labelled group of controls (General / Sessions / Conversation). */
+.settingssection { display:flex; flex-direction:column; gap:14px; }
+.settingssectitle { margin:0; font-family:var(--f-mono); font-size:10px; font-weight:600;
+  letter-spacing:.09em; text-transform:uppercase; color:var(--muted); }
+/* One control and its bold label, e.g. "Appearance" over its segmented row. */
+.settingsfield { display:flex; flex-direction:column; gap:8px; }
+.settingslabel { font-family:var(--f-body); font-size:13px; font-weight:700; color:var(--ink); }
+.settingshelp { margin:0; font-size:11px; line-height:1.5; color:var(--muted); }
+
+/* The segmented control replacing three of the four old <select>s: a
+   full-width, equal-width row of buttons inside one hairline-bordered pill.
+   The selected button is filled and brighter; the rest are transparent and
+   muted -- aria-pressed carries the same state for assistive tech, since a
+   plain colour change is not itself an accessible signal. */
+.settingsseg { display:flex; width:100%; border:1px solid var(--line);
+  border-radius:999px; overflow:hidden; }
+.settingssegbtn { flex:1; min-width:0; font-family:var(--f-mono); font-size:11px;
+  color:var(--muted); background:transparent; border:0; padding:8px 6px; cursor:pointer;
+  text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.settingssegbtn + .settingssegbtn { border-left:1px solid var(--line); }
+.settingssegbtn:hover:not([aria-pressed="true"]) { color:var(--ink-2); }
+.settingssegbtn[aria-pressed="true"] { background:var(--raised); color:var(--ink); font-weight:600; }
+
+/* The two message-style option cards, replacing the fourth <select>. Each is
+   a real <button> so aria-pressed carries its selected state the same way
+   the segmented rows above do; the selected card is marked with an accent
+   border rather than a fill, per the mockup. */
+.settingsstyles { display:flex; gap:10px; }
+.settingsstylecard { flex:1 1 0; min-width:0; display:flex; flex-direction:column; gap:10px;
+  text-align:left; background:var(--ground); border:1px solid var(--line);
+  border-radius:var(--r-md); padding:12px; cursor:pointer; }
+.settingsstylecard:hover { border-color:var(--line-soft); }
+.settingsstylecard[aria-pressed="true"] { border-color:var(--accent); }
+.settingsstyletitle { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;
+  font-family:var(--f-body); font-size:13px; font-weight:700; color:var(--ink); }
+.settingsstyledefault { font-family:var(--f-mono); font-size:10px; font-weight:400; color:var(--muted); }
+
+/* Abstract wireframe previews inside each style card -- grey bars standing
+   in for text, an accent rule or bubble standing in for the style itself.
+   Purely decorative (StyleWireframe renders them aria-hidden): the card's
+   own title and aria-pressed state are what a screen reader needs. */
+.settingswire-a { display:flex; align-items:stretch; gap:8px; }
+.settingswirerule { flex:none; width:3px; border-radius:2px; background:var(--accent); }
+.settingswirebars { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:5px; }
+.settingswirebar { height:6px; border-radius:3px; background:var(--line); }
+.settingswirebar-short { width:65%; }
+.settingswire-c { display:flex; flex-direction:column; gap:6px; }
+.settingswire-c .settingswirebubble { align-self:flex-end; width:60%; height:10px;
+  border-radius:6px; background:var(--accent); }
+.settingswire-c .settingswirebar { width:100%; }
+
+/* The live sample conversation, rendered at the CURRENTLY selected text size
+   (--prev-size) and message style (data-style) -- SettingsModal.tsx sets
+   both from the live settings object, so this changes the moment either
+   control does. Mirrors ConversationView.css's own turn/bubble rules under
+   its own class names, since this file's classes must not collide with it. */
+.settingsprev { display:flex; flex-direction:column; gap:12px; font-size:var(--prev-size,16px);
+  line-height:1.5; background:var(--ground); border:1px solid var(--line);
+  border-radius:var(--r-md); padding:12px 14px; }
+.settingsprevturn { display:block; }
+.settingsprevturn-assistant { border-left:3px solid var(--accent); padding-left:11px; }
+.settingsprevmeta { display:flex; align-items:center; gap:8px; margin:0 0 4px; }
+.settingsprevwho { font-family:var(--f-mono); font-size:calc(var(--prev-size,16px) * .6875);
+  color:var(--muted); display:inline-flex; align-items:center; }
+.settingsprevturn-assistant .settingsprevwho { color:var(--accent); }
+.settingsprevwhen { font-family:var(--f-mono); font-size:calc(var(--prev-size,16px) * .6875); color:var(--faint); }
+.settingsprevtext { margin:0; color:var(--ink-2); }
+.settingsprevturn-user .settingsprevtext { color:var(--ink); font-weight:600; }
+/* Style c: the user's turn moves into a neutral, right-aligned bubble --
+   neutral rather than accent, matching ConversationView.css's own reasoning
+   (the accent is style a's agent cue; reusing it here would put two
+   differently-meant accent marks in one pane). */
+.settingsprev[data-style="c"] .settingsprevturn-user { margin-left:auto; max-width:78%;
+  background:var(--raised); border:1px solid var(--line-soft); border-radius:var(--r-md); padding:8px 12px; }
+.settingsprev[data-style="c"] .settingsprevturn-user .settingsprevmeta { justify-content:flex-end; }
+
+.settingsfoot { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.settingscaption { margin:0; font-size:11px; color:var(--muted); }
 .settingsdone { font-family:var(--f-mono); font-size:11px; font-weight:600; color:var(--ground);
   background:var(--accent); border:0; border-radius:6px; padding:6px 16px; cursor:pointer; }
 
