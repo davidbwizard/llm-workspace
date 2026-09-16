@@ -26,6 +26,7 @@ import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import {
   sendLiteral, sendKeyName, capturePane, setSessionOption, loadBuffer, pasteBuffer, deleteBuffer,
+  paneInMode, cancelCopyMode,
   type TmuxResult, type TmuxExec,
 } from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
@@ -821,6 +822,18 @@ function waitForPasteToSettle(
   return false;
 }
 
+/** Whether the pane is in copy-mode right now. Read through the same exec
+ *  capturePane uses -- it is a read, not an outbound key.
+ *
+ *  An unreadable mode answers false, deliberately. This guard exists to
+ *  stop a silent message loss, and must not become a new way to refuse a
+ *  send that would have worked: a pane whose mode cannot be read behaves
+ *  exactly as it did before the guard existed. */
+function paneIsInCopyMode(name: string, capture?: (args: string[]) => TmuxResult): boolean {
+  const mode = paneInMode(name, capture);
+  return mode.ok && mode.stdout.trim() === '1';
+}
+
 /** The renderer sends a pid and text, never a session name. Refusals are
  *  returned, not thrown: the card has to be able to say WHY nothing happened,
  *  and "not_tmux" is the ordinary answer for a session running in plain iTerm. */
@@ -850,6 +863,34 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
     cached: cachedPushOpenSessions, processes: getCachedLiveProcesses(), read: readLiveSession,
   }));
   if (promptOpen(pid)) return { status: 'refused', reason: 'prompt_open' };
+
+  // A pane sitting in tmux copy-mode cannot be typed into: send-keys goes
+  // to copy-mode's key table, so the Enter below would be spent leaving
+  // the mode instead of submitting, while paste-buffer still delivered the
+  // text. Every tmux call would exit 0 and this function would answer
+  // 'sent' for a message left sitting unsubmitted in the composer, which
+  // the renderer takes as licence to clear the draft (measured 2026-09-16
+  // -- reported as Codex-only, reproduced on a plain shell too). The app
+  // sets `mouse on` for every session it creates, so a wheel scroll in the
+  // Terminal view is all it takes to get here.
+  //
+  // Leaving the mode first is not a new liberty with the user's pane: the
+  // Enter left it anyway, just by burning itself to do so. It happens
+  // BEFORE the baseline capture below because leaving copy-mode redraws
+  // the pane, and a baseline taken first would make the settle loop trip
+  // on that redraw rather than on the paste.
+  if (paneIsInCopyMode(name, deps.capture)) {
+    const left = cancelCopyMode(name, deps.send);
+    if (!left.ok) {
+      // The one place in this function where refusing beats sending. The
+      // pane is known to be in copy-mode and could not be brought out of
+      // it, so an Enter is certain to be swallowed -- and nothing has been
+      // pasted yet, so refusing keeps the user's draft rather than
+      // reporting a send that would have silently lost it.
+      console.error('tmux send-keys -X cancel failed:', left.error);
+      return { status: 'refused', reason: 'session_gone' };
+    }
+  }
 
   // The session name resolving is not proof the pane is still there to
   // receive anything -- re-check the pane itself, immediately before
