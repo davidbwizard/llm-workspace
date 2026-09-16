@@ -6,7 +6,7 @@
    be a drag handle instead of a control. Same trap FleetView.css's
    .fleetbar documents. */
 .settingsdlg { -webkit-app-region:no-drag; border:0; padding:0; background:none;
-  color:var(--ink); max-width:min(480px,92vw); }
+  color:var(--ink); max-width:min(460px, calc(100vw - 32px)); }
 .settingsdlg::backdrop { background:rgb(0 0 0 / 46%); }
 .settingspanel { display:flex; flex-direction:column; gap:20px;
   background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
@@ -16,7 +16,13 @@
      behind (spec §3.5). */
   max-height:80vh; overflow-y:auto; overscroll-behavior:contain; }
 .settingshead { display:flex; align-items:center; gap:12px; }
-.settingshead h2 { margin:0; font-family:var(--f-display); font-size:18px; font-weight:600; }
+/* The artifact's own .settings h2 sets no font-family, i.e. the body face
+   -- but theme.css's global `h1, h2, h3 { font-family:var(--f-display) }`
+   rule would otherwise win here (this h2 is more specific and would still
+   inherit that rule's declaration if this one left font-family unset), so
+   the body face is named explicitly rather than merely dropping the old
+   display-face line. */
+.settingshead h2 { margin:0; font-family:var(--f-body); font-size:17px; font-weight:700; }
 /* An icon-only button (a small "x"), not the old pill reading "Close": its
    accessible name still comes from aria-label on the button itself, so the
    glyph inside is aria-hidden rather than announced on top of it. */
@@ -27,11 +33,17 @@
 
 /* One labelled group of controls (General / Sessions / Conversation). */
 .settingssection { display:flex; flex-direction:column; gap:14px; }
-.settingssectitle { margin:0; font-family:var(--f-mono); font-size:10px; font-weight:600;
-  letter-spacing:.09em; text-transform:uppercase; color:var(--muted); }
+/* The artifact's own .section-label is a plain <p> with no font-weight set,
+   which renders unbolded. This is an <h3> instead (a deliberate addition
+   over the artifact, for heading-navigation accessibility the artifact's
+   flat <p> doesn't offer), and headings are bold by the browser's own
+   default stylesheet -- so font-weight:400 is named explicitly to reach
+   the same unbolded look, rather than left unset. */
+.settingssectitle { margin:0; font-family:var(--f-mono); font-size:11px; font-weight:400;
+  letter-spacing:.07em; text-transform:uppercase; color:var(--muted); }
 /* One control and its bold label, e.g. "Appearance" over its segmented row. */
 .settingsfield { display:flex; flex-direction:column; gap:8px; }
-.settingslabel { font-family:var(--f-body); font-size:13px; font-weight:700; color:var(--ink); }
+.settingslabel { font-family:var(--f-body); font-size:14px; font-weight:600; color:var(--ink); }
 .settingshelp { margin:0; font-size:11px; line-height:1.5; color:var(--muted); }
 
 /* The segmented control replacing three of the four old <select>s: a
@@ -41,11 +53,18 @@
    plain colour change is not itself an accessible signal. */
 .settingsseg { display:flex; width:100%; border:1px solid var(--line);
   border-radius:var(--r-sm); overflow:hidden; }
-.settingssegbtn { flex:1; min-width:0; font-family:var(--f-mono); font-size:11px;
-  color:var(--muted); background:transparent; border:0; padding:8px 6px; cursor:pointer;
-  text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* Body face, not mono: the artifact's .seg-face is a <span> with no
+   font-family set, so it inherits the body face by ordinary CSS
+   inheritance -- a <button> has no such inheritance (the browser's own
+   button font wins unless overridden), so the body face is named
+   explicitly here to reach the same result. tabular-nums keeps "14 px"
+   through "17 px" from jittering against each other as the pressed one
+   goes bold. */
+.settingssegbtn { flex:1; min-width:0; font-family:var(--f-body); font-size:13px;
+  font-variant-numeric:tabular-nums; color:var(--ink-2); background:transparent; border:0;
+  padding:8px 6px; cursor:pointer; text-align:center; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
 .settingssegbtn + .settingssegbtn { border-left:1px solid var(--line); }
-.settingssegbtn:hover:not([aria-pressed="true"]) { color:var(--ink-2); }
 .settingssegbtn[aria-pressed="true"] { background:var(--raised); color:var(--ink); font-weight:600; }
 
 /* The two message-style option cards, replacing the fourth <select>. Each is
@@ -53,11 +72,15 @@
    the segmented rows above do; the selected card is marked with an accent
    border rather than a fill, per the mockup. */
 .settingsstyles { display:flex; gap:10px; }
-.settingsstylecard { flex:1 1 0; min-width:0; display:flex; flex-direction:column; gap:10px;
-  text-align:left; background:var(--ground); border:1px solid var(--line);
-  border-radius:var(--r-sm); padding:12px; cursor:pointer; }
+/* background:transparent named explicitly, not merely left unset: the
+   artifact's .style-face has no background of its own (a <label>, showing
+   the dialog's own surface through it), but a <button> carries the
+   browser's own default button-face background unless told otherwise. */
+.settingsstylecard { flex:1 1 0; min-width:0; display:flex; flex-direction:column; gap:8px;
+  text-align:left; background:transparent; border:1px solid var(--line);
+  border-radius:var(--r-sm); padding:10px; cursor:pointer; }
 .settingsstylecard:hover { border-color:var(--line-soft); }
-.settingsstylecard[aria-pressed="true"] { border-color:var(--accent); }
+.settingsstylecard[aria-pressed="true"] { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
 .settingsstyletitle { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;
   font-family:var(--f-body); font-size:13px; font-weight:700; color:var(--ink); }
 .settingsstyledefault { font-family:var(--f-mono); font-size:10px; font-weight:400; color:var(--muted); }
@@ -86,7 +109,7 @@
    control does. Mirrors ConversationView.css's own turn/bubble rules under
    its own class names, since this file's classes must not collide with it. */
 .settingsprev { display:flex; flex-direction:column; gap:12px; font-size:var(--prev-size,16px);
-  line-height:1.5; background:var(--ground); border:1px solid var(--line);
+  line-height:1.5; background:var(--ground); border:1px solid var(--line-soft);
   border-radius:var(--r-sm); padding:12px 14px; }
 .settingsprevturn { display:block; }
 .settingsprevturn-assistant { border-left:3px solid var(--accent); padding-left:11px; }
@@ -95,6 +118,16 @@
   color:var(--muted); display:inline-flex; align-items:center; }
 .settingsprevturn-assistant .settingsprevwho { color:var(--accent); }
 .settingsprevwhen { font-family:var(--f-mono); font-size:calc(var(--prev-size,16px) * .6875); color:var(--faint); }
+/* Deliberately NOT matching the design mockup's own turn-text colours here.
+   The mockup gives the AGENT the brighter ink and the user ink-2; the real,
+   shipped ConversationView.css does the opposite on purpose (user's text is
+   ink + font-weight:600, agent's is ink-2) because the human's own prompts
+   are what a reader scans for when following a transcript back. This
+   preview mirrors the real, running pane -- not the mockup, which predates
+   other already-shipped changes on this branch -- so it stays ink-2/ink
+   here even though the mockup disagrees. Do not "fix" this back toward the
+   mockup; the mismatch is a real, open question about the CONVERSATION
+   pane itself, not a bug in this preview. */
 .settingsprevtext { margin:0; color:var(--ink-2); }
 .settingsprevturn-user .settingsprevtext { color:var(--ink); font-weight:600; }
 /* Style c: the user's turn moves into a neutral, right-aligned bubble --
@@ -105,7 +138,8 @@
   background:var(--raised); border:1px solid var(--line-soft); border-radius:var(--r-md); padding:8px 12px; }
 .settingsprev[data-style="c"] .settingsprevturn-user .settingsprevmeta { justify-content:flex-end; }
 
-.settingsfoot { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.settingsfoot { display:flex; align-items:center; justify-content:space-between; gap:12px;
+  border-top:1px solid var(--line-soft); }
 .settingscaption { margin:0; font-size:11px; color:var(--muted); }
 .settingsdone { font-family:var(--f-mono); font-size:11px; font-weight:600; color:var(--ground);
   background:var(--accent); border:0; border-radius:var(--r-sm); padding:6px 16px; cursor:pointer; }
