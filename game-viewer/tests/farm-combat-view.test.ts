@@ -8,7 +8,7 @@ it('keeps a defeated monster visible for one bounded transition without mutating
   s.monsters = []; const before = structuredClone(s);
   let frame = view.update(s, .1);
   expect(frame.defeats).toHaveLength(1);
-  expect(frame.defeats[0]).toMatchObject({ x: first.monsters[0].x, y: first.monsters[0].y, age: 0, duration: 1.4, reward: 12 });
+  expect(frame.defeats[0]).toMatchObject({ x: first.monsters[0].x, y: first.monsters[0].y, age: 0, duration: 1.4, reward: 2 });
   frame = view.update(s, 1, { paused: true }); expect(frame.defeats[0].age).toBe(0);
   frame = view.update(s, .5); expect(frame.defeats[0].age).toBeCloseTo(.5);
   frame = view.update(s, 1); expect(frame.defeats).toEqual([]);
@@ -26,20 +26,21 @@ it('does not invent defeated monsters on mount and holds a short non-flashing hi
   expect(view.update(s, .2).monsters[0].hit).toBe(false);
 });
 
-it('equips protectors and visibly intercepts their actual target; home guards do not attack', () => {
+it('uses model positions and actual strike IDs for equipped attackers', () => {
   const s = createFarm(); s.coins = 1000;
   command(s, { type: 'hire', kind: 'knight' }); command(s, { type: 'hire', kind: 'ranger' });
-  command(s, { type: 'raid' }); s.monsters[0].progress = .7;
-  const view = createCombatView(); let frame = view.update(s, 0);
-  for (let n = 0; n < 40; n++) frame = view.update(s, .05);
-  expect(frame.guards.map(g => g.weapon)).toEqual(['sword', 'sword', 'bow']);
-  for (const g of frame.guards) {
+  command(s, { type: 'raid' }); Object.assign(s.monsters[0], { x: 340, y: 160, health: 100, maxHealth: 100 });
+  s.guards.forEach((g,i) => Object.assign(g,{x:i===2?250:310,y:160}));
+  const view=createCombatView(); view.update(s,0); advanceFarm(s,.05);
+  let frame=view.update(s,.05);
+  expect(frame.guards.map(g=>g.weapon)).toEqual(['sword','sword','bow']);
+  frame.guards.forEach((g,i)=>{
     expect(g.attacking).toBe(true); expect(g.targetId).toBe(s.monsters[0].id);
-    expect(g.x).toBeLessThan(g.targetX);
-  }
-  expect(frame.guards[2].x).toBeLessThan(frame.guards[0].x - 20);
-  s.guards[0].mode = 'home';
-  expect(view.update(s, .05).guards[0].attacking).toBe(false);
+    expect({x:g.x,y:g.y}).toEqual({x:s.guards[i].x,y:s.guards[i].y});
+  });
+  const pose=frame.guards[0]; frame=view.update(s,1,{paused:true});
+  expect(frame.guards[0].strikeAge).toBe(pose.strikeAge);
+  expect(view.update(s,.4).guards.every(g=>!g.attacking)).toBe(true);
 });
 
 it('shows the finishing strike even when a large roster defeats a slime in one tick at 4x', () => {

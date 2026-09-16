@@ -126,6 +126,41 @@
 .farm-load-error{max-width:620px;margin:15vh auto;padding:30px}
 .farm-load-error p{margin-top:15px}
 .farm-load-error h1{font-size:30px}
+/* Inventory strip. Kept self-contained so it can later move over the canvas:
+   only its position and background need to change, not its contents. */
+.farm-shell .supply-strip{display:flex;align-items:center;flex-wrap:wrap;gap:0;margin-bottom:13px;padding:4px 6px;background:#f5f8ee;border:1px solid var(--line);border-radius:8px}
+.farm-shell .supply-tag{font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:#7c866d;padding:7px 9px 7px 11px}
+.farm-shell .supply-cell{display:flex;align-items:baseline;gap:6px;padding:7px 13px;font-size:11px;color:var(--muted)}
+.farm-shell .supply-cell b{font-size:15px;font-weight:600;color:#34503c;font-variant-numeric:tabular-nums}
+.farm-shell .supply-cell.blocked b{color:#a4553f}
+.farm-shell .supply-cell.idle{color:#98a292}
+.farm-shell .supply-cell.idle b{color:#9aa793;font-weight:400}
+.farm-shell .supply-sep{width:1px;align-self:stretch;background:var(--line);margin:5px 3px}
+@media(max-width:740px){.farm-shell .supply-strip{margin-bottom:10px}.farm-shell .supply-cell{padding:5px 9px;font-size:10px}.farm-shell .supply-cell b{font-size:13px}.farm-shell .supply-tag{padding:5px 6px 5px 8px}}
+.farm-shell .balance-panel{position:fixed;top:96px;right:20px;bottom:20px;width:325px;max-width:calc(100vw - 40px);display:flex;flex-direction:column;background:var(--paper);border:1px solid #b8c7b2;border-radius:10px;box-shadow:0 16px 50px #19362644;z-index:6}
+.farm-shell .balance-panel[hidden]{display:none}
+.farm-shell .balance-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line);background:#f5f8ee;border-radius:10px 10px 0 0}
+.farm-shell .balance-head h2{font-family:Georgia,serif;font-size:18px;font-weight:400;color:var(--forest)}
+.farm-shell .balance-head button{min-height:28px;padding:4px 10px;font-size:10px}
+.farm-shell .balance-body{flex:1;overflow-y:auto;padding:13px 15px}
+.farm-shell .balance-group{margin-bottom:15px}
+.farm-shell .balance-group:last-child{margin-bottom:0}
+.farm-shell .balance-group h2{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:5px;margin-bottom:9px}
+.farm-shell .balance-entry{border:1px solid var(--line);border-radius:7px;padding:9px 11px;margin-bottom:9px;background:#fff}
+.farm-shell .balance-entry:last-child{margin-bottom:0}
+.farm-shell .balance-entry h3{font-size:12px;color:var(--leaf);margin-bottom:5px}
+.farm-shell .balance-field{margin:8px 0}
+.farm-shell .balance-field label{display:block;font-size:10px;color:var(--muted)}
+.farm-shell .balance-field small{display:block;color:#8b9884;margin:2px 0 6px}
+.farm-shell .balance-controls{display:flex;align-items:center;gap:8px}
+.farm-shell .balance-controls input[type="range"]{flex:1;accent-color:var(--leaf)}
+.farm-shell .balance-controls input[type="number"]{width:64px;min-height:28px;padding:4px 5px;font-size:11px;border:1px solid #b8c7b2;border-radius:5px;background:var(--paper);color:var(--forest)}
+.farm-shell .balance-controls input[aria-invalid="true"]{border-color:#b5573f;background:#fbeee9}
+.farm-shell .balance-error{font-size:10px;color:#8a4632;min-height:12px;margin-top:4px}
+.farm-shell .balance-changed .balance-controls input[type="number"]{border-color:var(--leaf);background:#eef5e6;font-weight:600}
+.farm-shell .balance-foot{padding:11px 15px;border-top:1px solid var(--line);background:#f5f8ee;border-radius:0 0 10px 10px}
+.farm-shell .balance-foot button{width:100%}
+@media(max-width:740px){.farm-shell .balance-panel{top:auto;bottom:0;left:0;right:0;width:100%;max-height:72vh;border-radius:14px 14px 0 0}}
 .farm-shell .dialog-backdrop{position:fixed;inset:0;background:#243b3269;display:flex;align-items:center;justify-content:center;padding:22px;z-index:10}
 .farm-shell .farm-dialog{width:min(480px,100%);background:#f7faee;padding:30px;border:1px solid #819776;border-radius:10px;box-shadow:0 20px 90px #19362644}
 .farm-shell .farm-dialog h2{font-family:Georgia,serif;font-size:25px;font-weight:400}
@@ -213,3 +248,17 @@
 }
 @media(prefers-reduced-motion:reduce){.farm-shell *{scroll-behavior:auto!important}
 }
+.farm-shell .interaction-hint{padding:0 17px 8px;font-size:11px;color:#405c42;min-height:26px}
+.farm-shell .threat-status{margin:0 17px 6px;padding:10px 12px;border:1px solid #d8ceb0;background:#f4efdd;border-radius:6px}
+.farm-shell .threat-status>div{display:flex;justify-content:space-between;gap:12px;font-size:11px;color:#745e39}
+.farm-shell .threat-status meter{display:block;margin:8px 0;height:6px}
+.farm-shell .threat-status meter::-webkit-meter-optimum-value{background:#b99a60}
+.farm-shell .threat-status meter::-moz-meter-bar{background:#b99a60}
+.farm-shell .threat-status p{font-size:10px;color:#7b7056}
+.farm-shell .plot-picker button.locked{border-style:dashed;background:#e2e7da;color:#6d785e}
+.farm-shell .plot-picker button.locked[aria-pressed="true"]{background:#526f46;color:#fff6d6}
+.farm-shell .guard-row{flex-wrap:wrap}
+.farm-shell .guard-row label{margin-left:0;flex-direction:column;align-items:flex-start;gap:5px}
+.farm-shell .guard-row>div:first-child{margin-right:auto}
+.farm-shell .guard-row select{min-width:115px}
+@media(max-width:740px){.farm-shell .guard-row .button-row{width:100%;justify-content:flex-end}.farm-shell .interaction-hint{padding-inline:12px}.farm-shell .threat-status{margin-inline:12px}}

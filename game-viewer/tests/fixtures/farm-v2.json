@@ -1,0 +1,248 @@
+{
+  "version": 2,
+  "farm": {
+    "version": 2,
+    "time": 0,
+    "remainder": 0,
+    "harvests": 0,
+    "coins": 217,
+    "mainHealth": 50,
+    "mainCooldown": 0,
+    "farmer": {
+      "x": 166,
+      "y": 105,
+      "facing": "down",
+      "action": "idle",
+      "actionTime": 0
+    },
+    "nextId": 102,
+    "raidTimer": 150,
+    "wave": 1,
+    "connected": true,
+    "sessionRevision": -1,
+    "plots": [
+      {
+        "id": "p1",
+        "crop": "parsnip",
+        "unlocked": true,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 30,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p2",
+        "crop": "parsnip",
+        "unlocked": true,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p3",
+        "crop": "parsnip",
+        "unlocked": true,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p4",
+        "crop": "parsnip",
+        "unlocked": false,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p5",
+        "crop": "parsnip",
+        "unlocked": false,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p6",
+        "crop": "parsnip",
+        "unlocked": false,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p7",
+        "crop": "parsnip",
+        "unlocked": false,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p8",
+        "crop": "parsnip",
+        "unlocked": false,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p9",
+        "crop": "wheat",
+        "unlocked": false,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p10",
+        "crop": "wheat",
+        "unlocked": false,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p11",
+        "crop": "wheat",
+        "unlocked": false,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p12",
+        "crop": "wheat",
+        "unlocked": false,
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      }
+    ],
+    "animals": [
+      {
+        "id": "cow-1",
+        "kind": "cow",
+        "name": "Clover",
+        "health": 20,
+        "hunger": 80,
+        "production": 0,
+        "produce": 0
+      },
+      {
+        "id": "sheep-1",
+        "kind": "sheep",
+        "name": "Willow",
+        "health": 100,
+        "hunger": 80,
+        "production": 0,
+        "produce": 0
+      }
+    ],
+    "guards": [
+      {
+        "id": "guard-1",
+        "kind": "scout",
+        "health": 30,
+        "maxHealth": 60,
+        "mode": "patrol",
+        "progress": 0,
+        "post": "farm",
+        "level": 1,
+        "patrolIndex": 1,
+        "x": 190,
+        "y": 135,
+        "facing": "down",
+        "cooldown": 0,
+        "targetId": null,
+        "strikeId": 0,
+        "strikeX": 190,
+        "strikeY": 135,
+        "strikeTargetId": null
+      }
+    ],
+    "monsters": [
+      {
+        "id": "monster-100",
+        "kind": "slime",
+        "spawn": "west",
+        "health": 11,
+        "maxHealth": 22,
+        "x": 0,
+        "y": 182,
+        "facing": "down",
+        "cooldown": 0,
+        "targetId": null,
+        "strikeId": 0,
+        "strikeX": 0,
+        "strikeY": 182,
+        "strikeTargetId": null
+      }
+    ],
+    "workers": [],
+    "inventory": {
+      "parsnip": 0,
+      "wheat": 0,
+      "milk": 0,
+      "wool": 0,
+      "meat": 0,
+      "hide": 0,
+      "seeds": 6,
+      "feed": 8,
+      "medicine": 1
+    },
+    "policy": {
+      "autoHarvest": false,
+      "autoSell": false,
+      "autoCollect": true,
+      "autoHeal": true
+    },
+    "events": [
+      {
+        "id": 101,
+        "time": 0,
+        "text": "A creature approaches from west. Protect the farm!"
+      },
+      {
+        "id": 1,
+        "time": 0,
+        "text": "Welcome home. Your workers will tend the farm while their sessions work."
+      }
+    ]
+  }
+}

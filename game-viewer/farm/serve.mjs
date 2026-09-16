@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createViewer } from '../serve-viewer.mjs';
 
-const MODULES = ['app', 'scene', 'art', 'model', 'definitions', 'sessions', 'validation', 'storage', 'world', 'combat-view'];
+const MODULES = ['app', 'scene', 'art', 'model', 'definitions', 'sessions', 'validation', 'storage', 'world', 'combat-view', 'combat', 'balance'];
 
 export function createFarmServer(options = {}) {
   return createViewer({ ...options, extraStaticFiles: [
