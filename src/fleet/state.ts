@@ -6,8 +6,9 @@ export { compareOpenSessions, compareRank } from './order.ts';
 import type { Db } from '../store/db.ts';
 import type { Provider } from '../core/types.ts';
 import { openBlockers, type Blocker } from '../store/signals.ts';
-import { classifyMatch, type MatchQuality, type MatchResult } from '../discovery/match.ts';
+import { classifyMatch, applyExactMatches, type MatchQuality, type MatchResult } from '../discovery/match.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
+import type { LiveSessionStatus } from '../providers/claude/liveSession.ts';
 
 /** Is this run reachable? (spec §9.2) */
 export type Lifecycle = 'active' | 'disconnected' | 'ended';
@@ -120,6 +121,20 @@ function projectName(cwd: string | null): string {
  *  877 sessions in the real index, so it is a reliable boundary. */
 const TURN_END_KINDS = new Set(['turn.completed', 'session.ended']);
 
+/** Claude Code's own status for a live session, from its session file.
+ *  `waiting` covers both a question and a permission prompt (measured
+ *  2026-09-15) and does not say which, so it maps to the generic
+ *  waiting_input; a hook blocker, when one exists, still supplies the
+ *  specific kind (see deriveActivity). */
+export function activityFromLiveStatus(status: LiveSessionStatus | null | undefined): Activity | null {
+  switch (status) {
+    case 'waiting': return 'waiting_input';
+    case 'busy': return 'working';
+    case 'idle': return 'idle';
+    default: return null;
+  }
+}
+
 /** Turn-boundary/lifecycle derivation -- the exact rule fleetState's own
  *  per-row map uses below, factored out so the targeted open-session
  *  enrichment path (openSessionsLive, further down) computes activity
@@ -128,13 +143,20 @@ const TURN_END_KINDS = new Set(['turn.completed', 'session.ended']);
 function deriveActivity(opts: {
   lastTs: string | null; lastKind: string | null; blocker: Blocker | null;
   hasMatchedProcess: boolean; hasLiveSignal: boolean; now: number;
+  /** From the matched process's live session file, when there is one. It
+   *  outranks the transcript rule (the process knows its own state) but not
+   *  a hook blocker, which also says what kind of prompt is open. */
+  liveStatus?: LiveSessionStatus | null;
 }): { lifecycle: Lifecycle; activity: Activity } {
   const lastMs = opts.lastTs ? Date.parse(opts.lastTs) : 0;
   const age = opts.now - lastMs;
   const lifecycle: Lifecycle = age <= ACTIVE_MS ? 'active' : 'disconnected';
+  const fromStatus = activityFromLiveStatus(opts.liveStatus);
   let activity: Activity;
   if (opts.blocker) {
     activity = opts.blocker.kind === 'PermissionRequest' ? 'waiting_permission' : 'waiting_input';
+  } else if (fromStatus !== null) {
+    activity = fromStatus;
   } else if (lifecycle === 'active' && !TURN_END_KINDS.has(opts.lastKind ?? '') &&
     (opts.hasMatchedProcess || !opts.hasLiveSignal)) {
     // A session killed mid-turn never emits a turn boundary and would
@@ -531,12 +553,14 @@ export interface OpenSession {
    *  reasoning as ageSeconds. */
   rssBytes: number | null;
   match: MatchQuality;
-  /** The one session this pid's cwd matches uniquely, or null -- both when
-   *  no session shares its cwd at all, and when several do (`ambiguous`,
-   *  ordinary on a shared-cwd repo). `lastProse`/`events`/`activity` below
-   *  are enrichment from THIS session and are null under the exact same
-   *  two conditions -- see the `alive` doc comment on SessionState for why
-   *  an ambiguous match may never be attributed to any one of the sessions
+  /** The one session this pid matches uniquely -- by cwd, or by an exact
+   *  live-session file (spec 2026-09-15-exact-session-identity-design.md
+   *  §3.3), whichever resolved it -- or null both when no session shares
+   *  its cwd at all, and when several do (`ambiguous`, ordinary on a
+   *  shared-cwd repo). `lastProse`/`events`/`activity` below are
+   *  enrichment from THIS session and are null under the exact same two
+   *  conditions -- see the `alive` doc comment on SessionState for why an
+   *  ambiguous match may never be attributed to any one of the sessions
    *  sharing it. */
   sessionId: string | null;
   lastProse: string | null;
@@ -607,7 +631,10 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
     ageSeconds: p.ageSeconds ?? null,
     rssBytes: p.rssBytes ?? null,
     match: m.quality,
-    sessionId: enrichment?.sessionId ?? null,
+    // A unique match with no enrichment yet is an exact live-session match
+    // whose transcript has not been ingested (right after launch or /clear).
+    // The id is still known and still true; only the enrichment is empty.
+    sessionId: enrichment?.sessionId ?? (m.quality === 'unique' ? m.sessionId : null),
     lastProse: enrichment?.lastProse ?? null,
     events: enrichment?.events ?? null,
     activity: enrichment?.activity ?? null,
@@ -672,7 +699,7 @@ export function openSessions(
 ): OpenSession[] {
   const isTmux = deps.isTmux ?? (() => false);
   const refs = sessions.map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
-  const matches = classifyMatch(processes, refs);
+  const matches = applyExactMatches(processes, classifyMatch(processes, refs));
   const byId = new Map(sessions.map(s => [s.sessionId, s]));
 
   // The real recency signal for compareOpenSessions' tiers 3/4: `sessions`
@@ -770,7 +797,7 @@ export function openSessionsLive(
   }
 
   const refs = [...cwdBySession.entries()].map(([sessionId, cwd]) => ({ sessionId, cwd }));
-  const matches = classifyMatch(processes, refs);
+  const matches = applyExactMatches(processes, classifyMatch(processes, refs));
 
   // Disambiguate an ambiguous match for a pid THIS APP launched: among the
   // several sessions sharing that cwd, the app's own session is the one
@@ -895,6 +922,10 @@ export function openSessionsLive(
   const uniqueIds = [...new Set(
     resolvedMatches.filter((m): m is MatchResult & { sessionId: string } => m.quality === 'unique').map(m => m.sessionId))];
 
+  // One live status per exactly-matched session, from its process's file.
+  const liveStatusBySession = new Map(processes.flatMap(p =>
+    p.liveSession ? [[p.liveSession.sessionId, p.liveSession.status] as const] : []));
+
   const enrichmentById = new Map<string, {
     sessionId: string; lastProse: string | null; events: number | null; activity: Activity;
   }>();
@@ -903,9 +934,9 @@ export function openSessionsLive(
   // the sort only: never copied onto the returned OpenSession, which has
   // no field for it (see compareOpenSessions' own doc comment).
   const lastActiveMsById = new Map<string, number>();
+  const hasLiveSignal = processes.length > 0;
+  const blockers = new Map<string, Blocker>();
   if (uniqueIds.length > 0) {
-    const hasLiveSignal = processes.length > 0;
-    const blockers = new Map<string, Blocker>();
     for (const b of openBlockers(db, undefined, now)) blockers.set(b.sessionId, b);
 
     const rows = db.prepare(`
@@ -924,6 +955,7 @@ export function openSessionsLive(
       const blocker = blockers.get(r.session_id) ?? null;
       const { activity } = deriveActivity({
         lastTs: r.last_ts, lastKind: r.last_kind, blocker, hasMatchedProcess: true, hasLiveSignal, now,
+        liveStatus: liveStatusBySession.get(r.session_id) ?? null,
       });
       enrichmentById.set(r.session_id, {
         sessionId: r.session_id, lastProse: r.last_prose ?? null, events: r.events ?? 0, activity,
@@ -938,7 +970,21 @@ export function openSessionsLive(
 
   return processes.map((p, i) => {
     const m = resolvedMatches[i]!;
-    const enrichment = m.quality === 'unique' ? enrichmentById.get(m.sessionId!) ?? null : null;
+    let enrichment: { sessionId: string; lastProse: string | null; events: number | null; activity: Activity | null } | null =
+      m.quality === 'unique' ? enrichmentById.get(m.sessionId!) ?? null : null;
+    // An exact match whose transcript has no rows yet: the process's own
+    // status (or a hook blocker) is the only activity signal there is.
+    // With neither, activity stays unknown rather than defaulting to idle.
+    if (!enrichment && m.quality === 'unique' && p.liveSession) {
+      const blocker = blockers.get(m.sessionId!) ?? null;
+      const activity = (blocker || activityFromLiveStatus(p.liveSession.status) !== null)
+        ? deriveActivity({
+            lastTs: null, lastKind: null, blocker, hasMatchedProcess: true, hasLiveSignal, now,
+            liveStatus: p.liveSession.status,
+          }).activity
+        : null;
+      enrichment = { sessionId: m.sessionId!, lastProse: null, events: null, activity };
+    }
     return buildOpenSession(p, m, enrichment, isTmux);
   }).sort(compareOpenSessions(
     o => junkCwdKind(o.cwd) !== null,

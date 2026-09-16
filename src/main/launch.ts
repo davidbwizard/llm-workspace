@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Provider } from '../core/types.ts';
+// Validated before any session id reaches tmux's shell string; see src/core/identity.ts.
+import { SESSION_ID_SAFE } from '../core/identity.ts';
 import type { KillResult } from './ipc.ts';
 import { newSession, setSessionOption, panePid as tmuxPanePid, type TmuxExec } from './tmux.ts';
 import { registerSession } from './sessions.ts';
@@ -70,16 +72,6 @@ export function launchSession(
   return { status: 'launched', pid };
 }
 
-/** Claude's own session id, exactly as it names its transcript file
- *  (src/watch/watcher.ts: `sessionId = basename(sessionDir)`) -- a UUID in
- *  practice, but validated here rather than trusted, because it is about to
- *  be interpolated into the one string tmux's own new-session command takes
- *  (there is no argv-array escape from that -- tmux hands its trailing
- *  shell-command argument to a shell, same as every other launchSession
- *  call). Anchored, restricted to characters no shell gives special
- *  meaning to. */
-const SESSION_ID_SAFE = /^[A-Za-z0-9_-]{1,128}$/;
-
 /** session:resume. Relaunches a Claude conversation from its session id and
  *  cwd alone, with no kill step and no pid to resolve from -- this is what a
  *  retry after `killed_not_relaunched` calls, and the only reason it can
@@ -113,6 +105,12 @@ type ReattachDeps = LaunchDeps & {
    *  "unidentifiable", the safe direction (refuse) rather than the unsafe
    *  one (guess which session, or assume Claude). */
   resolveSession?: (pid: number) => ResolvedSession | null;
+  /** Whether Claude Code has a saved conversation for this session id in
+   *  this cwd. `claude --resume` fails ("No conversation found") without
+   *  one, and a session has none until its first message. Checked BEFORE
+   *  the kill. Optional so existing callers keep today's behaviour; the
+   *  app (ipc.ts) always supplies it. */
+  hasTranscript?: (sessionId: string, cwd: string) => boolean;
 };
 
 /** session:reattach. Ends the existing process at `pid` and relaunches its
@@ -148,6 +146,9 @@ export async function reattachSession(
   }
   if (!SESSION_ID_SAFE.test(resolved.sessionId)) {
     return { status: 'failed', reason: 'this session id has an unexpected shape' };
+  }
+  if (deps.hasTranscript && !deps.hasTranscript(resolved.sessionId, resolved.cwd)) {
+    return { status: 'failed', reason: 'this session has no saved conversation yet -- send it a message first, then reattach' };
   }
   if (!deps.kill) {
     return { status: 'failed', reason: 'no way to end the existing session' };

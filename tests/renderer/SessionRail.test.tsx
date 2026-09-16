@@ -141,37 +141,81 @@ describe('SessionRail', () => {
   // control that is NOT the card's own onOpen (that one still just selects
   // it, per the "reports the pid when a card is chosen" test above --
   // opening the popover must never be confused with switching the main
-  // pane to that session).
-  it('opens a reply popover for the waiting card, keyed to its pid and prompt', async () => {
+  // pane to that session). Reply guard: a waiting session is a choice as
+  // far as the rail can tell, so the popover opens with no text box --
+  // Answer routes to the terminal instead (covered by the choice-specific
+  // tests below and by tests/renderer/ReplyPopover.test.tsx).
+  it('opens a popover for the waiting card, keyed to its pid and prompt, with no text box', () => {
     render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     expect(screen.queryByRole('dialog')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /reply to game-viewer, pid 2/i }));
+    fireEvent.click(screen.getByRole('button', { name: /answer game-viewer, pid 2/i }));
     const dialog = screen.getByRole('dialog', { name: /reply to session 2/i });
     // Scoped to the dialog: OpenSessionCard's own .said already renders this
     // same lastProse text once, so a page-wide text search would match both.
     expect(within(dialog).getByText('Overwrite?')).toBeTruthy();
+    expect(within(dialog).queryByRole('textbox')).toBeNull();
+  });
 
-    fireEvent.change(within(dialog).getByRole('textbox', { name: /reply/i }), { target: { value: 'yes' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: /send/i }));
-    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(2, 'yes'));
+  // sessions[1] (pid 2) has tmux: undefined (falsy) in this file's plain
+  // fixtures, so the popover falls to the onReveal branch -- proving the
+  // rail wires choice/tmux/onOpenTerminal through even when tmux is false.
+  it('offers Open Terminal for a waiting, tmux-backed card, wired to select-then-switch-to-terminal', () => {
+    const tmuxSessions = [
+      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, tmux: true },
+    ] as never[];
+    const onSelect = vi.fn();
+    const onSetView = vi.fn();
+    render(<SessionRail sessions={tmuxSessions} selectedPid={null} onSelect={onSelect} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onOpenTerminal={pid => { onSelect(pid); onSetView('terminal'); }} side="left" />);
+    fireEvent.click(screen.getByRole('button', { name: /answer game-viewer, pid 2/i }));
+    fireEvent.click(screen.getByRole('button', { name: /open terminal/i }));
+    expect(onSelect).toHaveBeenCalledWith(2);
+    expect(onSetView).toHaveBeenCalledWith('terminal');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  // Fix round 1 (in-app testing, 2026-09-15): the popover was passed
+  // choice={waiting}, re-evaluated on every render from the session's
+  // CURRENT activity -- so a momentary activity change while it was open
+  // (a fleet:update landing mid-answer) silently morphed it back into a
+  // text box. The main-side guard then refused the send and the picker was
+  // never reached; on a second try it correctly showed Open Terminal. The
+  // popover is only ever opened from the waiting-only Answer button, so
+  // once open it must stay in choice mode regardless of what the session's
+  // activity does afterwards.
+  it('keeps an open Answer popover in choice mode even if the session stops looking like it is waiting', () => {
+    const waitingTmux = [
+      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, tmux: true },
+    ] as never[];
+    const { rerender } = render(<SessionRail sessions={waitingTmux} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
+    fireEvent.click(screen.getByRole('button', { name: /answer game-viewer, pid 2/i }));
+    expect(screen.getByRole('button', { name: /open terminal/i })).toBeTruthy();
+
+    const idleTmux = [
+      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, tmux: true },
+    ] as never[];
+    rerender(<SessionRail sessions={idleTmux} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
+
+    const dialog = screen.getByRole('dialog', { name: /reply to session 2/i });
+    expect(within(dialog).queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('button', { name: /open terminal/i })).toBeTruthy();
   });
 
   it('offers no reply trigger for a card that is not waiting on you', () => {
     render(<SessionRail sessions={[sessions[0]!]} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
-    expect(screen.queryByRole('button', { name: /reply/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /answer/i })).toBeNull();
   });
 
   // Fix-wave item 6: a bare "Reply" button, unlike its Close neighbour
   // (OpenSessionCard.tsx's `Close, pid ${pid}`), gave two waiting sessions
   // in the rail two indistinguishable buttons in the accessibility tree.
-  it('gives two waiting sessions two distinguishable Reply buttons, not two identical ones', () => {
+  it('gives two waiting sessions two distinguishable Answer buttons, not two identical ones', () => {
     const both = [
       { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'waiting_permission', lastProse: 'All green.', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
       { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
     ] as never[];
     render(<SessionRail sessions={both} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
-    expect(screen.getByRole('button', { name: /reply to llm-workspace, pid 1/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /reply to game-viewer, pid 2/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /answer llm-workspace, pid 1/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /answer game-viewer, pid 2/i })).toBeTruthy();
   });
 
   describe('resizing the rail', () => {

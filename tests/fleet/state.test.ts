@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions } from '../../src/fleet/state.ts';
+import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions, activityFromLiveStatus } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
 import type { OpenSession } from '../../src/fleet/state.ts';
@@ -454,6 +454,14 @@ describe('openSessions', () => {
     expect(open[0]!.match).toBe('unique');
   });
 
+  it('uses exact identity from a live session file even with no session list', () => {
+    const open = openSessions([], [proc({
+      pid:7, cwd:'/repo/x', ageSeconds:5,
+      liveSession: { sessionId:'exact-1', cwd:'/repo/x', startedAtMs:0, status:null },
+    })]);
+    expect(open[0]).toMatchObject({ match:'unique', sessionId:'exact-1' });
+  });
+
   it('shows pid, provider, host, cwd, project, age and memory for a process with no transcript match at all', () => {
     const open = openSessions([], [proc({
       pid:42, provider:'codex', cwd:'/Users/me/orphan', host:'iterm2', ageSeconds:120, rssBytes:50_000_000,
@@ -634,6 +642,135 @@ describe('openSessionsLive', () => {
   function proc(o: Partial<LiveProcess> & { pid: number }): LiveProcess {
     return { provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
   }
+
+  const live = (sessionId: string, cwd: string, status: 'idle' | 'busy' | 'waiting' | null = null) =>
+    ({ liveSession: { sessionId, cwd, startedAtMs: 0, status } });
+
+  describe('exact session identity', () => {
+    function twoSessionsOneFolder() {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ sessionId:'s1', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+        ev({ sessionId:'s1', kind:'prose', payload:{ text:'from s1' }, contentHash:'b', subIndex:1 }),
+        ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'c' }),
+        ev({ sessionId:'s2', kind:'prose', payload:{ text:'from s2' }, contentHash:'d', subIndex:1 }),
+      ]);
+      return db;
+    }
+
+    it('gives two live processes in one folder their own sessions', () => {
+      const db = twoSessionsOneFolder();
+      const open = openSessionsLive(db, [
+        proc({ pid:1, cwd:'/repo/shared', ageSeconds:60, ...live('s1', '/repo/shared') }),
+        proc({ pid:2, cwd:'/repo/shared', ageSeconds:60, ...live('s2', '/repo/shared') }),
+      ], NOW);
+      const byPid = new Map(open.map(o => [o.pid, o]));
+      expect(byPid.get(1)).toMatchObject({ match:'unique', sessionId:'s1', lastProse:'from s1' });
+      expect(byPid.get(2)).toMatchObject({ match:'unique', sessionId:'s2', lastProse:'from s2' });
+    });
+
+    it('stays ambiguous for the same setup without files (fallback pinned)', () => {
+      const db = twoSessionsOneFolder();
+      const open = openSessionsLive(db, [
+        proc({ pid:1, cwd:'/repo/shared', ageSeconds:60 }),
+        proc({ pid:2, cwd:'/repo/shared', ageSeconds:60 }),
+      ], NOW);
+      expect(open.map(o => [o.match, o.sessionId])).toEqual([['ambiguous', null], ['ambiguous', null]]);
+    });
+
+    it('keeps the neighbour of an exactly-matched process ambiguous', () => {
+      const db = twoSessionsOneFolder();
+      const open = openSessionsLive(db, [
+        proc({ pid:1, cwd:'/repo/shared', ageSeconds:60, ...live('s1', '/repo/shared') }),
+        proc({ pid:2, cwd:'/repo/shared', ageSeconds:60 }),
+      ], NOW);
+      expect(open.find(o => o.pid === 2)).toMatchObject({ match:'ambiguous', sessionId:null });
+    });
+
+    // Probe (fix wave F1): P1 ran `/clear` after P2 started, so P1 still
+    // owns an OLDER id (s_old) from before the clear, alongside its CURRENT
+    // one (s_new, the only one its live-session file can ever show). Before
+    // the fix, two rules combined to hand P2 that stale conversation:
+    // pidCwdCounts excluded P1 (it had a file), so P2 looked alone in its
+    // cwd and the recency fallback ran for it -- and since s_old's last
+    // activity (just before the clear) is more recent than P2's own s2,
+    // the fallback picked s_old over P2's real session. Every timestamp
+    // below sits inside both processes' lifetimes, exactly like the
+    // measured case.
+    it("never lets P2 inherit P1's pre-clear session (probe scenario)", () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ sessionId:'s2', kind:'session.started', ts:at(28), payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+        ev({ sessionId:'s_old', kind:'session.started', ts:at(12), payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+        ev({ sessionId:'s_new', kind:'session.started', ts:at(10), payload:{ cwd:'/repo/shared' }, contentHash:'c' }),
+      ]);
+      const open = openSessionsLive(db, [
+        proc({ pid:1, cwd:'/repo/shared', ageSeconds:3600, ...live('s_new', '/repo/shared') }),
+        proc({ pid:2, cwd:'/repo/shared', ageSeconds:1800 }),
+      ], NOW);
+      const byPid = new Map(open.map(o => [o.pid, o]));
+      expect(byPid.get(1)).toMatchObject({ match:'unique', sessionId:'s_new' });
+      expect(byPid.get(2)).toMatchObject({ match:'ambiguous', sessionId:null });
+    });
+
+    it('keeps the exact session id even before the index has any rows for it', () => {
+      const db = openDb(':memory:');
+      const [o] = openSessionsLive(db, [proc({ pid:1, cwd:'/repo/new', ageSeconds:5, ...live('just-launched', '/repo/new') })], NOW);
+      expect(o).toMatchObject({ match:'unique', sessionId:'just-launched', lastProse:null, events:null });
+    });
+  });
+
+  describe('activity from the live session status', () => {
+    function oneSession(lastKind: 'turn.completed' | 'prose') {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', ts:at(2), payload:{ cwd:'/repo/s' }, contentHash:'a' }),
+        ev({ kind:lastKind, ts:at(1), payload: lastKind === 'prose' ? { text:'hi' } : {}, contentHash:'b', subIndex:1 }),
+      ]);
+      return db;
+    }
+    const withStatus = (status: 'idle' | 'busy' | 'waiting' | null) =>
+      proc({ pid:3, cwd:'/repo/s', ageSeconds:600, ...live('s1', '/repo/s', status) });
+
+    it('waiting means waiting on you, even after a turn boundary', () => {
+      expect(openSessionsLive(oneSession('turn.completed'), [withStatus('waiting')], NOW)[0]!.activity).toBe('waiting_input');
+    });
+
+    it('busy means working, even after a turn boundary', () => {
+      expect(openSessionsLive(oneSession('turn.completed'), [withStatus('busy')], NOW)[0]!.activity).toBe('working');
+    });
+
+    it('idle means idle, even mid-turn by the transcript rule', () => {
+      expect(openSessionsLive(oneSession('prose'), [withStatus('idle')], NOW)[0]!.activity).toBe('idle');
+    });
+
+    it('null status keeps the transcript rule', () => {
+      expect(openSessionsLive(oneSession('prose'), [withStatus(null)], NOW)[0]!.activity).toBe('working');
+    });
+
+    it('a hook PermissionRequest still wins over the file', () => {
+      const db = oneSession('turn.completed');
+      db.prepare(`INSERT INTO signal_events
+        (event_id, occurred_at, ingested_at, provider, session_id, tool_use_id, kind, payload)
+        VALUES (?,?,?,?,?,?,?,?)`).run('e1', at(1), at(1), 'claude', 's1', 't1',
+          'PermissionRequest', JSON.stringify({ tool_name:'Bash', tool_input:{ command:'ls' } }));
+      expect(openSessionsLive(db, [withStatus('idle')], NOW)[0]!.activity).toBe('waiting_permission');
+    });
+
+    it('an exact match with no index rows yet still shows waiting', () => {
+      const [o] = openSessionsLive(openDb(':memory:'), [
+        proc({ pid:4, cwd:'/repo/new', ageSeconds:5, ...live('fresh', '/repo/new', 'waiting') }),
+      ], NOW);
+      expect(o!.activity).toBe('waiting_input');
+    });
+
+    it('an exact match with no index rows and no status leaves activity unknown', () => {
+      const [o] = openSessionsLive(openDb(':memory:'), [
+        proc({ pid:4, cwd:'/repo/new', ageSeconds:5, ...live('fresh', '/repo/new', null) }),
+      ], NOW);
+      expect(o!.activity).toBeNull();
+    });
+  });
 
   it('lists one card per live process, regardless of transcript recency', () => {
     const db = openDb(':memory:');
@@ -1437,5 +1574,15 @@ describe('compareOpenSessions', () => {
     const forward = [...items].sort(cmp).map(o => o.pid);
     const reversed = [...items].reverse().sort(cmp).map(o => o.pid);
     expect(reversed).toEqual(forward);
+  });
+});
+
+describe('activityFromLiveStatus', () => {
+  it('maps each known status and nothing else', () => {
+    expect(activityFromLiveStatus('waiting')).toBe('waiting_input');
+    expect(activityFromLiveStatus('busy')).toBe('working');
+    expect(activityFromLiveStatus('idle')).toBe('idle');
+    expect(activityFromLiveStatus(null)).toBeNull();
+    expect(activityFromLiveStatus(undefined)).toBeNull();
   });
 });

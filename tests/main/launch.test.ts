@@ -150,6 +150,7 @@ describe('reattachSession', () => {
     panePid: () => number | null;
     kill: ReturnType<typeof vi.fn>;
     resolveSession: (pid: number) => { sessionId: string; provider: 'claude' | 'codex'; cwd: string } | null;
+    hasTranscript: (sessionId: string, cwd: string) => boolean;
   }> = {}) {
     return {
       exec: overrides.exec ?? ((a: string[]) => ({ ok: true as const, stdout: '' })),
@@ -157,6 +158,7 @@ describe('reattachSession', () => {
       kill: overrides.kill ?? vi.fn(async () => ({ status: 'killed' as const })),
       resolveSession: overrides.resolveSession
         ?? (() => ({ sessionId: 'abc-123', provider: 'claude' as const, cwd: '/a/proj' })),
+      hasTranscript: overrides.hasTranscript,
     };
   }
 
@@ -168,6 +170,26 @@ describe('reattachSession', () => {
     expect(r).toEqual({ status: 'launched', pid: 9001 });
     expect(calls[0]).toContain('claude --resume abc-123');
     expect(calls[0]).toContain('/a/proj');
+  });
+
+  // Fix wave F2: exact identity can now resolve a session that has never
+  // been resumed successfully -- right after launch, or right after
+  // /clear, before its first message. `claude --resume` refuses ("No
+  // conversation found") for such a session (measured 2026-09-15), so this
+  // must be checked BEFORE the kill, not learned only after the old
+  // process is already gone.
+  it('refuses before killing when the session has no saved conversation yet', async () => {
+    const d = deps({ hasTranscript: () => false });
+    const r = await reattachSession(4821, 120, 40, d);
+    expect(r).toEqual({ status: 'failed', reason: expect.stringMatching(/no saved conversation/) });
+    expect(d.kill).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to kill and launch as normal when a saved conversation exists', async () => {
+    const d = deps({ hasTranscript: () => true });
+    const r = await reattachSession(4821, 120, 40, d);
+    expect(d.kill).toHaveBeenCalledWith(4821);
+    expect(r).toEqual({ status: 'launched', pid: 9001 });
   });
 
   it('treats "already gone" the same as "killed" -- either way, the old process is confirmed not running', async () => {

@@ -14,10 +14,36 @@ const REFUSAL_TEXT: Record<KeysRefusalReason, string> = {
   empty: 'Nothing to send.',
   too_long: 'That reply is too long to send as keystrokes.',
   contains_newline: 'Send one line at a time -- a line break would submit early.',
+  // Reply guard (measured 2026-09-15): a choice ignores typed text and Enter
+  // picks whichever option is highlighted -- "blue" was recorded as "Red".
+  // This is the backstop for a popover that believed choice was false (a
+  // race between the card's own status and main's fresher check); the
+  // ordinary case never reaches sendKeys at all -- see `choice` below.
+  prompt_open: 'Claude is showing a choice right now. Answer it in the Terminal view -- a typed reply would just pick the highlighted option.',
 };
 
-export function ReplyPopover({ pid, prompt, onClose }: {
-  pid: number; prompt: string | null; onClose: () => void;
+export function ReplyPopover({ pid, prompt, choice, tmux, hostLabel, onOpenTerminal, onReveal, onClose }: {
+  pid: number; prompt: string | null;
+  /** True when this pid is showing a choice (a question picker or a
+   *  permission prompt) as far as the caller can tell -- a waiting session,
+   *  today (SessionRail's own doc comment). A typed reply can never answer
+   *  one (see REFUSAL_TEXT.prompt_open above), so this popover offers no
+   *  text box at all rather than one that would just misfire; the guard in
+   *  sendKeysFor (src/main/ipc.ts) is the backstop, not the primary defence
+   *  -- it only fires if this ever opens onto a choice believing it isn't
+   *  one. */
+  choice: boolean;
+  /** Whether this session is tmux-backed -- Open Terminal only makes sense
+   *  for one that is; otherwise the only way in is revealing the host app. */
+  tmux: boolean;
+  hostLabel: string | null;
+  /** Selects this pid and switches the main pane to the Terminal view. */
+  onOpenTerminal: () => void;
+  /** Brings the host application forward. null when the caller has nothing
+   *  to call (no onReveal wired, or no host known) -- the button is omitted
+   *  entirely rather than rendered disabled. */
+  onReveal: (() => void) | null;
+  onClose: () => void;
 }) {
   const [text, setText] = useState('');
   const [message, setMessage] = useState<string | null>(null);
@@ -39,10 +65,30 @@ export function ReplyPopover({ pid, prompt, onClose }: {
   return (
     <div className="replypop" role="dialog" aria-label={`Reply to session ${pid}`}>
       {prompt && <p className="replyprompt">{prompt}</p>}
-      <input className="replyinput" type="text" value={text} aria-label="Reply"
-        onChange={e => setText(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter') void send(); }} />
-      <button type="button" className="replysend" onClick={() => void send()}>Send</button>
+      {choice ? (
+        <>
+          <p className="replyexplain">
+            Claude is showing a choice. Answer it in the terminal -- a typed reply would just pick the
+            highlighted option.
+          </p>
+          {tmux ? (
+            <button type="button" className="replysend" onClick={() => { onOpenTerminal(); onClose(); }}>
+              Open Terminal
+            </button>
+          ) : onReveal && (
+            <button type="button" className="replysend" onClick={() => { onReveal(); onClose(); }}>
+              Show in {hostLabel ?? 'its terminal'}
+            </button>
+          )}
+        </>
+      ) : (
+        <>
+          <input className="replyinput" type="text" value={text} aria-label="Reply"
+            onChange={e => setText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') void send(); }} />
+          <button type="button" className="replysend" onClick={() => void send()}>Send</button>
+        </>
+      )}
       {message && <p className="replymsg">{message}</p>}
     </div>
   );

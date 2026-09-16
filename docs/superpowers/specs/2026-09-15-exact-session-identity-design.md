@@ -124,18 +124,15 @@ quality: 'unique', sessionId: liveSession.sessionId
 ```
 
 The existing disambiguation rules then run only for processes without one, with
-two adjustments so an exact match also helps its neighbours:
-
-- A session id claimed exactly by one process is removed from every other
-  process's `candidates`.
-- An exactly-resolved process is not counted in `pidCwdCounts`, so the
-  one-live-process-per-cwd fallback (`src/fleet/state.ts:805`) can still resolve
-  the remaining process.
-
-Example: two live processes share a cwd, only one has a file. The other's
-candidates shrink by one, and it is the only unresolved process at that cwd, so
-the existing timing rule can resolve it. If the existing rules still cannot, it
-stays `ambiguous`, never guessed.
+one adjustment: a claimed id is removed from every other process's
+`candidates`, but that removal never PROMOTES a neighbour's quality -- a
+neighbour left with zero candidates becomes `unknown`, and one left with any
+candidates stays `ambiguous`, never guessed down to a single id by process of
+elimination. Every live process still counts toward the one-live-process-per-cwd
+fallback (`src/fleet/state.ts:805`), an exactly-resolved one included. Both
+follow from the same fact: a process can own several session ids across one or
+more `/clear`s, and only its CURRENT one is ever visible here, so a claimed id
+proves which session that process is, never which one a neighbour is.
 `classifyMatch` itself stays a pure cwd matcher, per the existing ruling
 recorded at `src/fleet/state.ts:748`. The override happens in the builders,
 after `classifyMatch`, the same place the launch-time rule already lives.
@@ -194,6 +191,23 @@ id reaches a command line.
 | `~/.claude/sessions` missing entirely (Claude Code changed) | Every Claude pid falls back. One log line per app run, not one per pid per sweep. |
 | File read throws for another reason (permissions) | Treated as missing, logged once per pid per app run. The sweep never throws because of this module. |
 
+### 3.7 Reply guard (added after in-app testing)
+
+In-app testing found that the card's Reply popover, which types text into
+tmux via `session:keys`, cannot answer a Claude choice (a question picker or
+a permission prompt): the picker ignores the typed letters and Enter selects
+whichever option is highlighted -- "blue" was recorded as `"Pick a
+color?"="Red"`, and at a permission prompt option 1 is "Yes", so the same
+action would silently approve a command. `sendKeysFor` now refuses to send
+while a choice is open (reason `prompt_open`): the exact `waiting` status
+(§3.4) wins when a fresh read is available, and otherwise only a cached
+`waiting_permission` (a PermissionRequest hook blocker, always a picker)
+counts -- a cached `waiting_input` does not, since a hook-based one can be an
+ordinary text prompt where Reply is correct. The Terminal view's own keys
+(`session:raw`) are unaffected; typing directly into the terminal remains the
+correct way to answer a choice until Part 4 replaces this with proper choice
+cards.
+
 ## 4. Out of scope
 
 - Codex sessions. Nothing equivalent exists, so the heuristics stay.
@@ -231,8 +245,12 @@ id reaches a command line.
   same setup without files stays `ambiguous`, which is today's behaviour, pinned
   so the fallback cannot regress. A process with a file whose session has no
   index rows still resolves unique. When only one of two same-cwd processes has
-  a file, its session id is removed from the other's candidates, and the other
-  goes through the existing rules as the sole unresolved process at that cwd.
+  a file, its session id is removed from the other's candidates, but the other
+  stays `ambiguous` (dropping to `unknown` if that was its only candidate)
+  rather than being promoted by the removal alone. A pinning test also
+  reproduces the two-process `/clear` probe directly: the exactly-matched
+  process's superseded, pre-`/clear` session must never be handed to its
+  neighbour just because the neighbour has no file of its own.
 - `deriveActivity`: every row of the §3.4 table.
 - Reattach: a fresh file read wins over a stale cache entry. No file falls back
   to the cache.
@@ -250,13 +268,14 @@ id reaches a command line.
 
 ## 7. Open items to settle while planning
 
-1. **Does `startedAt` change on `/clear`?** It matched process start on sessions
-   that had not cleared. If it resets, the start-time guard must use `procStart`
-   instead. `procStart` is a UTC date string, observed as
-   `"Tue Sep  8 19:53:43 2026"`. Measure before writing the guard.
-2. **What does `status` show during a permission prompt?** If it is `waiting`,
-   §3.4 stands. If it is something new, it is an unrecognised value, `status`
-   becomes null, and the fallback applies. Measure and record which.
-3. **Does a non-interactive session write the file?** Examples are `claude -p`
-   or SDK sessions. The design does not depend on it, because a missing file
-   means fallback, but record the answer.
+All three were measured on 2026-09-15 (Claude Code 2.1.272) before planning:
+
+1. **`startedAt` does not change on `/clear`.** A throwaway session kept
+   `startedAt: 1789484783913` while `sessionId` went from `ac322d5f…` to
+   `9e3c4b49…`. The start-time guard uses `startedAt`, and Reattach's fresh
+   re-read compares it to the value discovery verified.
+2. **`status` is `waiting` during a permission prompt**, the same as during a
+   multiple-choice question. §3.4 stands.
+3. **`claude -p` writes the file too**, with `entrypoint: "sdk-cli"`,
+   `kind: "interactive"`, and `status: null` at first. Such sessions get exact
+   identity; their activity uses the transcript rule until a status appears.

@@ -71,7 +71,13 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
   return (
     <div className="mainpane split">
       <SessionRail sessions={sessions} selectedPid={selection.pid} onSelect={onSelect} onKill={killSession}
-        onReveal={revealSession} onReattach={reattachSession} onResume={resumeSession} side={railSide} />
+        onReveal={revealSession} onReattach={reattachSession} onResume={resumeSession}
+        // Reply guard: Answer on a waiting session routes here instead of a
+        // text box -- select this pid, then flip to the Terminal view, the
+        // same select-then-switch pairing App.tsx's own openInTerminal uses
+        // for LaunchBar (see its doc comment there).
+        onOpenTerminal={pid => { onSelect(pid); onSetView('terminal'); }}
+        side={railSide} />
       <section className="pane">
         <header className="panehead">
           <button type="button" className="paneback" onClick={onClear}>All sessions</button>

@@ -22,10 +22,14 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename } from 'node:path';
+import { homedir } from 'node:os';
 import {
   parsePgrep, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost, type LiveProcess,
 } from './parse.ts';
-import { parseProcessChainHop } from '../config.ts';
+import { parseProcessChainHop, resolvePaths } from '../config.ts';
+import {
+  readLiveSessionFile, startTimeAgrees, type LiveSessionFile, type LiveSessionRead,
+} from '../providers/claude/liveSession.ts';
 import type { Provider } from '../core/types.ts';
 
 const execFileP = promisify(execFile);
@@ -74,6 +78,59 @@ export async function execFileSoft(bin: string, args: string[]): Promise<string>
 
 async function defaultExec(bin: string, args: string[]): Promise<string> {
   return execFileSoft(bin, args);
+}
+
+/** Injectable pieces of the live session lookup, so tests never read the
+ *  real ~/.claude/sessions and can pin the clock and capture warnings. */
+export type DiscoveryDeps = {
+  readLiveSession?: (pid: number) => LiveSessionRead;
+  now?: () => number;
+  warn?: (message: string) => void;
+};
+
+/** The production reader. Exported for Reattach's fresh re-read
+ *  (src/main/ipc.ts), which must hit the same directory discovery does. */
+export function readLiveSession(pid: number): LiveSessionRead {
+  return readLiveSessionFile(pid, resolvePaths(homedir()).claudeLiveSessions);
+}
+
+/** Spec §3.6: a rejected file is logged once per pid and reason per app
+ *  run (so format drift is visible without flooding the console every
+ *  5-second sweep), and a missing directory once per app run in total. */
+const warnedLiveSession = new Set<string>();
+export function resetLiveSessionWarnings(): void {
+  warnedLiveSession.clear();
+}
+function warnOnce(key: string, message: string, warn: (m: string) => void): void {
+  if (warnedLiveSession.has(key)) return;
+  warnedLiveSession.add(key);
+  warn(message);
+}
+
+/** The file for `pid`, or null when it is missing, rejected, or fails the
+ *  pid-reuse start-time check. Never throws. Never logs file contents. */
+export function verifiedLiveSession(
+  pid: number, ageSeconds: number | null | undefined, deps: DiscoveryDeps = {},
+): LiveSessionFile | null {
+  const warn = deps.warn ?? (m => console.warn(m));
+  const read = (deps.readLiveSession ?? readLiveSession)(pid);
+  if (!read.ok) {
+    if (read.reason === 'missing_dir') {
+      warnOnce('missing_dir', '[live-session] ~/.claude/sessions not found; falling back to cwd matching', warn);
+    } else if (read.reason !== 'missing') {
+      warnOnce(`${pid}:${read.reason}`, `[live-session] pid ${pid}: session file ignored (${read.reason})`, warn);
+    }
+    return null;
+  }
+  if (ageSeconds == null) {
+    warnOnce(`${pid}:no_age`, `[live-session] pid ${pid}: session file ignored (process start time unknown)`, warn);
+    return null;
+  }
+  if (!startTimeAgrees(read.file, ageSeconds, (deps.now ?? Date.now)())) {
+    warnOnce(`${pid}:start`, `[live-session] pid ${pid}: session file ignored (start time does not match the process)`, warn);
+    return null;
+  }
+  return read.file;
 }
 
 /** Result of walking one pid's parent chain: `chain` and `pids` are parallel
@@ -137,13 +194,15 @@ interface InspectedPid {
  *  come back empty (e.g. it exited between pgrep and this call) still
  *  produces a LiveProcess, just with every derived field null/'unknown'
  *  (provider excepted) rather than the pid disappearing. */
-async function inspectPid(pid: number, provider: Provider, exec: ExecFn): Promise<InspectedPid> {
+async function inspectPid(pid: number, provider: Provider, exec: ExecFn, deps: DiscoveryDeps): Promise<InspectedPid> {
   const [ttyOut, cwdOut, statOut, walk] = await Promise.all([
     exec('ps', ['-o', 'tty=', '-p', String(pid)]),
     exec('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']),
     exec('ps', ['-o', 'etime=,rss=', '-p', String(pid)]),
     walkProcessChain(pid, exec),
   ]);
+  const ageSeconds = parseEtime(statOut);
+  const liveSession = provider === 'claude' ? verifiedLiveSession(pid, ageSeconds, deps) : null;
   return {
     process: {
       pid,
@@ -151,8 +210,9 @@ async function inspectPid(pid: number, provider: Provider, exec: ExecFn): Promis
       tty: parseTty(ttyOut),
       cwd: parseLsofCwd(cwdOut),
       host: classifyHost(walk.chain),
-      ageSeconds: parseEtime(statOut),
+      ageSeconds,
       rssBytes: parseRss(statOut),
+      ...(liveSession ? { liveSession } : {}),
     },
     ancestorPids: walk.pids.slice(1), // walk.pids[0] is pid itself, not an ancestor
   };
@@ -198,13 +258,13 @@ function filterToSessions(inspected: InspectedPid[], matchedPids: ReadonlySet<nu
  *  is inspected), then inspects them all concurrently, then drops helper
  *  processes -- a session's own subprocesses that also happen to match
  *  `pgrep -x codex`/`pgrep -x claude` by binary name (see filterToSessions). */
-export async function discoverLiveProcesses(exec: ExecFn = defaultExec): Promise<LiveProcess[]> {
+export async function discoverLiveProcesses(exec: ExecFn = defaultExec, deps: DiscoveryDeps = {}): Promise<LiveProcess[]> {
   try {
     const matched = (await Promise.all(PROVIDER_BINS.map(async bin =>
       parsePgrep(await exec('pgrep', ['-x', bin])).map(pid => ({ pid, provider: bin }))))).flat();
     const matchedPids = new Set(matched.map(m => m.pid));
 
-    const inspected = await Promise.all(matched.map(({ pid, provider }) => inspectPid(pid, provider, exec)));
+    const inspected = await Promise.all(matched.map(({ pid, provider }) => inspectPid(pid, provider, exec, deps)));
     return filterToSessions(inspected, matchedPids);
   } catch {
     return [];
@@ -246,9 +306,9 @@ export function getCachedLiveProcesses(): LiveProcess[] {
  *  See inFlightSweep above for the overlap guard: a call that arrives while
  *  a sweep is already running returns that same in-flight promise rather
  *  than starting a second, concurrent one. */
-export async function refreshLiveProcesses(exec: ExecFn = defaultExec): Promise<LiveProcess[]> {
+export async function refreshLiveProcesses(exec: ExecFn = defaultExec, deps: DiscoveryDeps = {}): Promise<LiveProcess[]> {
   if (inFlightSweep) return inFlightSweep;
-  const sweep = discoverLiveProcesses(exec).then(result => {
+  const sweep = discoverLiveProcesses(exec, deps).then(result => {
     cache = result;
     return result;
   });

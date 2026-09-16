@@ -8,12 +8,32 @@ import {
   sanitizeFields, SANITISED_FIELDS, STRUCTURAL_FIELDS,
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
-  killSession, ownProcessAncestry, revealSession, sendKeysFor,
+  killSession, ownProcessAncestry, revealSession, sendKeysFor, resolveReattachTarget,
+  freshLiveSession, promptOpenFor,
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry, tmuxNameForPid } from '../../src/main/sessions.ts';
 import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { Blocker } from '../../src/store/signals.ts';
+import type { LiveProcess } from '../../src/discovery/parse.ts';
+import type { OpenSession } from '../../src/fleet/state.ts';
+import type { LiveSessionRead } from '../../src/providers/claude/liveSession.ts';
+
+// Fix wave F3: about 9 refreshLiveProcesses calls below give Claude pids
+// with no reader stub of their own, so without this every one of them
+// would fall through discovery's own readLiveSession to the REAL
+// readLiveSessionFile, which opens files under ~/.claude/sessions -- this
+// test file must never depend on what happens to be on the machine running
+// it. Every other export from the module stays real (built from
+// importOriginal), so this changes nothing about how discovery classifies
+// a pid beyond making its live-session read report "missing"
+// unconditionally, exactly like a machine with no such directory.
+// resolveReattachTarget's own tests below inject `read` directly and never
+// go through discovery's real readLiveSession, so they are unaffected.
+vi.mock('../../src/providers/claude/liveSession.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/providers/claude/liveSession.ts')>();
+  return { ...actual, readLiveSessionFile: () => ({ ok: false, reason: 'missing' }) };
+});
 
 function ev(o: Partial<NormalizedEvent>): NormalizedEvent {
   return { provider:'claude', sessionId:'s1', runId:'r1', agentId:null,
@@ -944,6 +964,92 @@ describe('session:keys', () => {
     });
     expect(r).toEqual({ status: 'refused', reason: 'session_gone' });
   });
+
+  // Reply guard (2026-09-15 in-app testing): a choice (a question picker or
+  // a permission prompt) ignores typed text and Enter selects whichever
+  // option is highlighted -- measured the same day, "blue" recorded as
+  // "Red". Nothing may be sent while one is open.
+  it('refuses with prompt_open, and never calls send, when a choice is open', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    let called = false;
+    const r = sendKeysFor(4821, 'yes', {
+      has: () => true,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: () => { called = true; return { ok: true, stdout: '' }; },
+      promptOpen: () => true,
+    });
+    expect(r).toEqual({ status: 'refused', reason: 'prompt_open' });
+    expect(called).toBe(false);
+  });
+
+  it('still sends text and Enter when promptOpen reports no choice is open', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'yes', {
+      has: () => true,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+      promptOpen: () => false,
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-l', 'yes']);
+    expect(calls[1]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
+  });
+});
+
+// promptOpenFor's own decision rule, independent of sendKeysFor's plumbing
+// above (which only proves the refusal is wired in and nothing is sent).
+// Exact status wins when there is one; only a cached PermissionRequest hook
+// blocker (`waiting_permission`) counts as a choice through the fallback --
+// hook-based `waiting_input` can be an ordinary text prompt, where Reply is
+// exactly right, so it must NOT be treated as a choice.
+describe('promptOpenFor', () => {
+  const STARTED = 1_789_000_000_000;
+  const proc = (o: Partial<LiveProcess> = {}): LiveProcess => ({
+    pid: 50, provider: 'claude', tty: null, cwd: '/a', host: 'iterm2', ageSeconds: 60, rssBytes: null,
+    liveSession: { sessionId: 's', cwd: '/a', startedAtMs: STARTED, status: 'idle' }, ...o,
+  });
+  const fresh = (status: 'idle' | 'busy' | 'waiting' | null, startedAtMs = STARTED): LiveSessionRead =>
+    ({ ok: true, file: { sessionId: 's', cwd: '/a', startedAtMs, status } });
+
+  it('a fresh waiting status is a choice', () => {
+    expect(promptOpenFor(50, { cached: [], processes: [proc()], read: () => fresh('waiting') })).toBe(true);
+  });
+
+  it('a fresh idle status wins over a cached waiting_permission', () => {
+    const cached = [{ pid: 50, provider: 'claude', activity: 'waiting_permission' } as OpenSession];
+    expect(promptOpenFor(50, { cached, processes: [proc()], read: () => fresh('idle') })).toBe(false);
+  });
+
+  it('a fresh busy status is not a choice', () => {
+    expect(promptOpenFor(50, { cached: [], processes: [proc()], read: () => fresh('busy') })).toBe(false);
+  });
+
+  it('falls back to a cached waiting_permission when the fresh status is null', () => {
+    const cached = [{ pid: 50, provider: 'claude', activity: 'waiting_permission' } as OpenSession];
+    expect(promptOpenFor(50, { cached, processes: [proc()], read: () => fresh(null) })).toBe(true);
+  });
+
+  it('does not treat a cached waiting_input as a choice', () => {
+    const cached = [{ pid: 50, provider: 'claude', activity: 'waiting_input' } as OpenSession];
+    expect(promptOpenFor(50, { cached, processes: [proc()], read: () => fresh(null) })).toBe(false);
+  });
+
+  it('falls back to the cache when the fresh read is from a different process instance', () => {
+    const cached = [{ pid: 50, provider: 'claude', activity: 'waiting_permission' } as OpenSession];
+    expect(promptOpenFor(50, { cached, processes: [proc()], read: () => fresh('waiting', STARTED + 60_000) })).toBe(true);
+  });
+
+  it('never reads for Codex, and reports no choice', () => {
+    const read = vi.fn((): LiveSessionRead => fresh('waiting'));
+    expect(promptOpenFor(50, { cached: [], processes: [proc({ provider: 'codex' })], read })).toBe(false);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('is false when nothing identifies the pid', () => {
+    expect(promptOpenFor(99, { cached: [], processes: [], read: () => fresh(null) })).toBe(false);
+  });
 });
 
 describe('terminal:data parity', () => {
@@ -996,5 +1102,67 @@ describe("session:launch / session:reattach -- Task 13's real handlers", () => {
     expect(ipc).toMatch(/import\s*\{[^}]*resumeSession[^}]*\}\s*from\s*'\.\/launch\.ts'/);
     const resumeHandler = ipc.match(/ipcMain\.handle\(\s*'session:resume',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
     expect(resumeHandler).toMatch(/resumeSession\(/);
+  });
+});
+
+describe('resolveReattachTarget', () => {
+  const STARTED = 1_789_000_000_000;
+  const proc = (o: Partial<LiveProcess> = {}): LiveProcess => ({
+    pid: 50, provider: 'claude', tty: null, cwd: '/repo/a', host: 'iterm2', ageSeconds: 60, rssBytes: null,
+    liveSession: { sessionId: 'before-clear', cwd: '/repo/a', startedAtMs: STARTED, status: 'idle' }, ...o,
+  });
+  const cached = [{ pid: 50, provider: 'claude', cwd: '/repo/a', sessionId: 'before-clear' } as OpenSession];
+  const fresh = (sessionId: string, startedAtMs = STARTED, cwd = '/repo/a'): LiveSessionRead =>
+    ({ ok: true, file: { sessionId, cwd, startedAtMs, status: 'idle' } });
+
+  it('uses a fresh read when /clear changed the session since the last sweep', () => {
+    // cwd deliberately differs from the cached entry's '/repo/a' -- proves
+    // the returned cwd comes from the fresh read, not merely echoed from
+    // the stale cache alongside a fresh sessionId.
+    const r = resolveReattachTarget(50, { cached, processes: [proc()], read: () => fresh('after-clear', STARTED, '/repo/a-moved') });
+    expect(r).toEqual({ sessionId: 'after-clear', provider: 'claude', cwd: '/repo/a-moved' });
+  });
+
+  it('ignores a fresh read from a different process instance (start time changed)', () => {
+    const r = resolveReattachTarget(50, { cached, processes: [proc()], read: () => fresh('someone-else', STARTED + 60_000) });
+    expect(r).toEqual({ sessionId: 'before-clear', provider: 'claude', cwd: '/repo/a' });
+  });
+
+  it('falls back to the cache when the fresh read fails', () => {
+    const r = resolveReattachTarget(50, { cached, processes: [proc()], read: () => ({ ok: false, reason: 'missing' }) });
+    expect(r).toEqual({ sessionId: 'before-clear', provider: 'claude', cwd: '/repo/a' });
+  });
+
+  it('does not read at all for a process discovery never verified', () => {
+    const read = vi.fn((): LiveSessionRead => fresh('x'));
+    const { liveSession: _omit, ...unverified } = proc();
+    resolveReattachTarget(50, { cached, processes: [unverified], read });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('does not read for Codex', () => {
+    const read = vi.fn((): LiveSessionRead => fresh('x'));
+    resolveReattachTarget(50, { cached, processes: [proc({ provider: 'codex' })], read });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('returns null when nothing identifies the pid', () => {
+    expect(resolveReattachTarget(99, { cached, processes: [], read: () => ({ ok: false, reason: 'missing' }) })).toBeNull();
+  });
+});
+
+// The shared helper resolveReattachTarget above (and promptOpenFor) are both
+// built on: the rest of its behaviour is already covered through
+// resolveReattachTarget's own tests, since it now calls this directly.
+describe('freshLiveSession', () => {
+  it('returns null when the start time differs', () => {
+    const STARTED = 1_789_000_000_000;
+    const proc: LiveProcess = {
+      pid: 50, provider: 'claude', tty: null, cwd: '/repo/a', host: 'iterm2', ageSeconds: 60, rssBytes: null,
+      liveSession: { sessionId: 's', cwd: '/repo/a', startedAtMs: STARTED, status: 'idle' },
+    };
+    const read = (): LiveSessionRead =>
+      ({ ok: true, file: { sessionId: 's', cwd: '/repo/a', startedAtMs: STARTED + 1, status: 'idle' } });
+    expect(freshLiveSession(50, [proc], read)).toBeNull();
   });
 });

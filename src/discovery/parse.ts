@@ -1,4 +1,5 @@
 import type { Provider } from '../core/types.ts';
+import type { LiveSessionFile } from '../providers/claude/liveSession.ts';
 
 export type HostApp = 'iterm2' | 'terminal' | 'vscode' | 'claude-app' | 'codex-app' | 'unknown';
 
@@ -25,6 +26,12 @@ export interface LiveProcess {
    *  blocks on macOS/BSD `ps` and normalized to bytes here). Same
    *  optionality rationale as ageSeconds. */
   rssBytes?: number | null;
+  /** Exact identity from Claude Code's own ~/.claude/sessions/<pid>.json
+   *  (src/providers/claude/liveSession.ts). Present only when the file was
+   *  valid AND its start time agreed with this process's; omitted, never
+   *  null, otherwise -- so every fixture that predates it, every Codex
+   *  process, and every rejected file look identical to before. */
+  liveSession?: LiveSessionFile;
 }
 
 /** Parse `pgrep -x claude` output. */
