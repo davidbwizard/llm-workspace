@@ -81,6 +81,18 @@ describe('SettingsModal', () => {
     expect(within(screen.getByRole('group', { name: 'Message style' })).getAllByRole('button')).toHaveLength(2);
   });
 
+  // Regression: the title and the "default" tag used to sit in adjacent JSX
+  // elements with no space between them, so the computed accessible name
+  // concatenated straight into "A · Margin ruledefault". getByRole's name
+  // match runs the same accessible-name computation a screen reader would,
+  // so an exact match here is the one place that word-glue defect would
+  // resurface silently.
+  it('puts a space before the "default" tag in the accessible name, not glued to the title', () => {
+    render(<SettingsModal open={true} onClose={() => {}} />);
+    const style = screen.getByRole('group', { name: 'Message style' });
+    expect(within(style).getByRole('button', { name: 'A · Margin rule default' })).toBeTruthy();
+  });
+
   it.each([
     ['Escape', () => fireEvent.keyDown(document, { key: 'Escape' })],
     ['the close button', () => fireEvent.click(screen.getByRole('button', { name: /close settings/i }))],

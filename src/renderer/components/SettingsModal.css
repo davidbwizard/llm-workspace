@@ -65,13 +65,17 @@
 /* Abstract wireframe previews inside each style card -- grey bars standing
    in for text, an accent rule or bubble standing in for the style itself.
    Purely decorative (StyleWireframe renders them aria-hidden): the card's
-   own title and aria-pressed state are what a screen reader needs. */
-.settingswire-a { display:flex; align-items:stretch; gap:8px; }
+   own title and aria-pressed state are what a screen reader needs.
+   .settingswire carries what both variants share (they are both flex
+   containers); the two variant classes hold what actually differs
+   (direction, gap, alignment) rather than repeating the shared rule. */
+.settingswire { display:flex; }
+.settingswire-a { align-items:stretch; gap:8px; }
 .settingswirerule { flex:none; width:3px; border-radius:2px; background:var(--accent); }
 .settingswirebars { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:5px; }
 .settingswirebar { height:6px; border-radius:3px; background:var(--line); }
 .settingswirebar-short { width:65%; }
-.settingswire-c { display:flex; flex-direction:column; gap:6px; }
+.settingswire-c { flex-direction:column; gap:6px; }
 .settingswire-c .settingswirebubble { align-self:flex-end; width:60%; height:10px;
   border-radius:6px; background:var(--accent); }
 .settingswire-c .settingswirebar { width:100%; }

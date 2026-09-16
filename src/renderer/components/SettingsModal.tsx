@@ -262,7 +262,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 >
                   <span className="settingsstyletitle">
                     {MESSAGE_STYLE_LABEL[m]}
-                    {m === DEFAULT_SETTINGS.messageStyle && <span className="settingsstyledefault">default</span>}
+                    {m === DEFAULT_SETTINGS.messageStyle && (
+                      <>{' '}<span className="settingsstyledefault">default</span></>
+                    )}
                   </span>
                   <StyleWireframe styleKey={m} />
                 </button>
