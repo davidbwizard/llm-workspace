@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
-import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop } from '../../src/renderer/components/ConversationView.tsx';
+import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop, mergeNewest } from '../../src/renderer/components/ConversationView.tsx';
 
 const turns = [
   { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests', steps: [] },
@@ -18,7 +18,7 @@ const fmtTime = (ts: string) => new Date(ts).toLocaleTimeString('en-US', { hour:
 // otherwise. One helper, so the component's required props live in one
 // place rather than in twenty-odd render calls.
 function renderConv(props: Partial<React.ComponentProps<typeof ConversationView>> = {}) {
-  return render(<ConversationView sessionId="s1" provider="claude" {...props} />);
+  return render(<ConversationView sessionId="s1" provider="claude" events={null} {...props} />);
 }
 
 beforeEach(() => {
@@ -247,7 +247,7 @@ describe('ConversationView', () => {
     const scroller = container.querySelector('.conv')!;
     fireEvent.scroll(scroller, { target: { scrollTop: 40 } }); // starts s1's older-page fetch, left pending
 
-    rerender(<ConversationView sessionId="s2" provider="claude" />);
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null} />);
     await waitFor(() => expect(screen.getByText('session B turn')).toBeTruthy());
 
     // Let session A's older-page fetch resolve well after session B has
@@ -609,6 +609,203 @@ describe('ConversationView -- the sticky bottom and Jump to latest', () => {
     fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
 
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+});
+
+describe('mergeNewest', () => {
+  const t = (id: number, text: string) =>
+    ({ id, ts: '2026-09-12T10:00:00Z', role: 'assistant' as const, text, steps: [] });
+
+  it('appends turns the pane has not seen, in the order they arrived', () => {
+    expect(mergeNewest([t(1, 'a')], [t(1, 'a'), t(2, 'b'), t(3, 'c')]).map(x => x.text))
+      .toEqual(['a', 'b', 'c']);
+  });
+
+  // The streaming case, and the whole reason this is a merge rather than an
+  // append: the last assistant turn GROWS as its reply arrives, keeping the
+  // same row id. Appending would show the same reply twice, once truncated.
+  it('replaces a turn that already exists, in place, rather than duplicating it', () => {
+    const merged = mergeNewest([t(1, 'a'), t(2, 'half a rep')], [t(2, 'half a reply, now whole')]);
+    expect(merged.map(x => x.text)).toEqual(['a', 'half a reply, now whole']);
+  });
+
+  // Older pages the reader deliberately loaded sit ABOVE the newest page
+  // and are not in it. A merge that trusted the incoming page alone would
+  // throw them away the first time a message arrived.
+  it('leaves older loaded pages exactly where they are', () => {
+    const merged = mergeNewest([t(0, 'much older'), t(1, 'a')], [t(1, 'a'), t(2, 'b')]);
+    expect(merged.map(x => x.text)).toEqual(['much older', 'a', 'b']);
+  });
+
+  it('changes nothing when the newest page is empty', () => {
+    const current = [t(1, 'a')];
+    expect(mergeNewest(current, [])).toBe(current);
+  });
+});
+
+describe('ConversationView -- live refresh from the events count', () => {
+  function fleetReturning(pages: Array<{ turns: unknown[]; nextCursor: unknown }>) {
+    const calls: Array<unknown[]> = [];
+    let next = 0;
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        return pages[Math.min(next++, pages.length - 1)];
+      },
+    };
+    return calls;
+  }
+  const first = {
+    turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'go on then', steps: [] }],
+    nextCursor: { ts: '2026-09-12T09:00:00Z', id: 0 },
+  };
+  const second = {
+    turns: [
+      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'go on then', steps: [] },
+      { id: 2, ts: '2026-09-12T10:00:09Z', role: 'assistant', text: 'arrived while you watched', steps: [] },
+    ],
+    nextCursor: { ts: '2026-09-12T09:00:00Z', id: 0 },
+  };
+
+  it('refetches the newest page and shows the new turn when the events count changes', async () => {
+    const calls = fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    await waitFor(() => expect(screen.getByText('arrived while you watched')).toBeTruthy());
+    // The refetch takes NO cursor -- it is the newest page, not a page walk.
+    expect(calls).toEqual([['s1', undefined], ['s1', undefined]]);
+  });
+
+  it('does not refetch on the very first render, which the mount fetch already covered', async () => {
+    const calls = fleetReturning([first]);
+    const { container } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not refetch when the events count is unchanged', async () => {
+    const calls = fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+    rerender(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await Promise.resolve();
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not refetch for a session whose events count is unknown', async () => {
+    const calls = fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={null} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+    rerender(<ConversationView sessionId="s1" provider="claude" events={null} />);
+    await Promise.resolve();
+    expect(calls).toHaveLength(1);
+  });
+
+  // A refetch of the NEWEST page carries the newest page's own cursor,
+  // which points at a page the reader may already have loaded above. Taking
+  // it would walk backwards through history the reader already has.
+  it('keeps the cursor it was already paging from, never the refetched page\'s own', async () => {
+    const olderCursor = { ts: '2026-09-12T08:00:00Z', id: -1 };
+    const calls: Array<unknown[]> = [];
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        if (cursor !== undefined) {
+          return {
+            turns: [{ id: 0, ts: '2026-09-12T09:30:00Z', role: 'user', text: 'older', steps: [] }],
+            nextCursor: olderCursor,
+          };
+        }
+        return calls.length === 1 ? first : second;
+      },
+    };
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    await waitFor(() => expect(screen.getByText('arrived while you watched')).toBeTruthy());
+
+    // Scrolling to the top again pages from the OLDER cursor the prepend
+    // established, not from the newest page's cursor the refetch carried.
+    fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+    await waitFor(() => expect(calls.at(-1)).toEqual(['s1', olderCursor]));
+  });
+
+  // Task 2 built the sticky bottom; this is the first task that can
+  // actually deliver new content to an open pane, so the two halves of
+  // spec §3.2's rule are pinned here, against the signal that drives them.
+  //
+  // jsdom reports scrollTop 0 and scrollHeight 0 for an unstubbed element,
+  // which nearBottom reads as "at the bottom" -- correct, and why the
+  // following case needs no stub while the staying-put case does.
+  it('follows the newest message while the reader is at the bottom', async () => {
+    fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    await waitFor(() => expect(screen.getByText('arrived while you watched')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+
+  it('stays put and offers Jump to latest when the reader has scrolled up', async () => {
+    fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    // 200px, not 100: comfortably away from the bottom AND outside
+    // nearOlderEdge's own 150px-from-the-top threshold. first/second (this
+    // describe block's fixture) carry a non-null nextCursor, on purpose,
+    // for the cursor-preservation test below -- so a scrollTop inside that
+    // threshold would also fire the pre-existing loadMore() here, and the
+    // cursor-agnostic fleetReturning mock would hand it the wrong page.
+    fireEvent.scroll(scroller, { target: { scrollTop: 200 } }); // 3300px from the bottom
+
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy());
+    // The view did not move itself.
+    expect(scroller.scrollTop).toBe(200);
+  });
+
+  it('clears Jump to latest once the reader is back at the bottom', async () => {
+    fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    fireEvent.scroll(scroller, { target: { scrollTop: 200 } }); // see note above
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy());
+
+    fireEvent.scroll(scroller, { target: { scrollTop: 3500 } }); // at the bottom
+    await waitFor(() => expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull());
+  });
+
+  it('jumps to the newest message when the button is pressed, and hides itself', async () => {
+    fleetReturning([first, second]);
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    fireEvent.scroll(scroller, { target: { scrollTop: 200 } }); // see note above
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+
+    const jump = await screen.findByRole('button', { name: /jump to latest/i });
+    fireEvent.click(jump);
+    expect(scroller.scrollTop).toBe(4000);
     expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
   });
 });

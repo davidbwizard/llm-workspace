@@ -127,4 +127,21 @@ describe('MainPane', () => {
     render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={codex} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
     return waitFor(() => expect(screen.getByText('Codex')).toBeTruthy());
   });
+
+  // Live updates (spec §3.3): the pane refetches on the one signal the app
+  // already pushes. MainPane is the only component that holds it.
+  it('hands the conversation the session\'s events count, so the pane can refresh itself', async () => {
+    const api = (window as unknown as { fleet: { conversation: ReturnType<typeof vi.fn> } }).fleet;
+    api.conversation = vi.fn()
+      .mockResolvedValueOnce({ turns: [], nextCursor: null })
+      .mockResolvedValue({
+        turns: [{ id: 9, ts: '2026-09-12T10:00:00Z', role: 'assistant', text: 'live', steps: [] }],
+        nextCursor: null,
+      });
+    const bumped = [{ ...(sessions[0] as unknown as object), events: 2 }] as never[];
+    const { rerender } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    await waitFor(() => expect(api.conversation).toHaveBeenCalledTimes(1));
+    rerender(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={bumped} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    await waitFor(() => expect(screen.getByText('live')).toBeTruthy());
+  });
 });

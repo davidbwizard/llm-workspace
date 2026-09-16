@@ -135,6 +135,26 @@ function lastTurnKey(turns: ConversationTurn[]): string | null {
   return last ? `${last.id}:${last.text.length}` : null;
 }
 
+/** Folds a freshly-fetched NEWEST page into the turns already loaded.
+ *
+ *  Two rules, and they are different on purpose:
+ *  - a turn whose id is already loaded is REPLACED in place, because the
+ *    last assistant turn grows as its reply streams and keeps its row id;
+ *  - anything genuinely new is appended at the bottom, in the incoming
+ *    page's own (oldest-first) order.
+ *
+ *  Older pages the reader deliberately loaded sit above the newest page and
+ *  are simply absent from it -- so they are carried through untouched
+ *  rather than being treated as turns the server has forgotten. */
+export function mergeNewest(current: ConversationTurn[], incoming: ConversationTurn[]): ConversationTurn[] {
+  if (incoming.length === 0) return current;
+  const byId = new Map(incoming.map(t => [t.id, t]));
+  const merged = current.map(t => byId.get(t.id) ?? t);
+  const seen = new Set(current.map(t => t.id));
+  for (const t of incoming) if (!seen.has(t.id)) merged.push(t);
+  return merged;
+}
+
 /** The clean half of the toggle: what was said, not how it was rendered.
  *  This is the only view a non-tmux session can have, and it is still a real
  *  upgrade on the card -- the card shows one line.
@@ -157,13 +177,17 @@ function lastTurnKey(turns: ConversationTurn[]): string | null {
  *  in the moment right after it launches, before its first events are
  *  written and ingested; and no match info at all (match omitted) falls
  *  back to a neutral message rather than asserting either specific claim. */
-export function ConversationView({ sessionId, match, provider }: {
+export function ConversationView({ sessionId, match, provider, events }: {
   sessionId: string | null;
   match?: MatchQuality;
   /** Which CLI this session is, so the agent's meta line carries that
    *  provider's own mark. MainPane always knows it (OpenSession.provider
    *  comes straight from the pgrep that found the process). */
   provider: Provider;
+  /** The matched session's monotonic event count, straight off the
+   *  fleet:update push MainPane already receives. Null when this process
+   *  matches no session uniquely -- there is nothing to refresh then. */
+  events: number | null;
 }) {
   const [page, setPage] = useState<ConversationPage | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -202,6 +226,10 @@ export function ConversationView({ sessionId, match, provider }: {
   /** The last turn's identity AND length, so a reply that grows in place as
    *  it streams counts as new content just as a brand-new turn does. */
   const lastTurnKeyRef = useRef<string | null>(null);
+  /** The events count this pane has already fetched for. Starts unset per
+   *  session so the very first value is recorded, not acted on: the mount
+   *  fetch has already covered it. */
+  const seenEventsRef = useRef<number | null>(null);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -215,11 +243,35 @@ export function ConversationView({ sessionId, match, provider }: {
     stickyRef.current = true;
     landedRef.current = false;
     lastTurnKeyRef.current = null;
+    seenEventsRef.current = null;
     void window.fleet?.conversation(sessionId).then(p => {
       if (alive) setPage(p);
     });
     return () => { alive = false; };
   }, [sessionId]);
+
+  /** Live updates (spec §3.3). No conversation data is pushed today --
+   *  fleet:update carries open-session cards only -- but `events` on those
+   *  cards is a per-session monotonic count that changes on exactly the
+   *  transitions that matter. When it moves, fetch the NEWEST page (no
+   *  cursor) and merge; pages the reader loaded above stay put, and so does
+   *  the cursor they are paging from, which must not be replaced by the
+   *  newest page's own or the next "load older" would walk history the
+   *  reader already has. */
+  useEffect(() => {
+    if (sessionId === null || events === null) return;
+    if (seenEventsRef.current === null) { seenEventsRef.current = events; return; }
+    if (seenEventsRef.current === events) return;
+    seenEventsRef.current = events;
+    let alive = true;
+    void window.fleet?.conversation(sessionId).then(next => {
+      if (!alive) return;
+      setPage(current => current === null
+        ? current
+        : { turns: mergeNewest(current.turns, next.turns), nextCursor: current.nextCursor });
+    });
+    return () => { alive = false; };
+  }, [sessionId, events]);
 
   /** All scroll bookkeeping, in a LAYOUT effect so it runs before the
    *  browser paints: landing at the bottom or restoring a prepend in a

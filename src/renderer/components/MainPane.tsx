@@ -106,7 +106,10 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
               // Falls back to 'claude' only when the selected pid has left
               // the fleet entirely -- the pane is then showing a stale
               // selection and the glyph is cosmetic.
-              provider={session?.provider ?? 'claude'} />}
+              provider={session?.provider ?? 'claude'}
+              // The refresh signal (spec §3.3). Null whenever this process
+              // matches no session uniquely -- there is nothing to refresh.
+              events={session?.events ?? null} />}
       </section>
     </div>
   );
