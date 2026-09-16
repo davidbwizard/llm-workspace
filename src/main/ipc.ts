@@ -748,13 +748,17 @@ function nextPasteBuffer(): string {
   return `llmws-p${process.pid}-${pasteBufferSeq}`;
 }
 
-/** Lines captured both for the pre-send liveness check and, for a
- *  multi-line send, as the "before" snapshot waitForPasteToSettle (below)
- *  compares against. Wider than a bare liveness probe needs: the input box
- *  a paste lands in can span more than one line, and a change confined to
- *  line 2 or 3 would be invisible to a single-line capture. Exported only
- *  so tests can size their own fixtures against it, not to make it
- *  configurable. */
+/** The `-S` backward count passed to tmux capture-pane, NOT the total number
+ *  of lines it returns: capture-pane -S -N walks N lines into scrollback ON
+ *  TOP OF the entire visible pane, not instead of it (verified against a
+ *  real tmux server: -S -8 returns 32 lines against a 24-line default
+ *  visible pane, i.e. 24 + 8, never 8 alone). Used both for the pre-send
+ *  liveness check and, for a multi-line send, as the "before" snapshot
+ *  waitForPasteToSettle (below) compares against. Wider than a bare
+ *  liveness probe needs: the input box a paste lands in can span more than
+ *  one line, and a change confined to line 2 or 3 would be invisible to a
+ *  single-line capture. Exported only so tests can size their own fixtures
+ *  against it, not to make it configurable. */
 export const PASTE_SETTLE_CAPTURE_LINES = 8;
 
 /** Bounds for the settle-poll between a successful paste and sending Enter
@@ -791,7 +795,15 @@ function defaultSleep(ms: number): void {
  *  is no substring of the original message to look for even when the paste
  *  landed exactly as sent. Returns whether a change was observed; the
  *  caller sends Enter either way regardless of the result -- see the call
- *  site in sendKeysFor for why a timeout here must never become a refusal. */
+ *  site in sendKeysFor for why a timeout here must never become a refusal.
+ *
+ *  A failed capture breaks the loop immediately rather than being retried
+ *  like an ordinary "no change yet" result: capturePane's own exec is
+ *  execFileSync with a 5s timeout, so a wedged tmux server would otherwise
+ *  cost up to PASTE_SETTLE_ATTEMPTS * 5s -- ~50s -- of this (synchronous,
+ *  Atomics.wait-based) main process blocked, freezing the whole window. A
+ *  settle loop that cannot capture the pane cannot do its job either way,
+ *  so nothing is gained by finishing out the budget. */
 function waitForPasteToSettle(
   name: string, before: string,
   capture: ((args: string[]) => TmuxResult) | undefined,
@@ -800,7 +812,11 @@ function waitForPasteToSettle(
   for (let attempt = 0; attempt < PASTE_SETTLE_ATTEMPTS; attempt++) {
     if (attempt > 0) sleep(PASTE_SETTLE_INTERVAL_MS);
     const now = capturePane(name, PASTE_SETTLE_CAPTURE_LINES, capture);
-    if (now.ok && now.stdout !== before) return true;
+    if (!now.ok) {
+      console.error('tmux capture-pane failed during paste settle, giving up on the settle:', now.error);
+      return false;
+    }
+    if (now.stdout !== before) return true;
   }
   return false;
 }

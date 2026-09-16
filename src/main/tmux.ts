@@ -136,10 +136,16 @@ export function sendKeyName(name: string, key: KeyName, exec: TmuxExec = default
 }
 
 /** `lines: null` omits -S entirely, which makes tmux capture only the
- *  currently-visible pane instead of walking back through scrollback.
- *  Still used by sendKeysFor (ipc.ts) as a freshness check immediately
- *  before sending a reply -- `lines: 1` there, since it only cares whether
- *  the pane is still there to receive anything, not what it contains. */
+ *  currently-visible pane instead of walking back through scrollback. A
+ *  non-null `lines` is the -S backward count, not the total returned: -S -N
+ *  adds N lines of scrollback ON TOP OF the whole visible pane, so e.g. -S
+ *  -8 against a 24-line default pane returns 32 lines, not 8 (see
+ *  PASTE_SETTLE_CAPTURE_LINES, ipc.ts, for where that number comes from).
+ *  Used by sendKeysFor (ipc.ts) both as a freshness check immediately
+ *  before sending a reply and, for a multi-line send, as the "before"
+ *  snapshot its post-paste settle loop compares against -- 8 lines there,
+ *  not 1, since a change confined to line 2 or 3 of a multi-line input box
+ *  must still be visible to that comparison. */
 export function capturePane(name: string, lines: number | null, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
   return exec(lines === null

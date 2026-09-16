@@ -1174,6 +1174,43 @@ describe('session:keys', () => {
     errs.mockRestore();
   });
 
+  // The bug this closes: a wedged tmux server that fails EVERY capture used
+  // to still be polled PASTE_SETTLE_ATTEMPTS times, each call blocked by
+  // execFileSync's own 5s timeout -- up to ~50s with this synchronous main
+  // process frozen (Atomics.wait) before Enter finally went out. The settle
+  // loop must give up on its first failed capture instead, still sending
+  // Enter right away.
+  it('stops the settle loop on the first failed capture instead of exhausting the budget', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sendCalls: string[][] = [];
+    let captureCalls = 0;
+    let sleepCalls = 0;
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      // Call 1 is the pre-paste liveness snapshot, which must succeed for
+      // the paste to go ahead at all; every settle-loop capture after it
+      // fails, standing in for a tmux server that stopped answering.
+      capture: () => {
+        captureCalls += 1;
+        return captureCalls === 1 ? { ok: true, stdout: 'before' } : { ok: false, error: 'server not responding' };
+      },
+      send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
+      sleep: () => { sleepCalls += 1; },
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(sendCalls.at(-1)).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
+    // 1 pre-paste capture + exactly ONE settle-loop attempt, which fails and
+    // breaks the loop immediately -- never the full PASTE_SETTLE_ATTEMPTS,
+    // and no sleep before a first attempt.
+    expect(captureCalls).toBe(2);
+    expect(sleepCalls).toBe(0);
+    expect(errs).toHaveBeenCalledWith(
+      'tmux capture-pane failed during paste settle, giving up on the settle:', 'server not responding',
+    );
+    errs.mockRestore();
+  });
+
   // The choice guard is not path-specific: a multi-line message must be
   // refused while a picker is open exactly as a single-line one is.
   it('still refuses a multi-line message with prompt_open, and touches no buffer', () => {
