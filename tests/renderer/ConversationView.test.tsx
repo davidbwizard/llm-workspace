@@ -883,6 +883,58 @@ describe('ConversationView -- live refresh from the events count', () => {
     consoleError.mockRestore();
   });
 
+  // The unconditional-logging ruling (fix round 1) has no coverage without
+  // this: the test above never switches sessions while the refresh is in
+  // flight, so it would pass identically whether the removed `if (!alive)
+  // return;` guard were still there or not. Same controlled-promise and
+  // macrotask-tick technique as the mount-fetch alive test above (search
+  // "does not leak an error onto the newly-selected session") -- applied to
+  // the live-refresh fetch instead of the mount fetch.
+  it('logs a rejected refresh fetch even for a session the reader has since left', async () => {
+    let rejectRefresh: (err: unknown) => void = () => {};
+    const pendingRefresh = new Promise((_resolve, reject) => { rejectRefresh = reject; });
+    let s1Calls = 0;
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string) => {
+        if (sessionId === 's1') {
+          s1Calls += 1;
+          if (s1Calls === 1) return first; // the mount fetch
+          return pendingRefresh; // the live-refresh fetch, held pending
+        }
+        if (sessionId === 's2') {
+          return {
+            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn', steps: [] }],
+            nextCursor: null,
+          };
+        }
+        throw new Error(`unexpected fetch: ${sessionId}`);
+      },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    // Bump events on session s1 -- fires the live-refresh fetch, held pending.
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+
+    // Switch sessions before that refresh resolves.
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null} />);
+    await waitFor(() => expect(screen.getByText('session B turn')).toBeTruthy());
+
+    // Let session s1's live-refresh fetch reject well after s2 has landed.
+    await act(async () => {
+      rejectRefresh(new Error('s1 refresh failed'));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByText('session B turn')).toBeTruthy();
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+    // The point of the ruling: logged even though the reader has moved on.
+    expect(consoleError).toHaveBeenCalledWith('Conversation refresh fetch failed:', expect.any(Error));
+
+    consoleError.mockRestore();
+  });
+
   // Task 2 built the sticky bottom; this is the first task that can
   // actually deliver new content to an open pane, so the two halves of
   // spec §3.2's rule are pinned here, against the signal that drives them.
