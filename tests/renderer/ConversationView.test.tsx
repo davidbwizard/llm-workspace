@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop } from '../../src/renderer/components/ConversationView.tsx';
 
 const turns = [
@@ -213,6 +213,62 @@ describe('ConversationView', () => {
 
     resolveSecondCall({ turns: [], nextCursor: null });
     await waitFor(() => expect(screen.getByText(/beginning of this session/i)).toBeTruthy());
+  });
+
+  // Regression: switching sessions must not let a slow older-page fetch for
+  // the OLD session land on whatever session is open now. Without a
+  // staleness guard in loadMore, resolving session A's older-page fetch
+  // AFTER session B's own page has loaded would prepend A's turn onto B's
+  // page and silently overwrite B's nextCursor with A's.
+  it('drops a stale older-page fetch if the reader switches sessions before it resolves', async () => {
+    let resolveOlderA: (page: unknown) => void = () => {};
+    const olderAPromise = new Promise(resolve => { resolveOlderA = resolve; });
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        if (sessionId === 's1' && cursor === undefined) {
+          return { turns, nextCursor: { ts: '2026-09-12T09:59:00Z', id: 0 } };
+        }
+        if (sessionId === 's1') return olderAPromise; // s1's older page, held pending
+        if (sessionId === 's2' && cursor === undefined) {
+          return {
+            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn', steps: [] }],
+            // Session B genuinely has more history -- if the stale fetch's
+            // nextCursor:null below clobbers this, the end-of-history
+            // marker would wrongly appear for a session that has one.
+            nextCursor: { ts: '2026-09-13T09:00:00Z', id: 4 },
+          };
+        }
+        throw new Error(`unexpected fetch: ${sessionId} ${String(cursor)}`);
+      },
+    };
+    const { container, rerender } = renderConv({ sessionId: 's1' });
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    const scroller = container.querySelector('.conv')!;
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } }); // starts s1's older-page fetch, left pending
+
+    rerender(<ConversationView sessionId="s2" provider="claude" />);
+    await waitFor(() => expect(screen.getByText('session B turn')).toBeTruthy());
+
+    // Let session A's older-page fetch resolve well after session B has
+    // landed -- exactly the ordering a slow network response can produce.
+    await act(async () => {
+      resolveOlderA({
+        turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn from session A', steps: [] }],
+        nextCursor: null,
+      });
+      // A real macrotask tick: the JS event loop always drains every
+      // pending microtask -- including the async-function and .then/.finally
+      // hops between the mock resolving and loadMore's callback running --
+      // before running a timer callback, so this is enough to guarantee the
+      // stale continuation, guarded or not, has already run by the time we
+      // assert below.
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    const said = [...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent);
+    expect(said).toEqual(['session B turn']);
+    expect(screen.queryByText(/beginning of this session/i)).toBeNull();
   });
 
   it('renders a compact human timestamp on each turn', async () => {

@@ -180,6 +180,15 @@ export function ConversationView({ sessionId, match, provider }: {
   // actually holds under a real burst of scroll events, not just in a
   // test that calls the handler once.
   const loadingMoreRef = useRef(false);
+  /** The most recently committed sessionId, kept current by the mount
+   *  effect below. loadMore's fetch closes over the sessionId it was
+   *  issued for; comparing that against this ref at resolve time is what
+   *  stops a stale older-page fetch -- for a session the reader has since
+   *  left -- from landing on whatever session is open now. Mirrors the
+   *  mount effect's own `alive` flag, but as a ref rather than a closure
+   *  variable, because loadMore runs outside that effect and needs to
+   *  check WHICH session is current, not merely whether one is alive. */
+  const sessionIdRef = useRef<string | null>(sessionId);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   /** Set by loadMore immediately before a prepend commits, consumed by the
    *  layout effect below. A ref rather than state because it must be read
@@ -195,6 +204,7 @@ export function ConversationView({ sessionId, match, provider }: {
   const lastTurnKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
+    sessionIdRef.current = sessionId;
     if (sessionId === null) return; // nothing to fetch -- see the doc comment above.
     let alive = true;
     setPage(null);
@@ -259,6 +269,11 @@ export function ConversationView({ sessionId, match, provider }: {
     loadingMoreRef.current = true;
     setLoadingMore(true);
     void window.fleet?.conversation(sessionId, nextCursor).then(next => {
+      // Stale: the reader left this session before the fetch resolved.
+      // Without this check, a slow older-page fetch for the OLD session
+      // can resolve after the NEW session's own page has already landed
+      // and prepend the old session's turns onto it.
+      if (sessionIdRef.current !== sessionId) return;
       const el = scrollerRef.current;
       if (el !== null) pendingRestoreRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
       setPage(current => current === null
