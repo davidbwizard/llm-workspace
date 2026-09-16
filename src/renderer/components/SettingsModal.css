@@ -1,0 +1,38 @@
+/* src/renderer/components/SettingsModal.css
+   Tokens only -- theme.css owns every colour. */
+
+/* LaunchBar.css makes .launchbar a window-drag region, and this dialog
+   renders inside it, so without this opt-out every control in here would
+   be a drag handle instead of a control. Same trap FleetView.css's
+   .fleetbar documents. */
+.settingsdlg { -webkit-app-region:no-drag; border:0; padding:0; background:none;
+  color:var(--ink); max-width:min(440px,92vw); }
+.settingsdlg::backdrop { background:rgb(0 0 0 / 46%); }
+.settingspanel { display:flex; flex-direction:column; gap:12px;
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
+  box-shadow:var(--shadow-pop); padding:18px 20px 16px;
+  /* The modal's own scrolling stays inside it: overscroll-behavior stops a
+     wheel that reaches this panel's end from chaining out to whatever is
+     behind (spec §3.5). */
+  max-height:80vh; overflow-y:auto; overscroll-behavior:contain; }
+.settingshead { display:flex; align-items:center; gap:12px; }
+.settingshead h2 { margin:0; font-family:var(--f-display); font-size:18px; font-weight:600; }
+.settingsclose { margin-left:auto; font-family:var(--f-mono); font-size:11px; color:var(--muted);
+  background:none; border:1px solid var(--line-soft); border-radius:20px; padding:4px 12px; cursor:pointer; }
+.settingsclose:hover { color:var(--ink); border-color:var(--line); }
+.settingsrow { display:flex; align-items:center; gap:12px; font-size:13px; }
+.settingsrow > span { flex:1; min-width:0; }
+.settingsrow select { flex:none; max-width:56%; font-family:var(--f-mono); font-size:11px;
+  color:var(--ink); background:var(--ground); border:1px solid var(--line);
+  border-radius:6px; padding:5px 8px; }
+.settingsfoot { display:flex; justify-content:flex-end; }
+.settingsdone { font-family:var(--f-mono); font-size:11px; font-weight:600; color:var(--ground);
+  background:var(--accent); border:0; border-radius:6px; padding:6px 16px; cursor:pointer; }
+
+/* The background scroll lock (SettingsModal.tsx's LOCK_CLASS). Body's own
+   overflow does nothing here -- this app's scrolling lives in these three
+   elements, each of which manages its own (see MainPane.css,
+   ConversationView.css, SessionRail.css) -- so the lock names them. */
+:root.modal-open .mainpane,
+:root.modal-open .conv,
+:root.modal-open .railcards { overflow:hidden; }

@@ -7,6 +7,7 @@ import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop, mergeNe
 // renderer code -- src/renderer/** itself must never import a value out of
 // src/main/**. See the drift test below.
 import { MAX_REPLY_CHARS as MAIN_MAX_REPLY_CHARS } from '../../src/main/outbound.ts';
+import { reloadSettings, setSettings } from '../../src/renderer/state/settings.ts';
 
 const turns = [
   { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests', steps: [] },
@@ -1534,5 +1535,24 @@ describe('ConversationView -- the message box\'s length counter', () => {
     await waitFor(() => expect(container.querySelector('.convannounce')?.textContent).not.toBe(''));
     fireEvent.change(box, { target: { value: 'a'.repeat(100) } });
     await waitFor(() => expect(container.querySelector('.convannounce')?.textContent).toBe(''));
+  });
+});
+
+describe('ConversationView -- the reading settings', () => {
+  beforeEach(() => { localStorage.clear(); reloadSettings(); });
+
+  it('renders at the stored text size, as a variable the whole pane is built from', async () => {
+    setSettings({ textSize: 14 });
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelector('.conv')).toBeTruthy());
+    expect((container.querySelector('.conv') as HTMLElement).style.getPropertyValue('--conv-size')).toBe('14px');
+  });
+
+  it('renders the stored message style, defaulting to A', async () => {
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelector('.conv')).toBeTruthy());
+    expect(container.querySelector('.conv')!.getAttribute('data-style')).toBe('a');
+    setSettings({ messageStyle: 'c' });
+    await waitFor(() => expect(container.querySelector('.conv')!.getAttribute('data-style')).toBe('c'));
   });
 });

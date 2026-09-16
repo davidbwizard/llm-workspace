@@ -7,6 +7,7 @@ import type { Provider } from '../../core/types.ts';
 import type { KeysResult } from '../../main/ipc.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
+import { useSettings } from '../state/settings.ts';
 import './ConversationView.css';
 
 /** Transcript text is untrusted, so markdown rendering is locked down:
@@ -448,6 +449,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
    *  choice, which this box deliberately cannot do. */
   onOpenTerminal: () => void;
 }) {
+  const settings = useSettings();
   const [page, setPage] = useState<ConversationPage | null>(null);
   /** True once the mount fetch (below) has rejected. This is the one call
    *  site whose failure the reader must be told about: page stays null on
@@ -674,7 +676,17 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   let prevDate = '';
   return (
     <div className="convwrap">
-      <div className="conv" data-style="a" ref={scrollerRef} onScroll={handleScroll}>
+      <div
+        className="conv"
+        // The one size the pane is built from (spec §3.5): every
+        // message-level rule in ConversationView.css is expressed relative
+        // to it, so meta lines, code blocks and steps move with the body
+        // text rather than staying behind at a fixed px.
+        style={{ ['--conv-size' as string]: `${settings.textSize}px` } as React.CSSProperties}
+        data-style={settings.messageStyle}
+        ref={scrollerRef}
+        onScroll={handleScroll}
+      >
         {body ?? (
           // Chat order puts the oldest loaded turn at the top, so both
           // history markers sit ABOVE turns.map: the older page a

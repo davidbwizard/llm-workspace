@@ -1,9 +1,9 @@
-import { Bell, CircleNotch, Terminal, Warning } from '@phosphor-icons/react';
+import { Bell, CircleNotch, Gear, Terminal, Warning } from '@phosphor-icons/react';
 
 /** Phosphor, per the visual design doc §5. Its weight range carries state by
  *  weight and fill rather than hue alone, which matters because colour is
  *  already carrying per-agent identity. */
-const ICONS = { bell: Bell, spinner: CircleNotch, terminal: Terminal, warning: Warning } as const;
+const ICONS = { bell: Bell, gear: Gear, spinner: CircleNotch, terminal: Terminal, warning: Warning } as const;
 
 export type IconName = keyof typeof ICONS;
 

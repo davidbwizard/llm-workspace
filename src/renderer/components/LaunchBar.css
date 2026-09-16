@@ -23,3 +23,7 @@
   padding:6px 14px; cursor:pointer; }
 .launchgo:disabled { opacity:.6; cursor:default; }
 .launchmsg { margin:0; font-size:11px; color:var(--signal); flex-basis:100%; }
+.launchgear { display:inline-flex; align-items:center; line-height:1; color:var(--muted);
+  background:none; border:1px solid var(--line-soft); border-radius:6px;
+  padding:5px 9px; cursor:pointer; }
+.launchgear:hover { color:var(--ink); border-color:var(--line); }
