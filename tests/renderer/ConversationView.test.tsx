@@ -1,3 +1,4 @@
+import React from 'react';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ConversationView, nearOlderEdge } from '../../src/renderer/components/ConversationView.tsx';
@@ -13,6 +14,13 @@ const turns = [
 const fmtDate = (ts: string) => new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 const fmtTime = (ts: string) => new Date(ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
+// Every test renders the pane for a Claude session unless it says
+// otherwise. One helper, so the component's required props live in one
+// place rather than in twenty-odd render calls.
+function renderConv(props: Partial<React.ComponentProps<typeof ConversationView>> = {}) {
+  return render(<ConversationView sessionId="s1" provider="claude" {...props} />);
+}
+
 beforeEach(() => {
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
     conversation: async () => ({ turns, nextCursor: null }),
@@ -21,13 +29,13 @@ beforeEach(() => {
 
 describe('ConversationView', () => {
   it('renders both sides of the conversation', async () => {
-    render(<ConversationView sessionId="s1" />);
+    renderConv();
     await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
     expect(screen.getByText('All green. Want me to commit?')).toBeTruthy();
   });
 
   it('labels who said what, since prose alone never showed the user', async () => {
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
     expect(container.querySelector('.turn.assistant')).toBeTruthy();
   });
@@ -42,7 +50,7 @@ describe('ConversationView', () => {
   // above and would not catch a regression that rendered every turn with
   // the same class).
   it('gives user and assistant turns different classes -- the actual hook the CSS distinction depends on', async () => {
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
     const [userRow, assistantRow] = [...container.querySelectorAll('.turn')];
     expect(userRow!.className).not.toBe(assistantRow!.className);
@@ -54,7 +62,7 @@ describe('ConversationView', () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: [], nextCursor: null }),
     };
-    render(<ConversationView sessionId="empty" />);
+    renderConv({ sessionId: 'empty' });
     await waitFor(() => expect(screen.getByText(/no conversation/i)).toBeTruthy());
   });
 
@@ -76,20 +84,20 @@ describe('ConversationView', () => {
   // one session open and the ambiguity is against HISTORY, not open
   // sessions).
   it('says several RECORDED sessions share the cwd when the match is ambiguous, never "open sessions"', () => {
-    render(<ConversationView sessionId={null} match="ambiguous" />);
+    renderConv({ sessionId: null, match: 'ambiguous' });
     expect(screen.getByText(/several recorded sessions/i)).toBeTruthy();
     expect(screen.queryByText(/no conversation/i)).toBeNull();
     expect(screen.queryByText(/open session/i)).toBeNull();
   });
 
   it('says no transcript has been found yet when the match is unknown, distinct from the ambiguous message', () => {
-    render(<ConversationView sessionId={null} match="unknown" />);
+    renderConv({ sessionId: null, match: 'unknown' });
     expect(screen.getByText(/no transcript has been found/i)).toBeTruthy();
     expect(screen.queryByText(/several recorded sessions/i)).toBeNull();
   });
 
   it('falls back to a neutral message, distinct from both above, when sessionId is null with no match info', () => {
-    render(<ConversationView sessionId={null} />);
+    renderConv({ sessionId: null });
     expect(screen.getByText(/transcript can't be identified/i)).toBeTruthy();
     expect(screen.queryByText(/several recorded sessions/i)).toBeNull();
     expect(screen.queryByText(/no transcript has been found/i)).toBeNull();
@@ -106,35 +114,35 @@ describe('ConversationView', () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => { called = true; return { turns: [], nextCursor: null }; },
     };
-    render(<ConversationView sessionId={null} />);
+    renderConv({ sessionId: null });
     // Give any accidental fetch a turn to run before asserting it didn't.
     await Promise.resolve();
     expect(called).toBe(false);
   });
 
-  // Team-lead ruling: this is a catch-up review surface, so it renders
-  // newest-first (the fixture below is already in the order conversationFor
-  // returns -- newest at index 0 -- and the component must not re-sort it).
-  it('renders turns in the order they are given, newest first', async () => {
+  // Chat order (spec §3.1): oldest at the top, newest at the bottom, with
+  // the message box underneath. conversationFor already returns each page
+  // in that order, so the component must not re-sort it.
+  it('renders turns in the order they are given, oldest first', async () => {
     const ordered = [
-      { id: 3, ts: '2026-09-12T10:00:10Z', role: 'assistant', text: 'newest reply', steps: [] },
-      { id: 2, ts: '2026-09-12T10:00:05Z', role: 'user', text: 'middle message', steps: [] },
       { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'oldest message', steps: [] },
+      { id: 2, ts: '2026-09-12T10:00:05Z', role: 'user', text: 'middle message', steps: [] },
+      { id: 3, ts: '2026-09-12T10:00:10Z', role: 'assistant', text: 'newest reply', steps: [] },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: ordered, nextCursor: null }),
     };
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
     const rendered = [...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent);
-    expect(rendered).toEqual(['newest reply', 'middle message', 'oldest message']);
+    expect(rendered).toEqual(['oldest message', 'middle message', 'newest reply']);
   });
 
   // Lazy-loading (50 turns/page) supersedes the old truncation notice --
   // nothing is hidden any more, so instead of an apology there is a plain
   // end-of-history fact once nextCursor genuinely runs out.
   it('shows an end-of-history marker once the fetch reports nextCursor null', async () => {
-    render(<ConversationView sessionId="s1" />); // default mock: nextCursor: null
+    renderConv(); // default mock: nextCursor: null
     await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
     expect(screen.getByText(/beginning of this session/i)).toBeTruthy();
   });
@@ -143,7 +151,7 @@ describe('ConversationView', () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns, nextCursor: { ts: '2026-09-12T10:00:00Z', id: 1 } }),
     };
-    render(<ConversationView sessionId="s1" />);
+    renderConv();
     await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
     expect(screen.queryByText(/beginning of this session/i)).toBeNull();
   });
@@ -173,7 +181,7 @@ describe('ConversationView', () => {
         };
       },
     };
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
 
     const scroller = container.querySelector('.conv')!;
@@ -200,7 +208,7 @@ describe('ConversationView', () => {
         return secondCallPromise; // deliberately left unresolved
       },
     };
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
 
     const scroller = container.querySelector('.conv')!;
@@ -221,7 +229,7 @@ describe('ConversationView', () => {
 
   it('renders a compact human timestamp on each turn', async () => {
     const [first] = turns;
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelector('.when')).toBeTruthy());
     // Lone/first entry always shows its date -- there is no prior entry to
     // compare against.
@@ -236,7 +244,7 @@ describe('ConversationView', () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: sameDay, nextCursor: null }),
     };
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.when')).toHaveLength(2));
     const [whenFirst, whenSecond] = [...container.querySelectorAll('.when')];
     expect(whenFirst!.textContent).toBe(`${fmtDate(sameDay[0]!.ts)} ${fmtTime(sameDay[0]!.ts)}`);
@@ -252,7 +260,7 @@ describe('ConversationView', () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: twoDays, nextCursor: null }),
     };
-    const { container } = render(<ConversationView sessionId="s1" />);
+    const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.when')).toHaveLength(2));
     const [whenFirst, whenSecond] = [...container.querySelectorAll('.when')];
     expect(whenFirst!.textContent).toBe(`${fmtDate(twoDays[0]!.ts)} ${fmtTime(twoDays[0]!.ts)}`);
@@ -264,7 +272,7 @@ function showOne(turn: Record<string, unknown>) {
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
     conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', steps: [], ...turn }], nextCursor: null }),
   };
-  return render(<ConversationView sessionId="s1" />);
+  return renderConv();
 }
 
 describe('ConversationView -- agent replies render as markdown', () => {
@@ -393,5 +401,52 @@ describe('nearOlderEdge', () => {
 
   it('respects a caller-supplied threshold rather than only the default', () => {
     expect(nearOlderEdge({ scrollTop: 0, scrollHeight: 1000, clientHeight: 500 }, 600)).toBe(true); // 500 < 600
+  });
+});
+
+describe('ConversationView -- who said it', () => {
+  it('marks the agent with the provider glyph and a readable name, never the word "agent"', async () => {
+    const { container } = showOne({ role: 'assistant', text: 'ok' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    const who = container.querySelector('.turn.assistant .who')!;
+    expect(who.querySelector('svg')).toBeTruthy();
+    expect(who.textContent).toBe('Claude');
+    expect(who.textContent).not.toMatch(/agent/i);
+  });
+
+  it('names the Codex provider on a Codex session rather than assuming Claude', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({
+        turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'assistant', text: 'ok', steps: [] }],
+        nextCursor: null,
+      }),
+    };
+    const { container } = renderConv({ provider: 'codex' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    expect(container.querySelector('.turn.assistant .who')!.textContent).toBe('Codex');
+  });
+
+  it('still says "you" for a human turn, with no glyph', async () => {
+    const { container } = showOne({ role: 'user', text: 'hi' });
+    await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
+    const who = container.querySelector('.turn.user .who')!;
+    expect(who.textContent).toBe('you');
+    expect(who.querySelector('svg')).toBeNull();
+  });
+
+  // Spec §2: the name and the time sit on ONE line above the message,
+  // replacing the 56px left gutter. The two spans being siblings inside
+  // .meta is the DOM half of that; the CSS half is in
+  // ConversationView.css.test.ts.
+  it('puts the name and the time in one meta row above the message text', async () => {
+    const { container } = showOne({ role: 'user', text: 'hi' });
+    await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
+    const turn = container.querySelector('.turn.user')!;
+    const meta = turn.querySelector('.meta')!;
+    expect(meta.querySelector('.who')).toBeTruthy();
+    expect(meta.querySelector('.when')).toBeTruthy();
+    // The meta row precedes the text, not beside it.
+    expect(meta.compareDocumentPosition(turn.querySelector('.turn-text')!))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 });

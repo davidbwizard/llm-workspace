@@ -26,39 +26,62 @@ function blockAfter(selector: string): string {
   return css.slice(open + 1, close);
 }
 
-describe('ConversationView.css: user and assistant turns are visually distinguishable', () => {
+describe('ConversationView.css: user and agent turns are visually distinguishable', () => {
   const base = blockAfter('.turn {');
-  const user = blockAfter('.turn.user {');
+  const assistant = blockAfter('.turn.assistant {');
   const baseSaid = blockAfter('.turn .turn-text {');
   const userSaid = blockAfter('.turn.user .turn-text {');
 
-  // The structural cue: a margin rule whose WIDTH (present vs absent), not
-  // merely its colour, sets user turns apart -- still visible with colour
-  // removed entirely (greyscale, or a colourblind viewer).
-  it('gives user turns a margin rule that the shared/assistant rule does not have', () => {
-    expect(user).toMatch(/border-left:\s*[1-9]/); // a real, nonzero width
-    expect(base).not.toMatch(/border-left/); // absent from the rule assistant turns fall back to
+  // Style A, the default David picked against the rendered mockup: the
+  // accent rule runs down the AGENT's replies, never the user's. The
+  // structural cue is the rule's WIDTH (present vs absent), so it survives
+  // greyscale and a colour-vision deficiency; the accent hue is a second,
+  // redundant cue layered on top.
+  it('gives agent turns a margin rule that the shared/user rule does not have', () => {
+    expect(assistant).toMatch(/border-left:\s*[1-9]/); // a real, nonzero width
+    expect(base).not.toMatch(/border-left/); // absent from the rule user turns fall back to
   });
 
   // The second, independent-of-colour cue: Karla is a variable font
   // (200-800, see the @font-face rule in theme.css), so a heavier
-  // font-weight here is a real cut change, not a faked bold.
-  it('gives user turns a heavier weight than assistant turns, independent of colour', () => {
-    expect(userSaid).toMatch(/font-weight:\s*[5-9]\d\d/); // heavier than normal (400)
+  // font-weight here is a real cut change, not a faked bold. It stays on
+  // the user's text -- the human prompts are the landmarks when scanning.
+  it('gives user turns a heavier weight than agent turns, independent of colour', () => {
+    expect(userSaid).toMatch(/font-weight:\s*[5-9]\d\d/);
     expect(baseSaid).not.toMatch(/font-weight/);
   });
 
-  // Colour layered on TOP of the structural cues above, not instead of
-  // them -- this only proves the color rules still exist, never on its own.
   it('backs the structural cues with the app\'s existing ink/ink-2 pair and its one emphasis colour', () => {
-    expect(user).toMatch(/var\(--accent\)/);
+    expect(assistant).toMatch(/var\(--accent\)/);
     expect(userSaid).toMatch(/color:\s*var\(--ink\)\s*;/);
     expect(baseSaid).toMatch(/color:\s*var\(--ink-2\)\s*;/);
   });
 
   it('uses theme tokens for every colour here, never a hardcoded hex', () => {
-    expect(user).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(assistant).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(userSaid).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
+});
+
+describe('ConversationView.css: one text size drives the whole pane', () => {
+  // Spec §3.5: conversation text size is a CSS variable on the
+  // conversation root, and every message-level size is expressed relative
+  // to it -- so changing it in Settings moves the meta lines, code blocks
+  // and steps with the body text instead of leaving them behind.
+  it('declares --conv-size on the conversation root, defaulting to 16px', () => {
+    expect(blockAfter('.conv {')).toMatch(/--conv-size:\s*16px/);
+  });
+
+  it('sizes the meta line, code, tables and steps off that variable, not off a fixed px', () => {
+    for (const selector of ['.turn .who, .turn .when {', '.turn-text.md code {',
+                            '.turn-text.md pre {', '.turn-text.md table {',
+                            '.steps-toggle {', '.steps-list {']) {
+      expect(blockAfter(selector), selector).toMatch(/font-size:\s*calc\(var\(--conv-size\)/);
+    }
+  });
+
+  it('offers style C as well as the default style A, keyed off data-style', () => {
+    expect(css).toMatch(/\.conv\[data-style="c"\]/);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MainPane } from '../../src/renderer/components/MainPane.tsx';
 
 // @testing-library/user-event is not a project dependency (see
@@ -105,5 +105,26 @@ describe('MainPane', () => {
     fireEvent.click(screen.getByRole('button', { name: /open terminal/i }));
     expect(onSelect).toHaveBeenCalledWith(1);
     expect(onSetView).toHaveBeenCalledWith('terminal');
+  });
+
+  // Spec §3.7: the rail already names the project, so the pane header
+  // carries the session's FOLDER PATH instead -- with a title for the
+  // untruncated value, since a deep path will not fit.
+  it('shows the session folder path in the header, not the project name, with a full-value title', () => {
+    const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    const title = container.querySelector('.panetitle')!;
+    expect(title.textContent).toBe('/a');
+    expect(title.getAttribute('title')).toBe('/a');
+  });
+
+  it('hands the conversation the session provider, so the agent glyph is that session\'s own', () => {
+    const codex = [{ ...(sessions[0] as unknown as object), provider: 'codex' }] as never[];
+    (window as unknown as { fleet: { conversation: ReturnType<typeof vi.fn> } }).fleet.conversation =
+      vi.fn().mockResolvedValue({
+        turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'assistant', text: 'ok', steps: [] }],
+        nextCursor: null,
+      });
+    render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={codex} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    return waitFor(() => expect(screen.getByText('Codex')).toBeTruthy());
   });
 });

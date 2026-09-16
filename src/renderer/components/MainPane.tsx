@@ -81,7 +81,11 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
       <section className="pane">
         <header className="panehead">
           <button type="button" className="paneback" onClick={onClear}>All sessions</button>
-          <span className="panetitle">{session?.project ?? 'session'}</span>
+          {/* The rail already names the project, so this carries the thing
+              the rail cannot fit: the session's full working directory
+              (spec §3.7). `title` keeps the untruncated value reachable on
+              hover and to assistive tech once the CSS ellipsis bites. */}
+          <span className="panetitle" title={session?.cwd ?? undefined}>{session?.cwd ?? 'session'}</span>
           <span className="seg" role="group" aria-label="View">
             <button type="button" aria-pressed={selection.view === 'conversation'}
               onClick={() => onSetView('conversation')}>Conversation</button>
@@ -98,7 +102,11 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
           // it rather than the misleading "no conversation recorded". `match`
           // rides along so ConversationView can say WHY sessionId is null
           // (ambiguous vs. unknown) instead of one generic claim.
-          : <ConversationView sessionId={session?.sessionId ?? null} match={session?.match} />}
+          : <ConversationView sessionId={session?.sessionId ?? null} match={session?.match}
+              // Falls back to 'claude' only when the selected pid has left
+              // the fleet entirely -- the pane is then showing a stale
+              // selection and the glyph is cosmetic.
+              provider={session?.provider ?? 'claude'} />}
       </section>
     </div>
   );

@@ -80,7 +80,7 @@ describe('conversationFor', () => {
       turnEvent('s1', '2026-09-01T00:00:03Z', 'prose', 'Fixed.'),
     ]);
 
-    expect(view(conversationFor(db, 's1').turns)).toEqual(['agent: Fixed.', 'you: fix the bug']);
+    expect(view(conversationFor(db, 's1').turns)).toEqual(['you: fix the bug', 'agent: Fixed.']);
   });
 
   // The reply is the last prose before the next human prompt; everything the
@@ -97,10 +97,10 @@ describe('conversationFor', () => {
     ]);
 
     expect(view(conversationFor(db, 's1').turns)).toEqual([
-      'agent: Done.',
-      'you: second ask',
-      'agent: All green. [Reading the file.|Running tests.]',
       'you: first ask',
+      'agent: All green. [Reading the file.|Running tests.]',
+      'you: second ask',
+      'agent: Done.',
     ]);
   });
 
@@ -113,7 +113,7 @@ describe('conversationFor', () => {
     ]);
 
     expect(view(conversationFor(db, 's1').turns)).toEqual([
-      'you: still thinking about this one', 'agent: b', 'you: a',
+      'you: a', 'agent: b', 'you: still thinking about this one',
     ]);
   });
 
@@ -126,7 +126,7 @@ describe('conversationFor', () => {
     ]);
 
     expect(view(conversationFor(db, 's1').turns)).toEqual([
-      'you: thanks', 'agent: resumed reply [resumed narration]',
+      'agent: resumed reply [resumed narration]', 'you: thanks',
     ]);
   });
 
@@ -138,12 +138,14 @@ describe('conversationFor', () => {
       turnEvent('s1', '2026-09-01T00:00:02Z', 'prose', 'ok'),
     ]);
 
-    expect(view(conversationFor(db, 's1').turns)).toEqual(['agent: ok', 'you: /clear']);
+    expect(view(conversationFor(db, 's1').turns)).toEqual(['you: /clear', 'agent: ok']);
   });
 
-  // Bug fix (kept from the row-paged version): newest first, not the opening
-  // of a days-old conversation. Paging is now by human prompt, so `limit`
-  // counts exchanges.
+  // Bug fix (kept from the row-paged version): the page is the NEWEST
+  // exchanges, not the opening of a days-old conversation. Paging is by
+  // human prompt, so `limit` counts exchanges; the page's own contents are
+  // ordered oldest-first, prompt before reply, which is the order the pane
+  // renders top to bottom.
   it('returns the newest exchanges, not the oldest, when a session exceeds the limit', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
@@ -153,7 +155,7 @@ describe('conversationFor', () => {
       turnEvent('s1', '2026-09-01T00:03:00Z', 'prose', 'turn 3 (newest)'),
     ]);
 
-    expect(view(conversationFor(db, 's1', 1).turns)).toEqual(['agent: turn 3 (newest)', 'you: turn 2']);
+    expect(view(conversationFor(db, 's1', 1).turns)).toEqual(['you: turn 2', 'agent: turn 3 (newest)']);
   });
 
   it('returns a null nextCursor only once the session is exhausted, non-null while more remain', () => {
@@ -186,9 +188,9 @@ describe('conversationFor', () => {
     ]);
 
     const page1 = conversationFor(db, 's1', 1);
-    expect(view(page1.turns)).toEqual(['agent: r2 [s4]', 'you: p2']);
+    expect(view(page1.turns)).toEqual(['you: p2', 'agent: r2 [s4]']);
     const page2 = conversationFor(db, 's1', 1, page1.nextCursor!);
-    expect(view(page2.turns)).toEqual(['agent: r1 [s1|s2|s3]', 'you: p1']);
+    expect(view(page2.turns)).toEqual(['you: p1', 'agent: r1 [s1|s2|s3]']);
     expect(page2.nextCursor).toBeNull();
   });
 
@@ -207,13 +209,13 @@ describe('conversationFor', () => {
     ]);
 
     const page1 = conversationFor(db, 's1', 2);
-    expect(view(page1.turns)).toEqual(['you: turn 5 (newest)', 'agent: turn 4', 'you: turn 3']);
+    expect(view(page1.turns)).toEqual(['you: turn 3', 'agent: turn 4', 'you: turn 5 (newest)']);
     expect(page1.nextCursor).not.toBeNull();
 
     const page2 = conversationFor(db, 's1', 2, page1.nextCursor!);
     // Fewer than `limit` prompts remain, so this page also takes the prose
     // recorded before the first prompt and reports exhaustion.
-    expect(view(page2.turns)).toEqual(['agent: turn 2', 'you: turn 1', 'agent: pre-prompt reply']);
+    expect(view(page2.turns)).toEqual(['agent: pre-prompt reply', 'you: turn 1', 'agent: turn 2']);
     expect(page2.nextCursor).toBeNull();
   });
 
@@ -241,8 +243,8 @@ describe('conversationFor', () => {
     }
 
     expect(seen).toEqual([
-      'agent: d (newest)', 'you: c (newer half of the tie)',
-      'agent: b (older half of the tie)', 'you: a (oldest)',
+      'you: c (newer half of the tie)', 'agent: d (newest)',
+      'you: a (oldest)', 'agent: b (older half of the tie)',
     ]);
   });
 });

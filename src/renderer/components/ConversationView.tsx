@@ -3,6 +3,8 @@ import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationStep } from '../../store/conversation.ts';
 import type { MatchQuality } from '../../discovery/match.ts';
+import type { Provider } from '../../core/types.ts';
+import { ProviderMark } from './ProviderMark.tsx';
 import './ConversationView.css';
 
 /** Transcript text is untrusted, so markdown rendering is locked down:
@@ -15,6 +17,13 @@ import './ConversationView.css';
  *    urlTransform already blanks javascript: and other unsafe schemes.
  *  - Images never load (no remote fetch, no tracking pixel). The alt text
  *    stands in for them. */
+/** The word "agent" is gone from the meta line (spec §2): the agent is
+ *  marked with its provider's own glyph, in the accent colour. The glyph is
+ *  aria-hidden (ProviderMark.tsx), so the provider's NAME rides along in a
+ *  visually-hidden span -- a screen reader hears "Claude", a reader sees the
+ *  mark, and neither hears nor sees the word "agent". */
+const PROVIDER_NAME: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
+
 const MARKDOWN_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   img: ({ alt }) => <span className="md-image">{alt || 'image'}</span>,
@@ -119,7 +128,14 @@ export function nearOlderEdge(
  *  in the moment right after it launches, before its first events are
  *  written and ingested; and no match info at all (match omitted) falls
  *  back to a neutral message rather than asserting either specific claim. */
-export function ConversationView({ sessionId, match }: { sessionId: string | null; match?: MatchQuality }) {
+export function ConversationView({ sessionId, match, provider }: {
+  sessionId: string | null;
+  match?: MatchQuality;
+  /** Which CLI this session is, so the agent's meta line carries that
+   *  provider's own mark. MainPane always knows it (OpenSession.provider
+   *  comes straight from the pgrep that found the process). */
+  provider: Provider;
+}) {
   const [page, setPage] = useState<ConversationPage | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   // A ref, not just the `loadingMore` state, guards the actual fetch:
@@ -197,15 +213,13 @@ export function ConversationView({ sessionId, match }: { sessionId: string | nul
     if (nearOlderEdge(e.currentTarget)) loadMore();
   }
 
-  // Newest-first, per the team-lead ruling on this task: this is a catch-up
-  // review surface, not a live chat transcript, so "what happened most
-  // recently" belongs at the top rather than requiring a scroll to the
-  // bottom. conversationFor already returns turns in this order (ts DESC),
-  // so no re-sort here -- and the date-repeat check below walks the same
-  // top-to-bottom order the reader sees, newest date first.
+  // Chat order (spec §3.1): oldest at the top, newest at the bottom.
+  // conversationFor already returns each page in that order, so there is no
+  // re-sort here -- and the date-repeat check below walks the same
+  // top-to-bottom order the reader sees, which is now oldest date first.
   let prevDate = '';
   return (
-    <div className="conv" onScroll={handleScroll}>
+    <div className="conv" data-style="a" onScroll={handleScroll}>
       {turns.map(t => {
         const date = formatDate(t.ts);
         const showDate = date !== prevDate;
@@ -213,7 +227,14 @@ export function ConversationView({ sessionId, match }: { sessionId: string | nul
         return (
           <article key={t.id} className={`turn ${t.role}`}>
             <div className="meta">
-              <span className="who">{t.role === 'user' ? 'you' : 'agent'}</span>
+              {t.role === 'user'
+                ? <span className="who">you</span>
+                : (
+                  <span className="who">
+                    <ProviderMark provider={provider} size={13} />
+                    <span className="wholabel">{PROVIDER_NAME[provider]}</span>
+                  </span>
+                )}
               <span className="when">{showDate ? `${date} ${formatTime(t.ts)}` : formatTime(t.ts)}</span>
             </div>
             {t.role === 'user'

@@ -67,9 +67,15 @@ type Stretch = { prompt: Row | null; prose: Row[] };
  *    last prose before the next prompt is the reply, earlier prose in that
  *    stretch becomes its `steps` (narration emitted before tool calls).
  *
- *  Order: newest first, which is also the order the UI renders in. The bug
- *  this once had (ASC with a LIMIT showed a days-old opening and hid the
- *  recent part) must not come back.
+ *  Order WITHIN a page: oldest first, prompt before reply -- the order the
+ *  pane renders top to bottom (spec 2026-09-15-conversation-pane-design.md
+ *  §3.1). Paging still walks BACKWARDS through history: `before` is the
+ *  cursor for the next OLDER page and `nextCursor` still names the oldest
+ *  prompt this page kept. The bug this once had (ASC with a LIMIT showed a
+ *  days-old opening and hid the recent part) must not come back: the
+ *  prompt query below is still ORDER BY ts DESC with a LIMIT, so the FIRST
+ *  page is still the newest exchanges. Only the assembled array's order
+ *  changed, not which exchanges a page contains.
  *
  *  Paging is keyset, by human prompt, not by row. OFFSET would skip or
  *  repeat as events land between fetches; a row-count LIMIT would cut a
@@ -137,21 +143,25 @@ export function conversationFor(
 
   // prompt.submitted = user, prose = assistant, in BOTH parsers. This is the
   // provider-agnostic backbone; richer detail (tokens, tool payloads) is not.
+  //
+  // Emitted here in conversation order rather than reversed downstream: the
+  // stretch loop above already knows the prompt-to-reply pairing, so saying
+  // it once here is smaller than re-deriving it in the view, and every
+  // consumer wants the same order.
   const turns: ConversationTurn[] = [];
-  for (let i = stretches.length - 1; i >= 0; i--) {
-    const { prompt, prose } = stretches[i]!;
+  for (const { prompt, prose } of stretches) {
+    // A wrapper that names no command unwraps to '' and shows nothing, but
+    // it still bounds its stretch -- that keeps paging and grouping agreed.
+    const text = prompt?.text ? unwrapSlashCommand(prompt.text) : '';
+    if (prompt && text !== '') {
+      turns.push({ id: prompt.id, ts: prompt.ts, role: 'user', text, steps: [] });
+    }
     const reply = prose[prose.length - 1];
     if (reply) {
       turns.push({
         id: reply.id, ts: reply.ts, role: 'assistant', text: reply.text!,
         steps: prose.slice(0, -1).map(s => ({ id: s.id, ts: s.ts, text: s.text! })),
       });
-    }
-    // A wrapper that names no command unwraps to '' and shows nothing, but
-    // it still bounds its stretch -- that keeps paging and grouping agreed.
-    const text = prompt?.text ? unwrapSlashCommand(prompt.text) : '';
-    if (prompt && text !== '') {
-      turns.push({ id: prompt.id, ts: prompt.ts, role: 'user', text, steps: [] });
     }
   }
   return { turns, nextCursor };
