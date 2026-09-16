@@ -168,3 +168,22 @@ describe('theme tokens', () => {
     expect(main, 'the light first-paint colour must be the light --ground').toContain(light);
   });
 });
+
+// Every real scroll surface in this app already manages its own overflow
+// (.mainpane, .conv, .rail -- see MainPane.css, ConversationView.css,
+// SessionRail.css, and SettingsModal.css's background-lock comment, which
+// already says body's own overflow does nothing for this app's scrolling).
+// But nothing stopped the DOCUMENT itself from scrolling -- a focus restore
+// or scrollIntoView call is enough -- and since .shell is bounded to
+// height:100%, a scrolled document strands .shell above an empty strip of
+// window with nothing painted in it (reported as "a massive empty footer";
+// DevTools showed .shell itself at the right height, only the document's
+// own scrollTop was wrong). jsdom computes no real layout and has no real
+// scrolling, so no test can reproduce the bug directly -- this pins the
+// rule that prevents it, so a future edit cannot drop it as cosmetic.
+describe('theme.css: the document itself never scrolls', () => {
+  it('sets overflow:hidden on html and body so the document cannot scroll', () => {
+    const rule = blockAfter('html, body, #root');
+    expect(rule).toMatch(/overflow:\s*hidden/);
+  });
+});
