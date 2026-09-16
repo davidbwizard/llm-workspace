@@ -139,8 +139,8 @@
 /* The compact card (spec §3.6). Additive only: every rule here is scoped
    to .card.compact, so SessionCard.css's base .card/.proj/.said rules --
    which this component and the History card BOTH rely on globally -- keep
-   the exact values they have today. A compact card does not render .said
-   at all, so that stylesheet's 2-line clamp has nothing to clip here. */
+   the exact values they have today. The compact card's own message text
+   uses .compact-said below, never .said -- see that rule's own comment. */
 .card.compact { padding:10px 12px 11px; gap:7px; }
 .card.compact .proj { font-size:15px; }
 .card.compact .badge { top:9px; right:11px; }
@@ -150,6 +150,21 @@
    status to the far right and strand the menu beyond it. On a compact card
    the menu is what claims that edge. */
 .card.compact .state { margin-left:0; }
+
+/* The compact card's own message text -- David, looking at the real
+   window, mid-task: "compact cards must still show some of the message
+   text, clamped to three lines max." This is a rule of its OWN, not an
+   override of SessionCard.css's .said (which clamps to two lines, for the
+   History card): the conversation pane once reused .said for this exact
+   purpose and silently cut off every reply past two lines in the real
+   window, because jsdom -- which computes no layout -- has no way to catch
+   a clamp count that only ever mattered once real text ran long enough to
+   hit it. Every property the clamp needs (display/orient/overflow) is
+   declared here, not borrowed, so nothing about this card's text depends on
+   a stylesheet it does not own. */
+.compact-said { font-size:12px; color:var(--ink-2); line-height:1.4; margin:0;
+  display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.compact-said.wait { color:var(--critical); }
 
 /* The `...` menu. A popover anchored to this one card, not a shared
    overlay: .cardmenu is the positioned ancestor, so nothing here needs to

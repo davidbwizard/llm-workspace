@@ -649,19 +649,45 @@ describe('OpenSessionCard', () => {
       render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
         onResume={neverResume()} compact state={{ ...enrichedCompact, ...over }} {...props} />);
 
-    it('keeps the provider, the project, the status and the host, and drops the rest', () => {
+    it('keeps the provider, the project, the status, the host and some of the message, and drops the rest', () => {
       const { container } = renderCompact();
       expect(container.querySelector('.card')!.classList.contains('compact')).toBe(true);
       expect(screen.getByText('trellome')).toBeTruthy();
       expect(screen.getByText('Claude')).toBeTruthy();
       expect(screen.getByText('iTerm2')).toBeTruthy();
       expect(screen.getByText('working')).toBeTruthy();
-      // Dropped: the path, the last reply, the age/memory line and the
-      // event count -- the four things that make a full card tall.
+      // Kept, per David (looking at the real, running window, mid-task):
+      // some of the message text, clamped to three lines by this card's own
+      // .compact-said CSS rule -- see OpenSessionCard.css.test.ts for the
+      // clamp itself; jsdom computes no layout, so this only proves the
+      // element renders, never that the clamp visually holds.
+      expect(screen.getByText('Reused the JWT helper')).toBeTruthy();
+      // Dropped: the path, the age/memory line and the event count -- still
+      // too tall for a compact card even with the message text kept.
       expect(screen.queryByText('/Users/me/trellome')).toBeNull();
-      expect(screen.queryByText('Reused the JWT helper')).toBeNull();
       expect(screen.queryByText(/206 MB/)).toBeNull();
       expect(screen.queryByText('9,129')).toBeNull();
+    });
+
+    it('renders the message through its own class, never SessionCard.css\'s two-line .said', () => {
+      // The regression this guards against: the conversation pane once
+      // reused .said for exactly this purpose and silently clipped every
+      // reply past two lines in the real window while jsdom -- which
+      // computes no layout -- kept passing. Pinning the exact class name
+      // here is what would catch a future edit that reaches for .said
+      // again, since jsdom can't catch the clamp count itself.
+      const { container } = renderCompact();
+      const msg = container.querySelector('.compact-said');
+      expect(msg).not.toBeNull();
+      expect(msg!.classList.contains('said')).toBe(false);
+      expect(msg!.textContent).toBe('Reused the JWT helper');
+    });
+
+    it('shows no message element on a compact card with nothing to say', () => {
+      // Same "blank is honest, not a placeholder" rule the full card's own
+      // .said follows -- extended to the compact card's .compact-said.
+      const { container } = renderCompact({ lastProse: null });
+      expect(container.querySelector('.compact-said')).toBeNull();
     });
 
     it('keeps the unread dot, which is the whole point of glancing at the rail', () => {

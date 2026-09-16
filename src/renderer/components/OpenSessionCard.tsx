@@ -135,8 +135,9 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
    *  (see `showUnread` below), so there's nothing a default would add. */
   unread?: boolean;
   /** The tidier card David chose as the default (spec §3.6): provider,
-   *  project, status, host, the unread dot and a `...` menu -- and nothing
-   *  else. Which places use it is one setting with four values
+   *  project, status, host, the unread dot, a `...` menu, and -- per David,
+   *  looking at the real, running window -- up to three lines of the last
+   *  message. Which places use it is one setting with four values
    *  (src/renderer/state/settings.ts), read by SessionRail and FleetView,
    *  never here: this component renders what it is told to, so a single
    *  card can still be exercised either way in a test.
@@ -398,11 +399,21 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
 
       {/* No fallback text (unlike SessionCard's "No output yet"): a blank
           last-message is honest on an ambiguous or unmatched card, where
-          there is no session to say anything came from. Dropped entirely on
-          a compact card -- it is the tallest thing on the card, and
-          SessionCard.css clamps it to two lines regardless. */}
+          there is no session to say anything came from. The compact card
+          keeps this too -- David, looking at the real window, mid-task:
+          "compact cards must still show some of the message text, clamped
+          to three lines max" -- but through this card's OWN .compact-said
+          rule (OpenSessionCard.css), never SessionCard.css's .said. That
+          class carries a two-line clamp built for the History card: the
+          conversation pane once reused it for exactly this purpose and
+          silently cut off every reply past two lines in the real window
+          while jsdom -- which computes no layout -- passed every test. A
+          card this component doesn't own is not where this clamp lives. */}
       {!compact && state.lastProse && (
         <p className={`said ${blocked ? 'wait' : ''}`}>{state.lastProse}</p>
+      )}
+      {compact && state.lastProse && (
+        <p className={`compact-said ${blocked ? 'wait' : ''}`}>{state.lastProse}</p>
       )}
 
       <div className="metrics">
