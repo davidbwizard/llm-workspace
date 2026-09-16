@@ -106,7 +106,7 @@ Two places where the spec is not self-consistent. Both are recorded here so a re
 
 **Files:**
 - Modify: `src/store/conversation.ts:58-94` (doc comment), `:140-156` (turn assembly)
-- Modify: `src/renderer/components/ConversationView.tsx:1-6` (imports), `:53-66` (date/time helpers, unchanged), `:200-229` (render loop)
+- Modify: `src/renderer/components/ConversationView.tsx:1-6` (imports), `:53-66` (date/time helpers, unchanged), `:200-238` (render loop)
 - Modify: `src/renderer/components/ConversationView.css` (layout, size scale, styles A and C)
 - Modify: `src/renderer/components/MainPane.tsx:84` (header title), `:101` (props)
 - Modify: `src/renderer/components/MainPane.css:16` (`.panetitle`)
@@ -454,7 +454,7 @@ Add above `MARKDOWN_COMPONENTS`:
 const PROVIDER_NAME: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
 ```
 
-Replace the render loop's leading comment and body (lines 200-229) with:
+Replace the render loop's leading comment and body (lines 200-238, through the closing `);` of the return) with:
 
 ```tsx
   // Chat order (spec §3.1): oldest at the top, newest at the bottom.
@@ -3620,7 +3620,7 @@ In `tests/renderer/FleetView.test.tsx`, append inside the `Open sessions` descri
     });
 ```
 
-Use whichever fixture that file already builds for the open-sessions tier in place of `payloadWithOpen`, and add the same `localStorage.clear(); reloadSettings();` `beforeEach` plus the `setSettings`/`reloadSettings` import.
+That file has no `payloadWithOpen`: it builds payloads with its own `payload(openSessions)` helper, and the open-sessions tier lives in the describe at `tests/renderer/FleetView.test.tsx:292`. Use `payload([...])` there in place of `payloadWithOpen`, and add the same `localStorage.clear(); reloadSettings();` `beforeEach` plus the `setSettings`/`reloadSettings` import.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -3719,6 +3719,10 @@ Gate the path (line 357), the last reply (lines 363-365) and swap the metrics ro
       )}
 
       <div className="metrics">
+        {/* The pid stays on the full card for now, gated like its siblings.
+            Task 8 removes it from both cards and updates the test that asserts
+            it; dropping it here would fail that test one task early. */}
+        {!compact && <span className="pid">pid {state.pid}</span>}
         {!compact && state.events != null && <span>{state.events.toLocaleString()}</span>}
         {activityWord && (
           <span className={`state ${state.activity}`}>
@@ -4019,7 +4023,7 @@ In `src/renderer/components/OpenSessionCard.tsx`, replace the accessible-name co
   ].filter((part): part is string => Boolean(part)).join('. ');
 ```
 
-and delete the pid span from the metrics row (lines 368-371), leaving:
+and delete the pid span Task 7 left gated on the full card (the `{!compact && <span className="pid">pid {state.pid}</span>}` line in the metrics row), leaving:
 
 ```tsx
       <div className="metrics">
