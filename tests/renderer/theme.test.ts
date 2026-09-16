@@ -153,4 +153,18 @@ describe('theme tokens', () => {
     expect(popover).not.toContain('#0009');
     expect(card).not.toContain('rgba(0,0,0,.22)');
   });
+
+  // src/main/index.ts paints the window's very first frame before any CSS
+  // exists, so it hardcodes the two --ground values rather than reading
+  // them. That is the one place a token is duplicated outside this file,
+  // and drift there is invisible to every renderer test: a light user would
+  // simply get a dark flash on every launch.
+  it('paints the window\'s first frame from the same --ground values declared here', () => {
+    const main = readFileSync('src/main/index.ts', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '');
+    const dark = parseTokens(css.slice(0, css.search(/@media|:root\[data-theme/)))['--ground'];
+    const light = parseTokens(blockAfter(':root[data-theme="light"]'))['--ground'];
+    expect(main, 'the dark first-paint colour must be --ground').toContain(dark);
+    expect(main, 'the light first-paint colour must be the light --ground').toContain(light);
+  });
 });

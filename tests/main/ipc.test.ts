@@ -9,7 +9,7 @@ import {
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
   killSession, ownProcessAncestry, revealSession, sendKeysFor, resolveReattachTarget,
-  freshLiveSession, promptOpenFor,
+  freshLiveSession, promptOpenFor, applyThemeChoice,
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry, tmuxNameForPid } from '../../src/main/sessions.ts';
 import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
@@ -1284,5 +1284,34 @@ describe('freshLiveSession', () => {
     const read = (): LiveSessionRead =>
       ({ ok: true, file: { sessionId: 's', cwd: '/repo/a', startedAtMs: STARTED + 1, status: 'idle' } });
     expect(freshLiveSession(50, [proc], read)).toBeNull();
+  });
+});
+
+describe('applyThemeChoice', () => {
+  // The renderer can call any exposed channel with any argument, so the
+  // three literals are checked HERE, in main, before the value reaches
+  // nativeTheme or a file (spec §5).
+  it.each(['system', 'light', 'dark'])('accepts %s and passes it on exactly once', (theme) => {
+    const setSource: string[] = [];
+    const persist: string[] = [];
+    const r = applyThemeChoice(theme, { setSource: t => setSource.push(t), persist: t => persist.push(t) });
+    expect(r).toEqual({ status: 'set', theme });
+    expect(setSource).toEqual([theme]);
+    expect(persist).toEqual([theme]);
+  });
+
+  it.each([
+    ['an unknown word', 'sepia'],
+    ['an empty string', ''],
+    ['a number', 1],
+    ['null', null],
+    ['undefined', undefined],
+    ['an object', { theme: 'dark' }],
+    ['an array', ['dark']],
+  ])('refuses %s, and touches neither nativeTheme nor the file', (_label, raw) => {
+    let touched = false;
+    const mark = () => { touched = true; };
+    expect(applyThemeChoice(raw, { setSource: mark, persist: mark })).toEqual({ status: 'refused' });
+    expect(touched).toBe(false);
   });
 });

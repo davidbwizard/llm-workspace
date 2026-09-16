@@ -15,6 +15,7 @@ export interface Paths {
   codexStateDb: string;
   codexHistoryDb: string;
   spool: string;
+  appearance: string;
   db: string;
 }
 
@@ -27,6 +28,7 @@ export function resolvePaths(home: string): Paths {
     codexStateDb: join(home, '.codex/state_5.sqlite'),
     codexHistoryDb: join(home, '.codex/thread_history_1.sqlite'),
     spool: join(home, '.llm-workspace/spool'),
+    appearance: join(home, '.llm-workspace/appearance.json'),
     db: join(home, '.llm-workspace/index.sqlite'),
   };
 }

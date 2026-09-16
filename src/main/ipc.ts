@@ -3,9 +3,10 @@
 // binds ipcMain to undefined rather than throwing. That stays harmless only
 // because ipcMain is dereferenced inside registerIpc's body, never at module
 // scope -- a test that imports and calls registerIpc directly will throw.
-import { app, ipcMain, BrowserWindow, dialog } from 'electron';
+import { app, ipcMain, BrowserWindow, dialog, nativeTheme } from 'electron';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn as ptySpawn, type IPty } from 'node-pty';
 import type { Db } from '../store/db.ts';
@@ -13,7 +14,8 @@ import {
   openSessions, openSessionsLive, fleetStatePage, type SessionState, type OpenSession,
 } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
-import { sanitizeForTerminal, parseProcessChainHop } from '../config.ts';
+import { sanitizeForTerminal, parseProcessChainHop, resolvePaths } from '../config.ts';
+import { writeStoredTheme, type ThemeChoice } from './appearance.ts';
 import {
   getCachedLiveProcesses, refreshLiveProcesses, execFileSoft, readLiveSession, type ExecFn,
 } from '../discovery/live.ts';
@@ -1056,6 +1058,36 @@ export function sendRawFor(
   return { status: 'sent' };
 }
 
+export type ThemeResult = { status: 'set'; theme: ThemeChoice } | { status: 'refused' };
+
+type ThemeDeps = {
+  setSource?: (theme: ThemeChoice) => void;
+  persist?: (theme: ThemeChoice) => void;
+};
+
+/** app:theme -- the renderer's appearance choice, reaching the WINDOW.
+ *
+ *  data-theme on the root element only restyles the page; native
+ *  scrollbars, the folder picker and the title bar follow nativeTheme,
+ *  which only main can set. The value is checked against the three
+ *  literals HERE, before it reaches nativeTheme or the file: the renderer
+ *  can call any exposed channel with any argument, whatever the preload's
+ *  TypeScript says, so this is the boundary, not the typing.
+ *
+ *  Both effects are injectable because under plain-Node vitest the electron
+ *  import is a stub and `nativeTheme` binds to undefined (see this file's
+ *  own note on ipcMain at the top). The defaults are built lazily inside
+ *  the call, so nothing dereferences the stub at module scope. */
+export function applyThemeChoice(raw: unknown, deps: ThemeDeps = {}): ThemeResult {
+  if (raw !== 'system' && raw !== 'light' && raw !== 'dark') return { status: 'refused' };
+  const theme: ThemeChoice = raw;
+  (deps.setSource ?? ((t: ThemeChoice) => { nativeTheme.themeSource = t; }))(theme);
+  // Mirrored for the next launch's first frame only -- see
+  // src/main/appearance.ts's doc comment.
+  (deps.persist ?? ((t: ThemeChoice) => writeStoredTheme(resolvePaths(homedir()).appearance, t)))(theme);
+  return { status: 'set', theme };
+}
+
 /** The complete set of channels main answers. Adding one means adding it to
  *  the preload's enumerated list as well; tests/main/ipc.test.ts asserts
  *  they match.
@@ -1106,6 +1138,7 @@ export function registerIpc(
       ? conversationFor(db, sessionId, undefined, parseConversationCursor(cursor))
       : { turns: [], nextCursor: null });
   ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown) => sendKeysFor(pid, text));
+  ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
 
   // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing
   // Task 6's TEMPORARY not_implemented stubs in place -- not a second

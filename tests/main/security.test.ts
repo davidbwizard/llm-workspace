@@ -38,6 +38,7 @@ describe('renderer security posture', () => {
   it('exposes only the enumerated channels', () => {
     const exposed = [...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/g)].map(m => m[1]);
     expect(exposed.sort()).toEqual([
+      'app:theme',
       'dialog:directory',
       'fleet:history', 'fleet:list',
       'session:attach', 'session:conversation', 'session:detach', 'session:keys',

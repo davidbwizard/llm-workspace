@@ -80,6 +80,12 @@ const api = {
     ipcRenderer.on('terminal:data', handler);
     return () => ipcRenderer.off('terminal:data', handler);
   },
+  // The appearance choice, so the WINDOW follows it too -- nativeTheme
+  // drives native scrollbars, the folder picker and the title bar, none of
+  // which a data-theme attribute on the page can reach. Main checks the
+  // value against its own three literals (applyThemeChoice); this typing
+  // narrows nothing at the trust boundary, same as every other channel here.
+  setTheme: (theme: string) => ipcRenderer.invoke('app:theme', theme),
 };
 
 contextBridge.exposeInMainWorld('fleet', api);
