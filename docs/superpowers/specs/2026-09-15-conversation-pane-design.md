@@ -270,15 +270,14 @@ button stay as they are.
    the window chrome, not just the page.
 6. Compact and full cards, in the fleet and in the rail, at a narrow rail width.
 
-## 7. Open questions for David
+## 7. Questions David settled (2026-09-15)
 
-1. **Does the message box belong on history-only sessions?** A session with no
-   live process cannot be typed into. Proposal: show the box disabled with
-   "This session is not running", rather than hiding it.
-2. **Does Enter-to-send need a confirmation for long messages?** Proposal: no.
-3. **Should the rail's Answer popover disappear** once the conversation has its
-   own message box? Proposal: keep it; it answers a session you are not
-   currently looking at.
+1. **A session with no live process** still shows the message box, disabled,
+   with "This session is not running". It is never hidden: a box that vanishes
+   reads as a missing feature, a disabled one reads as a state.
+2. **Enter sends, with no confirmation,** however long the message.
+3. **The rail's Answer popover stays.** It answers a session David is not
+   currently looking at, which the conversation's own box cannot do.
 
 ## 8. Out of scope
 
