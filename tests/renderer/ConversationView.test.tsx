@@ -1143,6 +1143,51 @@ describe('ConversationView -- the message box', () => {
     expect(sendKeys).not.toHaveBeenCalled();
   });
 
+  // A chat box that drops the caret on every send is unusable for two
+  // messages in a row: disabling the textarea while the send is in flight
+  // makes the browser blur it, and re-enabling does not put focus back, so
+  // the person has to click in again between every message.
+  //
+  // These assert the END state -- focused once the send has settled -- on
+  // purpose, and deliberately do NOT focus the box first. jsdom's own
+  // blur-on-disable behaviour is then irrelevant to the result: the box
+  // starts unfocused either way, so the assertion can only pass if
+  // something actively puts focus back, which is exactly the property
+  // being pinned.
+  it('puts focus back in the box after a send, so the next message can just be typed', async () => {
+    const sendKeys = withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalled());
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(''));
+    expect(document.activeElement).toBe(box);
+  });
+
+  // A refusal is the case where focus matters MOST: the text is still
+  // there and the whole point is to edit it and try again.
+  it('puts focus back after a refusal too, with the typed text still there to retry', async () => {
+    withSendKeys({ status: 'refused', reason: 'session_gone' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByText('That session has ended.')).toBeTruthy());
+    expect(document.activeElement).toBe(box);
+    expect((box as HTMLTextAreaElement).value).toBe('commit it');
+  });
+
+  // The other half of the restore: it must fire on the send-settled
+  // transition and nowhere else. An effect that simply focused whenever it
+  // ran would steal the caret every time a session is opened.
+  it('does not grab focus on mount -- opening a session must not steal the caret', async () => {
+    withSendKeys({ status: 'sent' });
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    expect(document.activeElement).not.toBe(box);
+  });
+
   // The popover's wording, not a second copy of it -- part 1 settled these
   // strings against a real misfire (typed text answering a picker).
   it('shows the popover\'s own refusal wording, and keeps the text so it can be retried', async () => {

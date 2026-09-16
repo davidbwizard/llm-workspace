@@ -177,6 +177,28 @@ function MessageBox({ pid, tmux, onOpenTerminal }: {
   const [message, setMessage] = useState<string | null>(null);
   const [choiceOpen, setChoiceOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const boxRef = useRef<HTMLTextAreaElement | null>(null);
+  /** Whether the previous render was mid-send, so the effect below can tell
+   *  the send-settled transition from every other reason it runs. */
+  const wasSendingRef = useRef(false);
+
+  /** Put the caret back after a send settles. Disabling the textarea while
+   *  the send is in flight makes the browser blur it, and re-enabling does
+   *  not restore focus -- so without this, a chat box drops the caret on
+   *  every message and the person has to click back in before typing the
+   *  next one.
+   *
+   *  An EFFECT, not a call after setSending(false): React batches the state
+   *  updates in send()'s continuation, so at that point `disabled` is still
+   *  true in the DOM and focus() would be dropped. This runs after the
+   *  commit that cleared it.
+   *
+   *  Guarded on the true -> false transition specifically. Focusing whenever
+   *  this effect ran would steal the caret every time a session is opened. */
+  useEffect(() => {
+    if (wasSendingRef.current && !sending) boxRef.current?.focus();
+    wasSendingRef.current = sending;
+  }, [sending]);
 
   const disabledReason = pid === null
     ? 'This session is not running.'
@@ -211,6 +233,7 @@ function MessageBox({ pid, tmux, onOpenTerminal }: {
   return (
     <div className="convbox">
       <textarea
+        ref={boxRef}
         className="convinput"
         aria-label="Message this session"
         rows={2}
