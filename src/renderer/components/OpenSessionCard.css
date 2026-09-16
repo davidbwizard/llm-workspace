@@ -135,3 +135,37 @@
 /* Codex's explanation in place of the button -- plain text, not styled as
    an interactive control, since it isn't one. */
 .reattach-na { color:var(--faint); margin:2px 0 0; }
+
+/* The compact card (spec §3.6). Additive only: every rule here is scoped
+   to .card.compact, so SessionCard.css's base .card/.proj/.said rules --
+   which this component and the History card BOTH rely on globally -- keep
+   the exact values they have today. A compact card does not render .said
+   at all, so that stylesheet's 2-line clamp has nothing to clip here. */
+.card.compact { padding:10px 12px 11px; gap:7px; }
+.card.compact .proj { font-size:15px; }
+.card.compact .badge { top:9px; right:11px; }
+.card.compact .unread-dot { top:12px; right:14px; }
+.card.compact .metrics { margin-top:0; }
+/* .state carries margin-left:auto in SessionCard.css, which would push the
+   status to the far right and strand the menu beyond it. On a compact card
+   the menu is what claims that edge. */
+.card.compact .state { margin-left:0; }
+
+/* The `...` menu. A popover anchored to this one card, not a shared
+   overlay: .cardmenu is the positioned ancestor, so nothing here needs to
+   know where on screen the card is. */
+.cardmenu { position:relative; margin-left:auto; }
+.cardmenu-btn { font-family:var(--f-mono); font-size:13px; line-height:1; color:var(--muted);
+  background:none; border:1px solid transparent; border-radius:6px;
+  padding:1px 6px 3px; cursor:pointer; }
+.cardmenu-btn:hover { color:var(--ink); border-color:var(--line); }
+.cardmenu-list { position:absolute; right:0; top:calc(100% + 4px); z-index:5;
+  display:flex; flex-direction:column; min-width:150px;
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-sm);
+  box-shadow:var(--shadow-pop); padding:4px; }
+.cardmenu-item { text-align:left; font-family:var(--f-mono); font-size:11px; color:var(--ink-2);
+  background:none; border:0; border-radius:5px; padding:6px 9px; cursor:pointer; white-space:nowrap; }
+.cardmenu-item:hover { background:var(--raised); color:var(--ink); }
+/* Close is the one destructive item, and it still only opens the confirm
+   panel -- the colour marks which item it is, not what pressing it does. */
+.cardmenu-danger:hover { color:var(--critical); }

@@ -639,4 +639,126 @@ describe('OpenSessionCard', () => {
       expect(onKill).not.toHaveBeenCalled();
     });
   });
+
+  describe('OpenSessionCard -- the compact variant', () => {
+    const enrichedCompact: OpenSession = {
+      ...base, match: 'unique', sessionId: 's1', lastProse: 'Reused the JWT helper',
+      events: 9129, activity: 'working', tmux: false,
+    };
+    const renderCompact = (over: Partial<OpenSession> = {}, props: Record<string, unknown> = {}) =>
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
+        onResume={neverResume()} compact state={{ ...enrichedCompact, ...over }} {...props} />);
+
+    it('keeps the provider, the project, the status and the host, and drops the rest', () => {
+      const { container } = renderCompact();
+      expect(container.querySelector('.card')!.classList.contains('compact')).toBe(true);
+      expect(screen.getByText('trellome')).toBeTruthy();
+      expect(screen.getByText('Claude')).toBeTruthy();
+      expect(screen.getByText('iTerm2')).toBeTruthy();
+      expect(screen.getByText('working')).toBeTruthy();
+      // Dropped: the path, the last reply, the age/memory line and the
+      // event count -- the four things that make a full card tall.
+      expect(screen.queryByText('/Users/me/trellome')).toBeNull();
+      expect(screen.queryByText('Reused the JWT helper')).toBeNull();
+      expect(screen.queryByText(/206 MB/)).toBeNull();
+      expect(screen.queryByText('9,129')).toBeNull();
+    });
+
+    it('keeps the unread dot, which is the whole point of glancing at the rail', () => {
+      const { container } = renderCompact({}, { unread: true });
+      expect(container.querySelector('.unread-dot')).not.toBeNull();
+    });
+
+    it('keeps the blocked badge and its wording', () => {
+      const { container } = renderCompact({ activity: 'waiting_permission' });
+      expect(container.querySelector('.badge')).not.toBeNull();
+      expect(screen.getByText(/waiting on you/)).toBeTruthy();
+    });
+
+    it('offers no bare Close or Reattach button -- they live in the menu', () => {
+      renderCompact();
+      expect(screen.queryByRole('button', { name: /^Close, pid/ })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^Reattach in app, pid/ })).toBeNull();
+      expect(screen.getByRole('button', { name: /session actions/i })).toBeTruthy();
+    });
+
+    it('opens the menu with the three documented items', () => {
+      const { container } = renderCompact({}, { onReveal: vi.fn(async () => {}) });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
+        .toEqual(['Show in iTerm2', 'Reattach in app', 'Close session']);
+    });
+
+    it('omits Reattach for a session that is already tmux-backed, and Show in host with no host', () => {
+      // 'unknown', not null: OpenSession.host (src/fleet/state.ts) is
+      // LiveProcess['host'] with no null in its union -- classifyHost's own
+      // sentinel for "no host" is the string 'unknown', the same value the
+      // non-compact card's own "renders no host text" test already uses.
+      const { container } = renderCompact({ tmux: true, host: 'unknown' });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
+        .toEqual(['Close session']);
+    });
+
+    it.each([
+      ['Escape', () => fireEvent.keyDown(window, { key: 'Escape' })],
+      ['a click elsewhere', () => fireEvent.mouseDown(document.body)],
+    ])('closes the menu on %s', (_label, act) => {
+      const { container } = renderCompact();
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      expect(container.querySelector('.cardmenu-list')).not.toBeNull();
+      act();
+      expect(container.querySelector('.cardmenu-list')).toBeNull();
+    });
+
+    // Reuse, not a second implementation: Close opens the SAME confirm panel
+    // the full card shows, naming the same session in the same words.
+    it('routes Close session into the existing confirm flow, not straight to a kill', () => {
+      const onKill = neverKill();
+      const { container } = renderCompact({}, { onKill });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Close session' }));
+      expect(container.querySelector('.kill-confirm')).not.toBeNull();
+      expect(screen.getByText(/^End the Claude session in trellome/)).toBeTruthy();
+      expect(onKill).not.toHaveBeenCalled();
+      expect(container.querySelector('.cardmenu-list')).toBeNull();
+    });
+
+    it('routes Reattach in app into the existing confirm flow too', () => {
+      const onReattach = neverReattach();
+      const { container } = renderCompact({}, { onReattach });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Reattach in app' }));
+      expect(container.querySelector('.reattach-confirm')).not.toBeNull();
+      expect(onReattach).not.toHaveBeenCalled();
+    });
+
+    it('brings the host forward from the menu', () => {
+      const onReveal = vi.fn(async () => {});
+      renderCompact({}, { onReveal });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Show in iTerm2' }));
+      expect(onReveal).toHaveBeenCalledWith(4242);
+    });
+
+    // Every control on this card is nested inside the card's own
+    // role="button" wrapper, so each must stop its own click from also
+    // opening the session -- the same rule .killrow and .reattachrow already
+    // follow.
+    it('never opens the session when the menu or one of its items is clicked', () => {
+      const onOpen = vi.fn();
+      renderCompact({}, { onOpen, onReveal: vi.fn(async () => {}) });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Show in iTerm2' }));
+      expect(onOpen).not.toHaveBeenCalled();
+    });
+
+    it('still renders the full card by default, with nothing opted in', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+        onReattach={neverReattach()} onResume={neverResume()} state={enrichedCompact} />);
+      expect(container.querySelector('.card')!.classList.contains('compact')).toBe(false);
+      expect(screen.getByText('/Users/me/trellome')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /session actions/i })).toBeNull();
+    });
+  });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { tmpdir } from 'node:os';
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { SessionRail } from '../../src/renderer/components/SessionRail.tsx';
+import { setSettings, reloadSettings } from '../../src/renderer/state/settings.ts';
 
 // @testing-library/user-event is not a dependency of this project (every
 // other renderer test file drives interaction through fireEvent, and
@@ -94,10 +95,16 @@ beforeEach(() => {
   // width" assumption, since jsdom's localStorage survives across tests
   // within a file.
   localStorage.clear();
+  reloadSettings();
 });
 
 describe('SessionRail', () => {
   it('renders one card per session, keeping its content', () => {
+    // Full cards, not compact -- this predates the compact variant and is
+    // testing generic per-session content (lastProse included), which only
+    // the full card renders. The compact variant's own content is covered
+    // by the "compact cards" describe block below.
+    setSettings({ compactCards: 'fleet' });
     render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     expect(screen.getByText('llm-workspace')).toBeTruthy();
     expect(screen.getByText('Overwrite?')).toBeTruthy();
@@ -128,6 +135,10 @@ describe('SessionRail', () => {
   // callback -- not a rail-owned stand-in -- is what Close ultimately
   // calls, with the pid of the card it was pressed on, not some other one.
   it('reaches the real onKill it was given, with the pid of the card that was closed', async () => {
+    // Full card, not compact -- this test is about which onKill callback
+    // Close ultimately reaches, not about the compact variant's own menu
+    // (covered separately, in OpenSessionCard.test.tsx's compact describe).
+    setSettings({ compactCards: 'fleet' });
     const onKill = vi.fn(async () => ({ status: 'killed' as const }));
     render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={onKill} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
     fireEvent.click(screen.getByRole('button', { name: /close, pid 2/i }));
@@ -417,6 +428,19 @@ describe('SessionRail', () => {
       const { rerender, container } = render(<SessionRail sessions={sessionsWithJunk} selectedPid={3} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
       rerender(<SessionRail sessions={sessionsWithJunkPid2Bumped} selectedPid={3} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
       expect(projectOrder(container)).toEqual(['blocked-proj', 'plain-proj', 'temp folder']);
+    });
+  });
+
+  describe('SessionRail -- compact cards', () => {
+    it('renders compact cards by default, which is what the setting ships as', () => {
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(container.querySelectorAll('.card.compact').length).toBe(sessions.length);
+    });
+
+    it('renders full cards once the setting turns the sidebar off', () => {
+      setSettings({ compactCards: 'fleet' });
+      const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(container.querySelectorAll('.card.compact').length).toBe(0);
     });
   });
 });

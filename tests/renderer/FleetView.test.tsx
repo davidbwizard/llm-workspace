@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { FleetView } from '../../src/renderer/components/FleetView.tsx';
 import type { SessionState, OpenSession } from '../../src/fleet/state.ts';
 import type { FleetListPayload } from '../../src/main/ipc.ts';
+import { setSettings, reloadSettings } from '../../src/renderer/state/settings.ts';
 
 // A transcript-session fixture. Used only for History now: History is
 // every transcript session, unfiltered (see FleetView.tsx) -- none of
@@ -65,6 +66,8 @@ beforeEach(() => {
     reattach: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
     resume: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
   };
+  localStorage.clear();
+  reloadSettings();
 });
 
 describe('FleetView', () => {
@@ -334,6 +337,22 @@ describe('FleetView', () => {
       render(<FleetView payload={payload([o({ pid:1, project:'one' })])} error={null} onSelect={() => {}} />);
       expect(screen.getByText(/1 open/)).toBeTruthy();
       expect(screen.queryByText(/need you/)).toBeNull();
+    });
+
+    it('renders compact cards by default, and full ones once the setting turns the fleet off', async () => {
+      const { container, rerender } = render(<FleetView payload={payload([o({ pid:1, project:'one' })])} error={null} onSelect={() => {}} />);
+      await waitFor(() => expect(container.querySelectorAll('.fleet .card').length).toBeGreaterThan(0));
+      expect(container.querySelectorAll('.fleet .card.compact').length)
+        .toBe(container.querySelectorAll('.fleet > .card').length);
+
+      // setSettings notifies useSyncExternalStore's subscribers synchronously
+      // (settings.ts's own setSettings), which happens outside any React
+      // event handler here -- wrapped in act() so that store-driven update
+      // is flushed before the assertions below, not left to warn about a
+      // state update React didn't see wrapped.
+      act(() => { setSettings({ compactCards: 'sidebar' }); });
+      rerender(<FleetView payload={payload([o({ pid:1, project:'one' })])} error={null} onSelect={() => {}} />);
+      expect(container.querySelectorAll('.fleet .card.compact').length).toBe(0);
     });
   });
 });

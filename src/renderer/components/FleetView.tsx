@@ -3,6 +3,7 @@ import { SessionCard } from './SessionCard.tsx';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
 import type { SessionState, OpenSession } from '../../fleet/state.ts';
 import type { FleetListPayload } from '../../main/ipc.ts';
+import { compactIn, useSettings } from '../state/settings.ts';
 import './FleetView.css';
 
 // One server-side page (src/main/ipc.ts's HISTORY_DEFAULT_LIMIT) fetched at
@@ -48,6 +49,7 @@ export function FleetView({ payload, error, onSelect }: {
   const [historyTotal, setHistoryTotal] = useState<number | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const compact = compactIn(useSettings(), 'fleet');
 
   // History is fetched only on the false->true transition, i.e. exactly
   // when a person actually opens the accordion -- not on every render, not
@@ -115,7 +117,8 @@ export function FleetView({ payload, error, onSelect }: {
         <div className="fleet">
           {openSessions.map(o => (
             <OpenSessionCard key={o.pid} state={o} onOpen={onSelect} onKill={fleetApi.killSession}
-              onReveal={fleetApi.revealSession} onReattach={fleetApi.reattach} onResume={fleetApi.resume} />
+              onReveal={fleetApi.revealSession} onReattach={fleetApi.reattach} onResume={fleetApi.resume}
+              compact={compact} />
           ))}
         </div>
       ) : (
