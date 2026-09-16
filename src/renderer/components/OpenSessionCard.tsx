@@ -340,11 +340,16 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
 
   // Same reasoning as SessionCard's label: role="button" replaces this
   // element's content with its accessible name, so every signal rendered
-  // below has to be carried in the name too. pid is included -- it is
-  // this card's actual identity (two open sessions can share a project
-  // name), the same job sessionId/provider do in SessionCard's label.
+  // below has to be carried in the name too.
+  //
+  // The pid is NOT here any more (spec §2: no pid on any card). It was
+  // never a signal a person acts on -- it was bookkeeping for the close
+  // action, which the code performs from `state.pid` regardless. The
+  // NESTED controls (Close, Reattach, the compact menu) do keep it, and
+  // must: those are otherwise-identical buttons repeated once per card,
+  // and two open sessions can share a project name.
   const label = [
-    `Open ${state.project} (${providerLabel}), pid ${state.pid}`,
+    `Open ${state.project} (${providerLabel})`,
     activityWord,
     // Placed right after activityWord, before lastProse -- "there is new
     // output" is a fact about the session's state, the same category as
@@ -417,10 +422,6 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
       )}
 
       <div className="metrics">
-        {/* The pid stays on the full card for now, gated like its siblings.
-            Task 8 removes it from both cards and updates the test that asserts
-            it; dropping it here would fail that test one task early. */}
-        {!compact && <span className="pid">pid {state.pid}</span>}
         {!compact && state.events != null && <span>{state.events.toLocaleString()}</span>}
         {activityWord && (
           <span className={`state ${state.activity}`}>

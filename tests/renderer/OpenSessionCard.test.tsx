@@ -41,7 +41,7 @@ function neverResume() {
 }
 
 describe('OpenSessionCard', () => {
-  it('shows pid, provider, project, cwd, host, age and memory even with no transcript match at all', () => {
+  it('shows provider, project, cwd, host, age and memory even with no transcript match at all', () => {
     render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
     expect(screen.getByText('trellome')).toBeTruthy();
     expect(screen.getByText('/Users/me/trellome')).toBeTruthy();
@@ -49,7 +49,9 @@ describe('OpenSessionCard', () => {
     expect(screen.getByText('iTerm2')).toBeTruthy();
     expect(screen.getByText(/9d/)).toBeTruthy();
     expect(screen.getByText(/206 MB/)).toBeTruthy();
-    expect(screen.getByText(/pid 4242/)).toBeTruthy();
+    // Gone from every card (spec §2). It was bookkeeping, and the app
+    // already knows which process a card is without printing it.
+    expect(screen.queryByText(/pid 4242/)).toBeNull();
   });
 
   it('is operable by keyboard and mouse, passing pid to onOpen every time', () => {
@@ -126,14 +128,24 @@ describe('OpenSessionCard', () => {
       expect(screen.getByText(/waiting on you/)).toBeTruthy();
     });
 
-    it('includes pid, project, provider, activity and last prose in the accessible name', () => {
+    it('includes project, provider, activity and last prose in the accessible name, and no pid', () => {
       render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={enriched} />);
       const card = screen.getByRole('button', { name: /trellome/i });
       const label = card.getAttribute('aria-label') ?? '';
-      expect(label).toMatch(/pid 4242/);
       expect(label).toMatch(/Claude/);
       expect(label).toMatch(/working/);
       expect(label).toMatch(/Reused the JWT helper/);
+      expect(label).not.toMatch(/pid/i);
+    });
+
+    // The nested controls keep it, and must: with two cards open, "Close"
+    // and "Close" are indistinguishable in a screen reader's rotor or a
+    // test's own lookup, and two sessions can share a project name. This
+    // is a different string from the card's own name, on a different
+    // element, and it is the only thing telling those buttons apart.
+    it('keeps the pid on the nested controls, which have nothing else to tell them apart', () => {
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={enriched} />);
+      expect(screen.getByRole('button', { name: 'Close, pid 4242' })).toBeTruthy();
     });
   });
 

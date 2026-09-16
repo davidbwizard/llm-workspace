@@ -11,11 +11,6 @@
    (for the open-sessions tier). Only what is genuinely new to this card
    lives here. */
 
-/* pid, shown in .metrics -- same quiet mono treatment as the counts beside
-   it, since it is bookkeeping (and what a future close action targets),
-   not the card's headline. */
-.pid { font-family:var(--f-mono); font-size:11px; color:var(--faint); }
-
 /* The unread indicator (SessionRail's own doc comment on `unread` covers
    how it's computed) -- same corner .badge already occupies, since the
    two are mutually exclusive (OpenSessionCard.tsx's showUnread is always
