@@ -722,6 +722,10 @@ type KeysDeps = {
   send?: TmuxExec;
   capture?: (args: string[]) => TmuxResult;
   promptOpen?: (pid: number) => boolean;
+  /** Injectable in place of the real between-attempt wait
+   *  waitForPasteToSettle (below) uses -- see defaultSleep's doc comment.
+   *  The one production caller never passes this. */
+  sleep?: (ms: number) => void;
 };
 
 /** Counter behind nextPasteBuffer, below. */
@@ -742,6 +746,63 @@ let pasteBufferSeq = 0;
 function nextPasteBuffer(): string {
   pasteBufferSeq += 1;
   return `llmws-p${process.pid}-${pasteBufferSeq}`;
+}
+
+/** Lines captured both for the pre-send liveness check and, for a
+ *  multi-line send, as the "before" snapshot waitForPasteToSettle (below)
+ *  compares against. Wider than a bare liveness probe needs: the input box
+ *  a paste lands in can span more than one line, and a change confined to
+ *  line 2 or 3 would be invisible to a single-line capture. Exported only
+ *  so tests can size their own fixtures against it, not to make it
+ *  configurable. */
+export const PASTE_SETTLE_CAPTURE_LINES = 8;
+
+/** Bounds for the settle-poll between a successful paste and sending Enter
+ *  (waitForPasteToSettle below). tmux reporting paste-buffer as successful
+ *  only means it delivered the bytes -- it says nothing about whether the
+ *  receiving program has finished acting on them. Claude Code is an Ink
+ *  TUI: it accumulates a bracketed paste until the closing marker and can
+ *  still be mid-ingest when the next command reaches the pane, which is
+ *  what swallows the Enter that follows too closely behind. 10 attempts of
+ *  30ms give ~300ms of budget for a slow run while returning almost
+ *  immediately once a change is actually observed on a fast one. Exported
+ *  only so tests can size their own fixtures against them, not to make
+ *  either one configurable. */
+export const PASTE_SETTLE_ATTEMPTS = 10;
+export const PASTE_SETTLE_INTERVAL_MS = 30;
+
+/** Real between-attempt wait for waitForPasteToSettle below. This send path
+ *  is fully synchronous end to end (every tmux call is execFileSync), so
+ *  there is no async context to await a delay from -- Atomics.wait on a
+ *  throwaway SharedArrayBuffer is Node's ordinary way to block the current
+ *  thread for a bounded time without one. Injectable (KeysDeps.sleep) so
+ *  tests can drive the settle loop deterministically, including its
+ *  timeout path, without ever waiting in real time; the one production
+ *  caller never passes a replacement. */
+function defaultSleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Blocks this (synchronous) send path until the pane's content differs
+ *  from `before`, or the budget above elapses -- whichever comes first.
+ *  Compares for ANY change, never for the pasted text itself: Claude Code
+ *  collapses a large paste in its input box into a placeholder like
+ *  "[Pasted text #1 +12 lines]" rather than echoing it literally, so there
+ *  is no substring of the original message to look for even when the paste
+ *  landed exactly as sent. Returns whether a change was observed; the
+ *  caller sends Enter either way regardless of the result -- see the call
+ *  site in sendKeysFor for why a timeout here must never become a refusal. */
+function waitForPasteToSettle(
+  name: string, before: string,
+  capture: ((args: string[]) => TmuxResult) | undefined,
+  sleep: (ms: number) => void,
+): boolean {
+  for (let attempt = 0; attempt < PASTE_SETTLE_ATTEMPTS; attempt++) {
+    if (attempt > 0) sleep(PASTE_SETTLE_INTERVAL_MS);
+    const now = capturePane(name, PASTE_SETTLE_CAPTURE_LINES, capture);
+    if (now.ok && now.stdout !== before) return true;
+  }
+  return false;
 }
 
 /** The renderer sends a pid and text, never a session name. Refusals are
@@ -776,8 +837,11 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
 
   // The session name resolving is not proof the pane is still there to
   // receive anything -- re-check the pane itself, immediately before
-  // sending, rather than trusting a name that was live a moment ago.
-  const captured = capturePane(name, 1, deps.capture);
+  // sending, rather than trusting a name that was live a moment ago. For a
+  // multi-line send this same capture doubles as the "before" snapshot
+  // waitForPasteToSettle compares against below, which is why it captures
+  // PASTE_SETTLE_CAPTURE_LINES rather than just one.
+  const captured = capturePane(name, PASTE_SETTLE_CAPTURE_LINES, deps.capture);
   if (!captured.ok) return { status: 'refused', reason: 'session_gone' };
 
   if (clean.text.includes('\n')) {
@@ -809,6 +873,16 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
       const dropped = deleteBuffer(buffer, deps.send);
       if (!dropped.ok) console.error('tmux delete-buffer failed:', dropped.error);
       return { status: 'refused', reason: 'session_gone' };
+    }
+    // The paste has landed as far as tmux is concerned, but the receiving
+    // program (an Ink TUI) may still be mid-ingest of the bracketed-paste
+    // sequence -- an Enter that arrives too soon gets swallowed along with
+    // it. Give it a bounded chance to visibly react before sending Enter.
+    // A timeout is logged, never turned into a refusal: the paste has
+    // already landed either way, and refusing would invite a retry that
+    // duplicates text already sitting in the pane's input line.
+    if (!waitForPasteToSettle(name, captured.stdout, deps.capture, deps.sleep ?? defaultSleep)) {
+      console.error('tmux paste settle timed out, sending Enter anyway:', { pid, name });
     }
     // The paste has already landed in the session by this point, so a
     // failed Enter is logged, not refused: refusing here would tell the

@@ -9,7 +9,7 @@ import {
   BLOCKER_SANITISED_FIELDS, BLOCKER_STRUCTURAL_FIELDS,
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
   killSession, ownProcessAncestry, revealSession, sendKeysFor, resolveReattachTarget,
-  freshLiveSession, promptOpenFor, applyThemeChoice,
+  freshLiveSession, promptOpenFor, applyThemeChoice, PASTE_SETTLE_ATTEMPTS,
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry, tmuxNameForPid } from '../../src/main/sessions.ts';
 import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
@@ -932,9 +932,15 @@ describe('session:keys', () => {
   it('delivers multi-line text as a bracketed paste, never as send-keys -l', () => {
     registerSession(4821, 'llmws-claude-abc');
     const calls: Array<{ args: string[]; input?: string }> = [];
+    // A distinct string on every call, so the post-paste settle-poll (see
+    // the session:keys/paste-settle describe block below) sees a change on
+    // its very first check and returns immediately -- this test is about
+    // the three tmux calls, not settle timing, so it must never actually
+    // wait in real time.
+    let captureCalls = 0;
     const r = sendKeysFor(4821, 'line one\nline two', {
       has: () => true,
-      capture: () => ({ ok: true, stdout: '' }),
+      capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
       send: (args: string[], input?: string) => { calls.push({ args, input }); return { ok: true, stdout: '' }; },
     });
     expect(r).toEqual({ status: 'sent' });
@@ -1041,9 +1047,13 @@ describe('session:keys', () => {
   it('logs, but does not refuse, when Enter fails after a successful paste', () => {
     registerSession(4821, 'llmws-claude-abc');
     const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Distinct per call so the settle-poll sees a change immediately and
+    // this test never actually waits -- see the comment on the identical
+    // pattern above.
+    let captureCalls = 0;
     const r = sendKeysFor(4821, 'a\nb', {
       has: () => true,
-      capture: () => ({ ok: true, stdout: '' }),
+      capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
       send: (args: string[]) => (args.includes('Enter')
         ? { ok: false, error: 'no pane' }
         : { ok: true, stdout: '' }),
@@ -1060,9 +1070,13 @@ describe('session:keys', () => {
   it('never reuses a buffer name between sends, so two instances cannot cross messages', () => {
     registerSession(4821, 'llmws-claude-abc');
     const names: string[] = [];
+    // Distinct per call (shared across both sends below) so each send's
+    // settle-poll sees a change immediately -- this test is about buffer
+    // naming, not settle timing, so it must never actually wait.
+    let captureCalls = 0;
     const deps = {
       has: () => true,
-      capture: () => ({ ok: true as const, stdout: '' }),
+      capture: () => ({ ok: true as const, stdout: `c${captureCalls++}` }),
       send: (args: string[]) => {
         if (args[0] === 'load-buffer') names.push(args[2]!);
         return { ok: true as const, stdout: '' };
@@ -1074,6 +1088,69 @@ describe('session:keys', () => {
     expect(names[0]).not.toBe(names[1]);
     // The pid segment is what separates two app instances from each other.
     for (const n of names) expect(n).toBe(`llmws-p${process.pid}-${n.split('-')[2]}`);
+  });
+
+  // The race this closes: tmux reports paste-buffer as successful the
+  // instant it delivers the bytes, but Claude Code (an Ink TUI) may still
+  // be mid-ingest of the bracketed-paste sequence -- an Enter sent that
+  // early gets swallowed along with it (2026-09-15 field report: several
+  // multi-line sends vanished this way with no tmux error at all). Enter
+  // must wait for the pane to visibly react, not fire right after the
+  // paste call returns.
+  it('withholds Enter until the pane visibly changes after a successful paste', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const sendCalls: string[][] = [];
+    let captureCalls = 0;
+    let sleepCalls = 0;
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      // Call 1 is the pre-paste liveness snapshot ('before'). The settle
+      // loop's first two checks (calls 2-3) still read 'before' -- proving
+      // Enter is not sent on the very first post-paste check -- and only
+      // the third settle check (call 4) reports a change.
+      capture: () => { captureCalls += 1; return { ok: true, stdout: captureCalls <= 3 ? 'before' : 'after' }; },
+      send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
+      // Deterministic stand-in for the real between-attempt wait -- no
+      // real time passes in this test.
+      sleep: () => { sleepCalls += 1; },
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(sendCalls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
+    expect(sendCalls.at(-1)).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
+    // 1 pre-paste capture + 3 settle-loop checks (two "no change" and the
+    // one that finally sees it), with a sleep before each of the latter
+    // two -- Enter only goes out once call 4 reports a change.
+    expect(captureCalls).toBe(4);
+    expect(sleepCalls).toBe(2);
+  });
+
+  // The other half of the same guard: a paste that never visibly settles
+  // (a slow or wedged receiving program) must still submit, not refuse.
+  // Refusing here would tell the user the send failed and invite a retry,
+  // duplicating text that already landed in the pane's input line.
+  it('still sends Enter, and logs it, when the settle-poll never sees a change', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sendCalls: string[][] = [];
+    let captureCalls = 0;
+    let sleepCalls = 0;
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      // Never changes -- the settle loop exhausts its entire budget.
+      capture: () => { captureCalls += 1; return { ok: true, stdout: 'same' }; },
+      send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
+      sleep: () => { sleepCalls += 1; },
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(sendCalls.at(-1)).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
+    // 1 pre-paste capture + PASTE_SETTLE_ATTEMPTS settle-loop checks, none
+    // of which ever see a change, with a sleep between each of the latter.
+    expect(captureCalls).toBe(1 + PASTE_SETTLE_ATTEMPTS);
+    expect(sleepCalls).toBe(PASTE_SETTLE_ATTEMPTS - 1);
+    expect(errs).toHaveBeenCalledWith(
+      'tmux paste settle timed out, sending Enter anyway:', { pid: 4821, name: 'llmws-claude-abc' },
+    );
+    errs.mockRestore();
   });
 
   // The choice guard is not path-specific: a multi-line message must be
