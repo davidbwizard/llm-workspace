@@ -31,9 +31,10 @@ function turnEvent(
   };
 }
 
-/** A turn.completed boundary row. It carries no text of its own in the real
- *  index -- only its position between prose rows matters -- so unlike
- *  turnEvent above it takes no text argument. */
+/** A turn.completed row. conversationFor's query no longer selects this kind
+ *  at all (see conversation.ts's no-collapse comment) -- every use below
+ *  exists only to prove that inserting one, however many, and wherever it
+ *  falls, has zero effect on what the conversation shows. */
 function turnCompletedEvent(sessionId: string, ts: string, agentId: string | null = null): NormalizedEvent {
   const offset = nextOffset++;
   return {
@@ -53,11 +54,11 @@ function turnCompletedEvent(sessionId: string, ts: string, agentId: string | nul
   };
 }
 
-/** Compact view of a page: "you: x" / "agent: y [a|b]" (steps in brackets). */
+/** Compact view of a page: "you: x" / "agent: y". No `steps` rendering here
+ *  any more -- conversationFor never fills that array in (no-collapse), so
+ *  there is nothing for this helper to show. */
 function view(turns: ConversationTurn[]): string[] {
-  return turns.map(t => t.role === 'user'
-    ? `you: ${t.text}`
-    : `agent: ${t.text}${t.steps.length ? ` [${t.steps.map(s => s.text).join('|')}]` : ''}`);
+  return turns.map(t => (t.role === 'user' ? `you: ${t.text}` : `agent: ${t.text}`));
 }
 
 describe('unwrapSlashCommand', () => {
@@ -92,12 +93,11 @@ describe('unwrapSlashCommand', () => {
 
 describe('conversationFor', () => {
   // Measured on session 92b09bc5: 82 of 246 "you" rows and 810 of 1,184
-  // "agent" rows came from subagents. They are not the conversation. A
-  // subagent's own turn.completed rows are excluded the same way, by the
-  // same agent_id filter -- worth pinning now that the query selects that
-  // kind too, so a subagent's turn boundary can never split the main
-  // thread's stretch.
-  it('leaves out subagent prompts, prose, and turn boundaries', () => {
+  // "agent" rows came from subagents. They are not the conversation. The
+  // turn.completed rows (one per agent, one on the main thread) are
+  // included only to confirm they have no effect at all any more -- the
+  // query does not select that kind, subagent or not.
+  it('leaves out subagent prompts and prose, and ignores turn.completed rows entirely', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'fix the bug'),
@@ -111,14 +111,11 @@ describe('conversationFor', () => {
     expect(view(conversationFor(db, 's1').turns)).toEqual(['you: fix the bug', 'agent: Fixed.']);
   });
 
-  // The reply is the last prose before the next boundary (a human prompt or
-  // a turn.completed); everything the agent said earlier in that stretch
-  // was narration around tool calls. No turn.completed appears in this
-  // session at all, which is itself a real case (some recorded sessions
-  // predate that event, or never emitted one) -- the old whole-stretch
-  // grouping must still be exactly what a session with no turn boundaries
-  // gets.
-  it('groups narration under the reply it led up to, oldest step first', () => {
+  // No collapsing: every prose row between two prompts is its own assistant
+  // turn, in the order it was recorded, whether it reads as narration ahead
+  // of a reply or as the reply itself -- conversationFor no longer tries to
+  // tell those apart.
+  it('emits every prose row in a stretch as its own turn, oldest first', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'first ask'),
@@ -131,7 +128,9 @@ describe('conversationFor', () => {
 
     expect(view(conversationFor(db, 's1').turns)).toEqual([
       'you: first ask',
-      'agent: All green. [Reading the file.|Running tests.]',
+      'agent: Reading the file.',
+      'agent: Running tests.',
+      'agent: All green.',
       'you: second ask',
       'agent: Done.',
     ]);
@@ -150,7 +149,7 @@ describe('conversationFor', () => {
     ]);
   });
 
-  it('keeps prose recorded before the first prompt, grouped the same way', () => {
+  it('keeps prose recorded before the first prompt, each as its own turn', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       turnEvent('s1', '2026-09-01T00:00:00Z', 'prose', 'resumed narration'),
@@ -159,7 +158,7 @@ describe('conversationFor', () => {
     ]);
 
     expect(view(conversationFor(db, 's1').turns)).toEqual([
-      'agent: resumed reply [resumed narration]', 'you: thanks',
+      'agent: resumed narration', 'agent: resumed reply', 'you: thanks',
     ]);
   });
 
@@ -204,10 +203,10 @@ describe('conversationFor', () => {
     expect(conversationFor(db, 's1', 10).nextCursor).toBeNull();
   });
 
-  // The rule the brief called out: a page boundary never separates a reply
-  // from its steps. With one exchange per page, every page must carry its
-  // whole stretch of narration, however long.
-  it('never splits a reply from its steps across a page boundary', () => {
+  // The rule the brief called out: a page boundary never splits a stretch.
+  // With one exchange per page, every page must carry every prose row that
+  // stretch produced, however many, each as its own turn.
+  it('never splits a stretch across a page boundary', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'p1'),
@@ -221,31 +220,30 @@ describe('conversationFor', () => {
     ]);
 
     const page1 = conversationFor(db, 's1', 1);
-    expect(view(page1.turns)).toEqual(['you: p2', 'agent: r2 [s4]']);
+    expect(view(page1.turns)).toEqual(['you: p2', 'agent: s4', 'agent: r2']);
     const page2 = conversationFor(db, 's1', 1, page1.nextCursor!);
-    expect(view(page2.turns)).toEqual(['you: p1', 'agent: r1 [s1|s2|s3]']);
+    expect(view(page2.turns)).toEqual(['you: p1', 'agent: s1', 'agent: s2', 'agent: s3', 'agent: r1']);
     expect(page2.nextCursor).toBeNull();
   });
 
-  // The bug this task fixes: an agent turn ends at turn.completed, not only
-  // at the next human prompt. An agent can reply many times between two
+  // The bug this task fixes: an agent can reply many times between two
   // prompts -- background task notifications, subagent reports, other
-  // wake-ups -- and each of those replies is its own turn. Before this fix,
-  // every reply but the last between two prompts was silently collapsed
-  // into "+ N steps" and never shown as a message (reported by David: a
-  // reply containing a large table was invisible in the app though present
-  // in the underlying transcript).
+  // wake-ups -- and each of those replies must show as its own turn. The
+  // original fix (af376c9) tried to detect this via turn.completed; that
+  // depended on turn.completed meaning "one reply just ended", which does
+  // not hold for Claude (see conversation.ts's no-collapse comment). The
+  // real fix is unconditional: no turn.completed appears in this fixture at
+  // all, and every prose row between the two prompts still shows as its own
+  // message (reported by David: a reply containing a large table was
+  // invisible in the app though present in the underlying transcript).
   it('shows every agent turn between two prompts, not just the last one', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'kick off the background task'),
       turnEvent('s1', '2026-09-01T00:00:01Z', 'prose', 'Started it, checking back shortly.'),
-      turnCompletedEvent('s1', '2026-09-01T00:00:02Z'),
       turnEvent('s1', '2026-09-01T00:05:00Z', 'prose', 'Background task finished: all green.'),
-      turnCompletedEvent('s1', '2026-09-01T00:05:01Z'),
       turnEvent('s1', '2026-09-01T00:10:00Z', 'prompt.submitted', 'thanks, ship it'),
       turnEvent('s1', '2026-09-01T00:10:01Z', 'prose', 'Shipped.'),
-      turnCompletedEvent('s1', '2026-09-01T00:10:02Z'),
     ]);
 
     expect(view(conversationFor(db, 's1').turns)).toEqual([
@@ -257,29 +255,11 @@ describe('conversationFor', () => {
     ]);
   });
 
-  // The other half of the same fix: turn.completed splits BETWEEN turns, and
-  // must not also split WITHIN one. Narration ahead of a turn's own final
-  // reply still collapses into that turn's steps exactly as before.
-  it('still collapses narration within one agent turn into steps, with turn.completed marking only where the turn ends', () => {
-    const db = openDb(':memory:');
-    insertEvents(db, [
-      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'first ask'),
-      turnEvent('s1', '2026-09-01T00:00:01Z', 'prose', 'Reading the file.'),
-      turnEvent('s1', '2026-09-01T00:00:02Z', 'prose', 'Running tests.'),
-      turnEvent('s1', '2026-09-01T00:00:03Z', 'prose', 'All green.'),
-      turnCompletedEvent('s1', '2026-09-01T00:00:04Z'),
-    ]);
-
-    expect(view(conversationFor(db, 's1').turns)).toEqual([
-      'you: first ask',
-      'agent: All green. [Reading the file.|Running tests.]',
-    ]);
-  });
-
-  // turn.completed is a pure boundary marker with no text of its own. One
-  // with nothing after it -- or a stray duplicate, which real transcripts do
-  // produce -- must not manufacture an empty assistant turn.
-  it('does not produce an empty turn for a turn.completed with no prose after it', () => {
+  // turn.completed rows are not part of this query at all any more (see
+  // conversation.ts's no-collapse comment). A stray one -- or a duplicate,
+  // which real transcripts do produce -- sitting after the last reply with
+  // nothing following it must not surface as a turn of any kind.
+  it('does not produce a turn for trailing turn.completed rows', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'ask'),
@@ -291,12 +271,14 @@ describe('conversationFor', () => {
     expect(view(conversationFor(db, 's1').turns)).toEqual(['you: ask', 'agent: reply']);
   });
 
-  // Extends the "never splits a reply from its steps" case above to several
-  // agent turns inside one stretch: a page boundary (always cut at a prompt
-  // row -- see the doc comment on conversationFor) must still carry every
-  // reply the stretch produced, however many turn.completed boundaries fall
-  // inside it, and none of them may leak onto the neighbouring page.
-  it('keeps every reply from a stretch on the same page as its prompt, across multiple turn.completed boundaries', () => {
+  // Extends the "never splits a stretch" case above: a page boundary
+  // (always cut at a prompt row -- see the doc comment on conversationFor)
+  // must still carry every reply a stretch produced, none leaking onto the
+  // neighbouring page. The turn.completed rows interspersed here are
+  // exactly the shape a real Claude transcript has -- one after nearly
+  // every prose row -- kept to prove they change nothing about the
+  // grouping or the paging, not because they still do anything.
+  it('keeps every reply from a stretch on the same page as its prompt', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'p1'),
