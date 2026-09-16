@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   sendLiteral, sendKeyName, hasSession, capturePane, pipePane, paneSize, TMUX_NAME,
-  listSessionNames, setSessionOption, loadBuffer, pasteBuffer, TMUX_BUFFER, type KeyName,
+  listSessionNames, setSessionOption, loadBuffer, pasteBuffer, deleteBuffer, TMUX_BUFFER,
+  type KeyName,
 } from '../../src/main/tmux.ts';
 
 function spy() {
@@ -184,8 +185,8 @@ describe('bracketed paste', () => {
   it('loads the text on stdin, never in an argv a ps on this machine could read', () => {
     const calls: Array<{ args: string[]; input?: string }> = [];
     const exec = (args: string[], input?: string) => { calls.push({ args, input }); return { ok: true as const, stdout: '' }; };
-    expect(loadBuffer('llmws-claude-abc', 'llmws-paste', 'line one\nline two', exec).ok).toBe(true);
-    expect(calls[0]!.args).toEqual(['load-buffer', '-b', 'llmws-paste', '-']);
+    expect(loadBuffer('llmws-claude-abc', 'llmws-p123-1', 'line one\nline two', exec).ok).toBe(true);
+    expect(calls[0]!.args).toEqual(['load-buffer', '-b', 'llmws-p123-1', '-']);
     expect(calls[0]!.input).toBe('line one\nline two');
     expect(calls[0]!.args.join(' ')).not.toContain('line one');
   });
@@ -193,22 +194,45 @@ describe('bracketed paste', () => {
   it('pastes with -p (bracketed) and -d (delete the buffer), at this session\'s pane', () => {
     const calls: string[][] = [];
     const exec = (args: string[]) => { calls.push(args); return { ok: true as const, stdout: '' }; };
-    expect(pasteBuffer('llmws-claude-abc', 'llmws-paste', exec).ok).toBe(true);
-    expect(calls[0]).toEqual(['paste-buffer', '-p', '-d', '-b', 'llmws-paste', '-t', '=llmws-claude-abc:']);
+    expect(pasteBuffer('llmws-claude-abc', 'llmws-p123-1', exec).ok).toBe(true);
+    expect(calls[0]).toEqual(['paste-buffer', '-p', '-d', '-b', 'llmws-p123-1', '-t', '=llmws-claude-abc:']);
+  });
+
+  // Cleanup for the paste-failure path. Server-scoped, so it needs no
+  // session target -- and it must still be guarded, because the buffer name
+  // is the one thing reaching tmux's grammar here.
+  it('deletes a buffer by name alone, with no session target', () => {
+    const calls: string[][] = [];
+    const exec = (args: string[]) => { calls.push(args); return { ok: true as const, stdout: '' }; };
+    expect(deleteBuffer('llmws-p123-1', exec).ok).toBe(true);
+    expect(calls[0]).toEqual(['delete-buffer', '-b', 'llmws-p123-1']);
   });
 
   it('refuses a session name this app did not generate, same guard as every other command here', () => {
-    expect(() => loadBuffer('someone-elses', 'llmws-paste', 'x')).toThrow(/refusing a tmux name/);
-    expect(() => pasteBuffer('someone-elses', 'llmws-paste')).toThrow(/refusing a tmux name/);
+    expect(() => loadBuffer('someone-elses', 'llmws-p123-1', 'x')).toThrow(/refusing a tmux name/);
+    expect(() => pasteBuffer('someone-elses', 'llmws-p123-1')).toThrow(/refusing a tmux name/);
   });
 
   // The buffer name reaches tmux's own target grammar, so it gets the same
   // treatment the session name does: anchored, and app-generated. Nothing
-  // derived from the message text may ever get there.
+  // derived from the message text may ever get there. The shape is two
+  // fixed literal segments around digits only -- no letters, so nothing
+  // resembling a word a caller might pass by mistake fits, and no shell
+  // metacharacter, ':' or '.' can appear at all.
   it('refuses a buffer name this app did not generate', () => {
     expect(() => loadBuffer('llmws-claude-abc', 'default', 'x')).toThrow(/refusing a tmux buffer name/);
     expect(() => pasteBuffer('llmws-claude-abc', '../x', )).toThrow(/refusing a tmux buffer name/);
-    expect(TMUX_BUFFER.test('llmws-paste')).toBe(true);
+    expect(() => deleteBuffer('llmws-paste; rm -rf ~')).toThrow(/refusing a tmux buffer name/);
+    expect(TMUX_BUFFER.test('llmws-p123-1')).toBe(true);
+    expect(TMUX_BUFFER.test('llmws-p1-99999')).toBe(true);
+    // The old fixed name is no longer a legal buffer name -- a stale caller
+    // that still passes it fails loudly rather than sharing one buffer.
+    expect(TMUX_BUFFER.test('llmws-paste')).toBe(false);
     expect(TMUX_BUFFER.test('llmws-paste; rm -rf ~')).toBe(false);
+    expect(TMUX_BUFFER.test('../x')).toBe(false);
+    expect(TMUX_BUFFER.test('default')).toBe(false);
+    expect(TMUX_BUFFER.test('llmws-p123-1:0')).toBe(false);
+    expect(TMUX_BUFFER.test('llmws-p123-1.0')).toBe(false);
+    expect(TMUX_BUFFER.test('llmws-pa-1')).toBe(false);
   });
 });

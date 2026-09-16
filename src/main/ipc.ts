@@ -23,7 +23,7 @@ import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import {
-  sendLiteral, sendKeyName, capturePane, setSessionOption, loadBuffer, pasteBuffer,
+  sendLiteral, sendKeyName, capturePane, setSessionOption, loadBuffer, pasteBuffer, deleteBuffer,
   type TmuxResult, type TmuxExec,
 } from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
@@ -722,11 +722,25 @@ type KeysDeps = {
   promptOpen?: (pid: number) => boolean;
 };
 
-/** The one buffer this app ever writes. A fixed literal, checked by
- *  tmux.ts's own TMUX_BUFFER before it becomes a tmux target -- never
- *  derived from the message, never per-session (each paste deletes the
- *  buffer as it lands, so there is nothing to collide over). */
-const PASTE_BUFFER = 'llmws-paste';
+/** Counter behind nextPasteBuffer, below. */
+let pasteBufferSeq = 0;
+
+/** A fresh buffer name for one send. Never a fixed literal, and this is a
+ *  correctness requirement rather than tidiness: tmux REPLACES a named
+ *  buffer instead of creating a second one, and the buffer namespace is
+ *  shared by every client of a tmux server. Two instances of this app on
+ *  one server (an orphaned dev build alongside a fresh one, which has
+ *  happened) would interleave as A.load, B.load, A.paste -- and A would
+ *  deliver B's text into A's session AND submit it, reporting success.
+ *
+ *  The pid separates instances; the counter separates sends within one.
+ *  Not random: there is nothing to make unguessable here, and a readable
+ *  name stays greppable in `tmux list-buffers`. Checked against
+ *  TMUX_BUFFER (tmux.ts) before it can become a tmux target. */
+function nextPasteBuffer(): string {
+  pasteBufferSeq += 1;
+  return `llmws-p${process.pid}-${pasteBufferSeq}`;
+}
 
 /** The renderer sends a pid and text, never a session name. Refusals are
  *  returned, not thrown: the card has to be able to say WHY nothing happened,
@@ -766,15 +780,34 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
 
   if (clean.text.includes('\n')) {
     // Bracketed paste (spec 2026-09-15-conversation-pane-design.md §3.4).
-    // Three calls, never concatenated: load the text into our own buffer,
-    // paste it as bracketed text and delete the buffer in the same command,
-    // then send Enter as a key name our code chose. A failed load or paste
-    // refuses BEFORE any Enter goes out, so a half-delivered message is
-    // never submitted.
-    const loaded = loadBuffer(name, PASTE_BUFFER, clean.text, deps.send);
-    if (!loaded.ok) return { status: 'refused', reason: 'session_gone' };
-    const pasted = pasteBuffer(name, PASTE_BUFFER, deps.send);
-    if (!pasted.ok) return { status: 'refused', reason: 'session_gone' };
+    // Three calls, never concatenated: load the text into a buffer of our
+    // own, paste it as bracketed text and delete the buffer in the same
+    // command, then send Enter as a key name our code chose. A failed load
+    // or paste refuses BEFORE any Enter goes out, so a half-delivered
+    // message is never submitted.
+    //
+    // What makes the embedded newlines safe to send at all is that the
+    // pasted text cannot break out of its own brackets -- which holds only
+    // because sanitizeOutbound stripped ESC and 8-bit CSI above. See the
+    // doc comment on pasteBuffer (src/main/tmux.ts) for the full argument.
+    const buffer = nextPasteBuffer();
+    const loaded = loadBuffer(name, buffer, clean.text, deps.send);
+    if (!loaded.ok) {
+      // The user is shown a generic "That session has ended."; the actual
+      // tmux error would otherwise be discarded entirely.
+      console.error('tmux load-buffer failed:', loaded.error);
+      return { status: 'refused', reason: 'session_gone' };
+    }
+    const pasted = pasteBuffer(name, buffer, deps.send);
+    if (!pasted.ok) {
+      console.error('tmux paste-buffer failed:', pasted.error);
+      // -d only deletes the buffer on a paste that happened. Buffer names
+      // are per-send, so nothing later overwrites this one and it would sit
+      // on the tmux server for as long as the server lives.
+      const dropped = deleteBuffer(buffer, deps.send);
+      if (!dropped.ok) console.error('tmux delete-buffer failed:', dropped.error);
+      return { status: 'refused', reason: 'session_gone' };
+    }
     sendKeyName(name, 'Enter', deps.send);
     return { status: 'sent' };
   }

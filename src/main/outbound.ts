@@ -13,6 +13,22 @@ export type OutboundResult = { ok: true; text: string } | { ok: false; reason: O
 // Tab (\t) is deliberately absent -- it is ordinary typed input. Newlines are
 // handled separately and explicitly, before stripping, so they refuse loudly
 // rather than vanishing.
+//
+// THESE TWO ARE LOAD-BEARING FOR THE BRACKETED-PASTE PATH, not just hygiene.
+// Do not narrow them without reading this.
+//
+// sendKeysFor (src/main/ipc.ts) delivers multi-line text by pasting it
+// between bracketed-paste markers, and the receiving program treats
+// everything up to the END marker as inert text. That is the entire reason
+// newlines may be allowed on that path -- and it holds only while a message
+// cannot write the end marker itself. The marker is ESC [ 2 0 1 ~, and the
+// only bytes that can begin one are ESC (\x1b, inside the \x0e-\x1f range
+// below) and the 8-bit CSI (\x9b, inside C1). Stop stripping either and a
+// message body containing ESC [ 2 0 1 ~ closes the paste early, after which
+// its remainder reaches the session as live keystrokes.
+//
+// Pinned by "strips the escape bytes a message would need to close its own
+// bracketed paste" in tests/main/outbound.test.ts.
 const C0_EXCEPT_TAB_NEWLINE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 const C1_CONTROLS = /[\x80-\x9f]/g;
 const NEWLINE = /[\r\n]/;

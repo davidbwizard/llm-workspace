@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
-import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop, mergeNewest } from '../../src/renderer/components/ConversationView.tsx';
+import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop, mergeNewest, clearDrafts } from '../../src/renderer/components/ConversationView.tsx';
 
 const turns = [
   { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests', steps: [] },
@@ -25,6 +25,13 @@ function renderConv(props: Partial<React.ComponentProps<typeof ConversationView>
 }
 
 beforeEach(() => {
+  // Drafts are module state in the component, kept there deliberately so
+  // they survive unmount (see the `drafts` comment there). That also means
+  // they survive between tests: without this reset, a test that types
+  // without sending leaves its text in the next test's box, which is a
+  // demonstrated failure, not a theoretical one -- running the Shift+Enter
+  // test and the empty-box test together makes the latter send.
+  clearDrafts();
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
     conversation: async () => ({ turns, nextCursor: null }),
   };
@@ -1213,6 +1220,77 @@ describe('ConversationView -- the message box', () => {
     await waitFor(() => expect(screen.getByText(/showing a choice/i)).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: /open terminal/i }));
     expect(onOpenTerminal).toHaveBeenCalled();
+  });
+
+  // The draft outliving the component is the whole point, not a nicety.
+  // The box's only remedy for prompt_open is Open Terminal, and MainPane
+  // renders the conversation as a ternary branch -- so following the UI's
+  // own instruction UNMOUNTS the component holding what was typed. Without
+  // a store outside the component, answering the choice and coming back
+  // loses the message.
+  it('keeps the draft across an unmount, so Open Terminal cannot destroy what was typed', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const first = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'the message I do not want to lose' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByText(/showing a choice/i)).toBeTruthy());
+    first.unmount();
+
+    renderConv();
+    const again = await screen.findByLabelText('Message this session');
+    expect((again as HTMLTextAreaElement).value).toBe('the message I do not want to lose');
+  });
+
+  it('drops the draft once the message actually goes out', async () => {
+    withSendKeys({ status: 'sent' });
+    const first = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(''));
+    first.unmount();
+
+    renderConv();
+    const again = await screen.findByLabelText('Message this session');
+    expect((again as HTMLTextAreaElement).value).toBe('');
+  });
+
+  // Drafts are per-pid. A store keyed wrongly would leak one session's
+  // half-written message into another session's box.
+  it('keeps each session\'s draft to itself', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const first = renderConv({ pid: 111 });
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'meant for 111' } });
+    first.unmount();
+
+    renderConv({ pid: 222 });
+    const other = await screen.findByLabelText('Message this session');
+    expect((other as HTMLTextAreaElement).value).toBe('');
+  });
+
+  // The catch in send() exists precisely so a rejected sendKeys cannot
+  // leave the box looking like the message went out. Without a test, the
+  // thing it protects against is exactly what a refactor would reintroduce.
+  it('surfaces a rejected send instead of letting the box look like it went out', async () => {
+    const sendKeys = vi.fn(async () => { throw new Error('bridge gone'); });
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns, nextCursor: null }),
+      sendKeys,
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'commit it' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(screen.getByText('Could not reach the app.')).toBeTruthy());
+    // Not cleared: a cleared box is what "it went out" looks like.
+    expect((box as HTMLTextAreaElement).value).toBe('commit it');
+    // And the box is usable again rather than stuck disabled mid-send.
+    expect((box as HTMLTextAreaElement).disabled).toBe(false);
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 
   // Spec §7.1: never hidden. A box that vanishes reads as a missing

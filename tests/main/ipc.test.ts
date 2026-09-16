@@ -938,9 +938,14 @@ describe('session:keys', () => {
       send: (args: string[], input?: string) => { calls.push({ args, input }); return { ok: true, stdout: '' }; },
     });
     expect(r).toEqual({ status: 'sent' });
+    // The buffer name is per-send (pid + counter), so it is captured from
+    // the load call rather than hardcoded -- and the paste MUST name that
+    // same buffer, which is the property that actually matters.
+    const buffer = calls[0]!.args[2]!;
+    expect(buffer).toMatch(/^llmws-p\d+-\d+$/);
     expect(calls.map(c => c.args)).toEqual([
-      ['load-buffer', '-b', 'llmws-paste', '-'],
-      ['paste-buffer', '-p', '-d', '-b', 'llmws-paste', '-t', '=llmws-claude-abc:'],
+      ['load-buffer', '-b', buffer, '-'],
+      ['paste-buffer', '-p', '-d', '-b', buffer, '-t', '=llmws-claude-abc:'],
       ['send-keys', '-t', '=llmws-claude-abc:', 'Enter'],
     ]);
     expect(calls[0]!.input).toBe('line one\nline two');
@@ -969,6 +974,7 @@ describe('session:keys', () => {
   it('refuses, and sends no Enter, when the buffer cannot be loaded', () => {
     registerSession(4821, 'llmws-claude-abc');
     const calls: string[][] = [];
+    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
     const r = sendKeysFor(4821, 'a\nb', {
       has: () => true,
       capture: () => ({ ok: true, stdout: '' }),
@@ -978,7 +984,58 @@ describe('session:keys', () => {
       },
     });
     expect(r).toEqual({ status: 'refused', reason: 'session_gone' });
-    expect(calls).toEqual([['load-buffer', '-b', 'llmws-paste', '-']]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.slice(0, 2)).toEqual(['load-buffer', '-b']);
+    // The real tmux error must not be swallowed behind the generic
+    // "That session has ended." the user is shown.
+    expect(errs).toHaveBeenCalledWith('tmux load-buffer failed:', 'no server');
+    errs.mockRestore();
+  });
+
+  // A failed paste leaves the loaded buffer behind. With a per-send buffer
+  // name nothing later overwrites it, so it would accumulate on the tmux
+  // server for as long as the server lives -- hence an explicit delete.
+  it('deletes the buffer, logs the real error, and sends no Enter when the paste fails', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const calls: string[][] = [];
+    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: (args: string[]) => {
+        calls.push(args);
+        return args[0] === 'paste-buffer' ? { ok: false, error: 'no pane' } : { ok: true, stdout: '' };
+      },
+    });
+    expect(r).toEqual({ status: 'refused', reason: 'session_gone' });
+    const buffer = calls[0]![2]!;
+    expect(calls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'delete-buffer']);
+    expect(calls[2]).toEqual(['delete-buffer', '-b', buffer]);
+    expect(errs).toHaveBeenCalledWith('tmux paste-buffer failed:', 'no pane');
+    errs.mockRestore();
+  });
+
+  // Critical: two app instances sharing one tmux server. tmux REPLACES a
+  // named buffer rather than creating a second, so a fixed name lets
+  // A.load, B.load, A.paste deliver B's text into A's session and submit
+  // it. Every send therefore gets its own name.
+  it('never reuses a buffer name between sends, so two instances cannot cross messages', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const names: string[] = [];
+    const deps = {
+      has: () => true,
+      capture: () => ({ ok: true as const, stdout: '' }),
+      send: (args: string[]) => {
+        if (args[0] === 'load-buffer') names.push(args[2]!);
+        return { ok: true as const, stdout: '' };
+      },
+    };
+    sendKeysFor(4821, 'a\nb', deps);
+    sendKeysFor(4821, 'c\nd', deps);
+    expect(names).toHaveLength(2);
+    expect(names[0]).not.toBe(names[1]);
+    // The pid segment is what separates two app instances from each other.
+    for (const n of names) expect(n).toBe(`llmws-p${process.pid}-${n.split('-')[2]}`);
   });
 
   // The choice guard is not path-specific: a multi-line message must be

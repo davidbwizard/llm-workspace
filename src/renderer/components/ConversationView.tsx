@@ -157,6 +157,31 @@ export function mergeNewest(current: ConversationTurn[], incoming: ConversationT
   return merged;
 }
 
+/** Half-written messages, keyed by pid, deliberately OUTSIDE the component.
+ *
+ *  Outliving the component is the entire purpose, not a side effect. The
+ *  box's only offered remedy for a prompt_open refusal is Open Terminal,
+ *  and MainPane renders ConversationView as a ternary branch against the
+ *  Terminal view -- so taking the UI's own advice unmounts the component
+ *  holding what was just typed. Kept in component state alone, answering
+ *  the choice and switching back would silently lose the message, which is
+ *  a worse outcome than the refusal it was trying to recover from.
+ *
+ *  Cleared on a successful send and on nothing else, so a draft also
+ *  survives an ordinary session switch. Bounded by the number of distinct
+ *  pids typed into in one run of the app, which is small and does not
+ *  outlive the window. */
+const drafts = new Map<number, string>();
+
+/** Empties the draft store. Exists for test isolation and has no production
+ *  caller: because `drafts` is module state rather than component state, it
+ *  survives unmount by design, which also means it survives from one test
+ *  to the next and would otherwise make tests order-dependent (a test that
+ *  types without sending would leave that text in the next test's box). */
+export function clearDrafts(): void {
+  drafts.clear();
+}
+
 /** The message box under the conversation (spec §3.4). Never hidden, only
  *  ever disabled with a reason: a box that vanishes reads as a missing
  *  feature, a disabled one reads as a state (spec §7.1, David's own
@@ -173,7 +198,11 @@ function MessageBox({ pid, tmux, onOpenTerminal }: {
   tmux: boolean;
   onOpenTerminal: () => void;
 }) {
-  const [text, setText] = useState('');
+  // Seeded from the draft store, so a remount (Open Terminal and back, or a
+  // session switch) restores what was typed rather than starting blank.
+  // ConversationView keys this component by pid, so the initialiser re-runs
+  // for the right session whenever the pid changes.
+  const [text, setText] = useState(() => (pid === null ? '' : drafts.get(pid) ?? ''));
   const [message, setMessage] = useState<string | null>(null);
   const [choiceOpen, setChoiceOpen] = useState(false);
   const [sending, setSending] = useState(false);
@@ -211,7 +240,9 @@ function MessageBox({ pid, tmux, onOpenTerminal }: {
     setChoiceOpen(false);
     try {
       const r: KeysResult | undefined = await window.fleet?.sendKeys(pid, text);
-      if (r?.status === 'sent') { setText(''); return; }
+      // Sent is the one outcome that discards the draft -- it is no longer
+      // a draft, it is in the session.
+      if (r?.status === 'sent') { setText(''); drafts.delete(pid); return; }
       // The text is deliberately KEPT on a refusal: the person can fix
       // whatever was wrong (answer the choice, reattach) and press Enter
       // again, rather than retyping what they already wrote.
@@ -240,7 +271,10 @@ function MessageBox({ pid, tmux, onOpenTerminal }: {
         value={text}
         disabled={disabledReason !== null || sending}
         placeholder={disabledReason ?? 'Message this session'}
-        onChange={e => setText(e.target.value)}
+        onChange={e => {
+          setText(e.target.value);
+          if (pid !== null) drafts.set(pid, e.target.value);
+        }}
         // Enter sends, with no confirmation, however long the message
         // (spec §7.2). Shift+Enter is the line break, which is what makes
         // a multi-line message typeable at all.
@@ -585,7 +619,11 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
       {missedLatest && (
         <button type="button" className="convjump" onClick={jumpToLatest}>Jump to latest</button>
       )}
-      <MessageBox pid={pid} tmux={tmux} onOpenTerminal={onOpenTerminal} />
+      {/* Keyed by pid so switching session remounts the box: its draft,
+          any standing refusal and the choice prompt all belong to the
+          session that produced them, and none should carry over to the
+          next one. */}
+      <MessageBox key={pid ?? 'none'} pid={pid} tmux={tmux} onOpenTerminal={onOpenTerminal} />
     </div>
   );
 }

@@ -12,9 +12,16 @@ export const TMUX_NAME = /^llmws-(claude|codex)-[A-Za-z0-9_-]{1,64}$/;
 
 /** Buffer names this app may touch. A buffer name reaches tmux's own target
  *  grammar the same way a session name does, so it gets the same treatment:
- *  anchored, and only ever a literal this code chose -- never anything
- *  derived from the message text. */
-export const TMUX_BUFFER = /^llmws-[a-z]{1,16}$/;
+ *  anchored, and only ever a name this code generated -- never anything
+ *  derived from the message text.
+ *
+ *  The shape is `llmws-p<process pid>-<counter>`: two fixed literal
+ *  segments around digits only. Deliberately tighter than a general
+ *  alphanumeric class -- with no letters, no ':' or '.' (tmux's own
+ *  window.pane target grammar) and no shell metacharacter able to appear at
+ *  all, the only strings that pass are ones ipc.ts's own generator
+ *  produces. */
+export const TMUX_BUFFER = /^llmws-p[0-9]{1,10}-[0-9]{1,10}$/;
 
 function defaultExec(args: string[], input?: string): TmuxResult {
   try {
@@ -210,11 +217,31 @@ export function loadBuffer(name: string, buffer: string, text: string, exec: Tmu
  *  Bracketed paste is the whole mechanism: the foreground program is told
  *  "this is pasted text", so Claude Code takes the embedded newlines as
  *  part of one message instead of submitting on each of them the way it
- *  would for typed ones (measured 2026-09-15). It executes nothing -- it is
- *  delivery, not interpretation -- which is why it is the one path where
- *  the outbound sanitiser's newline refusal can be relaxed. */
+ *  would for typed ones (measured 2026-09-15). It is delivery, not
+ *  interpretation, which is why it is the one path where the outbound
+ *  sanitiser's newline refusal can be relaxed.
+ *
+ *  That relaxation is safe for a narrower and more fragile reason than
+ *  "a paste executes nothing", and it is worth being precise about: the
+ *  text between the markers is inert ONLY while the message cannot write
+ *  the END marker itself. It cannot, because sanitizeOutbound
+ *  (src/main/outbound.ts) strips ESC and 8-bit CSI, the only two bytes that
+ *  can begin one. Relax that stripping and a message containing
+ *  ESC [ 2 0 1 ~ closes the paste early, and its remainder arrives as live
+ *  keystrokes. See the "strips the escape bytes" test in
+ *  tests/main/outbound.test.ts. */
 export function pasteBuffer(name: string, buffer: string, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
   guardBuffer(buffer);
   return exec(['paste-buffer', '-p', '-d', '-b', buffer, '-t', target(name)]);
+}
+
+/** Drops a buffer this app loaded. Only needed when a paste FAILED -- a
+ *  successful paste already deletes it via -d. Server-scoped, so unlike
+ *  every other command here it takes no session target at all; the buffer
+ *  name is the only thing reaching tmux's grammar, and it is still
+ *  guarded. */
+export function deleteBuffer(buffer: string, exec: TmuxExec = defaultExec): TmuxResult {
+  guardBuffer(buffer);
+  return exec(['delete-buffer', '-b', buffer]);
 }
