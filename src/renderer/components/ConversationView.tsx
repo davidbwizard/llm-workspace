@@ -190,6 +190,11 @@ export function ConversationView({ sessionId, match, provider, events }: {
   events: number | null;
 }) {
   const [page, setPage] = useState<ConversationPage | null>(null);
+  /** True once the mount fetch (below) has rejected. This is the one call
+   *  site whose failure the reader must be told about: page stays null on
+   *  rejection, and the render's page===null branch reads that as still
+   *  loading -- a lie once nothing is loading and nothing ever will. */
+  const [loadFailed, setLoadFailed] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   /** True once new content has landed at the bottom while the reader was
    *  scrolled away from it -- the Jump to latest button's whole condition
@@ -236,6 +241,7 @@ export function ConversationView({ sessionId, match, provider, events }: {
     if (sessionId === null) return; // nothing to fetch -- see the doc comment above.
     let alive = true;
     setPage(null);
+    setLoadFailed(false);
     setMissedLatest(false);
     loadingMoreRef.current = false;
     setLoadingMore(false);
@@ -246,6 +252,14 @@ export function ConversationView({ sessionId, match, provider, events }: {
     seenEventsRef.current = null;
     void window.fleet?.conversation(sessionId).then(p => {
       if (alive) setPage(p);
+    }).catch(err => {
+      // Logged unconditionally -- an old fetch failing is real information
+      // even once the reader has moved on and it can no longer act on the
+      // screen. Only the state change below is scoped to `alive`, so a
+      // slow rejection for a session the reader has since left cannot put
+      // the NEW session's pane into an error state.
+      console.error('Conversation mount fetch failed:', err);
+      if (alive) setLoadFailed(true);
     });
     return () => { alive = false; };
   }, [sessionId]);
@@ -269,6 +283,18 @@ export function ConversationView({ sessionId, match, provider, events }: {
       setPage(current => current === null
         ? current
         : { turns: mergeNewest(current.turns, next.turns), nextCursor: current.nextCursor });
+    }).catch(err => {
+      // A failed background refresh must never destroy content the reader
+      // is looking at -- no error UI, no clearing the pane, and no retry
+      // timer or seenEventsRef rollback: seenEventsRef was already updated
+      // above, before the fetch, so if the session goes idle immediately
+      // after this failure the pane stays stale until the next events
+      // change. That is accepted, not a bug to engineer around. Guarded by
+      // `alive` like the `.then()` above, so a rejection for a session the
+      // reader has since left is not even logged against the session now
+      // on screen.
+      if (!alive) return;
+      console.error('Conversation refresh fetch failed:', err);
     });
     return () => { alive = false; };
   }, [sessionId, events]);
@@ -331,6 +357,16 @@ export function ConversationView({ sessionId, match, provider, events }: {
       setPage(current => current === null
         ? current
         : { turns: [...next.turns, ...current.turns], nextCursor: next.nextCursor });
+    }).catch(err => {
+      // The pane still holds every turn it had; only the older page is
+      // missing. No error UI, no clearing the pane, and no disabling
+      // further attempts -- the .finally() below already clears
+      // loadingMoreRef, so scrolling near the top again re-fires loadMore
+      // and this self-heals on the reader's next scroll. Logged
+      // unconditionally, unlike the `.then()` above: this catch never
+      // touches state, so the sessionIdRef staleness check that guards the
+      // `.then()` does not apply here.
+      console.error('Conversation load-more fetch failed:', err);
     }).finally(() => {
       loadingMoreRef.current = false;
       setLoadingMore(false);
@@ -367,6 +403,8 @@ export function ConversationView({ sessionId, match, provider, events }: {
       : match === 'unknown'
         ? note(`No transcript has been found for this process yet -- which is also what a session looks like right after it launches, before its first events are written and ingested.`)
         : note(`This process's transcript can't be identified.`);
+  } else if (loadFailed) {
+    body = note(`This session's conversation could not be loaded. Reopening the session will try again.`);
   } else if (page === null) {
     body = note('Loading…');
   } else if (page.turns.length === 0) {

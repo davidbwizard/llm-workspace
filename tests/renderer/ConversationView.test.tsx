@@ -1,5 +1,5 @@
 import React from 'react';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop, mergeNewest } from '../../src/renderer/components/ConversationView.tsx';
 
@@ -269,6 +269,123 @@ describe('ConversationView', () => {
     const said = [...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent);
     expect(said).toEqual(['session B turn']);
     expect(screen.queryByText(/beginning of this session/i)).toBeNull();
+  });
+
+  // Out-of-plan fix, task-catch-brief.md: a rejected mount fetch used to
+  // leave `page` at null forever, which the render's page===null branch
+  // reads as "Loading..." -- a lie, since nothing is loading and nothing
+  // ever will. This is the one call site where a rejection must become
+  // visible UI, not just a log line.
+  it('shows an error note instead of "Loading..." forever when the mount fetch rejects', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => { throw new Error('fetch failed'); },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderConv();
+    await waitFor(() => expect(screen.getByText(/could not be loaded/i)).toBeTruthy());
+    expect(screen.queryByText(/loading/i)).toBeNull();
+    expect(consoleError).toHaveBeenCalledWith('Conversation mount fetch failed:', expect.any(Error));
+    consoleError.mockRestore();
+  });
+
+  // The alive guard: a slow mount fetch for a session the reader has
+  // already left must not put the NEW session's pane into an error state.
+  // Same controlled-promise technique as the stale-older-page-fetch
+  // regression above, applied to the mount fetch instead of loadMore's.
+  it('does not leak an error onto the newly-selected session when an old mount fetch rejects after the switch', async () => {
+    let rejectA: (err: unknown) => void = () => {};
+    const pendingA = new Promise((_resolve, reject) => { rejectA = reject; });
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string) => {
+        if (sessionId === 's1') return pendingA; // s1's mount fetch, held pending
+        if (sessionId === 's2') {
+          return {
+            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn', steps: [] }],
+            nextCursor: null,
+          };
+        }
+        throw new Error(`unexpected fetch: ${sessionId}`);
+      },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { rerender } = renderConv({ sessionId: 's1' });
+
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null} />);
+    await waitFor(() => expect(screen.getByText('session B turn')).toBeTruthy());
+
+    // Let session A's mount fetch reject well after session B has landed.
+    await act(async () => {
+      rejectA(new Error('s1 fetch failed'));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+    expect(screen.getByText('session B turn')).toBeTruthy();
+    // Still logged -- an old fetch failing is real information even when
+    // it can no longer act on the screen -- unlike the state it's guarded
+    // out of, the log itself isn't scoped to "alive".
+    expect(consoleError).toHaveBeenCalledWith('Conversation mount fetch failed:', expect.any(Error));
+    consoleError.mockRestore();
+  });
+
+  it('clears a previous session\'s error once the reader switches to a session that loads fine', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string) => {
+        if (sessionId === 's1') throw new Error('s1 fetch failed');
+        return { turns, nextCursor: null };
+      },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { rerender } = renderConv({ sessionId: 's1' });
+    await waitFor(() => expect(screen.getByText(/could not be loaded/i)).toBeTruthy());
+
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null} />);
+    await waitFor(() => expect(screen.getByText('run the farm tests')).toBeTruthy());
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  // loadMore's existing .finally() clears loadingMoreRef and setLoadingMore
+  // regardless of outcome -- that's what makes this path self-heal on the
+  // reader's next scroll, so the retry below must succeed with no other
+  // recovery logic.
+  it('keeps its turns and clears the loading indicator when loadMore rejects, then retries on the next scroll', async () => {
+    const olderCursor = { ts: '2026-09-12T09:59:00Z', id: 0 };
+    const calls: Array<unknown[]> = [];
+    let attempt = 0;
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        if (cursor === undefined) return { turns, nextCursor: olderCursor };
+        attempt += 1;
+        if (attempt === 1) throw new Error('network blip');
+        return {
+          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn', steps: [] }],
+          nextCursor: null,
+        };
+      },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    const scroller = container.querySelector('.conv')!;
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } });
+
+    await waitFor(() => expect(consoleError).toHaveBeenCalledWith(
+      'Conversation load-more fetch failed:', expect.any(Error)));
+    await waitFor(() => expect(screen.queryByText(/loading more/i)).toBeNull());
+    expect([...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent))
+      .toEqual(['run the farm tests', 'All green. Want me to commit?']);
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+
+    // Retry: scrolling near the top again fires another fetch, proving
+    // loadingMoreRef was cleared by .finally() despite the rejection.
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } });
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
+    expect(calls).toEqual([['s1', undefined], ['s1', olderCursor], ['s1', olderCursor]]);
+
+    consoleError.mockRestore();
   });
 
   it('renders a compact human timestamp on each turn', async () => {
@@ -736,6 +853,34 @@ describe('ConversationView -- live refresh from the events count', () => {
     // established, not from the newest page's cursor the refetch carried.
     fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
     await waitFor(() => expect(calls.at(-1)).toEqual(['s1', olderCursor]));
+  });
+
+  // seenEventsRef is updated BEFORE the fetch fires (so a rejection still
+  // consumes that events value and a later events bump can refetch), which
+  // is exactly why a failed background refresh must never destroy what the
+  // pane already has -- there's no error UI here, only the existing turns.
+  it('keeps its existing turns unchanged and shows no error note when the refetch rejects', async () => {
+    let call = 0;
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => {
+        call += 1;
+        if (call === 1) return first;
+        throw new Error('refresh blip');
+      },
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container, rerender } = render(<ConversationView sessionId="s1" provider="claude" events={12} />);
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    rerender(<ConversationView sessionId="s1" provider="claude" events={13} />);
+    await waitFor(() => expect(consoleError).toHaveBeenCalledWith(
+      'Conversation refresh fetch failed:', expect.any(Error)));
+
+    expect([...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent))
+      .toEqual(['go on then']);
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+
+    consoleError.mockRestore();
   });
 
   // Task 2 built the sticky bottom; this is the first task that can
