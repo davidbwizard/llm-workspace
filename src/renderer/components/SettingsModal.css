@@ -9,7 +9,7 @@
   color:var(--ink); max-width:min(480px,92vw); }
 .settingsdlg::backdrop { background:rgb(0 0 0 / 46%); }
 .settingspanel { display:flex; flex-direction:column; gap:20px;
-  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
   box-shadow:var(--shadow-pop); padding:20px 22px 18px;
   /* The modal's own scrolling stays inside it: overscroll-behavior stops a
      wheel that reaches this panel's end from chaining out to whatever is
@@ -22,7 +22,7 @@
    glyph inside is aria-hidden rather than announced on top of it. */
 .settingsclose { margin-left:auto; width:26px; height:26px; display:inline-flex;
   align-items:center; justify-content:center; font-size:17px; line-height:1;
-  color:var(--muted); background:none; border:0; border-radius:var(--r-sm); padding:0; cursor:pointer; }
+  color:var(--muted); background:none; border:0; border-radius:6px; padding:0; cursor:pointer; }
 .settingsclose:hover { color:var(--ink); background:var(--raised); }
 
 /* One labelled group of controls (General / Sessions / Conversation). */
@@ -40,7 +40,7 @@
    muted -- aria-pressed carries the same state for assistive tech, since a
    plain colour change is not itself an accessible signal. */
 .settingsseg { display:flex; width:100%; border:1px solid var(--line);
-  border-radius:999px; overflow:hidden; }
+  border-radius:var(--r-sm); overflow:hidden; }
 .settingssegbtn { flex:1; min-width:0; font-family:var(--f-mono); font-size:11px;
   color:var(--muted); background:transparent; border:0; padding:8px 6px; cursor:pointer;
   text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -55,7 +55,7 @@
 .settingsstyles { display:flex; gap:10px; }
 .settingsstylecard { flex:1 1 0; min-width:0; display:flex; flex-direction:column; gap:10px;
   text-align:left; background:var(--ground); border:1px solid var(--line);
-  border-radius:var(--r-md); padding:12px; cursor:pointer; }
+  border-radius:var(--r-sm); padding:12px; cursor:pointer; }
 .settingsstylecard:hover { border-color:var(--line-soft); }
 .settingsstylecard[aria-pressed="true"] { border-color:var(--accent); }
 .settingsstyletitle { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;
@@ -87,7 +87,7 @@
    its own class names, since this file's classes must not collide with it. */
 .settingsprev { display:flex; flex-direction:column; gap:12px; font-size:var(--prev-size,16px);
   line-height:1.5; background:var(--ground); border:1px solid var(--line);
-  border-radius:var(--r-md); padding:12px 14px; }
+  border-radius:var(--r-sm); padding:12px 14px; }
 .settingsprevturn { display:block; }
 .settingsprevturn-assistant { border-left:3px solid var(--accent); padding-left:11px; }
 .settingsprevmeta { display:flex; align-items:center; gap:8px; margin:0 0 4px; }
@@ -108,7 +108,7 @@
 .settingsfoot { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .settingscaption { margin:0; font-size:11px; color:var(--muted); }
 .settingsdone { font-family:var(--f-mono); font-size:11px; font-weight:600; color:var(--ground);
-  background:var(--accent); border:0; border-radius:6px; padding:6px 16px; cursor:pointer; }
+  background:var(--accent); border:0; border-radius:var(--r-sm); padding:6px 16px; cursor:pointer; }
 
 /* The background scroll lock (SettingsModal.tsx's LOCK_CLASS). Body's own
    overflow does nothing here -- this app's scrolling lives in these three
