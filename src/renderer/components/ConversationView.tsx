@@ -574,27 +574,40 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     return () => { alive = false; };
   }, [sessionId, events]);
 
-  /** All scroll bookkeeping, in a LAYOUT effect so it runs before the
-   *  browser paints: landing at the bottom or restoring a prepend in a
-   *  plain effect would show one frame at the wrong offset first.
+  /** Scroll bookkeeping for CONTENT changes -- new turns landing, or an
+   *  older page prepended -- keyed on `page` alone, in a LAYOUT effect so it
+   *  runs before the browser paints: landing at the bottom or restoring a
+   *  prepend in a plain effect would show one frame at the wrong offset
+   *  first.
    *
    *  jsdom computes no layout, so none of the arithmetic here is asserted
    *  through the DOM -- nearBottom and restoredScrollTop above carry the
    *  tests, and this effect is the (deliberately dull) wiring between them
    *  and a real element.
    *
-   *  KNOWN LIMITATION -- changing settings.textSize or settings.messageStyle
-   *  (read below, where --conv-size and data-style are set on the scroller)
-   *  re-flows every rendered message without re-running this effect, so a
-   *  reader parked at the newest message can be scrolled off it with no
-   *  Jump to latest offered. Adding those settings to this effect's
-   *  dependency array is a NO-OP, not a fix: the body still runs against
-   *  the same `page`, `pending` is still null, `landedRef.current` is
-   *  already true, and lastTurnKey(page.turns) is unchanged, so
-   *  grewAtBottom is false and the effect returns having done nothing --
-   *  someone will try exactly that, see no change, and may leave dead
-   *  dependencies behind. This is deliberately left unfixed pending the
-   *  user's own eyes-on of the rendered pane, not overlooked. */
+   *  KNOWN LIMITATION -- this effect does NOT own all scroll bookkeeping:
+   *  it fires only on a content change ([page]) and never on a REFLOW.
+   *  Changing settings.textSize or settings.messageStyle (read below, where
+   *  --conv-size and data-style are set on the scroller) re-flows every
+   *  rendered message without re-running this effect at all, so a reader
+   *  parked at the newest message can be scrolled off it with no Jump to
+   *  latest offered. Adding those settings to THIS effect's dependency
+   *  array is a NO-OP, not a fix: the body would still run against the same
+   *  `page`, `pending` would still be null, `landedRef.current` is already
+   *  true, and lastTurnKey(page.turns) is unchanged, so grewAtBottom is
+   *  false and the effect returns having done nothing -- someone will try
+   *  exactly that, see no change, and may leave dead dependencies behind.
+   *
+   *  The real fix is a SEPARATE useLayoutEffect keyed on
+   *  [settings.textSize, settings.messageStyle] that sets
+   *  el.scrollTop = el.scrollHeight ONLY when stickyRef.current is true --
+   *  about five lines. It must be a layout effect so it runs before paint,
+   *  and the stickyRef guard is essential: unguarded, it would yank a
+   *  reader who had deliberately scrolled up, which is a worse bug than the
+   *  one it fixes.
+   *
+   *  This is deliberately left unfixed pending the user's own eyes-on of
+   *  the rendered pane, not overlooked. */
   useLayoutEffect(() => {
     const el = scrollerRef.current;
     if (el === null || page === null) return;
