@@ -52,7 +52,9 @@ export type ConversationPage = {
 type Row = { id: number; ts: string; kind: string; text: string | null };
 
 /** One stretch of the main thread: a human prompt (absent for prose recorded
- *  before the first prompt) and the prose that followed it, oldest first. */
+ *  before the first prompt, or for an agent turn that began right after a
+ *  turn.completed rather than after a new prompt) and the prose that
+ *  followed it, oldest first. */
 type Stretch = { prompt: Row | null; prose: Row[] };
 
 /** Served by events_session_ts(session_id, ts) -- src/store/schema.ts.
@@ -63,9 +65,16 @@ type Stretch = { prompt: Row | null; prose: Row[] };
  *    for Codex too: its parser sets agent_id only inside a subagent's own
  *    rollout (real index: 3,406 of 3,459 Codex prompts and 48,342 of 48,529
  *    Codex prose rows have agent_id NULL).
- *  - Each stretch between human prompts collapses to ONE assistant turn: the
- *    last prose before the next prompt is the reply, earlier prose in that
- *    stretch becomes its `steps` (narration emitted before tool calls).
+ *  - Each stretch collapses to ONE assistant turn: the last prose before the
+ *    stretch's boundary is the reply, earlier prose in that stretch becomes
+ *    its `steps` (narration emitted before tool calls). A stretch is bounded
+ *    by a human prompt (opens the next stretch attached to that prompt) OR a
+ *    turn.completed (opens the next stretch with no prompt of its own) --
+ *    an agent can reply many times between two human prompts (background
+ *    task notifications, subagent reports, other wake-ups), each its own
+ *    turn, and turn.completed (src/core/types.ts) is the boundary that
+ *    tells those turns apart. Without it, every reply but the last between
+ *    two prompts was silently collapsed into `steps` and never shown.
  *
  *  Order WITHIN a page: oldest first, prompt before reply -- the order the
  *  pane renders top to bottom (spec 2026-09-15-conversation-pane-design.md
@@ -85,9 +94,13 @@ type Stretch = { prompt: Row | null; prose: Row[] };
  *   2. if more remain, the page's lower bound is the oldest prompt it keeps,
  *      and that prompt becomes nextCursor; otherwise there is no lower bound,
  *      which also sweeps in any prose recorded before the first prompt;
- *   3. read every main-thread prompt/prose row in [lower, before) and group.
- *  Every stretch starts at a prompt, so a bound placed on a prompt can never
- *  split one. `(ts, id)` row values break same-millisecond ties exactly.
+ *   3. read every main-thread prompt/prose/turn.completed row in
+ *      [lower, before) and group.
+ *  The page's own cut point is always a prompt row (`lowest`, from the
+ *  prompts-only query above), and a prompt row always starts a fresh
+ *  stretch -- whether or not turn.completed also splits stretches inside
+ *  the window -- so a bound placed there can never split one. `(ts, id)`
+ *  row values break same-millisecond ties exactly.
  *
  *  Both reads run in one transaction so they see the same snapshot.
  *
@@ -117,7 +130,7 @@ export function conversationFor(
     const lower = lowest ? 'AND (ts, id) >= (@lowTs, @lowId)' : '';
     const rows = db.prepare(
       `SELECT id, ts, kind, json_extract(payload,'$.text') AS text FROM events
-       WHERE session_id = @sessionId AND kind IN ('prompt.submitted','prose') AND agent_id IS NULL
+       WHERE session_id = @sessionId AND kind IN ('prompt.submitted','prose','turn.completed') AND agent_id IS NULL
          ${lower} ${upper}
        ORDER BY ts ASC, id ASC`,
     ).all({
@@ -132,9 +145,13 @@ export function conversationFor(
   const stretches: Stretch[] = [];
   let current: Stretch = { prompt: null, prose: [] };
   for (const r of rows) {
-    if (r.kind === 'prompt.submitted') {
+    if (r.kind === 'prompt.submitted' || r.kind === 'turn.completed') {
+      // Both close the current stretch. Only prompt.submitted opens the
+      // next one attached to a prompt; turn.completed carries no text of
+      // its own, so the next stretch opens prompt-less, exactly like the
+      // resumed-session leading-prose case this type's comment describes.
       if (current.prompt !== null || current.prose.length > 0) stretches.push(current);
-      current = { prompt: r, prose: [] };
+      current = { prompt: r.kind === 'prompt.submitted' ? r : null, prose: [] };
     } else if (r.text !== null && r.text !== '') {
       current.prose.push(r);
     }
