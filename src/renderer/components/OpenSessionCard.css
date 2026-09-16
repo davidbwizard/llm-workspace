@@ -163,21 +163,27 @@
 
 /* David's own bug report against the real, running window: this card's
    `...` menu opens downward, and the NEXT card in the list -- later in
-   document order, painted after this one at the SAME (default) stacking
-   level -- covered it ("card action bar is hidden below the card"). .card
-   is position:relative but its z-index is auto (SessionCard.css), so it
-   opens no stacking context of its own: a z-index set only on the nested
-   .cardmenu-list below escapes .card entirely and is placed against
-   whatever the nearest REAL stacking-context ancestor happens to be --
-   shared by every open card in the list, not scoped to "above this one
-   card". Raising .card itself while its menu is open, rather than only its
-   popover, keeps the whole card (popover included, since .card now hosts
-   a real local stacking context of its own) above its siblings as one
-   unit, with no dependency on how many non-stacking-context layers sit
-   between it and the page root. Scoped to .menu-open, toggled from this
-   component's own menuOpen state (OpenSessionCard.tsx's className
-   expression) -- never applied unconditionally, so cards overlap exactly
-   as they always have in every other state. */
+   document order -- covered it ("card action bar is hidden below the
+   card"). At rest .card is position:relative with z-index:auto
+   (SessionCard.css), which opens no stacking context of its own, so
+   .cardmenu-list's z-index:5 below would ordinarily escape .card cleanly.
+   But this card is never at rest while its own menu is open: the pointer
+   is sitting on it to have clicked the "..." button in the first place,
+   which is exactly SessionCard.css's `.card:hover` (its transform, not its
+   colour/shadow changes) -- and a transform other than none DOES open a
+   stacking context. Once hovered, THIS card becomes the stacking context
+   .cardmenu-list is trapped inside, unable to escape past it any more; the
+   NEXT card, still untransformed and at the default level, then paints
+   after this one in plain document order and covers it, menu included.
+   Raising .card itself while its menu is open -- rather than only its
+   popover, which could never have escaped an ancestor stacking context no
+   matter its own z-index -- gives THIS card an explicit, non-auto z-index
+   of its own, so it (and everything painted inside it, popover included)
+   outranks the next card's default level regardless of which of the two
+   is hovered. Scoped to .menu-open, toggled from this component's own
+   menuOpen state (OpenSessionCard.tsx's className expression) -- never
+   applied unconditionally, so cards overlap exactly as they always have in
+   every other state. */
 .card.menu-open { z-index:1; }
 
 /* The `...` menu. A popover anchored to this one card, not a shared
