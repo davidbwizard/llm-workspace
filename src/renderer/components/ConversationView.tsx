@@ -157,7 +157,7 @@ export function mergeNewest(current: ConversationTurn[], incoming: ConversationT
   return merged;
 }
 
-/** Half-written messages, keyed by pid, deliberately OUTSIDE the component.
+/** Half-written messages, deliberately OUTSIDE the component.
  *
  *  Outliving the component is the entire purpose, not a side effect. The
  *  box's only offered remedy for a prompt_open refusal is Open Terminal,
@@ -167,11 +167,34 @@ export function mergeNewest(current: ConversationTurn[], incoming: ConversationT
  *  the choice and switching back would silently lose the message, which is
  *  a worse outcome than the refusal it was trying to recover from.
  *
- *  Cleared on a successful send and on nothing else, so a draft also
+ *  Keyed by pid but STAMPED with the session id, and both must match before
+ *  a draft is handed back. The pid alone is not an identity: the OS reuses
+ *  pid numbers, and an app left running long enough will see a number it
+ *  holds a draft for handed to an entirely different process. Restoring on
+ *  the number alone would put one session's message in another session's
+ *  box, where a single Enter sends it -- the same failure as the shared
+ *  tmux buffer, reached by a slower route.
+ *
+ *  Cleared on a successful send and on nothing else, so a draft still
  *  survives an ordinary session switch. Bounded by the number of distinct
  *  pids typed into in one run of the app, which is small and does not
  *  outlive the window. */
-const drafts = new Map<number, string>();
+const drafts = new Map<number, { sessionId: string; text: string }>();
+
+/** The draft held for this pid, but only if it was typed in THIS session.
+ *
+ *  `sessionId` is null whenever the app cannot pin this process to one
+ *  transcript -- no session shares its cwd, or several do. There is then no
+ *  identity to check a draft against, so no draft is kept: a null would
+ *  match the next null at the same pid, which is precisely the case this
+ *  exists to prevent. Such sessions simply keep the behaviour they had
+ *  before drafts existed, which is a loss of convenience, not a regression,
+ *  and far cheaper than delivering a message to the wrong session. */
+function draftFor(pid: number | null, sessionId: string | null): string {
+  if (pid === null || sessionId === null) return '';
+  const held = drafts.get(pid);
+  return held?.sessionId === sessionId ? held.text : '';
+}
 
 /** Empties the draft store. Exists for test isolation and has no production
  *  caller: because `drafts` is module state rather than component state, it
@@ -193,8 +216,12 @@ export function clearDrafts(): void {
  *  picker is ignored and Enter selects whatever option is highlighted
  *  (measured 2026-09-15, "blue" recorded as "Red"), so a prompt_open
  *  refusal offers the Terminal view instead of a retry. */
-function MessageBox({ pid, tmux, onOpenTerminal }: {
+function MessageBox({ pid, sessionId, tmux, onOpenTerminal }: {
   pid: number | null;
+  /** Which recorded session this pid is, used ONLY to prove a stored draft
+   *  belongs to the session now on screen. Null when the app cannot tell,
+   *  which means no draft is kept -- see draftFor above. */
+  sessionId: string | null;
   tmux: boolean;
   onOpenTerminal: () => void;
 }) {
@@ -202,7 +229,7 @@ function MessageBox({ pid, tmux, onOpenTerminal }: {
   // session switch) restores what was typed rather than starting blank.
   // ConversationView keys this component by pid, so the initialiser re-runs
   // for the right session whenever the pid changes.
-  const [text, setText] = useState(() => (pid === null ? '' : drafts.get(pid) ?? ''));
+  const [text, setText] = useState(() => draftFor(pid, sessionId));
   const [message, setMessage] = useState<string | null>(null);
   const [choiceOpen, setChoiceOpen] = useState(false);
   const [sending, setSending] = useState(false);
@@ -273,7 +300,10 @@ function MessageBox({ pid, tmux, onOpenTerminal }: {
         placeholder={disabledReason ?? 'Message this session'}
         onChange={e => {
           setText(e.target.value);
-          if (pid !== null) drafts.set(pid, e.target.value);
+          // Stamped with the session id, so this draft can only ever be
+          // handed back to the session it was typed in. Not stored at all
+          // when that id is unknown -- there would be nothing to check.
+          if (pid !== null && sessionId !== null) drafts.set(pid, { sessionId, text: e.target.value });
         }}
         // Enter sends, with no confirmation, however long the message
         // (spec §7.2). Shift+Enter is the line break, which is what makes
@@ -623,7 +653,8 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           any standing refusal and the choice prompt all belong to the
           session that produced them, and none should carry over to the
           next one. */}
-      <MessageBox key={pid ?? 'none'} pid={pid} tmux={tmux} onOpenTerminal={onOpenTerminal} />
+      <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux}
+        onOpenTerminal={onOpenTerminal} />
     </div>
   );
 }

@@ -1256,6 +1256,65 @@ describe('ConversationView -- the message box', () => {
     expect((again as HTMLTextAreaElement).value).toBe('');
   });
 
+  // The invariant: a draft must never appear in a box belonging to a
+  // different session than the one it was typed in. A pid alone does not
+  // establish that, because the OS reuses pids -- a long-running app can
+  // outlive a session and see its number handed to a new process. One
+  // Enter would then send the old session's message to the new one.
+  it('never shows a draft from a different session, even at the same pid', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const first = renderConv({ pid: 777, sessionId: 'session-a' });
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'meant for session A' } });
+    first.unmount();
+
+    // Same pid number, different session behind it.
+    renderConv({ pid: 777, sessionId: 'session-b' });
+    const reused = await screen.findByLabelText('Message this session');
+    expect((reused as HTMLTextAreaElement).value).toBe('');
+  });
+
+  // The honest consequence of keying on session identity: a process whose
+  // transcript the app cannot pin down has no identity to check a draft
+  // against, so it does not keep one across unmount. Losing a draft is a
+  // far better outcome than delivering it to the wrong session, and this
+  // is the behaviour such sessions had before drafts existed at all.
+  it('does not hold a draft across unmount for a session it cannot identify', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const first = renderConv({ pid: 888, sessionId: null });
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'unidentified session' } });
+    expect((box as HTMLTextAreaElement).value).toBe('unidentified session');
+    first.unmount();
+
+    renderConv({ pid: 888, sessionId: null });
+    const again = await screen.findByLabelText('Message this session');
+    expect((again as HTMLTextAreaElement).value).toBe('');
+  });
+
+  // The other half of the identity check, and the reason the store is
+  // module-scoped at all: a draft must still come BACK when the reader
+  // returns to the session that owns it. Switching away and back is the
+  // ordinary case; the checks above must not have turned it into a loss.
+  it('brings a draft back when the reader returns to that session', async () => {
+    withSendKeys({ status: 'refused', reason: 'prompt_open' });
+    const props = (pid: number, sessionId: string) => (
+      <ConversationView sessionId={sessionId} provider="claude" events={null}
+        pid={pid} tmux={true} onOpenTerminal={() => {}} />
+    );
+    const { rerender } = render(props(101, 's-a'));
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'half written' } });
+
+    rerender(props(202, 's-b'));
+    const other = await screen.findByLabelText('Message this session');
+    expect((other as HTMLTextAreaElement).value).toBe('');
+
+    rerender(props(101, 's-a'));
+    const back = await screen.findByLabelText('Message this session');
+    expect((back as HTMLTextAreaElement).value).toBe('half written');
+  });
+
   // Drafts are per-pid. A store keyed wrongly would leak one session's
   // half-written message into another session's box.
   it('keeps each session\'s draft to itself', async () => {
