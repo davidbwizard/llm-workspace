@@ -10,8 +10,8 @@ import { MAX_REPLY_CHARS as MAIN_MAX_REPLY_CHARS } from '../../src/main/outbound
 import { reloadSettings, setSettings } from '../../src/renderer/state/settings.ts';
 
 const turns = [
-  { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests', steps: [] },
-  { id: 2, ts: '2026-09-12T10:00:05Z', role: 'assistant', text: 'All green. Want me to commit?', steps: [] },
+  { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests' },
+  { id: 2, ts: '2026-09-12T10:00:05Z', role: 'assistant', text: 'All green. Want me to commit?' },
 ];
 
 // Same formula the component uses (ConversationView.tsx's formatDate /
@@ -142,9 +142,9 @@ describe('ConversationView', () => {
   // in that order, so the component must not re-sort it.
   it('renders turns in the order they are given, oldest first', async () => {
     const ordered = [
-      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'oldest message', steps: [] },
-      { id: 2, ts: '2026-09-12T10:00:05Z', role: 'user', text: 'middle message', steps: [] },
-      { id: 3, ts: '2026-09-12T10:00:10Z', role: 'assistant', text: 'newest reply', steps: [] },
+      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'oldest message' },
+      { id: 2, ts: '2026-09-12T10:00:05Z', role: 'user', text: 'middle message' },
+      { id: 3, ts: '2026-09-12T10:00:10Z', role: 'assistant', text: 'newest reply' },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: ordered, nextCursor: null }),
@@ -238,7 +238,7 @@ describe('ConversationView', () => {
         calls.push([sessionId, cursor]);
         if (cursor === undefined) return { turns, nextCursor: olderCursor };
         return {
-          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn', steps: [] }],
+          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn' }],
           nextCursor: null,
         };
       },
@@ -304,7 +304,7 @@ describe('ConversationView', () => {
         if (sessionId === 's1') return olderAPromise; // s1's older page, held pending
         if (sessionId === 's2' && cursor === undefined) {
           return {
-            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn', steps: [] }],
+            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn' }],
             // Session B genuinely has more history -- if the stale fetch's
             // nextCursor:null below clobbers this, the end-of-history
             // marker would wrongly appear for a session that has one.
@@ -328,7 +328,7 @@ describe('ConversationView', () => {
     // landed -- exactly the ordering a slow network response can produce.
     await act(async () => {
       resolveOlderA({
-        turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn from session A', steps: [] }],
+        turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn from session A' }],
         nextCursor: null,
       });
       // A real macrotask tick: the JS event loop always drains every
@@ -374,7 +374,7 @@ describe('ConversationView', () => {
         if (sessionId === 's1') return pendingA; // s1's mount fetch, held pending
         if (sessionId === 's2') {
           return {
-            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn', steps: [] }],
+            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn' }],
             nextCursor: null,
           };
         }
@@ -436,7 +436,7 @@ describe('ConversationView', () => {
         attempt += 1;
         if (attempt === 1) throw new Error('network blip');
         return {
-          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn', steps: [] }],
+          turns: [{ id: 0, ts: '2026-09-12T09:58:00Z', role: 'user', text: 'an older turn' }],
           nextCursor: null,
         };
       },
@@ -475,8 +475,8 @@ describe('ConversationView', () => {
 
   it('does not repeat the date on a second entry from the same day', async () => {
     const sameDay = [
-      { id: 1, ts: '2026-09-12T09:00:00Z', role: 'user', text: 'first', steps: [] },
-      { id: 2, ts: '2026-09-12T15:30:00Z', role: 'assistant', text: 'second', steps: [] },
+      { id: 1, ts: '2026-09-12T09:00:00Z', role: 'user', text: 'first' },
+      { id: 2, ts: '2026-09-12T15:30:00Z', role: 'assistant', text: 'second' },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: sameDay, nextCursor: null }),
@@ -491,8 +491,8 @@ describe('ConversationView', () => {
 
   it('shows the date again once the day changes', async () => {
     const twoDays = [
-      { id: 1, ts: '2026-09-11T09:00:00Z', role: 'user', text: 'day one', steps: [] },
-      { id: 2, ts: '2026-09-12T09:00:00Z', role: 'assistant', text: 'day two', steps: [] },
+      { id: 1, ts: '2026-09-11T09:00:00Z', role: 'user', text: 'day one' },
+      { id: 2, ts: '2026-09-12T09:00:00Z', role: 'assistant', text: 'day two' },
     ];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({ turns: twoDays, nextCursor: null }),
@@ -507,7 +507,7 @@ describe('ConversationView', () => {
 
 function showOne(turn: Record<string, unknown>) {
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-    conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', steps: [], ...turn }], nextCursor: null }),
+    conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', ...turn }], nextCursor: null }),
   };
   return renderConv();
 }
@@ -578,48 +578,6 @@ describe('ConversationView -- agent replies render as markdown', () => {
     await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
     expect(container.querySelector('.turn.user strong, .turn.user b')).toBeNull();
     expect(container.querySelector('.turn.user .turn-text')!.textContent).toBe('**not bold** <b>x</b>');
-  });
-});
-
-describe('ConversationView -- steps under a reply', () => {
-  const steps = [
-    { id: 10, ts: '2026-09-12T09:59:00Z', text: 'Reading the file.' },
-    { id: 11, ts: '2026-09-12T09:59:30Z', text: 'Running `npm test`.' },
-  ];
-
-  it('collapses the narration behind a real button that says how many steps there are', async () => {
-    showOne({ role: 'assistant', text: 'All green.', steps });
-    const button = await screen.findByRole('button', { name: '+ 2 steps' });
-    expect(button.tagName).toBe('BUTTON');
-    expect(button.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByText('Reading the file.')).toBeNull();
-  });
-
-  it('expands the steps, oldest first, and collapses them again', async () => {
-    const { container } = showOne({ role: 'assistant', text: 'All green.', steps });
-    const button = await screen.findByRole('button', { name: '+ 2 steps' });
-
-    fireEvent.click(button);
-    expect(button.getAttribute('aria-expanded')).toBe('true');
-    const list = container.querySelector('.steps-list')!;
-    expect(button.getAttribute('aria-controls')).toBe(list.id);
-    expect([...list.querySelectorAll('.step')].map(s => s.textContent)).toEqual(['Reading the file.', 'Running npm test.']);
-    expect(list.querySelector('code')!.textContent).toBe('npm test');
-
-    fireEvent.click(button);
-    expect(button.getAttribute('aria-expanded')).toBe('false');
-    expect(container.querySelector('.steps-list')).toBeNull();
-  });
-
-  it('says "1 step" for a single step', async () => {
-    showOne({ role: 'assistant', text: 'ok', steps: [steps[0]] });
-    expect(await screen.findByRole('button', { name: '+ 1 step' })).toBeTruthy();
-  });
-
-  it('shows no steps button when the reply had no narration', async () => {
-    const { container } = showOne({ role: 'assistant', text: 'ok' });
-    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
-    expect(screen.queryByRole('button')).toBeNull();
   });
 });
 
@@ -709,7 +667,7 @@ describe('ConversationView -- who said it', () => {
   it('names the Codex provider on a Codex session rather than assuming Claude', async () => {
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
       conversation: async () => ({
-        turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'assistant', text: 'ok', steps: [] }],
+        turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'assistant', text: 'ok' }],
         nextCursor: null,
       }),
     };
@@ -746,7 +704,7 @@ describe('ConversationView -- who said it', () => {
 describe('ConversationView -- the sticky bottom and Jump to latest', () => {
   const page = (rest: Array<Record<string, unknown>>) => ({
     turns: [
-      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'first', steps: [] },
+      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'first' },
       ...rest,
     ],
     nextCursor: null,
@@ -789,7 +747,7 @@ describe('ConversationView -- the sticky bottom and Jump to latest', () => {
       conversation: async (_sessionId: string, cursor?: unknown) => cursor === undefined
         ? { ...page([]), nextCursor: { ts: '2026-09-12T09:00:00Z', id: 0 } }
         : {
-          turns: [{ id: 0, ts: '2026-09-12T09:30:00Z', role: 'user', text: 'older', steps: [] }],
+          turns: [{ id: 0, ts: '2026-09-12T09:30:00Z', role: 'user', text: 'older' }],
           nextCursor: null,
         },
     };
@@ -808,7 +766,7 @@ describe('ConversationView -- the sticky bottom and Jump to latest', () => {
 
 describe('mergeNewest', () => {
   const t = (id: number, text: string) =>
-    ({ id, ts: '2026-09-12T10:00:00Z', role: 'assistant' as const, text, steps: [] });
+    ({ id, ts: '2026-09-12T10:00:00Z', role: 'assistant' as const, text });
 
   it('appends turns the pane has not seen, in the order they arrived', () => {
     expect(mergeNewest([t(1, 'a')], [t(1, 'a'), t(2, 'b'), t(3, 'c')]).map(x => x.text))
@@ -850,13 +808,13 @@ describe('ConversationView -- live refresh from the events count', () => {
     return calls;
   }
   const first = {
-    turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'go on then', steps: [] }],
+    turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'go on then' }],
     nextCursor: { ts: '2026-09-12T09:00:00Z', id: 0 },
   };
   const second = {
     turns: [
-      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'go on then', steps: [] },
-      { id: 2, ts: '2026-09-12T10:00:09Z', role: 'assistant', text: 'arrived while you watched', steps: [] },
+      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'go on then' },
+      { id: 2, ts: '2026-09-12T10:00:09Z', role: 'assistant', text: 'arrived while you watched' },
     ],
     nextCursor: { ts: '2026-09-12T09:00:00Z', id: 0 },
   };
@@ -915,7 +873,7 @@ describe('ConversationView -- live refresh from the events count', () => {
         calls.push([sessionId, cursor]);
         if (cursor !== undefined) {
           return {
-            turns: [{ id: 0, ts: '2026-09-12T09:30:00Z', role: 'user', text: 'older', steps: [] }],
+            turns: [{ id: 0, ts: '2026-09-12T09:30:00Z', role: 'user', text: 'older' }],
             nextCursor: olderCursor,
           };
         }
@@ -990,7 +948,7 @@ describe('ConversationView -- live refresh from the events count', () => {
         }
         if (sessionId === 's2') {
           return {
-            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn', steps: [] }],
+            turns: [{ id: 5, ts: '2026-09-13T10:00:00Z', role: 'user', text: 'session B turn' }],
             nextCursor: null,
           };
         }

@@ -69,16 +69,15 @@ describe('ConversationView.css: user and agent turns are visually distinguishabl
 describe('ConversationView.css: one text size drives the whole pane', () => {
   // Spec §3.5: conversation text size is a CSS variable on the
   // conversation root, and every message-level size is expressed relative
-  // to it -- so changing it in Settings moves the meta lines, code blocks
-  // and steps with the body text instead of leaving them behind.
+  // to it -- so changing it in Settings moves the meta lines and code
+  // blocks with the body text instead of leaving them behind.
   it('declares --conv-size on the conversation root, defaulting to 16px', () => {
     expect(blockAfter('.conv {')).toMatch(/--conv-size:\s*16px/);
   });
 
-  it('sizes the meta line, code, tables and steps off that variable, not off a fixed px', () => {
+  it('sizes the meta line, code and tables off that variable, not off a fixed px', () => {
     for (const selector of ['.turn .who, .turn .when {', '.turn-text.md code {',
-                            '.turn-text.md pre {', '.turn-text.md table {',
-                            '.steps-toggle {', '.steps-list {']) {
+                            '.turn-text.md pre {', '.turn-text.md table {']) {
       expect(blockAfter(selector), selector).toMatch(/font-size:\s*calc\(var\(--conv-size\)/);
     }
   });
@@ -118,7 +117,7 @@ describe('ConversationView.css: the history markers separate from the content be
   });
 });
 
-describe('ConversationView.css: markdown replies and steps', () => {
+describe('ConversationView.css: markdown replies', () => {
   it('turns pre-wrap off for markdown, so newlines between block elements do not become blank lines', () => {
     expect(blockAfter('.turn-text.md {')).toMatch(/white-space:\s*normal/);
   });
@@ -132,10 +131,6 @@ describe('ConversationView.css: markdown replies and steps', () => {
 
   it('styles tables with theme-token borders', () => {
     expect(blockAfter('.turn-text.md th, .turn-text.md td {')).toMatch(/border:\s*1px solid var\(--line\)/);
-  });
-
-  it('dims expanded steps relative to the reply', () => {
-    expect(blockAfter('.steps-list {')).toMatch(/color:\s*var\(--muted\)/);
   });
 
   it('uses no hardcoded hex anywhere in the stylesheet', () => {

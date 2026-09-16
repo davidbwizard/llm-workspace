@@ -3,25 +3,11 @@ import type { Db } from './db.ts';
 /** Human prompts (exchanges) per page -- not rows. See conversationFor. */
 export const CONVERSATION_PAGE_SIZE = 50;
 
-/** Narration the agent wrote on its way to a reply (usually just before a
- *  tool call). Nothing is ever grouped into steps any more -- see the
- *  no-collapse decision on conversationFor below -- so this type is now
- *  only a shape, never populated. Kept because ConversationTurn.steps still
- *  exists (see that field's own comment). */
-export type ConversationStep = { id: number; ts: string; text: string };
-
 export type ConversationTurn = {
   id: number;
   ts: string;
   role: 'user' | 'assistant';
   text: string;
-  /** Always []. Every prose row is now its own turn (conversationFor's
-   *  no-collapse decision below), so there is never earlier prose to fold
-   *  in here. The field, ConversationView.tsx's Steps component, and the
-   *  .steps-toggle/.steps-list CSS rules are all unreachable as a result --
-   *  left in place because removing dead UI is a separate decision from the
-   *  bug this type change fixes. */
-  steps: ConversationStep[];
 };
 
 const NAME = /<command-name>([\s\S]*?)<\/command-name>/;
@@ -192,12 +178,12 @@ export function conversationFor(
     // it still bounds its stretch -- that keeps paging and grouping agreed.
     const text = prompt?.text ? unwrapSlashCommand(prompt.text) : '';
     if (prompt && text !== '') {
-      turns.push({ id: prompt.id, ts: prompt.ts, role: 'user', text, steps: [] });
+      turns.push({ id: prompt.id, ts: prompt.ts, role: 'user', text });
     }
     // No collapsing: every prose row in the stretch is its own turn, oldest
-    // first, `steps` always [] -- see the no-collapse decision above.
+    // first -- see the no-collapse decision above.
     for (const reply of prose) {
-      turns.push({ id: reply.id, ts: reply.ts, role: 'assistant', text: reply.text!, steps: [] });
+      turns.push({ id: reply.id, ts: reply.ts, role: 'assistant', text: reply.text! });
     }
   }
   return { turns, nextCursor };

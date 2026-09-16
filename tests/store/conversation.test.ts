@@ -54,9 +54,7 @@ function turnCompletedEvent(sessionId: string, ts: string, agentId: string | nul
   };
 }
 
-/** Compact view of a page: "you: x" / "agent: y". No `steps` rendering here
- *  any more -- conversationFor never fills that array in (no-collapse), so
- *  there is nothing for this helper to show. */
+/** Compact view of a page: "you: x" / "agent: y". */
 function view(turns: ConversationTurn[]): string[] {
   return turns.map(t => (t.role === 'user' ? `you: ${t.text}` : `agent: ${t.text}`));
 }

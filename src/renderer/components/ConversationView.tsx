@@ -1,7 +1,7 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { ConversationPage, ConversationStep, ConversationTurn } from '../../store/conversation.ts';
+import type { ConversationPage, ConversationTurn } from '../../store/conversation.ts';
 import type { MatchQuality } from '../../discovery/match.ts';
 import type { Provider } from '../../core/types.ts';
 import type { KeysResult } from '../../main/ipc.ts';
@@ -34,32 +34,6 @@ const MARKDOWN_COMPONENTS: Components = {
 
 function MarkdownText({ text }: { text: string }) {
   return <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{text}</Markdown>;
-}
-
-/** The narration an agent wrote on its way to a reply, collapsed by default
- *  so the reply is what a reader sees first. */
-function Steps({ steps }: { steps: ConversationStep[] }) {
-  const [open, setOpen] = useState(false);
-  const listId = useId();
-  const label = `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`;
-  return (
-    <div className="steps">
-      <button
-        type="button"
-        className="steps-toggle"
-        aria-expanded={open}
-        aria-controls={open ? listId : undefined}
-        onClick={() => setOpen(o => !o)}
-      >
-        {open ? `- ${label}` : `+ ${label}`}
-      </button>
-      {open && (
-        <ol id={listId} className="steps-list">
-          {steps.map(s => <li key={s.id} className="step"><MarkdownText text={s.text} /></li>)}
-        </ol>
-      )}
-    </div>
-  );
 }
 
 /** "Sep 12" -- no year, no weekday. Grouped with the time below rather than
@@ -719,8 +693,8 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
         className="conv"
         // The one size the pane is built from (spec §3.5): every
         // message-level rule in ConversationView.css is expressed relative
-        // to it, so meta lines, code blocks and steps move with the body
-        // text rather than staying behind at a fixed px.
+        // to it, so meta lines and code blocks move with the body text
+        // rather than staying behind at a fixed px.
         style={{ ['--conv-size' as string]: `${settings.textSize}px` } as React.CSSProperties}
         data-style={settings.messageStyle}
         ref={scrollerRef}
@@ -765,7 +739,6 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                     : (
                       <div className="turn-body">
                         <div className="turn-text md"><MarkdownText text={t.text} /></div>
-                        {t.steps.length > 0 && <Steps steps={t.steps} />}
                       </div>
                     )}
                 </article>
