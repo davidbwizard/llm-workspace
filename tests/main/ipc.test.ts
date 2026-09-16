@@ -971,6 +971,25 @@ describe('session:keys', () => {
     ]);
   });
 
+  // The text is already typed into the pane by the time Enter runs, so a
+  // failed Enter is logged, not turned into a refusal -- refusing here
+  // would tell the user the send failed and invite a retry, which would
+  // duplicate the text already sitting in the session's input line.
+  it('logs, but does not refuse, when Enter fails after single-line text was typed', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = sendKeysFor(4821, 'yes', {
+      has: () => true,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: (args: string[]) => (args.includes('Enter')
+        ? { ok: false, error: 'no pane' }
+        : { ok: true, stdout: '' }),
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(errs).toHaveBeenCalledWith('tmux send-keys (Enter) failed:', 'no pane');
+    errs.mockRestore();
+  });
+
   it('refuses, and sends no Enter, when the buffer cannot be loaded', () => {
     registerSession(4821, 'llmws-claude-abc');
     const calls: string[][] = [];
@@ -1012,6 +1031,25 @@ describe('session:keys', () => {
     expect(calls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'delete-buffer']);
     expect(calls[2]).toEqual(['delete-buffer', '-b', buffer]);
     expect(errs).toHaveBeenCalledWith('tmux paste-buffer failed:', 'no pane');
+    errs.mockRestore();
+  });
+
+  // The paste has already landed in the session by the time Enter runs, so
+  // a failed Enter here is logged, not turned into a refusal -- refusing
+  // would tell the user the send failed and invite a retry, which would
+  // submit a duplicate of text already sitting in the pane's input line.
+  it('logs, but does not refuse, when Enter fails after a successful paste', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      capture: () => ({ ok: true, stdout: '' }),
+      send: (args: string[]) => (args.includes('Enter')
+        ? { ok: false, error: 'no pane' }
+        : { ok: true, stdout: '' }),
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(errs).toHaveBeenCalledWith('tmux send-keys (Enter) failed:', 'no pane');
     errs.mockRestore();
   });
 

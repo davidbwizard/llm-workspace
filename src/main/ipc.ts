@@ -810,7 +810,12 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
       if (!dropped.ok) console.error('tmux delete-buffer failed:', dropped.error);
       return { status: 'refused', reason: 'session_gone' };
     }
-    sendKeyName(name, 'Enter', deps.send);
+    // The paste has already landed in the session by this point, so a
+    // failed Enter is logged, not refused: refusing here would tell the
+    // user the send failed and invite a retry, which would submit a
+    // duplicate of text that is already sitting in the pane's input line.
+    const entered = sendKeyName(name, 'Enter', deps.send);
+    if (!entered.ok) console.error('tmux send-keys (Enter) failed:', entered.error);
     return { status: 'sent' };
   }
 
@@ -819,7 +824,11 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
   // Reached only when the text has no newline at all, which is exactly what
   // the strict sanitiser would have required of it.
   sendLiteral(name, clean.text, deps.send);
-  sendKeyName(name, 'Enter', deps.send);
+  // As above: the text is already typed into the pane, so a failed Enter is
+  // logged rather than turned into a refusal, which would invite a retry
+  // and duplicate the typed text on next send.
+  const entered = sendKeyName(name, 'Enter', deps.send);
+  if (!entered.ok) console.error('tmux send-keys (Enter) failed:', entered.error);
   return { status: 'sent' };
 }
 

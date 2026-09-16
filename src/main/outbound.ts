@@ -41,11 +41,20 @@ const NEWLINE = /[\r\n]/;
  *
  *  `multiline` is the one opt-in, used by exactly one caller: sendKeysFor's
  *  bracketed-paste path (src/main/ipc.ts), which does not type the text at
- *  all -- tmux loads it into a buffer and pastes it, and the foreground
- *  program is told it is pasted text, so the embedded newlines do not
- *  submit (measured 2026-09-15). Every other rule is identical on both
- *  paths: non-empty, the 4,000 character cap, and control-character
- *  stripping, all applied before the text reaches tmux. */
+ *  all -- tmux loads it into a buffer and pastes it, and Claude Code takes
+ *  the embedded newlines as part of one pasted message instead of
+ *  submitting on each of them (measured 2026-09-15). Every other rule is
+ *  identical on both paths: non-empty, the 4,000 character cap, and
+ *  control-character stripping, all applied before the text reaches tmux.
+ *
+ *  That newline-safety depends on the foreground program having requested
+ *  bracketed paste mode (xterm mode 2004); only a program that asked for it
+ *  gets told the text is pasted at all. Claude Code was measured doing so
+ *  on 2026-09-15. Codex has never been measured on this path -- if it (or
+ *  any other foreground program) has not requested mode 2004, tmux's paste
+ *  degrades to raw text with the newlines still embedded, and lines 2..n
+ *  each run as their own submission, which is the exact failure this
+ *  refusal exists to prevent. */
 export function sanitizeOutbound(raw: unknown, opts: { multiline?: boolean } = {}): OutboundResult {
   if (typeof raw !== 'string' || raw.length === 0) return { ok: false, reason: 'empty' };
   if (!opts.multiline && NEWLINE.test(raw)) return { ok: false, reason: 'contains_newline' };

@@ -477,7 +477,20 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
    *  left -- from landing on whatever session is open now. Mirrors the
    *  mount effect's own `alive` flag, but as a ref rather than a closure
    *  variable, because loadMore runs outside that effect and needs to
-   *  check WHICH session is current, not merely whether one is alive. */
+   *  check WHICH session is current, not merely whether one is alive.
+   *
+   *  KNOWN LIMITATION -- does not hold across a SESSION BOUNCE: s1 -> s2 ->
+   *  back to s1 while a loadMore fetch issued for s1 is still in flight
+   *  makes this ref read 's1' again by the time that fetch resolves, so the
+   *  stale-fetch guard passes and the old page lands anyway. It is worse
+   *  than "an old page lands": the layout effect below checks
+   *  pendingRestoreRef before landedRef, so this arms a stale restore, and
+   *  the returning s1 pane never reaches the bottom and never sets
+   *  landedRef. Clearing pendingRestoreRef on session switch (the mount
+   *  effect below already does this) does not help, because the bounce
+   *  re-arms it afterward. Scheduled for Part 3: a monotonic fetch-epoch
+   *  ref, incremented in the mount effect, captured by loadMore's closure
+   *  and compared at resolve in place of this session-id comparison. */
   const sessionIdRef = useRef<string | null>(sessionId);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   /** Set by loadMore immediately before a prepend commits, consumed by the
@@ -568,7 +581,20 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
    *  jsdom computes no layout, so none of the arithmetic here is asserted
    *  through the DOM -- nearBottom and restoredScrollTop above carry the
    *  tests, and this effect is the (deliberately dull) wiring between them
-   *  and a real element. */
+   *  and a real element.
+   *
+   *  KNOWN LIMITATION -- changing settings.textSize or settings.messageStyle
+   *  (read below, where --conv-size and data-style are set on the scroller)
+   *  re-flows every rendered message without re-running this effect, so a
+   *  reader parked at the newest message can be scrolled off it with no
+   *  Jump to latest offered. Adding those settings to this effect's
+   *  dependency array is a NO-OP, not a fix: the body still runs against
+   *  the same `page`, `pending` is still null, `landedRef.current` is
+   *  already true, and lastTurnKey(page.turns) is unchanged, so
+   *  grewAtBottom is false and the effect returns having done nothing --
+   *  someone will try exactly that, see no change, and may leave dead
+   *  dependencies behind. This is deliberately left unfixed pending the
+   *  user's own eyes-on of the rendered pane, not overlooked. */
   useLayoutEffect(() => {
     const el = scrollerRef.current;
     if (el === null || page === null) return;

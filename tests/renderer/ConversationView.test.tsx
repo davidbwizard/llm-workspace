@@ -1479,7 +1479,7 @@ describe('ConversationView -- the message box\'s length counter', () => {
     expect(box.disabled).toBe(false);
     fireEvent.keyDown(box, { key: 'Enter' });
     await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, over));
-    await waitFor(() => expect(screen.getByText('That reply is too long to send as keystrokes.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('That reply is too long to send. Shorten it and try again.')).toBeTruthy());
     expect(box.disabled).toBe(false);
     expect(box.value).toBe(over); // kept whole, not truncated -- same as any other refusal
   });

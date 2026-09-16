@@ -16,7 +16,14 @@ export const REFUSAL_TEXT: Record<KeysRefusalReason, string> = {
   session_gone: 'That session has ended.',
   invalid_pid: 'Could not reach that session.',
   empty: 'Nothing to send.',
-  too_long: 'That reply is too long to send as keystrokes.',
+  too_long: 'That reply is too long to send. Shorten it and try again.',
+  // Unreachable in the current UI: the rail popover's text box is a
+  // single-line <input> (which browsers strip pasted newlines from), and
+  // the conversation message box routes any text containing a newline to
+  // the bracketed-paste path instead of here. Kept because
+  // KeysRefusalReason still includes it and sendKeysFor can still produce
+  // it in principle -- do not read this wording as describing live
+  // behaviour.
   contains_newline: 'Send one line at a time -- a line break would submit early.',
   // Reply guard (measured 2026-09-15): a choice ignores typed text and Enter
   // picks whichever option is highlighted -- "blue" was recorded as "Red".
