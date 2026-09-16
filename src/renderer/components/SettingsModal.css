@@ -79,7 +79,6 @@
 .settingsstylecard { flex:1 1 0; min-width:0; display:flex; flex-direction:column; gap:8px;
   text-align:left; background:transparent; border:1px solid var(--line);
   border-radius:var(--r-sm); padding:10px; cursor:pointer; }
-.settingsstylecard:hover { border-color:var(--line-soft); }
 .settingsstylecard[aria-pressed="true"] { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
 .settingsstyletitle { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;
   font-family:var(--f-body); font-size:13px; font-weight:700; color:var(--ink); }
