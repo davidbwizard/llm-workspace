@@ -7,7 +7,23 @@
    with; SettingsModal writes 14-17 over it as an inline style. */
 .conv { --conv-size:16px; font-size:var(--conv-size); line-height:1.55;
   padding:14px 18px; overflow-y:auto; flex:1; }
-.conv.empty, .conv.loading, .conv.unknown { color:var(--muted); }
+/* The scroller and everything pinned below it (the Jump to latest button,
+   and the message box) are siblings in a bounded column, so the pinned
+   parts stay put while only the turns scroll. min-height:0 on both is what
+   stops a long conversation from pushing the column past its parent
+   instead of scrolling inside it. */
+.convwrap { display:flex; flex-direction:column; flex:1; min-height:0; }
+.conv { min-height:0; }
+/* Whatever the pane is saying instead of turns: loading, empty, or one of
+   the three "we cannot identify this session" messages. */
+.convnote { margin:0; color:var(--muted); }
+/* Offered only when new content landed while the reader was scrolled away
+   from the bottom -- so it is never a button that would do nothing. Sits
+   between the scroller and the message box, as in the mockup. */
+.convjump { align-self:center; margin:6px 0 0; font-family:var(--f-mono); font-size:11px;
+  color:var(--ground); background:var(--accent); border:0; border-radius:20px;
+  padding:5px 14px; cursor:pointer; }
+.convjump:hover { background:color-mix(in srgb,var(--accent) 85%,black); }
 .turn { display:block; margin-bottom:16px; }
 /* Style A, the default: the accent rule runs down the AGENT's replies.
    David chose it against rendered options, and chose the agent rather than

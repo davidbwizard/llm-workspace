@@ -1,7 +1,7 @@
 import React from 'react';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { ConversationView, nearOlderEdge } from '../../src/renderer/components/ConversationView.tsx';
+import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop } from '../../src/renderer/components/ConversationView.tsx';
 
 const turns = [
   { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests', steps: [] },
@@ -107,6 +107,7 @@ describe('ConversationView', () => {
     // is what actually catches that regression.
     expect(screen.queryByText(/open session/i)).toBeNull();
     expect(screen.queryByText(/^Several/i)).toBeNull();
+    expect(screen.getByText(/transcript can't be identified/i).className).toBe('convnote');
   });
 
   it('never calls window.fleet.conversation when sessionId is null', async () => {
@@ -156,19 +157,7 @@ describe('ConversationView', () => {
     expect(screen.queryByText(/beginning of this session/i)).toBeNull();
   });
 
-  // Scrolling near the bottom is the trigger (see nearOlderEdge's own doc
-  // comment on why bottom, not top, is the older end in this newest-first
-  // layout). jsdom computes no real layout, so scrollHeight/clientHeight
-  // are stubbed directly on the node (Object.defineProperty -- verified
-  // assigning them any other way throws, since jsdom exposes them as
-  // getter-only) and only scrollTop, which jsdom genuinely implements, is
-  // set through fireEvent's target.
-  function stubScrollGeometry(el: Element, { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number }) {
-    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: scrollHeight });
-    Object.defineProperty(el, 'clientHeight', { configurable: true, value: clientHeight });
-  }
-
-  it('fetches the next older page and appends it once the reader scrolls near the bottom', async () => {
+  it('fetches the next older page and PREPENDS it once the reader scrolls near the top', async () => {
     const olderCursor = { ts: '2026-09-12T09:59:00Z', id: 0 };
     const calls: Array<unknown[]> = [];
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
@@ -185,14 +174,14 @@ describe('ConversationView', () => {
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
 
     const scroller = container.querySelector('.conv')!;
-    stubScrollGeometry(scroller, { scrollHeight: 1000, clientHeight: 500 });
-    fireEvent.scroll(scroller, { target: { scrollTop: 400 } }); // distance from bottom: 100, under the 150px threshold
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } }); // inside the 150px top threshold
 
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(3));
-    // Appended after the existing turns, not prepended -- newest-first
-    // means the older page continues at the bottom, not the top.
+    // Prepended, not appended: oldest-at-top means the older page
+    // continues at the TOP. This is the exact direction the old
+    // append-only trick got right for the old layout and wrong for this one.
     const said = [...container.querySelectorAll('.turn .turn-text')].map(el => el.textContent);
-    expect(said).toEqual(['run the farm tests', 'All green. Want me to commit?', 'an older turn']);
+    expect(said).toEqual(['an older turn', 'run the farm tests', 'All green. Want me to commit?']);
     expect(calls).toEqual([['s1', undefined], ['s1', olderCursor]]);
     await waitFor(() => expect(screen.getByText(/beginning of this session/i)).toBeTruthy());
   });
@@ -212,12 +201,11 @@ describe('ConversationView', () => {
     await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
 
     const scroller = container.querySelector('.conv')!;
-    stubScrollGeometry(scroller, { scrollHeight: 1000, clientHeight: 500 });
     // Two scroll events in a row, both past the threshold, before the
     // in-flight fetch has any chance to resolve -- exactly the burst a
     // real trackpad or momentum scroll produces.
-    fireEvent.scroll(scroller, { target: { scrollTop: 400 } });
-    fireEvent.scroll(scroller, { target: { scrollTop: 420 } });
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } });
+    fireEvent.scroll(scroller, { target: { scrollTop: 20 } });
     await waitFor(() => expect(screen.getByText(/loading more/i)).toBeTruthy());
 
     // Exactly one loadMore call, not two, alongside the initial page-1 call.
@@ -386,21 +374,76 @@ describe('ConversationView -- steps under a reply', () => {
   });
 });
 
-describe('nearOlderEdge', () => {
-  it('is true once the distance from the bottom drops under the threshold', () => {
-    expect(nearOlderEdge({ scrollTop: 400, scrollHeight: 1000, clientHeight: 500 })).toBe(true); // 100px left
+// Every number below is asserted as a number, never through a rendered
+// element: jsdom computes no layout, so scrollHeight/clientHeight are
+// getter-only there and no real scroll position exists to measure. Keeping
+// the arithmetic in exported pure functions is what makes it testable at
+// all -- the same shape nearOlderEdge already had before this change.
+describe('nearOlderEdge -- the older end is now the TOP', () => {
+  it('is true once the reader is within the threshold of the top', () => {
+    expect(nearOlderEdge({ scrollTop: 100 })).toBe(true);
   });
 
-  it('is false while comfortably far from the bottom', () => {
-    expect(nearOlderEdge({ scrollTop: 0, scrollHeight: 1000, clientHeight: 500 })).toBe(false); // 500px left
+  it('is true at the exact top', () => {
+    expect(nearOlderEdge({ scrollTop: 0 })).toBe(true);
   });
 
-  it('is true right at the exact bottom', () => {
-    expect(nearOlderEdge({ scrollTop: 500, scrollHeight: 1000, clientHeight: 500 })).toBe(true); // 0px left
+  it('is false while comfortably below the top', () => {
+    expect(nearOlderEdge({ scrollTop: 400 })).toBe(false);
+  });
+
+  // The regression this replaces: with oldest-at-bottom, being near the
+  // BOTTOM used to mean "running low on loaded history". It no longer does,
+  // and a view that still fired there would page backwards at exactly the
+  // moment the reader reached the newest message.
+  it('is false at the bottom of a long pane, however far down that is', () => {
+    expect(nearOlderEdge({ scrollTop: 100_000 })).toBe(false);
   });
 
   it('respects a caller-supplied threshold rather than only the default', () => {
-    expect(nearOlderEdge({ scrollTop: 0, scrollHeight: 1000, clientHeight: 500 }, 600)).toBe(true); // 500 < 600
+    expect(nearOlderEdge({ scrollTop: 400 }, 600)).toBe(true);
+  });
+});
+
+describe('nearBottom', () => {
+  it('is true within the sticky threshold of the bottom', () => {
+    expect(nearBottom({ scrollTop: 460, scrollHeight: 1000, clientHeight: 500 })).toBe(true); // 40px left
+  });
+
+  it('is true at the exact bottom', () => {
+    expect(nearBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 500 })).toBe(true);
+  });
+
+  it('is false once the reader has scrolled up past the threshold', () => {
+    expect(nearBottom({ scrollTop: 300, scrollHeight: 1000, clientHeight: 500 })).toBe(false); // 200px left
+  });
+
+  // A pane shorter than its viewport has nothing to scroll, so the reader
+  // is always at the bottom of it -- new messages must follow, not offer a
+  // Jump to latest button that would do nothing.
+  it('is true when there is nothing to scroll at all', () => {
+    expect(nearBottom({ scrollTop: 0, scrollHeight: 300, clientHeight: 500 })).toBe(true);
+  });
+});
+
+describe('restoredScrollTop', () => {
+  // The whole point of a prepend: content inserted ABOVE the viewport
+  // pushes everything down by exactly the height it added, so the reader's
+  // eye stays on the message they were reading.
+  it('adds exactly the height the prepended page introduced', () => {
+    expect(restoredScrollTop(200, 1000, 2600)).toBe(1800);
+  });
+
+  it('is a no-op when nothing was added', () => {
+    expect(restoredScrollTop(200, 1000, 1000)).toBe(200);
+  });
+
+  // Defensive, not hypothetical: a page that replaces taller content with
+  // shorter (a re-render between the measurement and the commit) must not
+  // produce a negative scrollTop, which the browser clamps silently and
+  // jsdom stores verbatim.
+  it('never returns a negative position', () => {
+    expect(restoredScrollTop(50, 1000, 600)).toBe(0);
   });
 });
 
@@ -448,5 +491,68 @@ describe('ConversationView -- who said it', () => {
     // The meta row precedes the text, not beside it.
     expect(meta.compareDocumentPosition(turn.querySelector('.turn-text')!))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+});
+
+describe('ConversationView -- the sticky bottom and Jump to latest', () => {
+  const page = (rest: Array<Record<string, unknown>>) => ({
+    turns: [
+      { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'first', steps: [] },
+      ...rest,
+    ],
+    nextCursor: null,
+  });
+
+  it('offers no Jump to latest on a pane that has only just opened', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => page([]),
+    };
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelector('.turn')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+
+  // Scrolling alone must never conjure the button: it appears only when
+  // new content LANDS while the reader is away from the bottom. Nothing in
+  // this task can deliver new content to an open pane -- Task 3's refetch
+  // is the only thing that can -- so the behaviour under new content is
+  // tested there, against the signal that actually drives it, rather than
+  // faked here with a remount that would reset the pane's own bookkeeping.
+  it('does not offer Jump to latest merely because the reader scrolled up', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => page([]),
+    };
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    fireEvent.scroll(scroller, { target: { scrollTop: 100 } }); // 3400px from the bottom
+
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+  });
+
+  // The other direction: a prepend adds a whole page ABOVE the reader and
+  // must not be mistaken for new content at the bottom.
+  it('does not offer Jump to latest when an older page is prepended', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (_sessionId: string, cursor?: unknown) => cursor === undefined
+        ? { ...page([]), nextCursor: { ts: '2026-09-12T09:00:00Z', id: 0 } }
+        : {
+          turns: [{ id: 0, ts: '2026-09-12T09:30:00Z', role: 'user', text: 'older', steps: [] }],
+          nextCursor: null,
+        },
+    };
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(1));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
   });
 });
