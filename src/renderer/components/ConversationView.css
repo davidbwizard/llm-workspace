@@ -41,9 +41,10 @@
    accenting them is what makes the two sides read apart while scrolling.
    The rule's WIDTH (3px vs none) is the real, colour-independent signal: a
    colourblind reader, or the pane in greyscale, still sees a turn set off
-   from the margin. The accent hue is a second, redundant cue on top, and
-   the user's heavier font-weight below is a third, independent of colour
-   entirely (Karla is a variable font, 200-800, see theme.css). */
+   from the margin. The accent hue on .who below is a second, redundant
+   cue on top. (There is no font-weight cue any more -- see .turn-text
+   below, updated to match the Sep 2026 design artifact, which puts the
+   text-colour emphasis on the agent's replies instead of the user's.) */
 .turn.assistant { border-left:3px solid var(--accent); padding-left:11px; }
 /* Name and time on ONE line above the message (spec §2), replacing the
    56px left gutter this pane used to reserve for them. */
@@ -59,9 +60,17 @@
    accessibility tree as well as the page. */
 .wholabel { position:absolute; width:1px; height:1px; margin:-1px; padding:0;
   overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
-.turn .turn-text { margin:0; font-size:1em; line-height:inherit; color:var(--ink-2);
+/* Text colour is the OTHER cue telling the two sides apart, on top of the
+   border-left rule above: the agent's replies render at full strength
+   (var(--ink)) and the user's dimmer (var(--ink-2)) -- matching the design
+   artifact, which emphasises the agent's replies since they're the bulk of
+   what's read, not the user's prompts as this pane had it before. No
+   font-weight difference between the two any more: the colour-independent
+   cue for the user's side is the border-left rule's absence here (style A)
+   or the bubble/border/right-alignment below (style C), not a heavier cut. */
+.turn .turn-text { margin:0; font-size:1em; line-height:inherit; color:var(--ink);
   white-space:pre-wrap; min-width:0; }
-.turn.user .turn-text { color:var(--ink); font-weight:600; }
+.turn.user .turn-text { color:var(--ink-2); }
 /* Agent replies render as markdown (.turn-text.md) inside .turn-body, which also
    holds the collapsed steps. pre-wrap is off for markdown: react-markdown
    emits newline text nodes between block elements, and pre-wrap would show

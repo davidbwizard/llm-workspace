@@ -42,19 +42,22 @@ describe('ConversationView.css: user and agent turns are visually distinguishabl
     expect(base).not.toMatch(/border-left/); // absent from the rule user turns fall back to
   });
 
-  // The second, independent-of-colour cue: Karla is a variable font
-  // (200-800, see the @font-face rule in theme.css), so a heavier
-  // font-weight here is a real cut change, not a faked bold. It stays on
-  // the user's text -- the human prompts are the landmarks when scanning.
-  it('gives user turns a heavier weight than agent turns, independent of colour', () => {
-    expect(userSaid).toMatch(/font-weight:\s*[5-9]\d\d/);
+  // Per the Sep 2026 design artifact, text weight is not a cue at all any
+  // more -- neither side is bold. The colour-independent cue for the
+  // user's side is the border-left rule's absence here (style A) or the
+  // bubble/border/right-alignment (style C), not a heavier text cut.
+  it('gives neither turn a font-weight -- style A and C carry the colour-independent cue instead', () => {
+    expect(userSaid).not.toMatch(/font-weight/);
     expect(baseSaid).not.toMatch(/font-weight/);
   });
 
+  // The artifact emphasises the AGENT's replies, not the user's prompts as
+  // this pane had it before: the agent's text runs at full strength
+  // (--ink), the user's dimmer (--ink-2).
   it('backs the structural cues with the app\'s existing ink/ink-2 pair and its one emphasis colour', () => {
     expect(assistant).toMatch(/var\(--accent\)/);
-    expect(userSaid).toMatch(/color:\s*var\(--ink\)\s*;/);
-    expect(baseSaid).toMatch(/color:\s*var\(--ink-2\)\s*;/);
+    expect(baseSaid).toMatch(/color:\s*var\(--ink\)\s*;/);
+    expect(userSaid).toMatch(/color:\s*var\(--ink-2\)\s*;/);
   });
 
   it('uses theme tokens for every colour here, never a hardcoded hex', () => {
