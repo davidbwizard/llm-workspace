@@ -85,6 +85,36 @@ describe('ConversationView.css: one text size drives the whole pane', () => {
   });
 });
 
+describe('ConversationView.css: a short conversation sits at the bottom, not the top', () => {
+  it('makes .conv a flex column so the turns stack can be pinned to its bottom edge', () => {
+    const rule = blockAfter('.conv {');
+    expect(rule).toMatch(/display:\s*flex/);
+    expect(rule).toMatch(/flex-direction:\s*column/);
+  });
+
+  // margin-top:auto, not justify-content:flex-end: on a scrollable flex
+  // container, flex-end has a long-standing cross-engine bug -- once
+  // content overflows, the overflowing top portion becomes unreachable.
+  it('pins the turns stack to the bottom via margin-top:auto', () => {
+    expect(blockAfter('.convstack {')).toMatch(/margin-top:\s*auto/);
+  });
+
+  it('does not bottom-align the scroller itself with justify-content', () => {
+    expect(blockAfter('.conv {')).not.toMatch(/justify-content/);
+  });
+});
+
+describe('ConversationView.css: the history markers separate from the content below them', () => {
+  it('puts the separating border and spacing on the markers\' bottom edge, not their top', () => {
+    const rule = blockAfter('.conv-end, .conv-loading-more {');
+    expect(rule).toMatch(/border-bottom:\s*1px solid var\(--line-soft\)/);
+    expect(rule).toMatch(/padding-bottom:\s*8px/);
+    expect(rule).toMatch(/margin:\s*0 0 6px/);
+    expect(rule).not.toMatch(/border-top/);
+    expect(rule).not.toMatch(/padding-top/);
+  });
+});
+
 describe('ConversationView.css: markdown replies and steps', () => {
   it('turns pre-wrap off for markdown, so newlines between block elements do not become blank lines', () => {
     expect(blockAfter('.turn-text.md {')).toMatch(/white-space:\s*normal/);

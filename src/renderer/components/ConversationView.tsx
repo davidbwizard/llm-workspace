@@ -417,7 +417,22 @@ export function ConversationView({ sessionId, match, provider, events }: {
     <div className="convwrap">
       <div className="conv" data-style="a" ref={scrollerRef} onScroll={handleScroll}>
         {body ?? (
-          <>
+          // Chat order puts the oldest loaded turn at the top, so both
+          // history markers sit ABOVE turns.map: the older page a
+          // loading-more spinner announces prepends at the top, and the
+          // end-of-history line describes the top edge of what's loaded.
+          // Only this stack -- not the notes branch above -- gets
+          // margin-top:auto (ConversationView.css), which is what pins a
+          // conversation shorter than the pane to the bottom.
+          <div className="convstack">
+            {loadingMore && <p className="conv-loading-more">Loading more…</p>}
+            {!loadingMore && nextCursor === null && turns.length > 0 && (
+              // A genuine end-of-history fact, not an apology -- unlike the
+              // old truncation notice this replaces, nothing here is hidden;
+              // older turns just have not been fetched yet, and now there
+              // are none left.
+              <p className="conv-end">Beginning of this session's recorded conversation.</p>
+            )}
             {turns.map(t => {
               const date = formatDate(t.ts);
               const showDate = date !== prevDate;
@@ -446,15 +461,7 @@ export function ConversationView({ sessionId, match, provider, events }: {
                 </article>
               );
             })}
-            {loadingMore && <p className="conv-loading-more">Loading more…</p>}
-            {!loadingMore && nextCursor === null && turns.length > 0 && (
-              // A genuine end-of-history fact, not an apology -- unlike the
-              // old truncation notice this replaces, nothing here is hidden;
-              // older turns just have not been fetched yet, and now there
-              // are none left.
-              <p className="conv-end">Beginning of this session's recorded conversation.</p>
-            )}
-          </>
+          </div>
         )}
       </div>
       {missedLatest && (

@@ -157,6 +157,63 @@ describe('ConversationView', () => {
     expect(screen.queryByText(/beginning of this session/i)).toBeNull();
   });
 
+  // Bug fix: Task 1 flipped the render loop to oldest-first but left this
+  // marker where the old newest-first layout put it -- below the turns,
+  // where a "beginning of history" line reads as a page footer under the
+  // NEWEST message. A text-presence check alone would have passed against
+  // that bug, so this asserts actual DOM order, the way the meta-row test
+  // above does.
+  it('renders the end-of-history line above the oldest turn, not below the newest', async () => {
+    const { container } = renderConv(); // default mock: nextCursor: null
+    await waitFor(() => expect(screen.getByText(/beginning of this session/i)).toBeTruthy());
+    const marker = screen.getByText(/beginning of this session/i);
+    const oldestTurn = container.querySelector('.turn')!;
+    expect(marker.compareDocumentPosition(oldestTurn)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  // Older pages PREPEND -- they arrive at the top -- so the spinner
+  // announcing one must be where the content will appear, not where the
+  // old newest-first layout put it.
+  it('renders "Loading more..." above the turns while an older page is in flight', async () => {
+    let resolveOlder: (page: unknown) => void = () => {};
+    const olderPromise = new Promise(resolve => { resolveOlder = resolve; });
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (_sessionId: string, cursor?: unknown) => {
+        if (cursor === undefined) return { turns, nextCursor: { ts: '2026-09-12T09:59:00Z', id: 0 } };
+        return olderPromise;
+      },
+    };
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    const scroller = container.querySelector('.conv')!;
+    fireEvent.scroll(scroller, { target: { scrollTop: 40 } });
+
+    const loadingMarker = await screen.findByText(/loading more/i);
+    const oldestTurn = container.querySelector('.turn')!;
+    expect(loadingMarker.compareDocumentPosition(oldestTurn)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+    resolveOlder({ turns: [], nextCursor: null }); // let the pending fetch settle
+    await waitFor(() => expect(screen.queryByText(/loading more/i)).toBeNull());
+  });
+
+  // Bug fix: a conversation shorter than the pane must sit at the bottom,
+  // not float at the top with empty space below -- but the notes branch
+  // (loading, empty, "cannot identify this session") must NOT be pinned: a
+  // one-line status floating at the bottom of an empty pane reads as
+  // broken, not as a chat.
+  it('wraps the turns stack in the bottom-pinning element', async () => {
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+    expect(container.querySelector('.turn')!.closest('.convstack')).toBeTruthy();
+  });
+
+  it('does not wrap a notes message in the bottom-pinning element', () => {
+    const { container } = renderConv({ sessionId: null });
+    const note = container.querySelector('.convnote')!;
+    expect(note.closest('.convstack')).toBeNull();
+  });
+
   it('fetches the next older page and PREPENDS it once the reader scrolls near the top', async () => {
     const olderCursor = { ts: '2026-09-12T09:59:00Z', id: 0 };
     const calls: Array<unknown[]> = [];
