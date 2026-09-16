@@ -289,11 +289,12 @@ export function ConversationView({ sessionId, match, provider, events }: {
       // timer or seenEventsRef rollback: seenEventsRef was already updated
       // above, before the fetch, so if the session goes idle immediately
       // after this failure the pane stays stale until the next events
-      // change. That is accepted, not a bug to engineer around. Guarded by
-      // `alive` like the `.then()` above, so a rejection for a session the
-      // reader has since left is not even logged against the session now
-      // on screen.
-      if (!alive) return;
+      // change. That is accepted, not a bug to engineer around. Logged
+      // unconditionally, with no `alive` check: this catch never touches
+      // state, so there is nothing here to scope to this effect
+      // invocation -- and a refresh failing is real information even for a
+      // session the reader has since left, same reasoning as the mount
+      // fetch's catch above.
       console.error('Conversation refresh fetch failed:', err);
     });
     return () => { alive = false; };
