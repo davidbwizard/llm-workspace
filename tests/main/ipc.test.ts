@@ -1128,7 +1128,14 @@ describe('session:keys', () => {
       // loop's first two checks (calls 2-3) still read 'before' -- proving
       // Enter is not sent on the very first post-paste check -- and only
       // the third settle check (call 4) reports a change.
-      capture: () => { captureCalls += 1; return { ok: true, stdout: captureCalls <= 3 ? 'before' : 'after' }; },
+      // The copy-mode read shares this exec but is not a capture-pane call,
+      // so it answers "not in a mode" without touching the counter this
+      // test's whole point rests on.
+      capture: (args: string[]) => {
+        if (args[0] === 'display-message') return { ok: true, stdout: '0' };
+        captureCalls += 1;
+        return { ok: true, stdout: captureCalls <= 3 ? 'before' : 'after' };
+      },
       send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
       // Deterministic stand-in for the real between-attempt wait -- no
       // real time passes in this test.
@@ -1156,8 +1163,13 @@ describe('session:keys', () => {
     let sleepCalls = 0;
     const r = sendKeysFor(4821, 'a\nb', {
       has: () => true,
-      // Never changes -- the settle loop exhausts its entire budget.
-      capture: () => { captureCalls += 1; return { ok: true, stdout: 'same' }; },
+      // Never changes -- the settle loop exhausts its entire budget. The
+      // copy-mode read shares this exec and is answered without counting.
+      capture: (args: string[]) => {
+        if (args[0] === 'display-message') return { ok: true, stdout: '0' };
+        captureCalls += 1;
+        return { ok: true, stdout: 'same' };
+      },
       send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
       sleep: () => { sleepCalls += 1; },
     });
@@ -1190,7 +1202,10 @@ describe('session:keys', () => {
       // Call 1 is the pre-paste liveness snapshot, which must succeed for
       // the paste to go ahead at all; every settle-loop capture after it
       // fails, standing in for a tmux server that stopped answering.
-      capture: () => {
+      // The copy-mode read shares this exec and is answered without
+      // counting, so "call 1" below still means the pre-paste snapshot.
+      capture: (args: string[]) => {
+        if (args[0] === 'display-message') return { ok: true, stdout: '0' };
         captureCalls += 1;
         return captureCalls === 1 ? { ok: true, stdout: 'before' } : { ok: false, error: 'server not responding' };
       },
@@ -1223,6 +1238,138 @@ describe('session:keys', () => {
     });
     expect(r).toEqual({ status: 'refused', reason: 'prompt_open' });
     expect(called).toBe(false);
+  });
+
+  // The bug this closes, measured 2026-09-16 against a live Codex session
+  // AND against a plain shell -- it was reported as Codex-only, and it is
+  // not provider-specific at all. A pane in tmux copy-mode (its scrollback
+  // view) routes send-keys to copy-mode's OWN key table. paste-buffer
+  // still writes to the program, so the text lands in the composer, but
+  // the Enter after it is spent LEAVING the mode instead of submitting.
+  // Both tmux calls exit 0, so the send reported 'sent' and the renderer
+  // cleared the draft while the message sat in the pane, unsubmitted.
+  // Every session this app creates sets `mouse on` (launch.ts), so a
+  // single wheel scroll in the Terminal view arms this.
+  it('leaves copy-mode before pasting, so the Enter reaches the program', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    // One ordered log across BOTH execs: the point of this test is that the
+    // cancel happens before the paste starts, which two separate logs
+    // could not show.
+    const order: string[] = [];
+    let captureCalls = 0;
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      capture: (args: string[]) => {
+        order.push(args[0]!);
+        if (args[0] === 'display-message') return { ok: true, stdout: '1\n' };
+        captureCalls += 1;
+        return { ok: true, stdout: `c${captureCalls}` };
+      },
+      send: (args: string[]) => {
+        order.push(args.includes('-X') ? 'send-keys -X cancel' : args[0]!);
+        return { ok: true, stdout: '' };
+      },
+    });
+    expect(r).toEqual({ status: 'sent' });
+    // The mode is read and left BEFORE the liveness/settle baseline is
+    // captured: leaving copy-mode itself redraws the pane, so a baseline
+    // taken first would make the settle loop trip on the redraw rather
+    // than on the paste.
+    expect(order).toEqual([
+      'display-message', 'send-keys -X cancel',
+      'capture-pane', 'load-buffer', 'paste-buffer', 'capture-pane', 'send-keys',
+    ]);
+  });
+
+  it('reads the pane mode with display-message, and cancels nothing when not in a mode', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const sendCalls: string[][] = [];
+    let captureCalls = 0;
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      capture: (args: string[]) => {
+        if (args[0] === 'display-message') {
+          expect(args).toEqual(['display-message', '-p', '-t', '=llmws-claude-abc:', '#{pane_in_mode}']);
+          return { ok: true, stdout: '0\n' };
+        }
+        captureCalls += 1;
+        return { ok: true, stdout: `c${captureCalls}` };
+      },
+      send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
+    });
+    expect(r).toEqual({ status: 'sent' });
+    // Exactly the three calls this path has always made -- an ordinary
+    // send is not given an extra outbound command it does not need.
+    expect(sendCalls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
+  });
+
+  // copy-mode swallows send-keys -l exactly as it swallows Enter, so the
+  // keystroke path needs the same guard. KNOWN_ISSUES.md offered
+  // single-line sends as the workaround for this bug; measured the same
+  // day, that workaround was broken too.
+  it('leaves copy-mode on the single-line keystroke path as well', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const sendCalls: string[][] = [];
+    const r = sendKeysFor(4821, 'yes', {
+      has: () => true,
+      capture: (args: string[]) => (args[0] === 'display-message'
+        ? { ok: true, stdout: '1' }
+        : { ok: true, stdout: '' }),
+      send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(sendCalls).toEqual([
+      ['send-keys', '-t', '=llmws-claude-abc:', '-X', 'cancel'],
+      ['send-keys', '-t', '=llmws-claude-abc:', '-l', 'yes'],
+      ['send-keys', '-t', '=llmws-claude-abc:', 'Enter'],
+    ]);
+  });
+
+  // Refusing is the safe answer here, and the one case in this function
+  // where refusing beats sending: the pane is known to be in copy-mode and
+  // could not be brought out of it, so an Enter would certainly be
+  // swallowed. Nothing has been pasted yet, so the draft is still the
+  // user's -- refusing keeps it instead of reporting a send that would
+  // have silently lost it.
+  it('refuses before pasting when copy-mode cannot be left', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sendCalls: string[][] = [];
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      capture: (args: string[]) => (args[0] === 'display-message'
+        ? { ok: true, stdout: '1' }
+        : { ok: true, stdout: '' }),
+      send: (args: string[]) => {
+        sendCalls.push(args);
+        return args.includes('-X') ? { ok: false, error: 'no current client' } : { ok: true, stdout: '' };
+      },
+    });
+    expect(r).toEqual({ status: 'refused', reason: 'session_gone' });
+    expect(sendCalls.map(c => c[0])).toEqual(['send-keys']);
+    expect(errs).toHaveBeenCalledWith('tmux send-keys -X cancel failed:', 'no current client');
+    errs.mockRestore();
+  });
+
+  // A pane whose mode cannot be read is treated as not in one: this guard
+  // exists to stop a silent loss, and must not become a new way to refuse
+  // a send that would have worked. Unreadable mode leaves the behaviour
+  // exactly as it was before the guard existed.
+  it('sends normally when the pane mode cannot be read', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const sendCalls: string[][] = [];
+    let captureCalls = 0;
+    const r = sendKeysFor(4821, 'a\nb', {
+      has: () => true,
+      capture: (args: string[]) => {
+        if (args[0] === 'display-message') return { ok: false, error: 'no such session' };
+        captureCalls += 1;
+        return { ok: true, stdout: `c${captureCalls}` };
+      },
+      send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
+    });
+    expect(r).toEqual({ status: 'sent' });
+    expect(sendCalls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
   });
 
   it('sends text and Enter as two separate calls, text first, with -l', () => {

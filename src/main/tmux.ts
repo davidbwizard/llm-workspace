@@ -153,6 +153,36 @@ export function capturePane(name: string, lines: number | null, exec: TmuxExec =
     : ['capture-pane', '-p', '-S', `-${lines}`, '-t', target(name)]);
 }
 
+/** Reads whether the pane is in one of tmux's own modes -- in practice
+ *  copy-mode, its scrollback view. `1` if it is, `0` if not.
+ *
+ *  This matters because a pane in a mode routes send-keys to THAT mode's
+ *  key table instead of to the program: Enter is spent leaving the mode
+ *  rather than submitting, and send-keys -l is read as mode commands.
+ *  paste-buffer is unaffected -- it writes to the pty either way -- which
+ *  is what made the resulting bug look provider-specific: the text landed
+ *  visibly in the composer and only the submit went missing. Measured
+ *  2026-09-16 against Codex and a plain shell; sendKeysFor is the caller.
+ *
+ *  Nothing else in this file needs a format string, so this stays a
+ *  purpose-built reader rather than a general display-message wrapper --
+ *  the format is a literal here, never built from anything a caller
+ *  supplies. */
+export function paneInMode(name: string, exec: TmuxExec = defaultExec): TmuxResult {
+  guard(name);
+  return exec(['display-message', '-p', '-t', target(name), '#{pane_in_mode}']);
+}
+
+/** Leaves copy-mode, putting the pane back in front of its program.
+ *
+ *  tmux FAILS this with "not in a mode" when the pane is not in one, so
+ *  callers read paneInMode first rather than sending it blind -- an error
+ *  there would otherwise be indistinguishable from a real failure. */
+export function cancelCopyMode(name: string, exec: TmuxExec = defaultExec): TmuxResult {
+  guard(name);
+  return exec(['send-keys', '-t', target(name), '-X', 'cancel']);
+}
+
 /** No production caller since the streaming bridge (ipc.ts) started
  *  attaching a real pty client -- tmux resizes the window itself to
  *  follow that client's own size, the same way it would for a real
