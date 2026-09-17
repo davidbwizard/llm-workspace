@@ -1,0 +1,96 @@
+# Handoff: Part 2 follow-ups (2026-09-16 evening to 2026-09-17)
+
+Everything below is merged to `main` and pushed. No open branches.
+
+## What shipped
+
+| Merge | What |
+|---|---|
+| `43b984a` | The app lists the session it was launched from. Discovery used `pgrep -x`, which hides the caller's own ancestors; it now enumerates with `ps -axo pid=,comm=`. |
+| `f9ad4e2` | A pane in tmux copy-mode (one mouse-wheel scroll) swallowed the Enter. `sendKeysFor` now leaves copy-mode first. |
+| `298921f` | Codex ignored the Enter sent right behind `send-keys -l` text (its paste-burst heuristic). Every message now goes out as a bracketed paste. |
+| `4d6f049` | Day dividers in the conversation. |
+| `ce1b24b` | Copy icon under each agent reply and on each code block, with a visible Copied / Copy failed result. |
+| `8b96d2e` | Images a reply links to show as thumbnails (main reads and checks the file, sends a `data:` URL). |
+| `dc57972`, `66f1153` | Images you attached show as thumbnails under your message, for Claude and Codex, read back from the transcript line the index already points at. |
+| `3878d77`, `73098e0` | Attach images or any file from the app: paperclip button, paste, or drop on the conversation. |
+| `e85100e` | better-sqlite3 13. Fixed a Node 24 native abort (also reachable in the app), and one binary now loads in Node and Electron -- **the app and the test suite run side by side, no rebuild**. |
+
+Suite: 1187 tests, typecheck clean. `KNOWN_ISSUES.md` is current.
+
+## David's priorities for next session, in order
+
+1. **Live feedback in the conversation -- two parts.**
+   - **Your message was sent.** Today the box clears on `sent`, but the message
+     only appears once the transcript is ingested, so there is a gap where nothing
+     shows it went. Add a pending entry at the bottom (text, attachment chips,
+     "Sending…" then "Sent") that is replaced by the real turn when it arrives.
+     Decide what a refusal does to it (probably: stays, marked failed, text
+     returned to the box).
+   - **The agent is working.** While the session is busy, show a working
+     indicator at the bottom of the conversation (like the terminal's spinner),
+     gone when it is idle or waiting on you. For Claude the app already reads
+     `~/.claude/sessions/<pid>.json` `status` (busy / idle / waiting). **Not
+     checked:** where the cards get Codex's working state today -- find that
+     first and reuse it. If there is nothing reliable, the rollout's
+     `task_started` / `task_complete` events tracked busy/idle correctly in every
+     measurement on 2026-09-17.
+2. **Quick responses in the cards and the conversation.** This is Part 4 of the
+   plan, pulled ahead of Part 3 at David's request: answer a waiting session's
+   question, permission or plan-approval prompt with buttons, from its card and
+   from the conversation pane. The Conversation Pane Mockup already designs all of
+   it (https://claude.ai/artifact/3dRyJz6S4B42orSZsM8osz -- read its CSS, do not
+   infer from screenshots). Choices measured 2026-09-15 are in the four-part-plan
+   memory. Needs a spec: where the prompt data comes from (hooks are not
+   installed), and verifying the answer against Claude's review screen.
+3. **Part 3: launch into iTerm.** No spec yet. See the section below.
+
+## Part 3 in one paragraph
+
+Sessions the app launches already live in tmux. Part 3 opens that same tmux session
+in a real iTerm2 window using iTerm's tmux integration (`tmux -CC attach -t
+<name>`), so the terminal gets native scrollback, selection, copy, find, links and
+drag-and-drop instead of the app's embedded widget. Because the session still lives
+in tmux, the app keeps sending messages and answers exactly as it does now. Closing
+the iTerm window asks Hide / Detach / Kill / Cancel with Hide as the default, so the
+session keeps running (verified 2026-09-15). tmux's scrollback is capped at 2,000
+lines by default; the app can raise `history-limit` for its own sessions. Open
+decisions: open in iTerm automatically on launch or only on a button; keep, drop or
+demote the built-in Terminal view; one window per session or tabs; Codex too.
+
+## How to verify agent behaviour -- use this, it worked
+
+Screen-scraping a TUI gave confidently wrong answers twice (Codex echoes a submitted
+message in the same form as an unsent one). What worked, all day:
+
+- **The agent's own session log is the verdict.** Codex:
+  `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (local date; first line has
+  `payload.cwd`). Claude Code: `~/.claude/projects/<key>/*.jsonl` (records carry
+  `cwd`; skip `isMeta` records). Codex TUI logs: `~/.codex/logs_2.sqlite`
+  (open read-only).
+- **Validate the detector every run:** a known submit must register and a known
+  strand must not. It caught a stale-data bug once; make tags unique per run.
+- **Drive the real code:** a throwaway vitest file under
+  `<scratchpad>/live/tests/`, run with `npx vitest run --dir <scratchpad>/live`,
+  calling `sendKeysFor` etc. with production defaults against real tmux sessions.
+  Run it against `main` too for a before/after.
+- Never send "reset" keys between runs without knowing what they do (Escape puts
+  Codex in backtrack mode). A busy Codex does not submit on Enter at all.
+- Claude's trust prompt defaults to "No, exit": send Down before Enter.
+
+## Things worth knowing
+
+- **A reboot kills every tmux session**, including app-launched agent sessions. The
+  conversations survive; resume them with `claude --resume` / `codex resume`.
+- **Launch the app detached** (e.g. a tmux session named `workspace-app` running
+  `npm run dev`) when testing discovery, or the launching shell is its ancestor.
+- **Uploaded files live in temp** (David's choice), so **Claude asks permission
+  before reading each one**; Codex does not. Measured.
+- **Attached images/files** are staged by main under `$TMPDIR/llm-workspace-attachments`
+  (images, 1 day) and `$TMPDIR/llm-workspace-files` (files, 7 days), sent as
+  single-quoted paths -- Codex only attaches a quoted path.
+- **Still unexplained:** the first Codex report (2026-09-16 13:40, multi-line, fresh
+  idle session). The paste path never stranded in any measurement since. If it
+  recurs, capture `#{pane_in_mode}` and the rollout before changing anything.
+- **Mockup divergences** from the Part 2 handoff are still untriaged, except day
+  dividers (done).
