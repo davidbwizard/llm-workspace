@@ -46,6 +46,8 @@ describe('renderer security posture', () => {
       'session:attach', 'session:attachments', 'session:conversation', 'session:detach', 'session:image', 'session:keys',
       'session:kill', 'session:launch', 'session:raw', 'session:reattach',
       'session:resize', 'session:resume', 'session:reveal',
+      // Bytes only; checked and written by src/main/staging.ts.
+      'session:stage-image',
     ]);
   });
 });

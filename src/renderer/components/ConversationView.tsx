@@ -1,10 +1,11 @@
-import { Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentProps } from 'react';
+import { Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type MutableRefObject } from 'react';
 import Markdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationTurn } from '../../store/conversation.ts';
 import type { MatchQuality } from '../../discovery/match.ts';
 import type { Provider } from '../../core/types.ts';
 import type { KeysResult } from '../../main/ipc.ts';
+import type { StageRefusal } from '../../main/staging.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import { useSettings } from '../state/settings.ts';
@@ -362,7 +363,31 @@ export function messageCounter(length: number, max: number = MAX_REPLY_CHARS):
  *  picker is ignored and Enter selects whatever option is highlighted
  *  (measured 2026-09-15, "blue" recorded as "Red"), so a prompt_open
  *  refusal offers the Terminal view instead of a retry. */
-function MessageBox({ pid, sessionId, tmux, onOpenTerminal }: {
+const ACCEPTED_IMAGES = 'image/png,image/jpeg,image/gif,image/webp';
+/** Mirrors MAX_ATTACHMENTS in src/main/attachments.ts, which main enforces
+ *  at send time (a drift test pins the two together). */
+export const MAX_ATTACH = 20;
+const STAGE_TEXT: Record<StageRefusal, (name: string) => string> = {
+  invalid: n => `${n} could not be attached.`,
+  failed: n => `${n} could not be attached.`,
+  not_image: n => `${n} is not a PNG, JPEG, GIF or WebP image.`,
+  too_large: n => `${n} is larger than 10 MB.`,
+};
+
+function readFile(file: File, as: 'dataUrl'): Promise<string>;
+function readFile(file: File, as: 'bytes'): Promise<ArrayBuffer>;
+function readFile(file: File, as: 'dataUrl' | 'bytes'): Promise<string | ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string | ArrayBuffer);
+    reader.onerror = () => reject(reader.error);
+    if (as === 'dataUrl') reader.readAsDataURL(file); else reader.readAsArrayBuffer(file);
+  });
+}
+
+type Attachment = { id: string; name: string; thumb: string };
+
+function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
   pid: number | null;
   /** Which recorded session this pid is, used ONLY to prove a stored draft
    *  belongs to the session now on screen. Null when the app cannot tell,
@@ -370,6 +395,8 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal }: {
   sessionId: string | null;
   tmux: boolean;
   onOpenTerminal: () => void;
+  /** Set while this box can take an image, for the pane's drop handler. */
+  attachRef?: MutableRefObject<((files: File[]) => void) | null>;
 }) {
   // Seeded from the draft store, so a remount (Open Terminal and back, or a
   // session switch) restores what was typed rather than starting blank.
@@ -434,16 +461,55 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal }: {
     ? 'This session is not running.'
     : !tmux ? REFUSAL_TEXT.not_tmux : null;
 
+  // Images attached for the next send. Main holds the bytes (staged by id,
+  // src/main/staging.ts); this keeps only the id, a name and a thumbnail.
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const canAttach = disabledReason === null && !sending;
+
+  async function addImages(files: File[]): Promise<void> {
+    for (const file of files) {
+      const name = file.name || 'Pasted image';
+      if (!file.type.startsWith('image/')) { setMessage(STAGE_TEXT.not_image(name)); continue; }
+      try {
+        const r = await window.fleet?.stageImage(await readFile(file, 'bytes'));
+        if (!r) { setMessage('Could not reach the app.'); continue; }
+        if (!r.ok) { setMessage(STAGE_TEXT[r.reason](name)); continue; }
+        const thumb = await readFile(file, 'dataUrl');
+        let full = false;
+        setAttachments(a => {
+          if (a.length >= MAX_ATTACH) { full = true; return a; }
+          return [...a, { id: r.id, name, thumb }];
+        });
+        if (full) setMessage(`At most ${MAX_ATTACH} images can go in one message.`);
+      } catch (err) {
+        console.error('Attaching an image failed:', err);
+        setMessage(STAGE_TEXT.failed(name));
+      }
+    }
+  }
+
+  // Lets the whole conversation pane accept a dropped image (see the
+  // drop handlers on .convwrap), only while this box can send.
+  useEffect(() => {
+    if (!attachRef) return;
+    attachRef.current = canAttach ? files => { void addImages(files); } : null;
+    return () => { attachRef.current = null; };
+  });
+
   async function send(): Promise<void> {
-    if (pid === null || text.trim() === '' || sending) return;
+    if (pid === null || (text.trim() === '' && attachments.length === 0) || sending) return;
     setSending(true);
     setMessage(null);
     setChoiceOpen(false);
     try {
-      const r: KeysResult | undefined = await window.fleet?.sendKeys(pid, text);
+      const ids = attachments.map(a => a.id);
+      const r: KeysResult | undefined = ids.length
+        ? await window.fleet?.sendKeys(pid, text, ids)
+        : await window.fleet?.sendKeys(pid, text);
       // Sent is the one outcome that discards the draft -- it is no longer
-      // a draft, it is in the session.
-      if (r?.status === 'sent') { setText(''); drafts.delete(pid); return; }
+      // a draft, it is in the session. The attached images went with it.
+      if (r?.status === 'sent') { setText(''); setAttachments([]); drafts.delete(pid); return; }
       // The text is deliberately KEPT on a refusal: the person can fix
       // whatever was wrong (answer the choice, reattach) and press Enter
       // again, rather than retyping what they already wrote.
@@ -464,6 +530,33 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal }: {
 
   return (
     <div className="convbox">
+      {attachments.length > 0 && (
+        <div className="convchips">
+          {attachments.map(a => (
+            <div className="convchip" key={a.id}>
+              <img src={a.thumb} alt="" />
+              <span>{a.name}</span>
+              <button type="button" aria-label={`Remove ${a.name}`}
+                onClick={() => setAttachments(x => x.filter(y => y.id !== a.id))}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="convrow">
+      <button type="button" className="convattach" aria-label="Attach image" title="Attach image"
+        disabled={!canAttach} onClick={() => fileRef.current?.click()}>
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8"
+          strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3.5" y="5" width="17" height="14" rx="2.5" /><circle cx="9" cy="10" r="1.6" />
+          <path d="m20.5 16-4.8-4.8L7 19" />
+        </svg>
+      </button>
+      <input ref={fileRef} type="file" accept={ACCEPTED_IMAGES} multiple hidden
+        onChange={e => {
+          const files = [...(e.target.files ?? [])];
+          e.target.value = '';
+          void addImages(files);
+        }} />
       <textarea
         ref={boxRef}
         className="convinput"
@@ -487,7 +580,15 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal }: {
           e.preventDefault();
           void send();
         }}
+        // An image on the clipboard attaches rather than pasting nothing.
+        onPaste={e => {
+          const files = [...(e.clipboardData?.files ?? [])].filter(f => f.type.startsWith('image/'));
+          if (files.length === 0 || !canAttach) return;
+          e.preventDefault();
+          void addImages(files);
+        }}
       />
+      </div>
       {counter && (
         <p className={`convcount${counter.warn ? ' convcount-warn' : ''}`}>{counter.label}</p>
       )}
@@ -557,6 +658,10 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
 }) {
   const settings = useSettings();
   const [page, setPage] = useState<ConversationPage | null>(null);
+  // The message box registers here while it can take an image; the pane's
+  // drop handler forwards dropped files to it.
+  const attachRef = useRef<((files: File[]) => void) | null>(null);
+  const [dragging, setDragging] = useState(false);
   /** True once the mount fetch (below) has rejected. This is the one call
    *  site whose failure the reader must be told about: page stays null on
    *  rejection, and the render's page===null branch reads that as still
@@ -820,7 +925,32 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
 
   let prevDate = '';
   return (
-    <div className="convwrap">
+    <div className="convwrap"
+      // Drop an image anywhere on the conversation to attach it, as in the
+      // mockup. Only while the message box can send (attachRef is set);
+      // anything else is left alone -- main blocks navigation regardless.
+      onDragOver={e => {
+        if (!e.dataTransfer?.types?.includes('Files') || !attachRef.current) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        if (!dragging) setDragging(true);
+      }}
+      onDragLeave={e => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+      }}
+      onDrop={e => {
+        setDragging(false);
+        const files = [...(e.dataTransfer?.files ?? [])].filter(f => f.type.startsWith('image/'));
+        if (files.length === 0 || !attachRef.current) return;
+        e.preventDefault();
+        attachRef.current(files);
+      }}
+    >
+      {dragging && (
+        <div className="convdrop">
+          <p>Drop to attach<small>Images go to the session the same way as dragging into iTerm</small></p>
+        </div>
+      )}
       <div
         className="conv"
         // The one size the pane is built from (spec §3.5): every
@@ -900,7 +1030,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           session that produced them, and none should carry over to the
           next one. */}
       <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux}
-        onOpenTerminal={onOpenTerminal} />
+        onOpenTerminal={onOpenTerminal} attachRef={attachRef} />
     </div>
   );
 }

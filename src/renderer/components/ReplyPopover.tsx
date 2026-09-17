@@ -13,6 +13,7 @@ import './ReplyPopover.css';
  *  misfire during part 1 and are not casual wording. */
 export const REFUSAL_TEXT: Record<KeysRefusalReason, string> = {
   not_tmux: 'This session is not running inside tmux, so it cannot be typed into. Reattach it to reply.',
+  attachment_gone: 'An attached image is no longer available. Remove it and attach it again.',
   session_gone: 'That session has ended.',
   invalid_pid: 'Could not reach that session.',
   empty: 'Nothing to send.',

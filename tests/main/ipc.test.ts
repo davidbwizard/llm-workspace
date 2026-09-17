@@ -1358,6 +1358,64 @@ describe('session:keys', () => {
     expect(sendCalls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
   });
 
+  // Attached images (measured 2026-09-17 against Claude Code 2.1.274 and
+  // Codex 0.154, verdicts from their own session logs): pasting an image
+  // file's path attaches it, but only when the paste is the path alone, and
+  // Codex only when the path is quoted -- a raw path with spaces stayed text.
+  // So each image is its own paste of the single-quoted path, then the text
+  // (after a space), then Enter.
+  describe('with attached images', () => {
+    const IMG1 = '/private/att/aaaa.png';
+    const IMG2 = '/private/att/bbbb.jpg';
+    function sendWith(text: string, images: string[]) {
+      registerSession(4821, 'llmws-codex-abc');
+      const calls: Array<{ args: string[]; input?: string }> = [];
+      let captureCalls = 0;
+      const r = sendKeysFor(4821, text, {
+        has: () => true,
+        capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
+        send: (args: string[], input?: string) => { calls.push({ args, input }); return { ok: true, stdout: '' }; },
+      }, images);
+      return { r, calls };
+    }
+
+    it('pastes each image path, quoted and alone, then the text, then Enter', () => {
+      const { r, calls } = sendWith('what are these?', [IMG1, IMG2]);
+      expect(r).toEqual({ status: 'sent' });
+      expect(calls.map(c => c.args[0])).toEqual([
+        'load-buffer', 'paste-buffer', 'load-buffer', 'paste-buffer', 'load-buffer', 'paste-buffer', 'send-keys',
+      ]);
+      expect(calls.filter(c => c.args[0] === 'load-buffer').map(c => c.input))
+        .toEqual([`'${IMG1}'`, `'${IMG2}'`, ' what are these?']);
+      expect(calls.at(-1)!.args).toEqual(['send-keys', '-t', '=llmws-codex-abc:', 'Enter']);
+    });
+
+    it('sends images with no text at all', () => {
+      const { r, calls } = sendWith('', [IMG1]);
+      expect(r).toEqual({ status: 'sent' });
+      expect(calls.map(c => c.args[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
+      expect(calls[0]!.input).toBe(`'${IMG1}'`);
+    });
+
+    it('treats whitespace-only text beside images as no text', () => {
+      const { calls } = sendWith('  \n ', [IMG1]);
+      expect(calls.filter(c => c.args[0] === 'load-buffer').map(c => c.input)).toEqual([`'${IMG1}'`]);
+    });
+
+    it('refuses, sending nothing, a path that could break out of its quotes', () => {
+      for (const bad of ["/tmp/it's.png", '/tmp/a\nb.png', 'relative.png', '']) {
+        const { r, calls } = sendWith('hi', [bad]);
+        expect(r, bad).toEqual({ status: 'refused', reason: 'attachment_gone' });
+        expect(calls).toEqual([]);
+      }
+    });
+
+    it('still refuses empty text when there are no images', () => {
+      const { r } = sendWith('', []);
+      expect(r).toEqual({ status: 'refused', reason: 'empty' });
+    });
+  });
+
   it('sends the text and Enter as separate calls, text first, Enter never merged into it', () => {
     registerSession(4821, 'llmws-claude-abc');
     const calls: string[][] = [];
