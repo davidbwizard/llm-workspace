@@ -1479,6 +1479,32 @@ describe('ConversationView -- pending messages (Task 9)', () => {
     expect(document.querySelector('.turn.user.pending')).toBeTruthy();
   });
 
+  // Fix round 1 (team-lead review): spec 4.1 step 1 says the pane scrolls
+  // to the bottom on a send, and this is not optional polish -- the turn-
+  // list layout effect further up is keyed on [page] alone, which a
+  // pending entry never touches, so without a dedicated effect for it,
+  // someone scrolled up when they press Enter would see no sign their own
+  // message landed anywhere at all. Unlike an arriving AGENT turn (which
+  // only follows the reader down when stickyRef is already true, offering
+  // Jump to latest otherwise -- see that effect's own KNOWN LIMITATION
+  // note), the person's OWN send scrolls unconditionally: it is always a
+  // deliberate action by the same person reading the pane, so there is no
+  // "yanked while reading" case to protect against here.
+  it('scrolls to the newest message on your own send, even if you had scrolled up', async () => {
+    withSendKeys({ status: 'sent', queued: false });
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelectorAll('.turn')).toHaveLength(2));
+
+    const scroller = container.querySelector('.conv')!;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 4000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 });
+    fireEvent.scroll(scroller, { target: { scrollTop: 200 } }); // well away from the bottom
+    expect(scroller.scrollTop).toBe(200);
+
+    await typeAndSend('ship it');
+    expect(scroller.scrollTop).toBe(4000);
+  });
+
   it('shows no label at all for a plain sent message -- Queued and the warning are both opt-in', async () => {
     withSendKeys({ status: 'sent', queued: false });
     renderConv();
@@ -1602,13 +1628,23 @@ describe('ConversationView -- pending messages (Task 9)', () => {
     }
   });
 
+  // Fix round 1: the spy used to be installed BEFORE the mount's own
+  // await screen.findByLabelText(...) -- which meant Testing Library's own
+  // internal findBy polling (it clears its own interval-based timers) was
+  // enough to satisfy a bare toHaveBeenCalled(), whether or not this
+  // component's cleanup ran at all. Proven by deleting the `return () =>
+  // clearInterval(id)` at ConversationView.tsx's idle-tick effect: the old
+  // version of this test still passed. Installing the spy AFTER the mount
+  // has settled, and asserting the exact count, means the only
+  // clearInterval call left for it to see is this component's own, at
+  // unmount.
   it('clears its pending-idle interval on unmount, rather than leaking a timer per pane', async () => {
     withSendKeys({ status: 'sent', queued: false });
-    const clearSpy = vi.spyOn(globalThis, 'clearInterval');
     const { unmount } = renderConv();
     await screen.findByLabelText('Message this session');
+    const clearSpy = vi.spyOn(globalThis, 'clearInterval');
     unmount();
-    expect(clearSpy).toHaveBeenCalled();
+    expect(clearSpy).toHaveBeenCalledTimes(1);
     clearSpy.mockRestore();
   });
 });

@@ -392,7 +392,7 @@ function readFile(file: File, as: 'dataUrl' | 'bytes'): Promise<string | ArrayBu
 
 type Attachment = { id: string; name: string; kind: AttachKind; thumb: string | null };
 
-function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef, onPendingChange }: {
+function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef, onPendingChange, onPendingSent }: {
   pid: number | null;
   /** Which recorded session this pid is, used ONLY to prove a stored draft
    *  belongs to the session now on screen. Null when the app cannot tell,
@@ -410,6 +410,13 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef, onPending
    *  no other way to learn a mutation happened and re-render the pending
    *  entries it renders below page.turns. */
   onPendingChange: () => void;
+  /** Notified ONLY by the optimistic add, never by the other mutations
+   *  onPendingChange above also covers -- ConversationView uses this to
+   *  scroll to the newest message on the person's own send, and firing it
+   *  from markQueued settling, a match dropping the entry, or the idle-tick
+   *  interval would scroll the reader away from wherever they had
+   *  deliberately scrolled, for no reason connected to anything they did. */
+  onPendingSent: () => void;
 }) {
   // Seeded from the draft store, so a remount (Open Terminal and back, or a
   // session switch) restores what was typed rather than starting blank.
@@ -529,6 +536,7 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef, onPending
     setAttachments([]);
     drafts.delete(pid);
     onPendingChange();
+    onPendingSent();
     // Puts the box back exactly as it was before the optimistic clear
     // above on a failed send -- the DRAFT store too, not just the visible
     // text, since that clear deleted it as well. Without restoring it
@@ -734,9 +742,17 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // a plain module-level store (src/renderer/state/pending.ts), not React
   // state, so a pending send survives a session switch the same way a
   // draft does -- pick up a mutation (a new send, a match against the log,
-  // an idle tick) the moment it happens. Only the setter is used; the count
-  // itself has no meaning of its own, same as WorkingStrip's own retick.
-  const [, retickPending] = useState(0);
+  // an idle tick) the moment it happens. The value itself is read once,
+  // below, by the scroll-on-send effect; every OTHER reader of this state
+  // (same pattern as WorkingStrip's own retick) only needs the setter.
+  const [pendingVersion, retickPending] = useState(0);
+  // Set by MessageBox's onPendingSent, immediately before the retick that
+  // follows it, and consumed by the scroll-on-send layout effect below --
+  // same one-shot, read-then-clear shape as pendingRestoreRef further down.
+  // A ref, not state: it must be read in the same commit that a `pendingVersion`
+  // bump renders, with nothing to trigger a render of its own (retickPending
+  // already does that).
+  const pendingSentRef = useRef(false);
   const [page, setPage] = useState<ConversationPage | null>(null);
   // The message box registers here while it can take an image; the pane's
   // drop handler forwards dropped files to it.
@@ -963,6 +979,33 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     if (stickyRef.current) el.scrollTop = el.scrollHeight;
     else setMissedLatest(true);
   }, [page]);
+
+  // A message the person just sent scrolls the pane to its own newest
+  // content, the same jump jumpToLatest performs -- but UNCONDITIONALLY,
+  // never gated by stickyRef the way an arriving AGENT turn is above (the
+  // KNOWN LIMITATION note on that effect is explicit about why that guard
+  // exists: yanking a reader who deliberately scrolled up is worse than the
+  // bug it would fix). Sending is always a deliberate action by the same
+  // person reading the pane, so there is no such reader-scrolled-up case to
+  // guard against here -- only the opposite risk, spec 4.1 step 1: showing
+  // them their own message with no sign at all that it landed, if they
+  // happened to be scrolled up at the moment they pressed Enter.
+  //
+  // Gated on pendingSentRef, which ONLY the optimistic ADD sets (see
+  // MessageBox's onPendingSent below) -- markQueued settling, a match
+  // dropping the entry, and the idle-tick interval all also bump
+  // pendingVersion (onPendingChange/retickPending, above), and re-scrolling
+  // on any of those would yank the reader away from wherever they had
+  // deliberately scrolled, for no reason connected to anything they did.
+  useLayoutEffect(() => {
+    if (!pendingSentRef.current) return;
+    pendingSentRef.current = false;
+    const el = scrollerRef.current;
+    if (el === null) return;
+    el.scrollTop = el.scrollHeight;
+    stickyRef.current = true;
+    setMissedLatest(false);
+  }, [pendingVersion]);
 
   const turns = page?.turns ?? [];
   const nextCursor = page?.nextCursor ?? null;
@@ -1208,7 +1251,8 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           next one. */}
       <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux}
         onOpenTerminal={onOpenTerminal} attachRef={attachRef}
-        onPendingChange={() => retickPending(t => t + 1)} />
+        onPendingChange={() => retickPending(t => t + 1)}
+        onPendingSent={() => { pendingSentRef.current = true; }} />
     </div>
   );
 }
