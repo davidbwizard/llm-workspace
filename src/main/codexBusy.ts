@@ -28,10 +28,12 @@ export function codexBusyFromTail(tail: string): boolean {
   return busy;
 }
 
-/** The rollout file this session's events were read from. */
+/** The rollout file this session's events were read from. Excludes subagent
+ *  threads (agent_id != null), which share the session_id but write their own
+ *  rollout file. */
 export function rolloutPathFor(db: Db, sessionId: string): string | null {
   const row = db.prepare(
-    `SELECT source_file FROM events WHERE session_id = ? AND source_file IS NOT NULL
+    `SELECT source_file FROM events WHERE session_id = ? AND agent_id IS NULL AND source_file IS NOT NULL
      ORDER BY id DESC LIMIT 1`,
   ).get(sessionId) as { source_file: string } | undefined;
   return row?.source_file ?? null;

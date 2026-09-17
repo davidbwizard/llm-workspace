@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { codexBusyFromTail, isCodexBusy, ROLLOUT_TAIL_BYTES } from '../../src/main/codexBusy.ts';
+import { codexBusyFromTail, isCodexBusy, rolloutPathFor, ROLLOUT_TAIL_BYTES } from '../../src/main/codexBusy.ts';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
@@ -35,6 +35,16 @@ describe('codexBusyFromTail', () => {
     const tail = '{"type":"event_ms' + '\n' + line('task_started');
     expect(codexBusyFromTail(tail)).toBe(true);
   });
+
+  it('tracks state across multiple turns, returning the state of the last boundary event', () => {
+    const tail = [
+      line('task_started'),
+      line('task_complete'),
+      line('task_started'),
+      line('token_count'),
+    ].join('\n');
+    expect(codexBusyFromTail(tail)).toBe(true);
+  });
 });
 
 describe('isCodexBusy', () => {
@@ -51,5 +61,20 @@ describe('isCodexBusy', () => {
       sourceOffset: 0, contentHash: 'h1', subIndex: 0, parserVersion: 3, agentId: null,
     })]);
     expect(isCodexBusy(db, 's1', () => { throw new Error('ENOENT'); })).toBe(null);
+  });
+
+  it('resolves to the root thread rollout path, not a subagent thread that shares the session id', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({
+        sessionId: 's1', agentId: null, sourceFile: '/root.jsonl',
+        ts: '2026-09-17T04:00:00.000Z', contentHash: 'h1',
+      }),
+      ev({
+        sessionId: 's1', agentId: 'agent-thread-1', sourceFile: '/subagent.jsonl',
+        ts: '2026-09-17T04:00:01.000Z', contentHash: 'h2',
+      }),
+    ]);
+    expect(rolloutPathFor(db, 's1')).toBe('/root.jsonl');
   });
 });
