@@ -41,6 +41,8 @@ const api = {
     ipcRenderer.invoke('session:conversation', sessionId, cursor),
   // An image a reply links to; main validates everything (src/main/images.ts).
   image: (sessionId: string, src: string) => ipcRenderer.invoke('session:image', sessionId, src),
+  // Images attached to one of your prompts; main finds and checks them.
+  attachments: (turnId: number) => ipcRenderer.invoke('session:attachments', turnId),
   attach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:attach', pid, cols, rows),
   detach: (pid: number) => ipcRenderer.invoke('session:detach', pid),
   resize: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:resize', pid, cols, rows),

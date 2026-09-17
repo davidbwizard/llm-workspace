@@ -187,3 +187,9 @@
   border-color:color-mix(in srgb, var(--accent) 45%, transparent); }
 .copy-btn[data-state="failed"] { color:var(--critical); background:var(--critical-soft);
   border-color:color-mix(in srgb, var(--critical) 45%, transparent); }
+
+/* Images you attached to a message, as in the mockup: a row of thumbnails
+   under your text. */
+.turn-thumbs { display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; }
+.turn-thumbs img { display:block; width:180px; max-width:100%; aspect-ratio:16/10; object-fit:cover;
+  border:1px solid var(--line); border-radius:var(--r-sm); }

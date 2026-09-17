@@ -3,6 +3,7 @@ import type { ConversationPage, ConversationCursor } from '../store/conversation
 import type { TerminalDataPayload } from '../main/stream.ts';
 import type { LaunchResult } from '../main/launch.ts';
 import type { ImageResult } from '../main/images.ts';
+import type { AttachmentResult } from '../main/attachments.ts';
 
 declare global {
   interface Window {
@@ -26,6 +27,8 @@ declare global {
       conversation: (sessionId: string, cursor?: ConversationCursor) => Promise<ConversationPage>;
       // An image a reply links to, read and checked by main.
       image: (sessionId: string, src: string) => Promise<ImageResult>;
+      // Images attached to one of your prompts, read back by main.
+      attachments: (turnId: number) => Promise<AttachmentResult>;
       // attach/detach/resize/sendRaw: Tasks 6b/10's streaming bridge. Left as
       // `unknown` here rather than guessed at when this file was written --
       // TerminalView.tsx (Task 10) narrows each with its own local cast

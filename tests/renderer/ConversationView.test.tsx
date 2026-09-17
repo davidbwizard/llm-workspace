@@ -1645,3 +1645,46 @@ describe('ConversationView -- images a reply links to', () => {
     expect(container.querySelector('.md-image')?.textContent).toBe('secret');
   });
 });
+
+describe('ConversationView -- images you attached', () => {
+  const DATA = 'data:image/png;base64,iVBORw0KGgo=';
+  function showTurn(turn: Record<string, unknown>, attachments: (id: number) => Promise<unknown>) {
+    const spy = vi.fn(attachments);
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: [{ id: 42, ts: '2026-09-12T10:00:00Z', ...turn }], nextCursor: null }),
+      attachments: spy,
+    };
+    return { spy, ...renderConv() };
+  }
+
+  it('shows your attached images under your text, without the [Image #N] markers', async () => {
+    const { spy, container } = showTurn({ role: 'user', text: '[Image #1] [Image #2] see these' },
+      async () => ({ ok: true, images: [DATA, DATA] }));
+    await waitFor(() => expect(container.querySelectorAll('.turn.user .turn-thumbs img')).toHaveLength(2));
+    expect(spy).toHaveBeenCalledWith(42);
+    expect(container.querySelector('.turn.user .turn-text')?.textContent).toBe('see these');
+    expect((container.querySelector('.turn-thumbs img') as HTMLImageElement).alt).toBe('Attached image 1');
+  });
+
+  it('does not ask when your message has no image marker', async () => {
+    const { spy, container } = showTurn({ role: 'user', text: 'just words' }, async () => ({ ok: true, images: [] }));
+    await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
+    expect(spy).not.toHaveBeenCalled();
+    expect(container.querySelector('.turn.user .turn-text')?.textContent).toBe('just words');
+  });
+
+  it('leaves the text exactly as it was when the images cannot be read', async () => {
+    const { container } = showTurn({ role: 'user', text: '[Image #1] look' }, async () => ({ ok: false, reason: 'not_found' }));
+    await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
+    await act(async () => {});
+    expect(container.querySelector('.turn-thumbs')).toBeNull();
+    expect(container.querySelector('.turn.user .turn-text')?.textContent).toBe('[Image #1] look');
+  });
+
+  it('only asks for your messages, not the agent\'s', async () => {
+    const { spy, container } = showTurn({ role: 'assistant', text: '[Image #1] quoted' }, async () => ({ ok: true, images: [DATA] }));
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    await act(async () => {});
+    expect(spy).not.toHaveBeenCalled();
+  });
+});

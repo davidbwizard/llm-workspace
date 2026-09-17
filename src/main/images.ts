@@ -30,8 +30,9 @@ const MIME_BY_EXT: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
 };
 
-/** The format the file's own bytes declare, or null. */
-function sniff(b: Buffer): string | null {
+/** The format the bytes themselves declare, or null. Shared with
+ *  attachments.ts. */
+export function sniffImage(b: Buffer): string | null {
   if (b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
   if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
   if (b.length >= 6 && /^GIF8[79]a$/.test(b.subarray(0, 6).toString('latin1'))) return 'image/gif';
@@ -61,7 +62,7 @@ async function realOrNull(p: string): Promise<string | null> {
   try { return await realpath(p); } catch { return null; }
 }
 
-const within = (p: string, root: string) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
+export const within = (p: string, root: string) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 
 export async function readSessionImage(sessionId: unknown, src: unknown, deps: Deps): Promise<ImageResult> {
   if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 200) return refuse('invalid');
@@ -89,7 +90,7 @@ export async function readSessionImage(sessionId: unknown, src: unknown, deps: D
   // The size was checked before reading; a file that grew in between is
   // still refused rather than sent.
   if (bytes.length > MAX_IMAGE_BYTES) return refuse('too_large');
-  const actual = sniff(bytes);
+  const actual = sniffImage(bytes);
   // The name must say image AND the bytes must agree on being one. A .jpg
   // that is really a PNG is still a picture, so the bytes' own type wins.
   if (!actual) return refuse('not_image');
