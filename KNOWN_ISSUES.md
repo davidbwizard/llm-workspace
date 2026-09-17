@@ -49,6 +49,51 @@ message; Escape presses between runs put Codex in backtrack mode; and a busy
 Codex does not submit on Enter at all ("tab to queue message"). Codex's own
 session log settled what the screen could not.
 
+## Sending to a busy Codex (measured 2026-09-17)
+
+The entry above's method note found that a busy Codex does not submit on
+Enter at all, and that Codex's own UI says "tab to queue message". Measured
+today whether Tab actually queues, and what it does on an idle session --
+by the same rule as before, from Codex's own rollout file, never the
+screen.
+
+Locating the right rollout file needed a correction too. `~/.codex/sessions/
+<date>/` is shared machine-wide; a real, unrelated session was actively
+writing new files there while this ran, so "sort filenames, take the
+newest" would have picked up someone else's session, not this measurement's
+own. `~/.codex/state_5.sqlite` has a `threads` table with `cwd` and
+`rollout_path` columns kept in sync live -- looking up the row for this
+session's own tmux cwd gives the exact file instead.
+
+**Detector validated first**, against a real busy/idle pair on one session:
+a tagged message sent on a 900-line counting turn (confirmed genuinely
+still running throughout -- the screen's own "Working (...)" indicator, and
+an unchanged task_complete count in the rollout), and again once idle.
+
+| condition | Enter | Tab |
+|---|---|---|
+| busy (confirmed still running) | submitted **~9s later**, while the original turn was still in progress -- not dropped | **queued** -- shown immediately in Codex's own "Queued follow-up inputs" panel, submitted within ~1s of the turn ending |
+| idle | submitted ~2s later | submitted ~1s later -- same as Enter, no indentation or completion popup |
+
+**Tab queues reliably.** On a confirmed-busy session it never showed as
+submitted while the turn was still running, and the queued message went
+out within about a second of the turn ending -- matching Codex's own
+hint. On an idle session Tab behaves like Enter: it submits.
+
+**busy+Enter no longer strands the message.** That is a change from the
+entry above, measured the same reported version (`0.154.0`) as
+2026-09-16. Not chased further here -- Task 3's question was about Tab, not
+re-litigating Enter -- but it means a busy Codex reached by the wrong path
+today risks the message landing in the live turn rather than being either
+queued or safely dropped, worth keeping in mind if that path is ever relied
+on again.
+
+**Method note.** Codex's own UI does render "queued" recognizably
+differently from "submitted" here (the "Queued follow-up inputs" panel),
+unlike the submitted/unsubmitted case the entry above warns about. The
+verdict was still the rollout file throughout, per the standing rule --
+the screen was read only to sanity-check it, never to replace it.
+
 ## FIXED 2026-09-16: a message sent to a pane in copy-mode was never submitted
 
 Found while investigating the Codex issue above. It reproduces that symptom
