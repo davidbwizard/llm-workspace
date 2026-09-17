@@ -1522,3 +1522,83 @@ describe('ConversationView -- the reading settings', () => {
     await waitFor(() => expect(container.querySelector('.conv')!.getAttribute('data-style')).toBe('c'));
   });
 });
+
+describe('ConversationView -- one-click copy', () => {
+  function mockClipboard(write: (text: string) => Promise<void>) {
+    const writeText = vi.fn(write);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    return writeText;
+  }
+
+  it('copies an agent reply as its original markdown, and says so', async () => {
+    const writeText = mockClipboard(async () => {});
+    const md = '**Done.** Run `npm test` next.';
+    const { container } = showOne({ role: 'assistant', text: md });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    // At the bottom of the reply, not in its meta line; an icon whose hover
+    // tooltip reads Copy.
+    expect(container.querySelector('.turn.assistant .meta .copy-btn')).toBeNull();
+    const btn = container.querySelector('.turn.assistant > .turn-actions .copy-btn') as HTMLButtonElement;
+    expect(btn.querySelector('svg')).toBeTruthy();
+    expect(btn.title).toBe('Copy');
+    expect(btn.getAttribute('aria-label')).toBe('Copy reply');
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.dataset.state).toBe('copied'));
+    expect(btn.getAttribute('aria-label')).toBe('Copied');
+    // Visible confirmation, not just an icon swap.
+    expect(btn.querySelector('.copy-note')?.textContent).toBe('Copied');
+    expect(writeText).toHaveBeenCalledWith(md);
+  });
+
+  // The app renders under React.StrictMode (src/renderer/main.tsx), which in
+  // dev mounts, unmounts and remounts every component. The first version's
+  // "still mounted" flag was cleared by that unmount and never set again, so
+  // in the running app the copy happened but "Copied" never showed.
+  it('shows Copied under React.StrictMode, as the app renders', async () => {
+    mockClipboard(async () => {});
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'assistant', text: 'x' }], nextCursor: null }),
+    };
+    const { container } = render(
+      <ConversationView sessionId="s1" provider="claude" events={null}
+        pid={4821} tmux={true} onOpenTerminal={() => {}} />,
+      { wrapper: React.StrictMode },
+    );
+    await waitFor(() => expect(container.querySelector('.turn-actions .copy-btn')).toBeTruthy());
+    const btn = container.querySelector('.turn-actions .copy-btn') as HTMLButtonElement;
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.querySelector('.copy-note')?.textContent).toBe('Copied'));
+  });
+
+  it('gives your own messages no copy button', async () => {
+    mockClipboard(async () => {});
+    const { container } = showOne({ role: 'user', text: 'hello' });
+    await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
+    expect(container.querySelector('.turn.user .copy-btn')).toBeNull();
+  });
+
+  it('copies exactly the code from a code block', async () => {
+    const writeText = mockClipboard(async () => {});
+    const { container } = showOne({ role: 'assistant', text: 'Fix:\n\n```js\nfunction parse(s) {\n  return s.trim()\n}\n```\n' });
+    await waitFor(() => expect(container.querySelector('pre')).toBeTruthy());
+    const btn = container.querySelector('.md-codeblock .copy-btn') as HTMLButtonElement;
+    expect(btn.title).toBe('Copy');
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.dataset.state).toBe('copied'));
+    expect(writeText).toHaveBeenCalledWith('function parse(s) {\n  return s.trim()\n}\n');
+  });
+
+  it('says the copy failed, and logs why, instead of claiming success', async () => {
+    mockClipboard(async () => { throw new Error('denied'); });
+    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container } = showOne({ role: 'assistant', text: 'x' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    const btn = container.querySelector('.turn.assistant > .turn-actions .copy-btn') as HTMLButtonElement;
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.dataset.state).toBe('failed'));
+    expect(btn.getAttribute('aria-label')).toBe('Copy failed');
+    expect(btn.querySelector('.copy-note')?.textContent).toBe('Copy failed');
+    expect(errs).toHaveBeenCalledWith('clipboard write failed:', expect.any(Error));
+    errs.mockRestore();
+  });
+});

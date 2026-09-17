@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ComponentProps } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationTurn } from '../../store/conversation.ts';
@@ -27,9 +27,67 @@ import './ConversationView.css';
  *  mark, and neither hears nor sees the word "agent". */
 const PROVIDER_NAME: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
 
+const COPY_LABEL = { idle: 'Copy', copied: 'Copied', failed: 'Copy failed' } as const;
+
+/** One-click copy that reports what actually happened for a moment. A
+ *  failed write says "Copy failed" and logs why -- never a false "Copied".
+ *  The write is wrapped so a missing clipboard API (which throws rather
+ *  than rejecting) lands in the same failure path. */
+function CopyButton({ getText, what }: { getText: () => string; what: string }) {
+  const [state, setState] = useState<keyof typeof COPY_LABEL>('idle');
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const alive = useRef(true);
+  // Set on every mount, not just initialised: StrictMode (main.tsx) mounts,
+  // unmounts and remounts in dev, and a flag only ever cleared stayed false,
+  // so the copy ran but its result was never shown.
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; clearTimeout(timer.current); };
+  }, []);
+  const settle = (next: keyof typeof COPY_LABEL) => {
+    if (!alive.current) return;
+    setState(next);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => { if (alive.current) setState('idle'); }, 2000);
+  };
+  const copy = () => {
+    Promise.resolve()
+      .then(() => navigator.clipboard.writeText(getText()))
+      .then(() => settle('copied'), (err: unknown) => {
+        console.error('clipboard write failed:', err);
+        settle('failed');
+      });
+  };
+  return (
+    <button type="button" className="copy-btn" data-state={state} onClick={copy}
+      title={COPY_LABEL[state]} aria-label={state === 'idle' ? `Copy ${what}` : COPY_LABEL[state]}>
+      <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
+        strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        {state === 'copied' ? <path d="m3.5 8.5 3 3 6-7" />
+          : state === 'failed' ? <path d="M8 4.5v4M8 11.2v.1M8 1.8 14.5 13.5h-13z" />
+            : <><rect x="5.5" y="5.5" width="8" height="8" rx="1.6" /><path d="M10.5 5.5V3.6c0-.9-.7-1.6-1.6-1.6H3.6c-.9 0-1.6.7-1.6 1.6v5.3c0 .9.7 1.6 1.6 1.6h1.9" /></>}
+      </svg>
+      {state !== 'idle' && <span className="copy-note">{COPY_LABEL[state]}</span>}
+    </button>
+  );
+}
+
+/** A fenced code block with its own Copy button. The text is read from the
+ *  rendered <pre> at click time, so what is copied is exactly what shows. */
+function CodeBlock(props: ComponentProps<'pre'>) {
+  const ref = useRef<HTMLPreElement>(null);
+  return (
+    <div className="md-codeblock">
+      <pre ref={ref} {...props} />
+      <CopyButton what="code" getText={() => ref.current?.textContent ?? ''} />
+    </div>
+  );
+}
+
 const MARKDOWN_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   img: ({ alt }) => <span className="md-image">{alt || 'image'}</span>,
+  pre: ({ node: _node, ...props }) => <CodeBlock {...props} />,
 };
 
 function MarkdownText({ text }: { text: string }) {
@@ -748,6 +806,9 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                         <div className="turn-text md"><MarkdownText text={t.text} /></div>
                       </div>
                     )}
+                  {t.role !== 'user' && (
+                    <div className="turn-actions"><CopyButton what="reply" getText={() => t.text} /></div>
+                  )}
                 </article>
                 </Fragment>
               );
