@@ -954,15 +954,23 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // that actually failed to arrive. tickIdle advances EVERY pending entry
   // at this pid, which is deliberate (its own doc comment in pending.ts): a
   // second message stuck behind a first one must warn too.
+  //
+  // The pendingFor check below is not an optimisation on top of the idle
+  // check -- it is load-bearing: retickPending bumps state on every firing,
+  // which re-renders the whole pane (nothing here is memoized, and
+  // react-markdown re-parses every assistant turn on each render), and an
+  // idle session with nothing pending is this component's RESTING state, so
+  // without this the pane would pay that cost once a second forever for no
+  // reason connected to anything on screen.
   useEffect(() => {
     if (pid === null) return;
     const id = setInterval(() => {
-      if (live?.activity !== 'idle') return;
+      if (live?.activity !== 'idle' || pendingFor(pid, sessionId).length === 0) return;
       tickIdle(pid, 1000);
       retickPending(t => t + 1);
     }, 1000);
     return () => clearInterval(id);
-  }, [pid, live?.activity]);
+  }, [pid, sessionId, live?.activity]);
 
   /** Scroll bookkeeping for CONTENT changes -- new turns landing, or an
    *  older page prepended -- keyed on `page` alone, in a LAYOUT effect so it

@@ -1720,6 +1720,42 @@ describe('ConversationView -- pending messages (Task 9)', () => {
     await waitFor(() => expect(screen.getByText(/no conversation/i)).toBeTruthy());
     expect(screen.queryByText('ship it')).toBeNull();
   });
+
+  // Finding 5 (final review, 2026-09-17): tickIdle's own idle check gated
+  // whether it advanced anything, but retickPending ran unconditionally --
+  // so the whole pane re-rendered once a second even in its resting state
+  // (idle, nothing pending), and nothing here is memoized, so every
+  // assistant turn was re-parsed by react-markdown on every tick. A
+  // Profiler around the pane counts commits directly, since a render count
+  // is the one thing DOM assertions cannot see.
+  it('does not re-render the pane once a second while idle with nothing pending', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pushLive: (payload: unknown) => void = () => {};
+      (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+        conversation: async () => ({ turns, nextCursor: null }),
+        watchSession: vi.fn().mockResolvedValue(true),
+        onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+      };
+      let renders = 0;
+      render(
+        <React.Profiler id="conv" onRender={() => { renders += 1; }}>
+          <ConversationView sessionId="s1" provider="claude" events={null}
+            pid={4821} tmux={true} onOpenTerminal={() => {}} />
+        </React.Profiler>,
+      );
+      await screen.findByText('run the farm tests');
+
+      act(() => {
+        pushLive({ version: 1, pid: 4821, sessionId: 's1', activity: 'idle', since: null, events: 1 });
+      });
+      const before = renders;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(renders).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // A reviewer suggested `maxLength` on the textarea; rejected because
