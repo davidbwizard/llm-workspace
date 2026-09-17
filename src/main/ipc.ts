@@ -20,7 +20,7 @@ import {
   getCachedLiveProcesses, refreshLiveProcesses, execFileSoft, readLiveSession, type ExecFn,
 } from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
-import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveSession.ts';
+import type { LiveSessionRead } from '../providers/claude/liveSession.ts';
 import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { readSessionImage } from './images.ts';
@@ -37,6 +37,9 @@ import { conversationFor, turnSource, type ConversationCursor } from '../store/c
 import type { Provider } from '../core/types.ts';
 import { launchSession, reattachSession, resumeSession, type LaunchResult } from './launch.ts';
 import { isCodexBusy } from './codexBusy.ts';
+import {
+  buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, type WatchDeps,
+} from './sessionLive.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -250,50 +253,13 @@ export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: num
   cachedPushOpenSessions = openSessionsLive(db, processes, now, { isTmux: pidIsTmux, launchedAtForPid });
 }
 
-/** The pid's live session file, re-read now, trusted only if its startedAt
- *  is the one discovery verified (stable across `/clear`, different for any
- *  other process). null for Codex, for a process discovery never verified,
- *  and for a failed or mismatched read. Shared by Reattach and Reply so the
- *  two cannot drift on what counts as a fresh, exact read. */
-export function freshLiveSession(
-  pid: number, processes: LiveProcess[], read: (pid: number) => LiveSessionRead,
-): LiveSessionFile | null {
-  const proc = processes.find(p => p.pid === pid);
-  if (proc?.provider !== 'claude' || !proc.liveSession) return null;
-  const fresh = read(pid);
-  return fresh.ok && fresh.file.startedAtMs === proc.liveSession.startedAtMs ? fresh.file : null;
-}
-
-/** session:reattach's session lookup: which session (id, provider, cwd) a
- *  live pid belongs to. Reads the exact same enriched cache pushFleet
- *  already maintains (cachedPushOpenSessions, refreshed by
- *  refreshPushEnrichment above) rather than running a query of its own --
- *  reattachSession (src/main/launch.ts) has no database or discovery access
- *  itself, by design, so this is the one place that resolves the pid before
- *  handing it in as an injected dependency. sessionId is only ever non-null
- *  on a `unique` match (OpenSession's own doc comment, src/fleet/state.ts)
- *  -- unique now covers an exact live-session match as well as a unique cwd
- *  match (spec §3.3) -- an ambiguous or unmatched pid still resolves to
- *  null here, which reattachSession treats as "cannot identify", never a
- *  guess.
- *
- *  Exact identity first (spec 2026-09-15-exact-session-identity-design.md
- *  §3.5): the enriched cache can be up to one sweep old, and a `/clear` in
- *  that window changes the session id. Uses freshLiveSession (above) for
- *  that fresh, verified read -- the same helper Reply's promptOpenFor
- *  (below) uses, so the two cannot drift on what counts as fresh. Anything
- *  else falls back to the cache exactly as before. */
-export function resolveReattachTarget(
-  pid: number,
-  deps: { cached: OpenSession[]; processes: LiveProcess[]; read: (pid: number) => LiveSessionRead },
-): { sessionId: string; provider: Provider; cwd: string } | null {
-  const fresh = freshLiveSession(pid, deps.processes, deps.read);
-  if (fresh) return { sessionId: fresh.sessionId, provider: 'claude', cwd: fresh.cwd };
-
-  const open = deps.cached.find(o => o.pid === pid);
-  if (!open || open.sessionId === null || open.cwd === null) return null;
-  return { sessionId: open.sessionId, provider: open.provider, cwd: open.cwd };
-}
+// freshLiveSession/resolveReattachTarget now live in src/main/sessionLive.ts
+// (Task 6, session:watch below) -- that module needs to be imported BY this
+// one (buildSessionLive, watchSessionFor), and it used to import these two
+// FROM here, which would have made that a cycle. Re-exported (not just
+// imported) so every existing caller of `./ipc.ts`'s freshLiveSession/
+// resolveReattachTarget (tests/main/ipc.test.ts) keeps working unchanged.
+export { freshLiveSession, resolveReattachTarget };
 
 /** Whether Claude is showing a choice (a question picker or a permission
  *  prompt) for this pid right now. A typed reply cannot answer one: the
@@ -1357,6 +1323,29 @@ export function registerIpc(
     typeof sessionId === 'string'
       ? conversationFor(db, sessionId, undefined, parseConversationCursor(cursor))
       : { turns: [], nextCursor: null });
+  // Which pid's conversation is on screen -- watchSessionFor
+  // (src/main/sessionLive.ts) revalidates pid itself (a positive integer
+  // already present in a real discovery sweep) regardless of what this
+  // `typeof` check narrows; that is the actual trust boundary, not this
+  // line. BrowserWindow.fromWebContents(event.sender), same pattern as
+  // session:attach below, so a push always reaches the window that asked
+  // to watch rather than a module-level "mainWindow" this file does not
+  // otherwise hold a reference to. `buildPayload`/`processes` are read
+  // fresh on every call -- see WatchDeps' own doc comment -- so a session
+  // that ends, or whose activity changes, between pushes is reflected on
+  // the very next one rather than frozen at whatever it was when the watch
+  // started.
+  ipcMain.handle('session:watch', (event, pid: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const validPid = typeof pid === 'number' ? pid : null;
+    const deps: WatchDeps = {
+      processes: getCachedLiveProcesses,
+      buildPayload: () => validPid === null ? null
+        : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), { cached: cachedPushOpenSessions }),
+      send: payload => { if (win && !win.isDestroyed()) win.webContents.send('session:live', payload); },
+    };
+    return watchSessionFor(validPid, deps);
+  });
   // An image a reply links to, as a data: URL. The session's folder comes
   // from main's own event log; see src/main/images.ts for every check.
   ipcMain.handle('session:image', async (_event, sessionId: unknown, src: unknown) => {

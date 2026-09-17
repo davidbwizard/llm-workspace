@@ -1,7 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { homedir } from 'node:os';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { buildSessionLive } from '../../src/main/sessionLive.ts';
+import {
+  buildSessionLive, watchSessionFor, notifySessionChanged, pushSessionLive,
+  type SessionLivePayload, type WatchDeps, type WatchHandle,
+} from '../../src/main/sessionLive.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
 import type { OpenSession } from '../../src/fleet/state.ts';
@@ -216,5 +220,187 @@ describe('buildSessionLive', () => {
     expect(p?.events).toBe(3);
     expect(p?.activity).toBe('working');
     expect(p?.since).toBe(Date.parse('2026-09-17T10:00:00Z'));
+  });
+});
+
+describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
+  const CLAUDE_PATH = `${homedir()}/.claude/sessions/4821.json`;
+
+  // A fake fs.watch: records every path it is asked to watch and lets a
+  // test fire that path's own registered 'error' handler, or close it,
+  // without ever touching the real filesystem or leaving a real watcher
+  // running past the test.
+  function fakeWatch() {
+    const errorHandlers = new Map<string, (err: Error) => void>();
+    const active = new Set<string>();
+    let closedCount = 0;
+    const watch = (path: string): WatchHandle => {
+      active.add(path);
+      return {
+        on: (event, cb) => { if (event === 'error') errorHandlers.set(path, cb); },
+        close: () => { active.delete(path); closedCount += 1; },
+      };
+    };
+    return {
+      watch,
+      watchedPaths: () => [...active],
+      closedCount: () => closedCount,
+      triggerError: (path: string, err: Error) => errorHandlers.get(path)?.(err),
+    };
+  }
+
+  function makeDeps(o: {
+    processes: LiveProcess[];
+    buildPayload: () => SessionLivePayload | null;
+    fake?: ReturnType<typeof fakeWatch>;
+  }): { deps: WatchDeps; sent: SessionLivePayload[]; fake: ReturnType<typeof fakeWatch> } {
+    const sent: SessionLivePayload[] = [];
+    const fake = o.fake ?? fakeWatch();
+    return {
+      deps: { processes: () => o.processes, buildPayload: o.buildPayload, send: p => sent.push(p), watch: fake.watch },
+      sent,
+      fake,
+    };
+  }
+
+  // Nothing watched, and never touches deps -- watchSessionFor(null, ...)
+  // never reaches processes()/buildPayload()/watch(), so this is a safe
+  // reset even though none of its fields do anything real.
+  const NOOP: WatchDeps = { processes: () => [], buildPayload: () => null, send: () => {} };
+
+  afterEach(() => {
+    watchSessionFor(null, NOOP);
+    vi.useRealTimers();
+  });
+
+  it('refuses a pid absent from the discovery cache, and starts no watch', () => {
+    const { deps, sent, fake } = makeDeps({ processes: [], buildPayload: () => null });
+    expect(watchSessionFor(999999, deps)).toBe(false);
+    expect(fake.watchedPaths()).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+
+  it('refuses anything that is not a positive integer', () => {
+    const { deps, fake } = makeDeps({
+      processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => null,
+    });
+    for (const bad of [0, -1, 1.5, NaN, '4821' as unknown as number]) {
+      expect(watchSessionFor(bad, deps)).toBe(false);
+    }
+    expect(fake.watchedPaths()).toEqual([]);
+  });
+
+  it('an explicit null reports not watching, even with nothing previously watched', () => {
+    expect(watchSessionFor(null, NOOP)).toBe(false);
+  });
+
+  it('watches the claude live-session file at the validated pid, and pushes once immediately', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    const { deps, sent, fake } = makeDeps({
+      processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload,
+    });
+    expect(watchSessionFor(4821, deps)).toBe(true);
+    expect(fake.watchedPaths()).toEqual([CLAUDE_PATH]);
+    expect(sent).toEqual([payload]);
+  });
+
+  it('never opens a status-file watch for a non-claude process', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    const { deps, sent, fake } = makeDeps({
+      processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => payload,
+    });
+    expect(watchSessionFor(4821, deps)).toBe(true);
+    expect(fake.watchedPaths()).toEqual([]);
+    expect(sent).toEqual([payload]);
+  });
+
+  it('closes the previous watcher before starting a new one for a different pid', () => {
+    const payload1: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    const first = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload1 });
+    expect(watchSessionFor(4821, first.deps)).toBe(true);
+    expect(first.fake.watchedPaths()).toEqual([CLAUDE_PATH]);
+
+    const payload2: SessionLivePayload = { version: 1, pid: 4822, sessionId: 's2', activity: 'idle', since: null, events: 2 };
+    const second = makeDeps({ processes: [proc({ pid: 4822, provider: 'claude' })], buildPayload: () => payload2 });
+    expect(watchSessionFor(4822, second.deps)).toBe(true);
+
+    expect(first.fake.closedCount()).toBe(1);
+    expect(first.fake.watchedPaths()).toEqual([]);
+    expect(second.fake.watchedPaths()).toEqual([`${homedir()}/.claude/sessions/4822.json`]);
+  });
+
+  it('releases the watcher and timer on an explicit null', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    const { deps, fake } = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload });
+    watchSessionFor(4821, deps);
+    expect(watchSessionFor(null, deps)).toBe(false);
+    expect(fake.watchedPaths()).toEqual([]);
+    expect(fake.closedCount()).toBe(1);
+  });
+
+  it('falls back to the sweep when the watch reports an error, without dropping the watched session', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    const { deps, sent, fake } = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload });
+    watchSessionFor(4821, deps);
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fake.triggerError(CLAUDE_PATH, new Error('boom'));
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+    // The failed watcher closed itself and is no longer tracked...
+    expect(fake.watchedPaths()).toEqual([]);
+    expect(fake.closedCount()).toBe(1);
+
+    // ...but the session itself is still the one being watched: a change
+    // notification for it still coalesces into a push through the ordinary
+    // sweep/notify path, exactly as it would for a Codex session that never
+    // had a fs.watch at all.
+    sent.length = 0;
+    vi.useFakeTimers();
+    notifySessionChanged(new Set(['s1']));
+    vi.advanceTimersByTime(250);
+    expect(sent).toEqual([payload]);
+  });
+
+  it('pushes at most one payload per 250ms burst', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    const { deps, sent } = makeDeps({ processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => payload });
+    watchSessionFor(4821, deps);
+    sent.length = 0; // clear the immediate push watchSessionFor itself sent
+
+    vi.useFakeTimers();
+    notifySessionChanged(new Set(['s1']));
+    notifySessionChanged(new Set(['s1']));
+    notifySessionChanged(new Set(['s1']));
+    vi.advanceTimersByTime(250);
+    expect(sent).toHaveLength(1);
+  });
+
+  it('ignores changes to other sessions', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    const { deps, sent } = makeDeps({ processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => payload });
+    watchSessionFor(4821, deps);
+    sent.length = 0;
+
+    vi.useFakeTimers();
+    notifySessionChanged(new Set(['s2']));
+    vi.advanceTimersByTime(250);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('releases the watch when pushSessionLive finds the watched pid has left the discovery cache', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    let gone = false;
+    const { deps, fake } = makeDeps({
+      processes: [proc({ pid: 4821, provider: 'claude' })],
+      buildPayload: () => (gone ? null : payload),
+    });
+    watchSessionFor(4821, deps);
+    expect(fake.watchedPaths()).toEqual([CLAUDE_PATH]);
+
+    gone = true;
+    pushSessionLive();
+    expect(fake.watchedPaths()).toEqual([]);
+    expect(fake.closedCount()).toBe(1);
   });
 });

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { watchSessionFor, type WatchDeps } from '../../src/main/sessionLive.ts';
+import type { LiveProcess } from '../../src/discovery/parse.ts';
 
 // Comments can contain the same event/option names the assertions below look
 // for (e.g. a comment explaining why will-redirect is blocked would satisfy
@@ -48,6 +50,37 @@ describe('renderer security posture', () => {
       'session:resize', 'session:resume', 'session:reveal',
       // Bytes only; checked and written by src/main/staging.ts.
       'session:stage-file', 'session:stage-image',
+      // Which pid's conversation is on screen -- see the dedicated
+      // watchSessionFor pid-validation tests below.
+      'session:watch',
     ]);
+  });
+});
+
+// session:watch's own pid boundary (watchSessionFor, src/main/sessionLive.ts):
+// the renderer sends only a pid, and main must revalidate it -- a positive
+// integer already present in a real discovery sweep -- before it is ever
+// used to build a file path, since that path is what an fs.watch is opened
+// on (see watchSessionFor's own doc comment for why the path may never be
+// built from renderer-supplied text). These three refusals are the
+// security-relevant boundary; watchSessionFor's fuller behaviour
+// (coalescing, provider gating, teardown on move) is
+// tests/main/sessionLive.test.ts's job, not this file's.
+describe('session:watch pid validation', () => {
+  const NOOP: WatchDeps = { processes: () => [], buildPayload: () => null, send: () => {} };
+  const proc = (pid: number): LiveProcess =>
+    ({ pid, provider: 'claude', tty: null, cwd: '/repo', host: 'iterm2', ageSeconds: 60, rssBytes: null });
+
+  it('rejects a non-integer pid', () => {
+    expect(watchSessionFor(1.5, NOOP)).toBe(false);
+  });
+
+  it('rejects a negative pid', () => {
+    expect(watchSessionFor(-4821, NOOP)).toBe(false);
+  });
+
+  it('rejects a pid absent from discovery, even though it is a valid positive integer', () => {
+    const deps: WatchDeps = { processes: () => [proc(111)], buildPayload: () => null, send: () => {} };
+    expect(watchSessionFor(4821, deps)).toBe(false);
   });
 });
