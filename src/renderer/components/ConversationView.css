@@ -167,6 +167,14 @@
 .convsend { margin-left:8px; font-family:var(--f-mono); font-size:11px; color:var(--accent);
   background:none; border:1px solid var(--line); border-radius:20px; padding:3px 10px; cursor:pointer; }
 .convsend:hover { border-color:color-mix(in srgb,var(--accent) 40%,transparent); }
+/* The composer's own Send button (Conversation Pane Mockup's `.composer
+   .send`) -- a distinct class from .convsend above on purpose: that one is
+   the small pill-shaped text link used for "Open Terminal" inside a
+   refusal message, not this row's actual submit control, and the two must
+   not end up sharing a rule meant for only one of them. */
+.convsubmit { font:inherit; font-size:14px; font-weight:600; color:var(--ink); background:var(--raised);
+  border:1px solid var(--line); border-radius:var(--r-sm); padding:8px 14px; cursor:pointer; }
+.convsubmit:disabled { opacity:.45; cursor:default; }
 
 /* One-click copy: an always-visible icon under each agent reply and in the
    bottom-right corner of each code block; its native tooltip reads Copy.

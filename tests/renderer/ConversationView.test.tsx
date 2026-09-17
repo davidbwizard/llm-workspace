@@ -2145,3 +2145,152 @@ it('keeps the renderer attachment cap equal to main\'s', async () => {
   const { MAX_ATTACH } = await import('../../src/renderer/components/ConversationView.tsx');
   expect(MAX_ATTACH).toBe(MAX_ATTACHMENTS);
 });
+
+// Task 11 (2026-09-17-live-conversation-feedback): the strip moved here
+// from Task 10, which built WorkingStrip and its own unit tests standalone
+// (WorkingStrip.test.tsx) -- these prove the PANE actually renders it, not
+// merely that the component itself works in isolation.
+describe('ConversationView -- the working strip (Task 11)', () => {
+  function withLivePush() {
+    let pushLive: (payload: unknown) => void = () => {};
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns, nextCursor: null }),
+      watchSession: vi.fn().mockResolvedValue(true),
+      onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+    };
+    return (payload: Record<string, unknown>) => act(() => { pushLive(payload); });
+  }
+
+  it('shows the strip between the scroller and the message box while the agent works', async () => {
+    const push = withLivePush();
+    const { container } = renderConv();
+    await screen.findByLabelText('Message this session');
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: Date.now(), events: 1 });
+    await waitFor(() => expect(screen.getByText('Claude is working')).toBeTruthy());
+
+    const scroller = container.querySelector('.conv')!;
+    const strip = container.querySelector('.strip')!;
+    const box = screen.getByLabelText('Message this session');
+    expect(scroller.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(strip.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('takes the strip away once the agent goes idle', async () => {
+    const push = withLivePush();
+    const { container } = renderConv();
+    await screen.findByLabelText('Message this session');
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: Date.now(), events: 1 });
+    await waitFor(() => expect(container.querySelector('.strip')).toBeTruthy());
+
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'idle', since: null, events: 1 });
+    await waitFor(() => expect(container.querySelector('.strip')).toBeNull());
+  });
+
+  // The explicit `pid !== null` check in ConversationView earns its keep
+  // here: useSessionLive filters a push on `payload.pid !== pid`, and with
+  // pid null on both sides that comparison is false, so a payload that
+  // literally claims pid: null still reaches this pane's `live` state. Only
+  // the extra check stops it from showing a strip for a session that is not
+  // even running.
+  it('never shows the strip for a pane with no live process, even if a payload claims one is working', async () => {
+    const push = withLivePush();
+    const { container } = renderConv({ pid: null });
+    await waitFor(() => expect(screen.getByText('This session is not running.')).toBeTruthy());
+    push({ version: 1, pid: null, sessionId: null, activity: 'working', since: Date.now(), events: 1 });
+    await Promise.resolve();
+    expect(container.querySelector('.strip')).toBeNull();
+  });
+});
+
+describe('ConversationView -- the waiting card (Task 11)', () => {
+  function withLivePush() {
+    let pushLive: (payload: unknown) => void = () => {};
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns, nextCursor: null }),
+      watchSession: vi.fn().mockResolvedValue(true),
+      onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+    };
+    return (payload: Record<string, unknown>) => act(() => { pushLive(payload); });
+  }
+
+  it('turns the message box off while the agent waits, and keeps what was typed', async () => {
+    const push = withLivePush();
+    renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'half a thought' } });
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1 });
+
+    await waitFor(() => expect((box as HTMLTextAreaElement).disabled).toBe(true));
+    expect((box as HTMLTextAreaElement).value).toBe('half a thought');
+    expect(screen.getByPlaceholderText("Answer Claude's prompt above to keep typing")).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Send' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('disables the attach button and the pane\'s drop target too', async () => {
+    const push = withLivePush();
+    const { container } = renderConv();
+    await screen.findByLabelText('Message this session');
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1 });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Attach files' }).hasAttribute('disabled')).toBe(true));
+
+    // The drop target is gated on attachRef.current, which the message box
+    // only sets while it can attach (ConversationView.tsx's own effect) --
+    // so a drop while waiting must do nothing, same as a drop on a
+    // not-tmux session already proves elsewhere in this file.
+    const pane = container.querySelector('.convwrap') as HTMLElement;
+    const dataTransfer = { types: ['Files'], files: [], dropEffect: '' };
+    fireEvent.dragOver(pane, { dataTransfer });
+    expect(container.querySelector('.convdrop')).toBeNull();
+  });
+
+  it('shows the card itself, and switches to the Terminal view from its own button', async () => {
+    const push = withLivePush();
+    const onOpenTerminal = vi.fn();
+    renderConv({ onOpenTerminal });
+    await screen.findByLabelText('Message this session');
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1 });
+
+    await waitFor(() => expect(screen.getByText('Claude is waiting on you')).toBeTruthy());
+    expect(screen.getByText('Answer in the Terminal')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Terminal' }));
+    expect(onOpenTerminal).toHaveBeenCalled();
+  });
+
+  it('takes the card away, and re-enables the box, once the agent is working again', async () => {
+    const push = withLivePush();
+    renderConv();
+    await screen.findByLabelText('Message this session');
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1 });
+    await waitFor(() => expect(screen.getByText('Answer in the Terminal')).toBeTruthy());
+
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: Date.now(), events: 1 });
+    await waitFor(() => expect(screen.queryByText('Answer in the Terminal')).toBeNull());
+    expect((screen.getByLabelText('Message this session') as HTMLTextAreaElement).disabled).toBe(false);
+  });
+
+  // The name and logo come from the session's own provider -- only Claude
+  // reports `waiting` today, but nothing here should assume that stays true.
+  it('names the Codex provider in the placeholder rather than assuming Claude', async () => {
+    const push = withLivePush();
+    renderConv({ provider: 'codex' });
+    await screen.findByLabelText('Message this session');
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1 });
+    await waitFor(() => expect(screen.getByPlaceholderText("Answer Codex's prompt above to keep typing")).toBeTruthy());
+  });
+
+  // A real combination, not a contrived one: a session that has lost its
+  // tmux backing can still have Claude reporting `waiting` from its status
+  // file. disabledReason -- "not running inside tmux" -- must win, since it
+  // is the more fundamental reason nothing typed here can go anywhere; the
+  // waiting placeholder would otherwise claim a remedy (Open Terminal) that
+  // not_tmux's own message and backstop already cover differently.
+  it('keeps the not-tmux message and placeholder even if the agent also reports waiting', async () => {
+    const push = withLivePush();
+    renderConv({ tmux: false });
+    const box = await screen.findByLabelText('Message this session') as HTMLTextAreaElement;
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1 });
+    await waitFor(() => expect(box.disabled).toBe(true));
+    expect(screen.getByText(/not running inside tmux/i)).toBeTruthy();
+    expect(box.placeholder).toMatch(/not running inside tmux/i);
+  });
+});

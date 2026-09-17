@@ -8,6 +8,8 @@ import type { KeysResult } from '../../main/ipc.ts';
 import type { StageRefusal } from '../../main/staging.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
+import { WorkingStrip } from './WorkingStrip.tsx';
+import { WaitingCard } from './WaitingCard.tsx';
 import { useSettings } from '../state/settings.ts';
 import { useSessionLive } from '../state/useSessionLive.ts';
 import { addPending, pendingFor, dropPending, matchPending, markQueued, tickIdle, NOT_SEEN_AFTER_MS } from '../state/pending.ts';
@@ -392,13 +394,26 @@ function readFile(file: File, as: 'dataUrl' | 'bytes'): Promise<string | ArrayBu
 
 type Attachment = { id: string; name: string; kind: AttachKind; thumb: string | null };
 
-function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef, onPendingChange, onPendingSent }: {
+function MessageBox({ pid, sessionId, tmux, provider, waiting, onOpenTerminal, attachRef, onPendingChange, onPendingSent }: {
   pid: number | null;
   /** Which recorded session this pid is, used ONLY to prove a stored draft
    *  belongs to the session now on screen. Null when the app cannot tell,
    *  which means no draft is kept -- see draftFor above. */
   sessionId: string | null;
   tmux: boolean;
+  /** Whose prompt to name in the placeholder while `waiting` is true --
+   *  Task 11's card names the provider rather than assuming Claude, and
+   *  this box's own placeholder must say the same thing. */
+  provider: Provider;
+  /** True while the open session's agent is showing a choice (WaitingCard
+   *  is on screen). Folded into the same disabling this box already had
+   *  for "no live process" / "not tmux-backed", rather than a second,
+   *  competing disabled state -- the reasoning for why is the same either
+   *  way: nothing typed here can reach the agent right now. The typed text
+   *  itself is never touched -- only `disabled` and the placeholder change,
+   *  so answering in the Terminal and coming back finds it exactly as it
+   *  was left. */
+  waiting: boolean;
   onOpenTerminal: () => void;
   /** Set while this box can take an image, for the pane's drop handler. */
   attachRef?: MutableRefObject<((files: File[]) => void) | null>;
@@ -481,12 +496,24 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef, onPending
     ? 'This session is not running.'
     : !tmux ? REFUSAL_TEXT.not_tmux : null;
 
+  // Folds `waiting` into the one thing every disabled state here already
+  // meant: nothing typed can reach the agent right now. disabledReason
+  // alone still governs the message shown BELOW the box (the "not running" /
+  // "not tmux-backed" line) and the ordinary placeholder fallback -- ranked
+  // ahead of `waiting` deliberately, since a session that is not even
+  // running is a more fundamental reason than a prompt it cannot possibly
+  // be showing.
+  const inputDisabled = disabledReason !== null || waiting || sending;
+  const placeholder = disabledReason ?? (waiting
+    ? `Answer ${PROVIDER_NAME[provider]}'s prompt above to keep typing`
+    : 'Message this session');
+
   // Attachments for the next send. Main holds the bytes (staged by id,
   // src/main/staging.ts); this keeps only the id, a name, the kind and, for
   // an image, a thumbnail.
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const canAttach = disabledReason === null && !sending;
+  const canAttach = !inputDisabled;
 
   async function addFiles(files: File[]): Promise<void> {
     for (const file of files) {
@@ -633,8 +660,8 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef, onPending
         aria-label="Message this session"
         rows={2}
         value={text}
-        disabled={disabledReason !== null || sending}
-        placeholder={disabledReason ?? 'Message this session'}
+        disabled={inputDisabled}
+        placeholder={placeholder}
         onChange={e => {
           setText(e.target.value);
           // Stamped with the session id, so this draft can only ever be
@@ -659,6 +686,15 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef, onPending
           void addFiles(files);
         }}
       />
+      {/* The composer's own send affordance (Conversation Pane Mockup's
+          `.composer .send`), alongside the existing Enter-to-send (spec
+          §7.2, unchanged). Disabled by the exact same `inputDisabled` as
+          the textarea above -- while the agent is waiting, or this session
+          cannot be typed into at all, there is nothing for either path to
+          do. */}
+      <button type="button" className="convsubmit" disabled={inputDisabled} onClick={() => void send()}>
+        Send
+      </button>
       </div>
       {counter && (
         <p className={`convcount${counter.warn ? ' convcount-warn' : ''}`}>{counter.label}</p>
@@ -1245,11 +1281,27 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
       {missedLatest && (
         <button type="button" className="convjump" onClick={jumpToLatest}>Jump to latest</button>
       )}
+      {/* Between the scroller and the composer, never both at once: `live`
+          reports one `activity` at a time. The strip moved here from Task
+          10, which built the component and its own tests standalone --
+          this is its one render site, and ConversationView.tsx is the only
+          file Task 11 has open, which is why the two tasks stayed
+          sequential. `pid !== null` is checked on top of the activity
+          check, not folded into `live` itself: `live` already goes null
+          whenever `pid` does (useSessionLive's own doc comment), but this
+          keeps the strip from ever depending on that happening to be true. */}
+      {live?.activity === 'working' && pid !== null && (
+        <WorkingStrip provider={provider} since={live.since} />
+      )}
+      {live?.activity === 'waiting' && (
+        <WaitingCard provider={provider} onOpenTerminal={onOpenTerminal} />
+      )}
       {/* Keyed by pid so switching session remounts the box: its draft,
           any standing refusal and the choice prompt all belong to the
           session that produced them, and none should carry over to the
           next one. */}
-      <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux}
+      <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux} provider={provider}
+        waiting={live?.activity === 'waiting'}
         onOpenTerminal={onOpenTerminal} attachRef={attachRef}
         onPendingChange={() => retickPending(t => t + 1)}
         onPendingSent={() => { pendingSentRef.current = true; }} />
