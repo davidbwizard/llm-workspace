@@ -363,15 +363,18 @@ export function messageCounter(length: number, max: number = MAX_REPLY_CHARS):
  *  picker is ignored and Enter selects whatever option is highlighted
  *  (measured 2026-09-15, "blue" recorded as "Red"), so a prompt_open
  *  refusal offers the Terminal view instead of a retry. */
-const ACCEPTED_IMAGES = 'image/png,image/jpeg,image/gif,image/webp';
+/** Sent as images; any other file goes as a file the agent reads. */
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 /** Mirrors MAX_ATTACHMENTS in src/main/attachments.ts, which main enforces
  *  at send time (a drift test pins the two together). */
 export const MAX_ATTACH = 20;
-const STAGE_TEXT: Record<StageRefusal, (name: string) => string> = {
+type AttachKind = 'image' | 'file';
+const STAGE_TEXT: Record<StageRefusal, (name: string, kind: AttachKind) => string> = {
   invalid: n => `${n} could not be attached.`,
   failed: n => `${n} could not be attached.`,
   not_image: n => `${n} is not a PNG, JPEG, GIF or WebP image.`,
-  too_large: n => `${n} is larger than 10 MB.`,
+  // Mirrors MAX_IMAGE_BYTES and MAX_FILE_BYTES in src/main.
+  too_large: (n, kind) => `${n} is larger than ${kind === 'image' ? 10 : 25} MB.`,
 };
 
 function readFile(file: File, as: 'dataUrl'): Promise<string>;
@@ -385,7 +388,7 @@ function readFile(file: File, as: 'dataUrl' | 'bytes'): Promise<string | ArrayBu
   });
 }
 
-type Attachment = { id: string; name: string; thumb: string };
+type Attachment = { id: string; name: string; kind: AttachKind; thumb: string | null };
 
 function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
   pid: number | null;
@@ -461,39 +464,43 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
     ? 'This session is not running.'
     : !tmux ? REFUSAL_TEXT.not_tmux : null;
 
-  // Images attached for the next send. Main holds the bytes (staged by id,
-  // src/main/staging.ts); this keeps only the id, a name and a thumbnail.
+  // Attachments for the next send. Main holds the bytes (staged by id,
+  // src/main/staging.ts); this keeps only the id, a name, the kind and, for
+  // an image, a thumbnail.
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const canAttach = disabledReason === null && !sending;
 
-  async function addImages(files: File[]): Promise<void> {
+  async function addFiles(files: File[]): Promise<void> {
     for (const file of files) {
-      const name = file.name || 'Pasted image';
-      if (!file.type.startsWith('image/')) { setMessage(STAGE_TEXT.not_image(name)); continue; }
+      const kind: AttachKind = IMAGE_TYPES.has(file.type) ? 'image' : 'file';
+      const name = file.name || (kind === 'image' ? 'Pasted image' : 'Pasted file');
       try {
-        const r = await window.fleet?.stageImage(await readFile(file, 'bytes'));
+        const bytes = await readFile(file, 'bytes');
+        const r = kind === 'image'
+          ? await window.fleet?.stageImage(bytes)
+          : await window.fleet?.stageFile(bytes, name);
         if (!r) { setMessage('Could not reach the app.'); continue; }
-        if (!r.ok) { setMessage(STAGE_TEXT[r.reason](name)); continue; }
-        const thumb = await readFile(file, 'dataUrl');
+        if (!r.ok) { setMessage(STAGE_TEXT[r.reason](name, kind)); continue; }
+        const thumb = kind === 'image' ? await readFile(file, 'dataUrl') : null;
         let full = false;
         setAttachments(a => {
           if (a.length >= MAX_ATTACH) { full = true; return a; }
-          return [...a, { id: r.id, name, thumb }];
+          return [...a, { id: r.id, name, kind, thumb }];
         });
-        if (full) setMessage(`At most ${MAX_ATTACH} images can go in one message.`);
+        if (full) setMessage(`At most ${MAX_ATTACH} attachments can go in one message.`);
       } catch (err) {
-        console.error('Attaching an image failed:', err);
-        setMessage(STAGE_TEXT.failed(name));
+        console.error('Attaching a file failed:', err);
+        setMessage(STAGE_TEXT.failed(name, kind));
       }
     }
   }
 
-  // Lets the whole conversation pane accept a dropped image (see the
-  // drop handlers on .convwrap), only while this box can send.
+  // Lets the whole conversation pane accept a dropped file (see the drop
+  // handlers on .convwrap), only while this box can send.
   useEffect(() => {
     if (!attachRef) return;
-    attachRef.current = canAttach ? files => { void addImages(files); } : null;
+    attachRef.current = canAttach ? files => { void addFiles(files); } : null;
     return () => { attachRef.current = null; };
   });
 
@@ -503,12 +510,15 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
     setMessage(null);
     setChoiceOpen(false);
     try {
-      const ids = attachments.map(a => a.id);
-      const r: KeysResult | undefined = ids.length
-        ? await window.fleet?.sendKeys(pid, text, ids)
+      const attach = {
+        images: attachments.filter(a => a.kind === 'image').map(a => a.id),
+        files: attachments.filter(a => a.kind === 'file').map(a => a.id),
+      };
+      const r: KeysResult | undefined = attachments.length
+        ? await window.fleet?.sendKeys(pid, text, attach)
         : await window.fleet?.sendKeys(pid, text);
       // Sent is the one outcome that discards the draft -- it is no longer
-      // a draft, it is in the session. The attached images went with it.
+      // a draft, it is in the session. The attachments went with it.
       if (r?.status === 'sent') { setText(''); setAttachments([]); drafts.delete(pid); return; }
       // The text is deliberately KEPT on a refusal: the person can fix
       // whatever was wrong (answer the choice, reattach) and press Enter
@@ -534,7 +544,14 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
         <div className="convchips">
           {attachments.map(a => (
             <div className="convchip" key={a.id}>
-              <img src={a.thumb} alt="" />
+              {a.thumb
+                ? <img src={a.thumb} alt="" />
+                : (
+                  <svg className="convchip-file" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+                    strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z" /><path d="M14 3.5v5h5" />
+                  </svg>
+                )}
               <span>{a.name}</span>
               <button type="button" aria-label={`Remove ${a.name}`}
                 onClick={() => setAttachments(x => x.filter(y => y.id !== a.id))}>×</button>
@@ -543,19 +560,18 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
         </div>
       )}
       <div className="convrow">
-      <button type="button" className="convattach" aria-label="Attach image" title="Attach image"
+      <button type="button" className="convattach" aria-label="Attach files" title="Attach images or files"
         disabled={!canAttach} onClick={() => fileRef.current?.click()}>
         <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8"
           strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3.5" y="5" width="17" height="14" rx="2.5" /><circle cx="9" cy="10" r="1.6" />
-          <path d="m20.5 16-4.8-4.8L7 19" />
+          <path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l7.8-7.8a3.3 3.3 0 0 1 4.7 4.7l-7.8 7.8a1.7 1.7 0 0 1-2.4-2.4l7.1-7.1" />
         </svg>
       </button>
-      <input ref={fileRef} type="file" accept={ACCEPTED_IMAGES} multiple hidden
+      <input ref={fileRef} type="file" multiple hidden
         onChange={e => {
           const files = [...(e.target.files ?? [])];
           e.target.value = '';
-          void addImages(files);
+          void addFiles(files);
         }} />
       <textarea
         ref={boxRef}
@@ -580,12 +596,13 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
           e.preventDefault();
           void send();
         }}
-        // An image on the clipboard attaches rather than pasting nothing.
+        // A file or image on the clipboard attaches rather than pasting
+        // nothing; plain text pastes as it always did.
         onPaste={e => {
-          const files = [...(e.clipboardData?.files ?? [])].filter(f => f.type.startsWith('image/'));
+          const files = [...(e.clipboardData?.files ?? [])];
           if (files.length === 0 || !canAttach) return;
           e.preventDefault();
-          void addImages(files);
+          void addFiles(files);
         }}
       />
       </div>
@@ -926,7 +943,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   let prevDate = '';
   return (
     <div className="convwrap"
-      // Drop an image anywhere on the conversation to attach it, as in the
+      // Drop an image or file anywhere on the conversation to attach it, as in the
       // mockup. Only while the message box can send (attachRef is set);
       // anything else is left alone -- main blocks navigation regardless.
       onDragOver={e => {
@@ -940,7 +957,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
       }}
       onDrop={e => {
         setDragging(false);
-        const files = [...(e.dataTransfer?.files ?? [])].filter(f => f.type.startsWith('image/'));
+        const files = [...(e.dataTransfer?.files ?? [])];
         if (files.length === 0 || !attachRef.current) return;
         e.preventDefault();
         attachRef.current(files);
@@ -948,7 +965,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     >
       {dragging && (
         <div className="convdrop">
-          <p>Drop to attach<small>Images go to the session the same way as dragging into iTerm</small></p>
+          <p>Drop to attach<small>Images are attached; other files are given to the session by path</small></p>
         </div>
       )}
       <div

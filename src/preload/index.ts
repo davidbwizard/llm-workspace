@@ -24,10 +24,12 @@ const api = {
   },
   // Free-form text from the renderer: the first channel of its kind here.
   // Main sanitises and revalidates; the typing below narrows nothing.
-  sendKeys: (pid: number, text: string, imageIds?: string[]) =>
-    ipcRenderer.invoke('session:keys', pid, text, imageIds),
+  sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }) =>
+    ipcRenderer.invoke('session:keys', pid, text, attach),
   // An image's bytes, for main to check and hold until sent; returns an id.
   stageImage: (bytes: ArrayBuffer) => ipcRenderer.invoke('session:stage-image', bytes),
+  // Any other file's bytes and name, held the same way.
+  stageFile: (bytes: ArrayBuffer, name: string) => ipcRenderer.invoke('session:stage-file', bytes, name),
   // Raw keystrokes from the terminal widget itself -- arrow keys, Ctrl-C, the
   // TUI menu navigation the reply box deliberately refuses. Separate channel
   // from sendKeys precisely because the rules differ: this one MUST pass

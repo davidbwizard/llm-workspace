@@ -1689,24 +1689,27 @@ describe('ConversationView -- images you attached', () => {
   });
 });
 
-describe('ConversationView -- attaching images', () => {
+describe('ConversationView -- attaching images and files', () => {
   const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const png = (name = 'shot.png') => new File([PNG_BYTES], name, { type: 'image/png' });
   function withFleet(stage: (b: ArrayBuffer) => Promise<unknown> = async () => ({ ok: true, id: 'id-1' })) {
     const sendKeys = vi.fn(async () => ({ status: 'sent' }));
     const stageImage = vi.fn(stage);
+    const stageFile = vi.fn(async () => ({ ok: true, id: 'file-1' }));
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      conversation: async () => ({ turns, nextCursor: null }), sendKeys, stageImage,
+      conversation: async () => ({ turns, nextCursor: null }), sendKeys, stageImage, stageFile,
     };
-    return { sendKeys, stageImage };
+    return { sendKeys, stageImage, stageFile };
   }
+  const pdf = (name = 'report.pdf') => new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], name, { type: 'application/pdf' });
   const chips = (c: HTMLElement) => [...c.querySelectorAll('.convchip span')].map(s => s.textContent);
 
   it('attaches a picked image as a chip, sending its bytes to main', async () => {
     const { stageImage } = withFleet();
     const { container } = renderConv();
     const input = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement);
-    expect(input.accept).toBe('image/png,image/jpeg,image/gif,image/webp');
+    // Any file can be picked; images and other files are told apart below.
+    expect(input.accept).toBe('');
     fireEvent.change(input, { target: { files: [png()] } });
     await waitFor(() => expect(chips(container)).toEqual(['shot.png']));
     const sent = stageImage.mock.calls[0]![0] as ArrayBuffer;
@@ -1717,7 +1720,7 @@ describe('ConversationView -- attaching images', () => {
   it('the image button opens the file picker', async () => {
     withFleet();
     const { container } = renderConv();
-    const btn = await screen.findByRole('button', { name: 'Attach image' });
+    const btn = await screen.findByRole('button', { name: 'Attach files' });
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     const click = vi.spyOn(input, 'click');
     fireEvent.click(btn);
@@ -1733,7 +1736,7 @@ describe('ConversationView -- attaching images', () => {
     const box = screen.getByLabelText('Message this session') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'what is this?' } });
     fireEvent.keyDown(box, { key: 'Enter' });
-    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, 'what is this?', ['id-1']));
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, 'what is this?', { images: ['id-1'], files: [] }));
     await waitFor(() => expect(chips(container)).toEqual([]));
     expect(box.value).toBe('');
   });
@@ -1745,7 +1748,7 @@ describe('ConversationView -- attaching images', () => {
     fireEvent.change(input, { target: { files: [png()] } });
     await waitFor(() => expect(chips(container)).toHaveLength(1));
     fireEvent.keyDown(screen.getByLabelText('Message this session'), { key: 'Enter' });
-    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, '', ['id-1']));
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, '', { images: ['id-1'], files: [] }));
   });
 
   it('keeps the chips when the send is refused', async () => {
@@ -1801,10 +1804,42 @@ describe('ConversationView -- attaching images', () => {
     expect(chips(container)).toEqual([]);
   });
 
+  it('attaches any other file by name, with a file icon, and sends it as a file', async () => {
+    const { sendKeys, stageImage, stageFile } = withFleet();
+    const { container } = renderConv();
+    const input = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement);
+    fireEvent.change(input, { target: { files: [pdf()] } });
+    await waitFor(() => expect(chips(container)).toEqual(['report.pdf']));
+    expect(stageImage).not.toHaveBeenCalled();
+    const [bytes, name] = stageFile.mock.calls[0] as unknown as [ArrayBuffer, string];
+    expect([...new Uint8Array(bytes)]).toEqual([0x25, 0x50, 0x44, 0x46]);
+    expect(name).toBe('report.pdf');
+    expect(container.querySelector('.convchip img')).toBeNull();
+    expect(container.querySelector('.convchip svg')).toBeTruthy();
+    const box = screen.getByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: 'summarise' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, 'summarise', { images: [], files: ['file-1'] }));
+  });
+
+  it('takes a dropped or pasted non-image file as a file', async () => {
+    const { stageFile } = withFleet();
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.paste(box, { clipboardData: { files: [pdf('pasted.pdf')], getData: () => '' } });
+    await waitFor(() => expect(chips(container)).toEqual(['pasted.pdf']));
+    const pane = container.querySelector('.convwrap') as HTMLElement;
+    const dataTransfer = { types: ['Files'], files: [pdf('dropped.txt')], dropEffect: '' };
+    fireEvent.dragOver(pane, { dataTransfer });
+    fireEvent.drop(pane, { dataTransfer });
+    await waitFor(() => expect(chips(container)).toEqual(['pasted.pdf', 'dropped.txt']));
+    expect(stageFile).toHaveBeenCalledTimes(2);
+  });
+
   it('offers no attaching for a session that cannot be typed into', async () => {
     withFleet();
     renderConv({ tmux: false });
-    const btn = await screen.findByRole('button', { name: 'Attach image' });
+    const btn = await screen.findByRole('button', { name: 'Attach files' });
     expect((btn as HTMLButtonElement).disabled).toBe(true);
   });
 });
