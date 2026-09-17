@@ -558,7 +558,7 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, onOpenTerminal, a
     // by the fleet sweep's full 5s, longer still if the agent is mid-turn.
     // The draft is dropped here too: it is no longer a draft, it is either
     // in flight to the session or about to be restored below if that fails.
-    const key = addPending(pid, { text, attachments, sentAt: Date.now(), queued: false });
+    const key = addPending(pid, { text, attachments, sentAt: Date.now(), queued: false, sessionId });
     setText('');
     setAttachments([]);
     drafts.delete(pid);
@@ -941,7 +941,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // exactly when a newly-landed turn could match one still pending.
   useEffect(() => {
     if (pid === null || page === null) return;
-    const matched = matchPending(pendingFor(pid), page.turns, matchedTurnsRef.current);
+    const matched = matchPending(pendingFor(pid, sessionId), page.turns, matchedTurnsRef.current);
     if (matched.length === 0) return;
     for (const key of matched) dropPending(pid, key);
     retickPending(t => t + 1);
@@ -1125,7 +1125,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     body = note(`This session's conversation could not be loaded. Reopening the session will try again.`);
   } else if (page === null) {
     body = note('Loading…');
-  } else if (page.turns.length === 0 && (pid === null || pendingFor(pid).length === 0)) {
+  } else if (page.turns.length === 0 && (pid === null || pendingFor(pid, sessionId).length === 0)) {
     // The one exception to "empty means say so": a message just sent, still
     // waiting on the agent's log to catch up, is not nothing -- "no
     // conversation recorded" would be sitting right above the very message
@@ -1241,7 +1241,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                 box has, the Terminal. Claude's queued flag is simply false
                 whenever its status file cannot be read, so no Queued label
                 is an intentional, honest silence, not a missing state. */}
-            {pid !== null && pendingFor(pid).map(p => {
+            {pid !== null && pendingFor(pid, sessionId).map(p => {
               const warn = p.idleMs >= NOT_SEEN_AFTER_MS;
               return (
                 <article className="turn user pending" key={p.key}>

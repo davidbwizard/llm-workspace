@@ -1694,6 +1694,32 @@ describe('ConversationView -- pending messages (Task 9)', () => {
     expect(document.querySelectorAll('.turn.user.pending')).toHaveLength(1);
     expect(document.querySelectorAll('.turn.user')).toHaveLength(2);
   });
+
+  // Finding 4 (final review, 2026-09-17), reproduced end to end: spec 4.4
+  // says a pending entry is "dropped when the pid leaves the fleet", but
+  // nothing ever did that -- pending was keyed by bare pid with no session
+  // stamp. Here the OS hands the same pid (4821) to a brand-new session
+  // (s2) while a message sent into the OLD session (s1) is still pending --
+  // exactly the drafts store's own documented pid-reuse hazard, reached
+  // through the neighbouring store. The old session's text must never show
+  // up in the new session's pane.
+  it('does not show a pending entry from a session that no longer matches this pid', async () => {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: [], nextCursor: null }),
+      sendKeys: vi.fn(async () => ({ status: 'sent', queued: false })),
+    };
+    const { rerender } = renderConv(); // sessionId 's1', pid 4821
+    await typeAndSend('ship it');
+    await waitFor(() => expect(document.querySelector('.turn.user.pending')).toBeTruthy());
+
+    // Same pid, a different session -- the OS-reuse scenario the drafts
+    // store already guards against (see its own doc comment above).
+    rerender(<ConversationView sessionId="s2" provider="claude" events={null}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText(/no conversation/i)).toBeTruthy());
+    expect(screen.queryByText('ship it')).toBeNull();
+  });
 });
 
 // A reviewer suggested `maxLength` on the textarea; rejected because

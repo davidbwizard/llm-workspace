@@ -8,6 +8,15 @@ export type Pending = {
   sentAt: number;
   queued: boolean;
   idleMs: number;
+  /** The session this entry was sent into, the same way the `drafts` store
+   *  in ConversationView.tsx stamps a draft -- see its own doc comment for
+   *  why the pid alone is not an identity: the OS reuses pid numbers, and an
+   *  entry restored on the number alone would show one session's pending
+   *  text in a different session's conversation once that pid is handed to
+   *  a new process. null when the app could not identify the session at
+   *  send time (an ambiguous or not-yet-matched pid), which pendingFor
+   *  below never matches -- see its own doc comment for why. */
+  sessionId: string | null;
 };
 
 export const MATCH_SKEW_MS = 2_000;
@@ -41,10 +50,23 @@ export function addPending(pid: number, p: Omit<Pending, 'key' | 'idleMs'>): str
 }
 
 /**
- * Returns all pending messages for the given pid, or an empty array if none.
+ * Returns the pending messages for the given pid that were sent into the
+ * session now on screen, or an empty array if none. Spec 4.4's "dropped
+ * when the pid leaves the fleet" is delivered by this filter, not by an
+ * active removal: once the pid is handed to a different session (or the
+ * same pid resolves to a different sessionId for any other reason), the old
+ * entries' stamp no longer matches and they simply stop being returned,
+ * rather than lingering in whatever is now on screen.
+ *
+ * `sessionId` null (the app cannot identify the session now on screen)
+ * never matches, even an entry ALSO stamped null -- mirrors drafts' own
+ * draftFor in ConversationView.tsx: two different, both-unidentified
+ * sessions at the same pid must not be treated as the same identity just
+ * because neither could be pinned down.
  */
-export function pendingFor(pid: number): Pending[] {
-  return pending.get(pid) ?? [];
+export function pendingFor(pid: number, sessionId: string | null): Pending[] {
+  if (sessionId === null) return [];
+  return (pending.get(pid) ?? []).filter(e => e.sessionId === sessionId);
 }
 
 /**
