@@ -22,9 +22,11 @@ declare global {
       onFleet: (cb: (payload: FleetListPayload) => void) => () => void;
       // Main sanitises and revalidates pid and text on every call; this
       // typing narrows nothing at the trust boundary itself.
-      sendKeys: (pid: number, text: string, imageIds?: string[]) => Promise<KeysResult>;
+      sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }) => Promise<KeysResult>;
       // An image's bytes, checked and held by main until sent.
       stageImage: (bytes: ArrayBuffer) => Promise<StageResult>;
+      // Any other file's bytes and name, held by main until sent.
+      stageFile: (bytes: ArrayBuffer, name: string) => Promise<StageResult>;
       // cursor pages backward (older) from a prior page's nextCursor;
       // omitted for the first, newest page.
       conversation: (sessionId: string, cursor?: ConversationCursor) => Promise<ConversationPage>;

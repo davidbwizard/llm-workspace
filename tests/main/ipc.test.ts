@@ -1367,7 +1367,7 @@ describe('session:keys', () => {
   describe('with attached images', () => {
     const IMG1 = '/private/att/aaaa.png';
     const IMG2 = '/private/att/bbbb.jpg';
-    function sendWith(text: string, images: string[]) {
+    function sendWith(text: string, images: string[], files: string[] = []) {
       registerSession(4821, 'llmws-codex-abc');
       const calls: Array<{ args: string[]; input?: string }> = [];
       let captureCalls = 0;
@@ -1375,7 +1375,7 @@ describe('session:keys', () => {
         has: () => true,
         capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
         send: (args: string[], input?: string) => { calls.push({ args, input }); return { ok: true, stdout: '' }; },
-      }, images);
+      }, images, files);
       return { r, calls };
     }
 
@@ -1408,6 +1408,29 @@ describe('session:keys', () => {
         expect(r, bad).toEqual({ status: 'refused', reason: 'attachment_gone' });
         expect(calls).toEqual([]);
       }
+    });
+
+    // Other files are not attached by the agent; it reads them from the
+    // path it is given. So each goes as a labelled line ahead of the text,
+    // in the same paste.
+    it('lists attached files ahead of the text, in one paste', () => {
+      const { r, calls } = sendWith('summarise these', [], ['/private/f/a/report.pdf', '/private/f/b/notes.md']);
+      expect(r).toEqual({ status: 'sent' });
+      expect(calls.map(c => c.args[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
+      expect(calls[0]!.input).toBe("Attached file: '/private/f/a/report.pdf'\nAttached file: '/private/f/b/notes.md'\nsummarise these");
+    });
+
+    it('sends files with no text, and after any images', () => {
+      expect(sendWith('', [], ['/private/f/a/report.pdf']).calls[0]!.input).toBe("Attached file: '/private/f/a/report.pdf'");
+      const { calls } = sendWith('look', [IMG1], ['/private/f/a/report.pdf']);
+      expect(calls.filter(c => c.args[0] === 'load-buffer').map(c => c.input))
+        .toEqual([`'${IMG1}'`, " Attached file: '/private/f/a/report.pdf'\nlook"]);
+    });
+
+    it('refuses a file path that could break out of its quotes', () => {
+      const { r, calls } = sendWith('hi', [], ["/tmp/it's.pdf"]);
+      expect(r).toEqual({ status: 'refused', reason: 'attachment_gone' });
+      expect(calls).toEqual([]);
     });
 
     it('still refuses empty text when there are no images', () => {

@@ -47,7 +47,7 @@ describe('renderer security posture', () => {
       'session:kill', 'session:launch', 'session:raw', 'session:reattach',
       'session:resize', 'session:resume', 'session:reveal',
       // Bytes only; checked and written by src/main/staging.ts.
-      'session:stage-image',
+      'session:stage-file', 'session:stage-image',
     ]);
   });
 });

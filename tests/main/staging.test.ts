@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, statSync, existsSync, writeFileSync, utimesSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { createStager, MAX_STAGED } from '../../src/main/staging.ts';
+import { createStager, createFileStager, MAX_STAGED, MAX_FILE_BYTES } from '../../src/main/staging.ts';
 import { MAX_IMAGE_BYTES } from '../../src/main/images.ts';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000'
@@ -76,5 +76,61 @@ describe('createStager', () => {
     await stager.sweep();
     expect(existsSync(old)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
+  });
+});
+
+describe('createFileStager', () => {
+  const bytes = new Uint8Array(Buffer.from('%PDF-1.7 hello'));
+
+  it('keeps the file under its own name in a private per-upload folder', async () => {
+    const stager = createFileStager(join(base, 'files'));
+    const r = await stager.stage(bytes, 'Quarterly report.pdf');
+    const path = r.ok ? stager.pathFor(r.id) : null;
+    expect(path).toMatch(/\/files\/[0-9a-f-]{36}\/Quarterly report\.pdf$/);
+    expect(readFileSync(path!)).toEqual(Buffer.from(bytes));
+    expect(statSync(path!).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(path!)).mode & 0o777).toBe(0o700);
+  });
+
+  it('cleans the name so it can never break out of the quoted path', async () => {
+    const stager = createFileStager(join(base, 'files'));
+    const cases: Array<[string, string]> = [
+      ["it's \"here\".txt", 'its here.txt'],
+      ['../../etc/passwd', 'passwd'],
+      ['a\nb\tc.md', 'a b c.md'],
+      ['...', 'file'],
+      ['', 'file'],
+      ['.hidden', 'hidden'],
+      ['x'.repeat(300) + '.txt', 'x'.repeat(96) + '.txt'],
+    ];
+    for (const [given, want] of cases) {
+      const r = await stager.stage(bytes, given);
+      expect(r.ok && stager.pathFor(r.id)!.split('/').pop(), JSON.stringify(given)).toBe(want);
+    }
+  });
+
+  it('refuses a file over the cap, and input that is not bytes or a name', async () => {
+    const stager = createFileStager(join(base, 'files'));
+    expect(await stager.stage(new Uint8Array(MAX_FILE_BYTES + 1), 'big.bin')).toEqual({ ok: false, reason: 'too_large' });
+    expect(await stager.stage('text', 'a.txt')).toEqual({ ok: false, reason: 'invalid' });
+    expect(await stager.stage(bytes, 42)).toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  it('accepts an empty file', async () => {
+    const stager = createFileStager(join(base, 'files'));
+    expect((await stager.stage(new Uint8Array(0), 'empty.txt')).ok).toBe(true);
+  });
+
+  it('sweeps uploads older than seven days, and nothing newer', async () => {
+    const dir = join(base, 'files');
+    const stager = createFileStager(dir);
+    const oldOne = await stager.stage(bytes, 'old.txt');
+    const newOne = await stager.stage(bytes, 'new.txt');
+    const oldDir = dirname(oldOne.ok ? stager.pathFor(oldOne.id)! : '');
+    const eightDaysAgo = (Date.now() - 8 * 86_400_000) / 1000;
+    utimesSync(oldDir, eightDaysAgo, eightDaysAgo);
+    await stager.sweep();
+    expect(existsSync(oldDir)).toBe(false);
+    expect(existsSync(newOne.ok ? stager.pathFor(newOne.id)! : '')).toBe(true);
   });
 });
