@@ -39,11 +39,12 @@ const NEWLINE = /[\r\n]/;
  *  default here refuses rather than silently collapsing, and it stays the
  *  default.
  *
- *  `multiline` is the one opt-in, used by exactly one caller: sendKeysFor's
- *  bracketed-paste path (src/main/ipc.ts), which does not type the text at
- *  all -- tmux loads it into a buffer and pastes it, and Claude Code takes
- *  the embedded newlines as part of one pasted message instead of
- *  submitting on each of them (measured 2026-09-15). Every other rule is
+ *  `multiline` is the one opt-in, used by exactly one caller: sendKeysFor
+ *  (src/main/ipc.ts), which never types text at all -- since 2026-09-17
+ *  every message, single-line included, is loaded into a tmux buffer and
+ *  pasted, and the receiving program takes the embedded newlines as part of
+ *  one pasted message instead of submitting on each of them (measured for
+ *  Claude Code 2026-09-15, Codex 2026-09-17). Every other rule is
  *  identical on both paths: non-empty, the 4,000 character cap, and
  *  control-character stripping, all applied before the text reaches tmux.
  *

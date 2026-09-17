@@ -954,59 +954,51 @@ describe('session:keys', () => {
       ['send-keys', '-t', '=llmws-claude-abc:', 'Enter'],
     ]);
     expect(calls[0]!.input).toBe('line one\nline two');
-    // The keystroke path never sees a newline. This is the assertion that
-    // keeps the relaxation confined to the paste path.
-    for (const c of calls) {
-      if (c.args.includes('-l')) expect(c.args.at(-1)).not.toMatch(/\n/);
-    }
+    // No call types the text: it reaches tmux only as buffer contents.
+    expect(calls.some(c => c.args.includes('-l'))).toBe(false);
   });
 
-  it('keeps single-line text on the unchanged send-keys -l path, with no buffer involved', () => {
-    registerSession(4821, 'llmws-claude-abc');
-    const calls: string[][] = [];
+  // The bug this closes, measured 2026-09-17 against Codex 0.154 with its
+  // own rollout file as the detector (validated first against a known
+  // submit and a known strand). Single-line text used to go out as
+  // `send-keys -l` with Enter right behind it. Codex's paste-burst
+  // heuristic reads a run of characters arriving at once as a paste, and
+  // the Enter at its tail as part of that paste -- so the message sat in
+  // the composer unsubmitted while the app reported 'sent'. First Enter
+  // submitted 2 times in 13. A bracketed paste says outright that it is a
+  // paste, so there is nothing to guess: 16 of 16. Claude Code, measured
+  // the same way, submitted every send on both paths (19 of 19).
+  it('delivers single-line text as a bracketed paste too, never as send-keys -l', () => {
+    registerSession(4821, 'llmws-codex-abc');
+    const calls: Array<{ args: string[]; input?: string }> = [];
+    let captureCalls = 0;
     const r = sendKeysFor(4821, 'yes', {
       has: () => true,
-      capture: () => ({ ok: true, stdout: '' }),
-      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+      capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
+      send: (args: string[], input?: string) => { calls.push({ args, input }); return { ok: true, stdout: '' }; },
     });
     expect(r).toEqual({ status: 'sent' });
-    expect(calls).toEqual([
-      ['send-keys', '-t', '=llmws-claude-abc:', '-l', 'yes'],
-      ['send-keys', '-t', '=llmws-claude-abc:', 'Enter'],
+    const buffer = calls[0]!.args[2]!;
+    expect(calls.map(c => c.args)).toEqual([
+      ['load-buffer', '-b', buffer, '-'],
+      ['paste-buffer', '-p', '-d', '-b', buffer, '-t', '=llmws-codex-abc:'],
+      ['send-keys', '-t', '=llmws-codex-abc:', 'Enter'],
     ]);
+    expect(calls[0]!.input).toBe('yes');
+    expect(calls.some(c => c.args.includes('-l'))).toBe(false);
   });
 
-  // The single-line path used to discard sendLiteral's result outright, so
-  // a failed keystroke send returned 'sent' with nothing logged -- the same
-  // defect fixed for the Enter key below, left in place here. A false
-  // refusal would tell the user the send failed and invite a retry, which
-  // could duplicate text that already landed in a live session, so this is
-  // logged rather than refused, same as the Enter path.
-  it('logs, but does not refuse, when the single-line keystroke send itself fails', () => {
-    registerSession(4821, 'llmws-claude-abc');
-    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const r = sendKeysFor(4821, 'yes', {
-      has: () => true,
-      capture: () => ({ ok: true, stdout: '' }),
-      send: (args: string[]) => (args.includes('-l')
-        ? { ok: false, error: 'no pane' }
-        : { ok: true, stdout: '' }),
-    });
-    expect(r).toEqual({ status: 'sent' });
-    expect(errs).toHaveBeenCalledWith('tmux send-keys (literal) failed:', 'no pane');
-    errs.mockRestore();
-  });
-
-  // The text is already typed into the pane by the time Enter runs, so a
+  // The text is already pasted into the pane by the time Enter runs, so a
   // failed Enter is logged, not turned into a refusal -- refusing here
   // would tell the user the send failed and invite a retry, which would
   // duplicate the text already sitting in the session's input line.
-  it('logs, but does not refuse, when Enter fails after single-line text was typed', () => {
+  it('logs, but does not refuse, when Enter fails after single-line text was pasted', () => {
     registerSession(4821, 'llmws-claude-abc');
     const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let captureCalls = 0;
     const r = sendKeysFor(4821, 'yes', {
       has: () => true,
-      capture: () => ({ ok: true, stdout: '' }),
+      capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
       send: (args: string[]) => (args.includes('Enter')
         ? { ok: false, error: 'no pane' }
         : { ok: true, stdout: '' }),
@@ -1303,26 +1295,20 @@ describe('session:keys', () => {
     expect(sendCalls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
   });
 
-  // copy-mode swallows send-keys -l exactly as it swallows Enter, so the
-  // keystroke path needs the same guard. KNOWN_ISSUES.md offered
-  // single-line sends as the workaround for this bug; measured the same
-  // day, that workaround was broken too.
-  it('leaves copy-mode on the single-line keystroke path as well', () => {
+  it('leaves copy-mode before a single-line send as well', () => {
     registerSession(4821, 'llmws-claude-abc');
     const sendCalls: string[][] = [];
+    let captureCalls = 0;
     const r = sendKeysFor(4821, 'yes', {
       has: () => true,
       capture: (args: string[]) => (args[0] === 'display-message'
         ? { ok: true, stdout: '1' }
-        : { ok: true, stdout: '' }),
+        : { ok: true, stdout: `c${captureCalls++}` }),
       send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
     });
     expect(r).toEqual({ status: 'sent' });
-    expect(sendCalls).toEqual([
-      ['send-keys', '-t', '=llmws-claude-abc:', '-X', 'cancel'],
-      ['send-keys', '-t', '=llmws-claude-abc:', '-l', 'yes'],
-      ['send-keys', '-t', '=llmws-claude-abc:', 'Enter'],
-    ]);
+    expect(sendCalls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-X', 'cancel']);
+    expect(sendCalls.map(c => c[0])).toEqual(['send-keys', 'load-buffer', 'paste-buffer', 'send-keys']);
   });
 
   // Refusing is the safe answer here, and the one case in this function
@@ -1372,23 +1358,27 @@ describe('session:keys', () => {
     expect(sendCalls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
   });
 
-  it('sends text and Enter as two separate calls, text first, with -l', () => {
+  it('sends the text and Enter as separate calls, text first, Enter never merged into it', () => {
     registerSession(4821, 'llmws-claude-abc');
     const calls: string[][] = [];
-    const r = sendKeysFor(4821, 'yes', {
+    let captureCalls = 0;
+    const r = sendKeysFor(4821, 'Enter', {
       has: () => true,
       // The pane is confirmed live before anything is sent -- see the
       // capture-pane test below for the refusal path this stands in for.
-      capture: () => ({ ok: true, stdout: '' }),
+      capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
       send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
     });
     expect(r).toEqual({ status: 'sent' });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
+    // A message that is literally "Enter" travels as buffer contents on
+    // stdin, never as an argv entry tmux could read as a key name.
+    expect(calls.slice(0, 2).some(c => c.includes('Enter'))).toBe(false);
     // Trailing ':' on the target -- tmux.ts's target() appends it because a
     // real tmux 3.7c server rejects a bare '=name' for target-PANE commands
     // (send-keys included) with "can't find pane"; see tmux.test.ts.
-    expect(calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-l', 'yes']);
-    expect(calls[1]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
+    expect(calls[1]).toEqual(['paste-buffer', '-p', '-d', '-b', calls[0]![2]!, '-t', '=llmws-claude-abc:']);
+    expect(calls[2]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
   });
 
   // spec §9: the session name resolving is not proof the pane is still
@@ -1424,16 +1414,16 @@ describe('session:keys', () => {
   it('still sends text and Enter when promptOpen reports no choice is open', () => {
     registerSession(4821, 'llmws-claude-abc');
     const calls: string[][] = [];
+    let captureCalls = 0;
     const r = sendKeysFor(4821, 'yes', {
       has: () => true,
-      capture: () => ({ ok: true, stdout: '' }),
+      capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
       send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
       promptOpen: () => false,
     });
     expect(r).toEqual({ status: 'sent' });
-    expect(calls).toHaveLength(2);
-    expect(calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-l', 'yes']);
-    expect(calls[1]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
+    expect(calls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
+    expect(calls[2]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
   });
 });
 

@@ -25,7 +25,7 @@ import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import {
-  sendLiteral, sendKeyName, capturePane, setSessionOption, loadBuffer, pasteBuffer, deleteBuffer,
+  sendKeyName, capturePane, setSessionOption, loadBuffer, pasteBuffer, deleteBuffer,
   paneInMode, cancelCopyMode,
   type TmuxResult, type TmuxExec,
 } from './tmux.ts';
@@ -843,8 +843,8 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
   }
   // Sanitise BEFORE resolving, so malformed text never reaches tmux even
   // momentarily, and the cheap check runs first. Multi-line is allowed
-  // here, but ONLY because the branch below routes it to a bracketed paste
-  // -- the keystroke path never sees a newline (see the send block).
+  // here, but ONLY because every message below is delivered as a bracketed
+  // paste -- nothing is ever typed with send-keys -l.
   const clean = sanitizeOutbound(raw, { multiline: true });
   if (!clean.ok) return { status: 'refused', reason: clean.reason };
 
@@ -901,69 +901,60 @@ export function sendKeysFor(pid: unknown, raw: unknown, deps: KeysDeps = {}): Ke
   const captured = capturePane(name, PASTE_SETTLE_CAPTURE_LINES, deps.capture);
   if (!captured.ok) return { status: 'refused', reason: 'session_gone' };
 
-  if (clean.text.includes('\n')) {
-    // Bracketed paste (spec 2026-09-15-conversation-pane-design.md §3.4).
-    // Three calls, never concatenated: load the text into a buffer of our
-    // own, paste it as bracketed text and delete the buffer in the same
-    // command, then send Enter as a key name our code chose. A failed load
-    // or paste refuses BEFORE any Enter goes out, so a half-delivered
-    // message is never submitted.
-    //
-    // What makes the embedded newlines safe to send at all is that the
-    // pasted text cannot break out of its own brackets -- which holds only
-    // because sanitizeOutbound stripped ESC and 8-bit CSI above. See the
-    // doc comment on pasteBuffer (src/main/tmux.ts) for the full argument.
-    const buffer = nextPasteBuffer();
-    const loaded = loadBuffer(name, buffer, clean.text, deps.send);
-    if (!loaded.ok) {
-      // The user is shown a generic "That session has ended."; the actual
-      // tmux error would otherwise be discarded entirely.
-      console.error('tmux load-buffer failed:', loaded.error);
-      return { status: 'refused', reason: 'session_gone' };
-    }
-    const pasted = pasteBuffer(name, buffer, deps.send);
-    if (!pasted.ok) {
-      console.error('tmux paste-buffer failed:', pasted.error);
-      // -d only deletes the buffer on a paste that happened. Buffer names
-      // are per-send, so nothing later overwrites this one and it would sit
-      // on the tmux server for as long as the server lives.
-      const dropped = deleteBuffer(buffer, deps.send);
-      if (!dropped.ok) console.error('tmux delete-buffer failed:', dropped.error);
-      return { status: 'refused', reason: 'session_gone' };
-    }
-    // The paste has landed as far as tmux is concerned, but the receiving
-    // program (an Ink TUI) may still be mid-ingest of the bracketed-paste
-    // sequence -- an Enter that arrives too soon gets swallowed along with
-    // it. Give it a bounded chance to visibly react before sending Enter.
-    // A timeout is logged, never turned into a refusal: the paste has
-    // already landed either way, and refusing would invite a retry that
-    // duplicates text already sitting in the pane's input line.
-    if (!waitForPasteToSettle(name, captured.stdout, deps.capture, deps.sleep ?? defaultSleep)) {
-      console.error('tmux paste settle timed out, sending Enter anyway:', { pid, name });
-    }
-    // The paste has already landed in the session by this point, so a
-    // failed Enter is logged, not refused: refusing here would tell the
-    // user the send failed and invite a retry, which would submit a
-    // duplicate of text that is already sitting in the pane's input line.
-    const entered = sendKeyName(name, 'Enter', deps.send);
-    if (!entered.ok) console.error('tmux send-keys (Enter) failed:', entered.error);
-    return { status: 'sent' };
+  // Every message, one line or many, goes out as a bracketed paste (spec
+  // 2026-09-15-conversation-pane-design.md §3.4). Single-line text used to
+  // be typed with send-keys -l instead, and Codex dropped the Enter behind
+  // it: its paste-burst heuristic reads a run of characters arriving at
+  // once as a paste, and a trailing Enter as part of that paste, so the
+  // message sat in the composer unsubmitted while this function answered
+  // 'sent'. Measured 2026-09-17 against Codex 0.154 using its own rollout
+  // file, not the screen: the first Enter submitted 2 of 13 typed sends and
+  // 16 of 16 pasted ones. A bracketed paste declares itself, so there is
+  // no heuristic left to trip. Claude Code, measured the same way,
+  // submitted every send on both paths.
+  //
+  // Three calls, never concatenated: load the text into a buffer of our
+  // own, paste it as bracketed text and delete the buffer in the same
+  // command, then send Enter as a key name our code chose. A failed load
+  // or paste refuses BEFORE any Enter goes out, so a half-delivered
+  // message is never submitted.
+  //
+  // What makes the embedded newlines safe to send at all is that the
+  // pasted text cannot break out of its own brackets -- which holds only
+  // because sanitizeOutbound stripped ESC and 8-bit CSI above. See the
+  // doc comment on pasteBuffer (src/main/tmux.ts) for the full argument.
+  const buffer = nextPasteBuffer();
+  const loaded = loadBuffer(name, buffer, clean.text, deps.send);
+  if (!loaded.ok) {
+    // The user is shown a generic "That session has ended."; the actual
+    // tmux error would otherwise be discarded entirely.
+    console.error('tmux load-buffer failed:', loaded.error);
+    return { status: 'refused', reason: 'session_gone' };
   }
-
-  // Two calls, always. Text with -l; Enter as a key name our code chose.
-  // Concatenating them would let a reply of "Enter" become a keypress.
-  // Reached only when the text has no newline at all, which is exactly what
-  // the strict sanitiser would have required of it.
-  const typed = sendLiteral(name, clean.text, deps.send);
-  // A failed keystroke send is logged, not turned into a refusal: the text
-  // may already have reached the pane (tmux applies -l as one call, but the
-  // pane side is out of our control), and a false refusal here would tell
-  // the user the send failed and invite a retry, duplicating a message
-  // that is already sitting in a live session.
-  if (!typed.ok) console.error('tmux send-keys (literal) failed:', typed.error);
-  // As above: the text is already typed into the pane, so a failed Enter is
-  // logged rather than turned into a refusal, which would invite a retry
-  // and duplicate the typed text on next send.
+  const pasted = pasteBuffer(name, buffer, deps.send);
+  if (!pasted.ok) {
+    console.error('tmux paste-buffer failed:', pasted.error);
+    // -d only deletes the buffer on a paste that happened. Buffer names
+    // are per-send, so nothing later overwrites this one and it would sit
+    // on the tmux server for as long as the server lives.
+    const dropped = deleteBuffer(buffer, deps.send);
+    if (!dropped.ok) console.error('tmux delete-buffer failed:', dropped.error);
+    return { status: 'refused', reason: 'session_gone' };
+  }
+  // The paste has landed as far as tmux is concerned, but the receiving
+  // program (an Ink TUI) may still be mid-ingest of the bracketed-paste
+  // sequence -- an Enter that arrives too soon gets swallowed along with
+  // it. Give it a bounded chance to visibly react before sending Enter.
+  // A timeout is logged, never turned into a refusal: the paste has
+  // already landed either way, and refusing would invite a retry that
+  // duplicates text already sitting in the pane's input line.
+  if (!waitForPasteToSettle(name, captured.stdout, deps.capture, deps.sleep ?? defaultSleep)) {
+    console.error('tmux paste settle timed out, sending Enter anyway:', { pid, name });
+  }
+  // The paste has already landed in the session by this point, so a
+  // failed Enter is logged, not refused: refusing here would tell the
+  // user the send failed and invite a retry, which would submit a
+  // duplicate of text that is already sitting in the pane's input line.
   const entered = sendKeyName(name, 'Enter', deps.send);
   if (!entered.ok) console.error('tmux send-keys (Enter) failed:', entered.error);
   return { status: 'sent' };
