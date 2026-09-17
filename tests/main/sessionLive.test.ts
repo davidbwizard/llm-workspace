@@ -403,4 +403,44 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
     expect(fake.watchedPaths()).toEqual([]);
     expect(fake.closedCount()).toBe(1);
   });
+
+  // Fix round 1 (review of d3d5010): watchSessionFor used to tear down
+  // whatever was already watched BEFORE validating the new pid, so a
+  // refusal arriving mid-session-switch silently killed the live-push
+  // channel for the session that WAS working -- worse than "falls back to
+  // the sweep", since pushSessionLive short-circuits on a null watchState
+  // forever, not just for one push. Validate first, teardown only on the
+  // success path.
+  it('leaves an existing good watch running, and still pushing, when a new pid is refused', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    const { deps, sent } = makeDeps({
+      processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => payload,
+    });
+    watchSessionFor(4821, deps);
+    sent.length = 0; // clear the immediate push from watchSessionFor itself
+
+    // Absent from `deps.processes()` above -- an ordinary discovery-cache
+    // refusal, the exact case a session switch racing a sweep can produce.
+    expect(watchSessionFor(999999, deps)).toBe(false);
+
+    vi.useFakeTimers();
+    notifySessionChanged(new Set(['s1']));
+    vi.advanceTimersByTime(250);
+    expect(sent).toEqual([payload]);
+  });
+
+  it('an explicit null still tears down the watch, and no further changes push anything', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    const { deps, sent } = makeDeps({
+      processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => payload,
+    });
+    watchSessionFor(4821, deps);
+    expect(watchSessionFor(null, deps)).toBe(false);
+    sent.length = 0;
+
+    vi.useFakeTimers();
+    notifySessionChanged(new Set(['s1']));
+    vi.advanceTimersByTime(250);
+    expect(sent).toEqual([]);
+  });
 });

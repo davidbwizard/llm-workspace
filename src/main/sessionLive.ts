@@ -361,21 +361,28 @@ function startClaudeWatch(pid: number, watch: (path: string) => WatchHandle): Wa
  *  ourselves found running" -- or the call is refused and logged. Nothing
  *  else the renderer could send ever reaches a file path.
  *
- *  Always tears down whatever was previously watched first, including on a
- *  refusal: the return value is "is a specific session now being watched",
- *  which must be accurate immediately after every call, not conditional on
- *  what happened to be watched before it. `pid: null` is the renderer's own
- *  explicit "stop" (closing the pane, or switching to a session Terminal
- *  view) -- distinct from a refusal in intent, but identical in effect and
- *  return value, so it is handled by the same teardown rather than a
- *  separate code path.
+ *  Validates BEFORE tearing anything down, and a refusal leaves whatever was
+ *  already watched untouched and still pushing -- fix round 1 (review of
+ *  d3d5010): tearing down unconditionally meant a refused pid arriving
+ *  mid-session-switch (0, -1, 1.5, or a pid that had just fallen out of the
+ *  discovery cache) silently killed the live-push channel for the pane that
+ *  WAS working, with nothing surfaced beyond a log line, until the renderer
+ *  happened to call this again with a good pid. `pid: null` is the one
+ *  exception -- the renderer's own explicit "stop" (closing the pane, or
+ *  switching to a session's Terminal view) -- which always tears down,
+ *  since there is no "existing good watch to protect" reading of a
+ *  deliberate stop request.
  *
  *  Returns whether a session is now being watched: true only for a
  *  validated pid that started (or moved) a watch, false for null and for
- *  every refusal. */
+ *  every refusal (including a refusal that left a prior watch running --
+ *  the return value answers "is a session now being watched BECAUSE OF THIS
+ *  CALL", not "is one being watched at all"). */
 export function watchSessionFor(pid: number | null, deps: WatchDeps): boolean {
-  teardownWatch();
-  if (pid === null) return false;
+  if (pid === null) {
+    teardownWatch();
+    return false;
+  }
   if (!Number.isInteger(pid) || pid <= 0) {
     console.error('session:watch refused a pid that is not a positive integer:', pid);
     return false;
@@ -386,6 +393,7 @@ export function watchSessionFor(pid: number | null, deps: WatchDeps): boolean {
     return false;
   }
 
+  teardownWatch();
   const watcher = proc.provider === 'claude' ? startClaudeWatch(pid, deps.watch ?? defaultWatch) : null;
 
   // Pushed once immediately, before returning, so the pane is not left
