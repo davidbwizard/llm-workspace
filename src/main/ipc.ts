@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { spawn as ptySpawn, type IPty } from 'node-pty';
 import type { Db } from '../store/db.ts';
 import {
-  openSessions, openSessionsLive, fleetStatePage, type SessionState, type OpenSession,
+  openSessions, openSessionsLive, fleetStatePage, sessionCwd, type SessionState, type OpenSession,
 } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
 import { sanitizeForTerminal, parseProcessChainHop, resolvePaths } from '../config.ts';
@@ -23,6 +23,7 @@ import type { LiveProcess } from '../discovery/parse.ts';
 import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveSession.ts';
 import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
+import { readSessionImage } from './images.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import {
   sendKeyName, capturePane, setSessionOption, loadBuffer, pasteBuffer, deleteBuffer,
@@ -1274,6 +1275,13 @@ export function registerIpc(
     typeof sessionId === 'string'
       ? conversationFor(db, sessionId, undefined, parseConversationCursor(cursor))
       : { turns: [], nextCursor: null });
+  // An image a reply links to, as a data: URL. The session's folder comes
+  // from main's own event log; see src/main/images.ts for every check.
+  ipcMain.handle('session:image', async (_event, sessionId: unknown, src: unknown) => {
+    const result = await readSessionImage(sessionId, src, { cwdFor: id => sessionCwd(db, id) });
+    if (!result.ok && result.reason !== 'invalid') console.error('session:image refused:', result.reason);
+    return result;
+  });
   ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown) => sendKeysFor(pid, text));
   ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
 

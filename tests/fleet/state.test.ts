@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions, activityFromLiveStatus } from '../../src/fleet/state.ts';
+import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions, activityFromLiveStatus, sessionCwd } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
 import type { OpenSession } from '../../src/fleet/state.ts';
@@ -1584,5 +1584,20 @@ describe('activityFromLiveStatus', () => {
     expect(activityFromLiveStatus('idle')).toBe('idle');
     expect(activityFromLiveStatus(null)).toBeNull();
     expect(activityFromLiveStatus(undefined)).toBeNull();
+  });
+});
+
+describe('sessionCwd', () => {
+  it('returns the newest session.started cwd, and null for an unknown or cwd-less session', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', ts:at(10), payload:{ cwd:'/old' }, contentHash:'a' }),
+      ev({ kind:'session.started', ts:at(5), payload:{ cwd:'/new' }, contentHash:'b' }),
+      ev({ kind:'prose', ts:at(1), payload:{ cwd:'/not-a-start' }, contentHash:'c' }),
+      ev({ sessionId:'s2', kind:'session.started', payload:{}, contentHash:'d' }),
+    ]);
+    expect(sessionCwd(db, 's1')).toBe('/new');
+    expect(sessionCwd(db, 's2')).toBeNull();
+    expect(sessionCwd(db, 'nope')).toBeNull();
   });
 });

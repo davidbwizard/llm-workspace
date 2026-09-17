@@ -1602,3 +1602,46 @@ describe('ConversationView -- one-click copy', () => {
     errs.mockRestore();
   });
 });
+
+describe('ConversationView -- images a reply links to', () => {
+  function showWithImages(text: string, image: (sessionId: string, src: string) => Promise<unknown>) {
+    const spy = vi.fn(image);
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'assistant', text }], nextCursor: null }),
+      image: spy,
+    };
+    return { spy, ...renderConv() };
+  }
+  const DATA = 'data:image/png;base64,iVBORw0KGgo=';
+
+  it('asks main for a local image and shows it as a thumbnail', async () => {
+    const { spy, container } = showWithImages('Here:\n\n![the chart](out/chart.png)', async () => ({ ok: true, dataUrl: DATA }));
+    await waitFor(() => expect(container.querySelector('img.md-thumb')).toBeTruthy());
+    const img = container.querySelector('img.md-thumb') as HTMLImageElement;
+    expect(img.getAttribute('src')).toBe(DATA);
+    expect(img.alt).toBe('the chart');
+    expect(spy).toHaveBeenCalledWith('s1', 'out/chart.png');
+  });
+
+  it('passes a file:// link through to main rather than dropping it', async () => {
+    const { spy, container } = showWithImages('![x](file:///tmp/a.png)', async () => ({ ok: true, dataUrl: DATA }));
+    await waitFor(() => expect(container.querySelector('img.md-thumb')).toBeTruthy());
+    expect(spy).toHaveBeenCalledWith('s1', 'file:///tmp/a.png');
+  });
+
+  it('never asks for a web image, and shows its alt text instead', async () => {
+    const { spy, container } = showWithImages('![remote](https://example.com/a.png)', async () => ({ ok: true, dataUrl: DATA }));
+    await waitFor(() => expect(container.querySelector('.md-image')).toBeTruthy());
+    expect(container.querySelector('.md-image')?.textContent).toBe('remote');
+    expect(container.querySelector('img')).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('shows the alt text when main refuses the file', async () => {
+    const { container } = showWithImages('![secret](/etc/x.png)', async () => ({ ok: false, reason: 'outside_roots' }));
+    await waitFor(() => expect(container.querySelector('.md-image')).toBeTruthy());
+    await act(async () => {});
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('.md-image')?.textContent).toBe('secret');
+  });
+});

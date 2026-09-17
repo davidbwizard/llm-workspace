@@ -39,6 +39,8 @@ const api = {
   // regardless of what TypeScript says here.
   conversation: (sessionId: string, cursor?: ConversationCursor) =>
     ipcRenderer.invoke('session:conversation', sessionId, cursor),
+  // An image a reply links to; main validates everything (src/main/images.ts).
+  image: (sessionId: string, src: string) => ipcRenderer.invoke('session:image', sessionId, src),
   attach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:attach', pid, cols, rows),
   detach: (pid: number) => ipcRenderer.invoke('session:detach', pid),
   resize: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:resize', pid, cols, rows),
