@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ComponentProps } from 'react';
-import Markdown, { type Components } from 'react-markdown';
+import { Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentProps } from 'react';
+import Markdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationTurn } from '../../store/conversation.ts';
 import type { MatchQuality } from '../../discovery/match.ts';
@@ -84,14 +84,52 @@ function CodeBlock(props: ComponentProps<'pre'>) {
   );
 }
 
+/** Which session the Markdown being rendered belongs to, for LinkedImage. */
+const SessionIdContext = createContext<string | null>(null);
+
+/** Any URL scheme at all -- a web, data or script URL is never asked for. */
+const HAS_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+/** An image a reply links to. A local path (or file: URL) is read and checked
+ *  by main, which hands back a data: URL -- this pane's CSP allows no other
+ *  way to show a local file, and should not. Web images are never fetched.
+ *  Until an image arrives, or if main refuses it, the alt text shows, as it
+ *  always did. */
+function LinkedImage({ src, alt }: { src?: string; alt?: string }) {
+  const sessionId = useContext(SessionIdContext);
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const local = !!src && (!HAS_SCHEME.test(src) || /^file:/i.test(src));
+  useEffect(() => {
+    setDataUrl(null);
+    if (!local || !sessionId || !src || !window.fleet?.image) return;
+    let current = true;
+    window.fleet.image(sessionId, src).then(
+      r => { if (current && r.ok) setDataUrl(r.dataUrl); },
+      (err: unknown) => console.error('session:image failed:', err),
+    );
+    return () => { current = false; };
+  }, [local, sessionId, src]);
+  if (!dataUrl) return <span className="md-image">{alt || 'image'}</span>;
+  return <img className="md-thumb" src={dataUrl} alt={alt ?? ''} title={src} />;
+}
+
 const MARKDOWN_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-  img: ({ alt }) => <span className="md-image">{alt || 'image'}</span>,
+  img: ({ src, alt }) => <LinkedImage src={typeof src === 'string' ? src : undefined} alt={alt} />,
   pre: ({ node: _node, ...props }) => <CodeBlock {...props} />,
 };
 
+/** react-markdown's default drops file: URLs; keep them for images only, so
+ *  LinkedImage can hand them to main. Everything else is unchanged. */
+const urlTransform: UrlTransform = (url, key, node) =>
+  key === 'src' && node.tagName === 'img' && /^file:/i.test(url) ? url : defaultUrlTransform(url);
+
 function MarkdownText({ text }: { text: string }) {
-  return <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{text}</Markdown>;
+  return (
+    <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS} urlTransform={urlTransform}>
+      {text}
+    </Markdown>
+  );
 }
 
 /** "Sep 12" -- no year, no weekday. Shown once per day, on the divider above
@@ -767,6 +805,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           // margin-top:auto (ConversationView.css), which is what pins a
           // conversation shorter than the pane to the bottom.
           <div className="convstack">
+            <SessionIdContext.Provider value={sessionId}>
             {loadingMore && <p className="conv-loading-more">Loading more…</p>}
             {!loadingMore && nextCursor === null && turns.length > 0 && (
               // A genuine end-of-history fact, not an apology -- unlike the
@@ -813,6 +852,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                 </Fragment>
               );
             })}
+            </SessionIdContext.Provider>
           </div>
         )}
       </div>

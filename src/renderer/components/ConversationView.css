@@ -97,6 +97,10 @@
 .turn-text.md th, .turn-text.md td { border:1px solid var(--line); padding:3px 8px; text-align:left; vertical-align:top; }
 .turn-text.md th { background:var(--raised); color:var(--ink); font-weight:600; }
 .turn-text.md .md-image { font-style:italic; color:var(--muted); }
+/* An image a reply links to, read by main (src/main/images.ts). Sized like
+   the mockup's attachment thumbnails; the tooltip shows the path. */
+.turn-text.md .md-thumb { display:block; width:180px; max-width:100%; aspect-ratio:16/10;
+  object-fit:cover; margin:6px 0; border:1px solid var(--line); border-radius:var(--r-sm); }
 /* Lazy-loading (50 exchanges/page, oldest-first): both markers sit ABOVE
    the turns.map they describe (ConversationView.tsx), so the separating
    rule goes on their BOTTOM edge, not their top -- otherwise it would read

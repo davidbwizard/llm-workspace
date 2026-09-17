@@ -235,6 +235,16 @@ export interface FleetOpts {
  *  not free, but paid once per on-demand fleet:history request, never on
  *  the fleet:list/fleet:update path (see buildFleetListPayload's and
  *  pushFleet's doc comments in src/main/ipc.ts). */
+/** The session's working folder, from the newest session.started event main
+ *  itself ingested -- the trusted source readSessionImage (src/main/images.ts)
+ *  bounds file reads by. Null for an unknown session or one with no cwd. */
+export function sessionCwd(db: Db, sessionId: string): string | null {
+  const row = db.prepare(`SELECT json_extract(payload,'$.cwd') cwd FROM events
+    WHERE session_id = ? AND kind = 'session.started' ORDER BY ts DESC, id DESC LIMIT 1`)
+    .get(sessionId) as { cwd: unknown } | undefined;
+  return typeof row?.cwd === 'string' && row.cwd.length > 0 ? row.cwd : null;
+}
+
 function sessionSummaries(db: Db): SessionSummaryRow[] {
   return db.prepare(`
     SELECT session_id, provider, MAX(ts) last_ts,
