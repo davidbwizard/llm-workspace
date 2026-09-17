@@ -414,11 +414,20 @@ export function watchSessionFor(pid: number | null, deps: WatchDeps): boolean {
   teardownWatch();
   const watcher = proc.provider === 'claude' ? startClaudeWatch(pid, deps.watch ?? defaultWatch) : null;
 
+  // watchState is assigned BEFORE buildPayload runs, not after, so the
+  // watcher just opened above is reachable through it even if buildPayload
+  // throws (it reaches db.prepare(...).get() and openBlockers, so a closed
+  // or busy database can throw). Every teardown path -- teardownWatch
+  // itself, win.on('closed'), before-quit -- reaches the watcher only
+  // through watchState, so assigning it after a call that can throw would
+  // leave the watcher referenced by nothing, unrecoverable for the life of
+  // the process.
+  watchState = { pid, sessionId: null, watcher, timer: null, deps };
   // Pushed once immediately, before returning, so the pane is not left
   // blank until the first change -- the same reasoning pushFleet's own
   // callers apply on startup (src/main/index.ts).
   const payload = deps.buildPayload();
-  watchState = { pid, sessionId: payload?.sessionId ?? null, watcher, timer: null, deps };
+  watchState.sessionId = payload?.sessionId ?? null;
   if (payload) deps.send(payload);
   return true;
 }

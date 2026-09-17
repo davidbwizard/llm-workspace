@@ -334,6 +334,31 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
     expect(second.fake.watchedPaths()).toEqual([`${homedir()}/.claude/sessions/4822.json`]);
   });
 
+  // Finding 3 (final review, 2026-09-17): the watcher used to be created
+  // before watchState was assigned, and every teardown path (teardownWatch
+  // itself, window close, before-quit) reaches the watcher only through
+  // watchState -- so a throw between the two left the just-opened handle
+  // referenced by nothing, unrecoverable for the life of the process.
+  // watchState is now assigned right after the watcher is created, before
+  // the call that can throw, so a subsequent teardown still reaches it.
+  it('does not orphan the fs.watch handle when buildPayload throws', () => {
+    const { deps, fake } = makeDeps({
+      processes: [proc({ pid: 4821, provider: 'claude' })],
+      buildPayload: () => { throw new Error('database is closed'); },
+    });
+    expect(() => watchSessionFor(4821, deps)).toThrow('database is closed');
+    // The watcher is still open right after the throw...
+    expect(fake.watchedPaths()).toEqual([CLAUDE_PATH]);
+    expect(fake.closedCount()).toBe(0);
+
+    // ...and reachable through watchState, so an ordinary teardown (an
+    // explicit stop, a window close, before-quit -- all reach the watcher
+    // this same way) closes it rather than leaking it for good.
+    expect(watchSessionFor(null, deps)).toBe(false);
+    expect(fake.watchedPaths()).toEqual([]);
+    expect(fake.closedCount()).toBe(1);
+  });
+
   it('releases the watcher and timer on an explicit null', () => {
     const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
     const { deps, fake } = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload });
