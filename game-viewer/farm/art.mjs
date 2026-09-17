@@ -5,6 +5,7 @@ export const ART = {
   josh: { path: 'Character/Character/Pre-made/Josh/Walk.png', cell: [32, 32], frames: 6 },
   idle: { path: 'Character/Character/Pre-made/Josh/Idle.png', cell: [32, 32], frames: 4 },
   hoe: { path: 'Character/Character/Pre-made/Josh/Hoe.png', cell: [32, 32], frames: 6 },
+  throwing: { path: 'Character/Character/Pre-made/Josh/Throwing items.png', cell: [32, 32], frames: 5 },
   watering: { path: 'Character/Character/Pre-made/Josh/Watering.png', cell: [32, 32], frames: 8 },
   sword: { path: 'Character/Character/Pre-made/Josh/Sword.png', cell: [32, 32], frames: 10 },
   bow: { path: 'Character/Character/Pre-made/Josh/Bow and Arrow.png', cell: [32, 32], frames: 8 },
@@ -17,6 +18,17 @@ export const ART = {
   slimeDead: { path: 'Enemy/Slimes/Green/Slime/Dead.png', cell: [32, 32], frames: 4 },
   slimeDamage: { path: 'Enemy/Slimes/Green/Slime/Damage.png', cell: [32, 32], frames: 4 },
   slime: { path: 'Enemy/Slimes/Green/Slime/Walk.png', cell: [32, 32], frames: 4 },
+  raider: { path: 'Enemy/Goblins/Spear Goblin/Walk.png', cell: [32, 32], frames: 6 },
+  raiderAttack: { path: 'Enemy/Goblins/Spear Goblin/Spear.png', cell: [32, 32], frames: 6 },
+  raiderDamage: { path: 'Enemy/Goblins/Spear Goblin/Damage.png', cell: [32, 32], frames: 4 },
+  raiderDead: { path: 'Enemy/Goblins/Spear Goblin/Dead.png', cell: [32, 32], frames: 4 },
+  spitter: { path: 'Enemy/Myconid/Purple/Walk.png', cell: [32, 32], frames: 6 },
+  spitterAttack: { path: 'Enemy/Myconid/Purple/Attack.png', cell: [32, 32], frames: 6 },
+  spitterDamage: { path: 'Enemy/Myconid/Purple/Damage.png', cell: [32, 32], frames: 4 },
+  spitterDead: { path: 'Enemy/Myconid/Purple/Dead.png', cell: [32, 32], frames: 6 },
+  brute: { path: 'Enemy/Slimes/Black/Big Slime/Walk.png', cell: [32, 32], frames: 4 },
+  bruteDamage: { path: 'Enemy/Slimes/Black/Big Slime/Damage.png', cell: [32, 32], frames: 4 },
+  bruteDead: { path: 'Enemy/Slimes/Black/Big Slime/Dead.png', cell: [32, 32], frames: 4 },
 };
 
 export async function loadArt({ signal, onError = () => {} } = {}) {

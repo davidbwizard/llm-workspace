@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createFarm, advanceFarm, moveFarmer, command, validateFarm } from '../farm/model.mjs';
 import { parseFarm, serializeFarm } from '../farm/storage.mjs';
 import { plotPosition, monsterPosition } from '../farm/world.mjs';
@@ -39,59 +40,62 @@ describe('the player farmer', () => {
     expect(moveFarmer(s, 1, 0, 1)).toBe(false);
     expect(s.farmer).toEqual(before.farmer);
   });
-  it('harvests a nearby ripe crop once and rejects distant interaction', () => {
+  it('harvests a nearby ripe crop once and makes distant swings harmless', () => {
     const s = createFarm(); s.raidTimer = 1000;
     Object.assign(s.plots[0], { stage: 'ready', growth: 75, water: 80 });
-    expect(() => command(s, { type: 'interact' })).toThrow(/closer/i);
+    command(s, { type: 'interact' }); advanceFarm(s, 1);
     const p = plotPosition(0); Object.assign(s.farmer, { x: p.x, y: p.y });
     command(s, { type: 'interact' });
-    expect(s.inventory.parsnip).toBe(3); expect(s.plots[0].stage).toBe('empty');
+    expect(s.inventory.parsnip).toBe(2); expect(s.plots[0].stage).toBe('empty');
     expect(s.farmer.action).toBe('harvest');
     advanceFarm(s, 1);
-    expect(() => command(s, { type: 'interact' })).toThrow(/closer/i);
-    expect(s.inventory.parsnip).toBe(3);
+    command(s, { type: 'interact' }); advanceFarm(s, 1);
+    expect(s.inventory.parsnip).toBe(2);
   });
   it('attacks only a nearby enemy, applies cooldown, and awards defeat exactly once', () => {
     const s = createFarm(); s.guards = []; s.raidTimer = 1000;
     command(s, { type: 'raid' });
-    expect(() => command(s, { type: 'interact' })).toThrow(/closer/i);
-    const m = s.monsters[0]; m.progress = .7; m.health = 24;
+    command(s, { type: 'interact' }); advanceFarm(s, 1);
+    const m = s.monsters[0]; m.x = 330; m.y = 160; m.health = 24;
     const pos = monsterPosition(m); Object.assign(s.farmer, { x: pos.x - 24, y: pos.y });
     command(s, { type: 'interact' });
     expect(m.health).toBe(12); expect(s.farmer.action).toBe('attack');
-    expect(() => command(s, { type: 'interact' })).toThrow(/finishing/i);
+    command(s, { type: 'interact' });
     expect(m.health).toBe(12);
     advanceFarm(s, 1); command(s, { type: 'interact' });
-    expect(s.monsters).toHaveLength(0); expect(s.coins).toBe(132);
-    advanceFarm(s, 1); expect(s.coins).toBe(132);
+    expect(s.monsters).toHaveLength(0); expect(s.coins).toBe(37);
+    advanceFarm(s, 1); expect(s.coins).toBe(37);
   });
   it('saves position, upgrades older v1 saves, and rejects invalid new fields', () => {
     const s = createFarm(); moveFarmer(s, 1, 0, .5);
     const restored = parseFarm(serializeFarm(s));
     expect(restored.farmer.x).toBe(s.farmer.x);
     expect(restored.farmer.action).toBe('idle');
-    const legacy = createFarm(); delete legacy.farmer;
+    const legacy = JSON.parse(readFileSync(new URL('./fixtures/farm-v1.json', import.meta.url), 'utf8')).farm; delete legacy.farmer;
     expect(parseFarm(JSON.stringify({ version: 1, farm: legacy })).farmer).toEqual(createFarm().farmer);
-    expect(() => parseFarm(JSON.stringify({ version: 1, farm: { ...s, farmer: { ...s.farmer, x: 99999 } } }))).toThrow(/farmer/i);
+    expect(() => parseFarm(JSON.stringify({ version: 3, farm: { ...s, farmer: { ...s.farmer, x: 99999 } } }))).toThrow(/farmer/i);
     expect(() => validateFarm({ ...s, farmer: { ...s.farmer, action: '<script>' } })).toThrow(/farmer/i);
   });
 });
 
 it('each patrolling protector damages one priority target, not every incoming slime', () => {
   const s = createFarm(); command(s, { type: 'raid' }); command(s, { type: 'raid' });
-  s.monsters[0].progress = .7; s.monsters[1].progress = .6;
+  Object.assign(s.guards[0], { x: 300, y: 140 });
+  Object.assign(s.monsters[0], { x: 330, y: 140 }); Object.assign(s.monsters[1], { x: 500, y: 200 });
   const [first, second] = s.monsters.map(m => m.health);
   advanceFarm(s, .25);
-  expect(s.monsters[0].health).toBe(first - 1.25);
+  expect(s.monsters[0].health).toBe(first - 7);
   expect(s.monsters[1].health).toBe(second);
-  expect(s.guards[0].health).toBe(59.5);
+  expect(s.guards[0].health).toBe(57);
 });
 
-it('retreats and recovers at exactly the minimum fighting health', () => {
+it('keeps fighting below the old retreat threshold and lets the player redeploy a wounded protector', () => {
   const s = createFarm(); s.policy.autoHeal = false; s.raidTimer = 1000;
-  s.guards[0].health = 12.5; command(s, { type: 'raid' }); s.monsters[0].progress = .7;
-  advanceFarm(s, .25); expect(s.guards[0].health).toBe(12);
-  advanceFarm(s, .25); expect(s.guards[0].mode).toBe('home');
-  expect(() => command(s, { type: 'guardMode', guardId: 'guard-1', mode: 'patrol' })).toThrow(/recover/i);
-  advanceFarm(s, .25); expect(s.guards[0].health).toBeGreaterThan(12);
+  Object.assign(s.guards[0], { health: 15, x: 300, y: 140 }); command(s, { type: 'raid' }); Object.assign(s.monsters[0], { x: 330, y: 140 });
+  advanceFarm(s, .05); expect(s.guards[0].health).toBe(12);
+  advanceFarm(s, .05); expect(s.guards[0].mode).toBe('patrol');
+  command(s, { type: 'guardMode', guardId: 'guard-1', mode: 'home' });
+  expect(s.guards[0].mode).toBe('home');
+  expect(() => command(s, { type: 'guardMode', guardId: 'guard-1', mode: 'patrol' })).not.toThrow();
+  expect(s.guards[0].mode).toBe('patrol');
 });

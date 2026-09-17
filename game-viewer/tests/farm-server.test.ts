@@ -11,7 +11,7 @@ it('serves an isolated game and its explicit modules, with the original HTTP pro
   expect(page.status).toBe(200);
   expect(await page.text()).toContain('data-farm-app');
   expect(page.headers.get('content-security-policy')).toContain("script-src 'self'");
-  for (const filename of ['app.mjs', 'style.css', 'scene.mjs', 'art.mjs', 'sessions.mjs', 'storage.mjs', 'definitions.mjs', 'validation.mjs', 'world.mjs', 'combat-view.mjs']) {
+  for (const filename of ['app.mjs', 'style.css', 'scene.mjs', 'art.mjs', 'sessions.mjs', 'storage.mjs', 'definitions.mjs', 'validation.mjs', 'world.mjs', 'combat-view.mjs', 'combat.mjs']) {
     expect((await fetch(`${base}/farm/${filename}`)).status, filename).toBe(200);
   }
   const module = await fetch(`${base}/farm/model.mjs`);

@@ -1,8 +1,9 @@
 import { loadArt, sprite, ART } from './art.mjs';
-import { CROPS } from './definitions.mjs';
+import { CROPS, MONSTERS } from './definitions.mjs';
+import { statsFor } from './balance.mjs';
 import { createCombatView } from './combat-view.mjs';
 
-import { WORLD, plotPosition } from './world.mjs';
+import { WORLD, plotPosition, animalPosition } from './world.mjs';
 export { WORLD, plotPosition } from './world.mjs';
 
 export function hitPlot(x, y) {
@@ -15,7 +16,7 @@ const noise = n => fract(Math.sin(n * 78.233 + 1.2) * 43758.5453);
 export function createScene(canvas, { getState, getSelected, isPaused, onSelect, onAttention, onArtError, assetLoader = loadArt }) {
   const ctx = canvas.getContext('2d'); const abort = new AbortController();
   let images = {}, frame = 0, disposed = false, last = 0, clock = 0;
-  const positions = new Map(); const combat = createCombatView(); let bubbles = [];
+  let combat = createCombatView(), previousState = null, bubbles = [];
   canvas.width = WORLD.width * 2; canvas.height = WORLD.height * 2;
   const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   Promise.resolve().then(() => disposed ? {} : assetLoader({ signal: abort.signal, onError: onArtError }))
@@ -39,7 +40,9 @@ export function createScene(canvas, { getState, getSelected, isPaused, onSelect,
     if (!ctx || disposed) return;
     const elapsed = last ? Math.min((t - last) / 1000, 0.05) : 0; last = t;
     if (!isPaused() && !document.hidden) clock += elapsed;
-    const state = getState(); const motion = reduced?.matches ? 0 : clock;
+    const state = getState();
+    if (previousState !== state) { combat = createCombatView(); clock = 0; previousState = state; }
+    const motion = reduced?.matches ? 0 : clock;
     ctx.setTransform(2, 0, 0, 2, 0, 0); ctx.imageSmoothingEnabled = false;
     rect(0, 0, 640, 390, '#9fbd75');
     // A dark, layered tree line makes the open meadow feel sheltered.
@@ -68,6 +71,14 @@ export function createScene(canvas, { getState, getSelected, isPaused, onSelect,
     state.plots.forEach((plot, i) => {
       const { x, y } = plotPosition(i);
       rect(x - 1, y + 2, 39, 35, '#83955c');
+      if (!plot.unlocked) {
+        rect(x, y, 37, 33, '#8ba16b');
+        for (let r = 0; r < 3; r++) { rect(x + 6 + r * 10, y + 7, 2, 10, '#668650'); rect(x + 3 + r * 10, y + 11, 8, 2, '#668650'); }
+        rect(x + 3, y + 19, 31, 10, '#516744'); text('Locked', x + 6, y + 27, '#ede5c1', 7);
+        if (getSelected() === plot.id) { ctx.strokeStyle = '#fff1bd'; ctx.lineWidth = 2; ctx.strokeRect(x - 3, y - 3, 43, 39); }
+        text(String(i + 1), x + 2, y + 9, '#f2dfb3', 6);
+        return;
+      }
       const soil = plot.stage === 'empty' ? '#ac9c70' : plot.water > 45 ? '#735643' : '#98704d';
       rect(x, y, 37, 33, soil);
       for (let r = 0; r < 3; r++) rect(x + 3, y + 6 + r * 9, 31, 2, plot.water > 45 ? '#604b3e' : '#856447');
@@ -90,7 +101,7 @@ export function createScene(canvas, { getState, getSelected, isPaused, onSelect,
     for (let y = 181; y < 268; y += 20) { fence(454, y, 3); fence(607, y, 3); }
     rect(567, 177, 26, 12, '#887451'); rect(569, 179, 22, 7, '#80b4b0'); rect(578, 244, 22, 16, '#d7bd68'); rect(582, 244, 3, 16, '#b69551');
     state.animals.forEach((animal, i) => {
-      const x = 471 + (i % 4) * 29 + Math.sin(motion * .4 + i) * 3, y = 181 + Math.floor(i / 4) * 24;
+      const { x, y } = animalPosition(i);
       shadow(x + 16, y + 26, 13); sprite(ctx, images, animal.kind, x, y, Math.floor(motion * 2 + i) % 4, 0);
       if (animal.produce) { rect(x + 22, y + 2, 5, 5, '#fff1bd'); }
       if (animal.hunger < 35 || animal.health < 60) bar(x + 3, y + 31, animal.health, '#e3a384');
@@ -112,41 +123,39 @@ export function createScene(canvas, { getState, getSelected, isPaused, onSelect,
       if (mainKey === 'sword') { rect(farmer.x + 23, farmer.y + 16, 13, 2, '#dbe4de'); rect(farmer.x + 25, farmer.y + 14, 2, 6, '#bc995a'); }
     }
     text('You', farmer.x + 9, farmer.y - 1);
-    if (state.mainHealth < 100) bar(farmer.x + 3, farmer.y + 31, state.mainHealth, '#e6b094');
+    const mainMax = statsFor(state, 'farmer', 'main').maxHealth;
+    if (state.mainHealth < mainMax) bar(farmer.x + 3, farmer.y + 31, state.mainHealth / mainMax * 100, '#e6b094');
     bubbles = [];
-    const ids = new Set(state.workers.map(w => w.id)); for (const id of positions.keys()) if (!ids.has(id)) positions.delete(id);
-    state.workers.forEach((worker, i) => {
-      let destination = { x: 61 + (i % 6) * 25, y: 154 + Math.floor(i / 6) * 28 };
-      if (worker.activity === 'working' && worker.job) {
-        const pi = state.plots.findIndex(p => p.id === worker.job.targetId);
-        destination = pi >= 0 ? { x: plotPosition(pi).x - 9, y: plotPosition(pi).y + 12 } : { x: 453 + (i % 4) * 26, y: 220 };
-      }
-      const position = positions.get(worker.id) ?? { x: 145, y: 126 }; positions.set(worker.id, position);
-      const dx = destination.x - position.x, dy = destination.y - position.y, distance = Math.hypot(dx, dy);
-      if (!isPaused() && distance > 1) { const step = Math.min(distance, elapsed * 63); position.x += dx / distance * step; position.y += dy / distance * step; }
-      const moving = distance > 3 && !isPaused();
-      let key = moving ? 'josh' : worker.activity === 'working' && worker.job ? worker.job.kind === 'water' ? 'watering' : 'hoe' : 'idle';
-      const row = moving ? Math.abs(dx) > Math.abs(dy) ? 2 : dy < 0 ? 1 : 0 : 0;
-      shadow(position.x + 16, position.y + 27, 10);
-      ctx.save(); if (moving && dx < 0 && row === 2) { ctx.translate(Math.round(position.x + 32), 0); ctx.scale(-1, 1); sprite(ctx, images, key, 0, position.y, Math.floor(motion * 6) % ART[key].frames, row); } else sprite(ctx, images, key, position.x, position.y, Math.floor(motion * 6) % ART[key].frames, row); ctx.restore();
-      text(worker.name.slice(0, 12), position.x, position.y + 39, '#344c37', 7);
-      if (worker.job && !moving) bar(position.x + 3, position.y + 31, worker.job.progress / worker.job.duration * 100, '#eedda2');
+    // Positions are the model's own; this only picks a pose from them, never moves a helper.
+    state.workers.forEach(worker => {
+      const { x, y } = worker, moving = worker.moving && !isPaused();
+      const key = moving ? 'josh' : worker.activity === 'working' && worker.job
+        ? worker.job.kind === 'water' ? 'watering' : worker.job.kind === 'plant' ? 'throwing' : 'hoe' : 'idle';
+      const row = worker.facing === 'up' ? 1 : ['left', 'right'].includes(worker.facing) ? 2 : 0;
+      const left = worker.facing === 'left';
+      shadow(x + 16, y + 27, 10);
+      ctx.save();
+      if (left) { ctx.translate(Math.round(x + 32), 0); ctx.scale(-1, 1); }
+      sprite(ctx, images, key, left ? 0 : x, y, Math.floor(motion * 6) % ART[key].frames, row);
+      ctx.restore();
+      text(worker.name.slice(0, 12), x, y + 39, '#344c37', 7);
+      if (worker.job && !moving) bar(x + 3, y + 31, worker.job.progress / worker.job.duration * 100, '#eedda2');
       if (worker.attention) {
-        const bx = position.x + 9, by = position.y - 11;
+        const bx = x + 9, by = y - 11;
         rect(bx, by, 25, 18, '#fff4cc'); rect(bx + 3, by + 17, 4, 4, '#fff4cc'); text('?', bx + 9, by + 13, '#6b593b', 13);
         bubbles.push({ x: bx, y: by, id: worker.id });
       }
     });
     const battle = combat.update(state, elapsed, { paused: isPaused(), reducedMotion: reduced?.matches });
-    battle.guards.forEach((guard, i) => {
+    battle.guards.forEach(guard => {
       const { x, y, weapon, attacking } = guard;
-      const phase = fract(motion * 1.65 + i * .11);
+      const phase = Math.min(.999, guard.strikeAge / guard.strikeDuration || 0);
       const column = attacking ? reduced?.matches ? 4 : Math.floor(phase * ART[weapon].frames) : 0;
-      const left = attacking && guard.targetX < x;
+      const left = guard.facing === 'left', row = guard.facing === 'up' ? 1 : ['left', 'right'].includes(guard.facing) ? 2 : 0;
       shadow(x + 16, y + 27, 10);
       ctx.save();
       if (left) { ctx.translate(Math.round(x + 32), 0); ctx.scale(-1, 1); }
-      const drawn = sprite(ctx, images, weapon, left ? 0 : x, y, column, 2);
+      const drawn = sprite(ctx, images, weapon, left ? 0 : x, y, column, row);
       ctx.restore();
       if (!drawn) {
         if (!sprite(ctx, images, 'josh', x, y, 0, 2)) {
@@ -164,6 +173,8 @@ export function createScene(canvas, { getState, getSelected, isPaused, onSelect,
       if (guard.kind === 'knight') {
         rect(x + 7, y + 17, 7, 9, '#91adb8'); rect(x + 10, y + 17, 1, 9, '#e7ead0');
       }
+      text(`${guard.post[0].toUpperCase() + guard.post.slice(1)} · ${guard.level}`, x - 1, y - 3, '#40563c', 6);
+      if (guard.hit) { rect(x + 2, y + 12, 3, 3, '#f4dbb3'); rect(x + 28, y + 10, 3, 3, '#f4dbb3'); }
       bar(x + 3, y + 31, guard.health / guard.maxHealth * 100, '#99c5bb');
       if (attacking && !reduced?.matches) {
         if (weapon === 'bow') {
@@ -184,24 +195,46 @@ export function createScene(canvas, { getState, getSelected, isPaused, onSelect,
       }
     });
     battle.monsters.forEach(monster => {
-      const { x, y, hit } = monster;
-      // The other damage cells flash white: use only the verified green pose.
-      const key = hit ? 'slimeDamage' : 'slime', column = hit ? 0 : Math.floor(motion * 5) % 4;
-      if (!sprite(ctx, images, key, x, y, column)) {
-        if (!sprite(ctx, images, 'slime', x, y, 0)) {
-          rect(x + 7, y + 14, 19, 10, hit ? '#77b56a' : '#598f55');
-          rect(x + 11, y + 11, 11, 4, hit ? '#77b56a' : '#598f55'); rect(x + 12, y + 17, 2, 2, '#243e35'); rect(x + 20, y + 17, 2, 2, '#243e35');
+      const { x, y, hit, attacking } = monster, kind = monster.kind;
+      const phase = Math.min(.999, monster.strikeAge / monster.strikeDuration || 0);
+      const attackKey = `${kind}Attack`;
+      // First damage cells keep each enemy's colors; later cells flash white.
+      const key = hit ? `${kind}Damage` : attacking && ART[attackKey] ? attackKey : kind;
+      const column = hit ? 0 : attacking && ART[attackKey] ? reduced?.matches ? 2 : Math.floor(phase * ART[key].frames) : Math.floor(motion * 5) % ART[key].frames;
+      const row = monster.facing === 'up' ? 1 : ['left', 'right'].includes(monster.facing) ? 2 : 0;
+      const left = monster.facing === 'left';
+      shadow(x + 16, y + 27, 10);
+      ctx.save(); if (left) { ctx.translate(Math.round(x + 32), 0); ctx.scale(-1, 1); }
+      const drawn = sprite(ctx, images, key, left ? 0 : x, y, column, row);
+      ctx.restore();
+      if (!drawn) {
+        const colors = { slime: '#598f55', raider: '#8b9844', spitter: '#a178a4', brute: '#585b60' };
+        const color = hit ? '#77b56a' : colors[kind];
+        rect(x + 7, y + 14, 19, 10, color); rect(x + 11, y + 11, 11, 4, color);
+        rect(x + 12, y + 17, 2, 2, '#243e35'); rect(x + 20, y + 17, 2, 2, '#243e35');
+      }
+      if (kind !== 'slime') text(MONSTERS[kind].name, x - 7, y - 3, '#543e46', 6);
+      if (hit) { rect(x + 2, y + 13, 3, 2, '#d9cd91'); rect(x + 28, y + 10, 2, 3, '#d9cd91'); }
+      if (attacking && !reduced?.matches) {
+        if (kind === 'spitter') {
+          const sx = x + 16, sy = y + 16;
+          rect(sx + (monster.targetX + 16 - sx) * phase, sy + (monster.targetY + 16 - sy) * phase, 5, 5, '#c6a6d9');
+        } else {
+          const angle = Math.atan2(monster.targetY - y, monster.targetX - x);
+          ctx.strokeStyle = '#dbb187'; ctx.lineWidth = 2; ctx.beginPath();
+          ctx.arc(x + 16, y + 18, 20, angle - .65, angle + .65); ctx.stroke();
         }
       }
-      if (hit) { rect(x + 2, y + 13, 3, 2, '#d9cd91'); rect(x + 28, y + 10, 2, 3, '#d9cd91'); }
       bar(x + 3, y + 28, monster.health / monster.maxHealth * 100, '#e4a190');
     });
     battle.defeats.forEach(defeat => {
-      // Clamp once to the final dissolve cell; never wrap a death back to life.
-      const column = reduced?.matches ? 2 : Math.min(3, Math.floor(defeat.age / .16));
-      if (!sprite(ctx, images, 'slimeDead', defeat.x, defeat.y, column)) {
+      const key = `${defeat.kind}Dead`, frames = ART[key].frames;
+      // Play the matching death once, holding its final cell until removal.
+      const column = reduced?.matches ? frames - 1 : Math.min(frames - 1, Math.floor(defeat.age / .12));
+      if (!sprite(ctx, images, key, defeat.x, defeat.y, column)) {
         const height = reduced?.matches ? 3 : Math.max(2, 9 - column * 2);
-        rect(defeat.x + 5, defeat.y + 25 - height, 23, height, '#6c9554');
+        const colors = { slime: '#6c9554', raider: '#8b9844', spitter: '#a178a4', brute: '#585b60' };
+        rect(defeat.x + 5, defeat.y + 25 - height, 23, height, colors[defeat.kind]);
       }
       if (defeat.age >= .25 || reduced?.matches) {
         const rise = reduced?.matches ? 0 : Math.min(12, defeat.age * 9);
@@ -224,5 +257,5 @@ export function createScene(canvas, { getState, getSelected, isPaused, onSelect,
     if (bubble) onAttention(bubble.id); else { const plot = hitPlot(x, y); if (plot) onSelect(plot); }
   };
   canvas.addEventListener('click', click);
-  return () => { disposed = true; abort.abort(); cancelAnimationFrame(frame); canvas.removeEventListener('click', click); positions.clear(); images = {}; bubbles = []; };
+  return () => { disposed = true; abort.abort(); cancelAnimationFrame(frame); canvas.removeEventListener('click', click); images = {}; bubbles = []; };
 }

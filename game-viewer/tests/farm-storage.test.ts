@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { createFarm, applySessionSnapshot, advanceFarm } from '../farm/model.mjs';
+import { createFarm, applySessionSnapshot, advanceFarm, validateFarm } from '../farm/model.mjs';
 import { createSaveStore, SAVE_KEY, BACKUP_KEY, serializeFarm, parseFarm } from '../farm/storage.mjs';
+import { guardHome } from '../farm/world.mjs';
 const memoryStorage = () => {
   const data = new Map<string, string>();
   return { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value), data };
@@ -25,7 +26,7 @@ describe('farm saves', () => {
     store.save(s); s.coins = 90; store.save(s);
     storage.setItem(SAVE_KEY, '{ broken');
     const loaded = store.load();
-    expect(loaded.state.coins).toBe(120); expect(loaded.warning).toMatch(/backup/i);
+    expect(loaded.state.coins).toBe(35); expect(loaded.warning).toMatch(/backup/i);
     expect(storage.getItem(SAVE_KEY)).toBe('{ broken');
     store.save(loaded.state);
     expect(store.load().warning).toBeNull();
@@ -46,5 +47,17 @@ describe('farm saves', () => {
   it('surfaces denied storage writes without claiming the save succeeded', () => {
     const store = createSaveStore({ getItem: () => null, setItem: () => { throw new Error('Quota exceeded'); } });
     expect(() => store.save(createFarm())).toThrow(/Quota exceeded/);
+  });
+  it('keeps a zero-health protector resting at home alive through a save/load round trip, then heals and resumes patrol', () => {
+    const s = createFarm();
+    Object.assign(s.guards[0], { mode: 'home', health: 0, ...guardHome(0) });
+    const restored = parseFarm(serializeFarm(s));
+    expect(validateFarm(restored)).toBe(true);
+    expect(restored.guards[0].health).toBe(0); expect(restored.guards[0].mode).toBe('home');
+    restored.connected = true; restored.policy.autoHeal = false; restored.raidTimer = 1000;
+    for (let n = 0; n < 100; n++) advanceFarm(restored, 1);
+    expect(restored.guards.some(g => g.id === 'guard-1')).toBe(true);
+    expect(restored.guards[0].mode).toBe('patrol');
+    expect(restored.guards[0].health).toBe(restored.guards[0].maxHealth);
   });
 });

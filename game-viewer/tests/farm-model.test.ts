@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createFarm, advanceFarm, command, applySessionSnapshot, validateFarm } from '../farm/model.mjs';
+import { guardHome, plotPosition, animalPosition } from '../farm/world.mjs';
+import { EXPEDITION_TIME } from '../farm/definitions.mjs';
 
 const session = (id = 'a', extra = {}) => ({ id, name: id, provider: 'demo', activity: 'working', parentId: null, attention: null, ...extra });
 const snapshot = (sessions = [session()], revision = 1, connected = true) => ({ version: 1, revision, connected, sessions });
@@ -21,14 +23,15 @@ describe('session labor and crop care', () => {
     const s = createFarm();
     applySessionSnapshot(s, snapshot());
     command(s, { type: 'assign', workerId: 'a', targetId: 'p1' });
-    run(s, 100);
+    run(s, 210);
     expect(s.plots[0].stage).toBe('ready');
     expect(s.inventory.parsnip).toBe(0);
+    Object.assign(s.farmer, plotPosition(0));
     command(s, { type: 'harvest', plotId: 'p1' });
-    expect(s.inventory.parsnip).toBe(3);
+    expect(s.inventory.parsnip).toBe(2);
     expect(s.plots[0].stage).toBe('empty');
     expect(() => command(s, { type: 'harvest', plotId: 'p1' })).toThrow();
-    expect(s.inventory.parsnip).toBe(3);
+    expect(s.inventory.parsnip).toBe(2);
   });
   it('keeps progress when a finished worker is replaced', () => {
     const s = createFarm();
@@ -41,7 +44,7 @@ describe('session labor and crop care', () => {
     run(s, 5);
     applySessionSnapshot(s, snapshot([session('b')], 3));
     command(s, { type: 'assign', workerId: 'b', targetId: 'p1' });
-    run(s, 70);
+    run(s, 170);
     expect(s.plots[0].growth).toBeGreaterThanOrEqual(progress);
     expect(s.plots[0].stage).toBe('ready');
   });
@@ -74,14 +77,46 @@ describe('session labor and crop care', () => {
     command(s, { type: 'assign', workerId: 'a', targetId: 'auto' });
     expect(s.workers[0].assignment).toBe('auto');
   });
+  it('does not advance a job until its helper has physically walked to the target', () => {
+    const s = createFarm(); applySessionSnapshot(s, snapshot());
+    command(s, { type: 'assign', workerId: 'a', targetId: 'p1' });
+    advanceFarm(s, 0.05);
+    const worker = s.workers[0];
+    expect(worker.job).toMatchObject({ targetId: 'p1', kind: 'till', progress: 0 });
+    // Placed far from the plot: time passing alone must not finish the job.
+    Object.assign(worker, { x: 400, y: 172 });
+    advanceFarm(s, 0.05);
+    expect(worker.job.progress).toBe(0);
+    expect(s.plots[0].stage).toBe('empty');
+    // Placed right beside the plot's work spot: progress can now begin.
+    Object.assign(worker, { x: plotPosition(0).x - 9, y: plotPosition(0).y + 12 });
+    advanceFarm(s, 0.05);
+    expect(worker.job.progress).toBeGreaterThan(0);
+  });
+  it('leaves a destroyed plot ruined until a helper walks over to clear and replant it', () => {
+    const s = createFarm(); applySessionSnapshot(s, snapshot());
+    Object.assign(s.plots[0], { stage: 'dead', health: 0 });
+    command(s, { type: 'assign', workerId: 'a', targetId: 'p1' });
+    advanceFarm(s, 0.05);
+    const worker = s.workers[0];
+    expect(worker.job.kind).toBe('clear');
+    Object.assign(worker, { x: 400, y: 172 });
+    advanceFarm(s, 0.05);
+    expect(s.plots[0].stage).toBe('dead');
+    expect(worker.job.progress).toBe(0);
+    Object.assign(worker, { x: plotPosition(0).x - 9, y: plotPosition(0).y + 12 });
+    run(s, 8); // clear, till and plant each take a few seconds once the helper has arrived
+    expect(s.plots[0].stage).toBe('growing');
+  });
 });
 
 describe('production, money, and protection', () => {
   it('produces milk and wool with care, collects once, and converts a selected animal once', () => {
     const s = createFarm(); s.raidTimer = 1000;
-    run(s, 95);
+    run(s, 185);
     expect(s.animals[0].produce).toBe(1);
     expect(s.animals[1].produce).toBe(1);
+    Object.assign(s.farmer, animalPosition(0));
     command(s, { type: 'collect', animalId: 'cow-1' });
     expect(s.inventory.milk).toBe(1);
     expect(() => command(s, { type: 'collect', animalId: 'cow-1' })).toThrow();
@@ -99,7 +134,7 @@ describe('production, money, and protection', () => {
     s.inventory.parsnip = 3;
     command(s, { type: 'sell', item: 'parsnip', quantity: 2 });
     expect(s.inventory.parsnip).toBe(1);
-    expect(s.coins).toBe(12);
+    expect(s.coins).toBe(8);
     expect(() => command(s, { type: 'sell', item: 'parsnip', quantity: -1 })).toThrow();
     expect(() => command(s, { type: 'buy', item: '__proto__' })).toThrow();
   });
@@ -107,7 +142,7 @@ describe('production, money, and protection', () => {
     const s = createFarm(); applySessionSnapshot(s, snapshot());
     command(s, { type: 'assign', workerId: 'a', targetId: 'p1' });
     command(s, { type: 'policy', key: 'autoHarvest', value: true });
-    run(s, 100);
+    run(s, 210);
     expect(s.inventory.parsnip).toBeGreaterThan(0);
     const coins = s.coins;
     command(s, { type: 'policy', key: 'autoSell', value: true });
@@ -127,7 +162,7 @@ describe('production, money, and protection', () => {
     expect(s.inventory.medicine).toBe(medicine - 1);
     command(s, { type: 'guardMode', guardId: 'guard-1', mode: 'expedition' });
     const coins = s.coins;
-    run(s, 50);
+    run(s, 185);
     expect(s.coins).toBeGreaterThan(coins);
     expect(s.guards[0].mode).toBe('home');
   });
@@ -157,13 +192,70 @@ describe('production, money, and protection', () => {
   });
   it('releases care jobs in the same tick that an animal dies', () => {
     const s = createFarm(); applySessionSnapshot(s, snapshot());
-    s.animals[0].hunger = 0; s.animals[0].health = 0.05;
+    s.animals[0].hunger = 0; s.animals[0].health = 0.01; s.policy.autoHeal = false;
     s.inventory.feed = 0;
     s.workers[0].job = { targetId: 'cow-1', kind: 'feed', duration: 3, progress: 0 };
     expect(validateFarm(s)).toBe(true);
-    advanceFarm(s, 0.25);
+    advanceFarm(s, 0.05);
     expect(s.animals.some(a => a.id === 'cow-1')).toBe(false);
     expect(s.workers[0].job).toBeNull();
     expect(validateFarm(s)).toBe(true);
+  });
+  it('kills a patrolling protector permanently in combat and journals its death, upgrades included', () => {
+    const s = createFarm(); s.policy.autoHeal = false; s.raidTimer = 1000; s.coins = 100;
+    command(s, { type: 'upgradeGuard', guardId: 'guard-1' });
+    Object.assign(s.guards[0], { health: 1, x: 300, y: 140 });
+    command(s, { type: 'raid' }); Object.assign(s.monsters[0], { x: 330, y: 140 });
+    advanceFarm(s, .05);
+    expect(s.guards.some(g => g.id === 'guard-1')).toBe(false);
+    expect(s.events[0].text).toMatch(/scout/i);
+    expect(validateFarm(s)).toBe(true);
+  });
+  it('sends a fully healed home protector back to patrol automatically', () => {
+    const s = createFarm(); s.policy.autoHeal = false; s.raidTimer = 1000;
+    Object.assign(s.guards[0], { mode: 'home', health: 1, ...guardHome(0) });
+    for (let n = 0; n < 100; n++) advanceFarm(s, 1);
+    expect(s.guards[0].mode).toBe('patrol');
+    expect(s.guards[0].health).toBe(s.guards[0].maxHealth);
+  });
+  it('caps expedition wear so it cannot kill a protector', () => {
+    const s = createFarm();
+    Object.assign(s.guards[0], { mode: 'expedition', health: 5, progress: EXPEDITION_TIME - 0.05 });
+    advanceFarm(s, 1);
+    expect(s.guards[0].health).toBeGreaterThan(0);
+    expect(s.guards[0].mode).toBe('home');
+  });
+  it('requires the farmer to stand near a plot or animal for Tend, Harvest, Collect, Heal and Slaughter', () => {
+    const s = createFarm(); s.raidTimer = 1000;
+    Object.assign(s.plots[0], { stage: 'tilled' }); // seeds are available: needs planting
+    Object.assign(s.animals[0], { produce: 1, health: 40 });
+    // The farmer starts at home, far from both the garden bed and the pasture.
+    expect(() => command(s, { type: 'tend', plotId: 'p1' })).toThrow(/closer/i);
+    expect(() => command(s, { type: 'collect', animalId: 'cow-1' })).toThrow(/closer/i);
+    expect(() => command(s, { type: 'heal', targetId: 'cow-1' })).toThrow(/closer/i);
+    expect(() => command(s, { type: 'slaughter', animalId: 'cow-1' })).toThrow(/closer/i);
+    s.plots[0].stage = 'ready'; s.plots[0].growth = 180;
+    expect(() => command(s, { type: 'harvest', plotId: 'p1' })).toThrow(/closer/i);
+    s.plots[0].stage = 'tilled';
+    // Walking beside the plot lets Tend succeed, then Harvest once it is ready.
+    Object.assign(s.farmer, plotPosition(0));
+    command(s, { type: 'tend', plotId: 'p1' });
+    expect(s.plots[0].stage).toBe('growing');
+    s.plots[0].stage = 'ready';
+    command(s, { type: 'harvest', plotId: 'p1' });
+    expect(s.plots[0].stage).toBe('empty');
+    // Walking beside the pasture lets Collect, Heal and Slaughter succeed.
+    Object.assign(s.farmer, animalPosition(0));
+    command(s, { type: 'collect', animalId: 'cow-1' });
+    expect(s.inventory.milk).toBe(1);
+    command(s, { type: 'heal', targetId: 'cow-1' });
+    expect(s.animals[0].health).toBeGreaterThan(40);
+    command(s, { type: 'slaughter', animalId: 'cow-1' });
+    expect(s.animals.some(a => a.id === 'cow-1')).toBe(false);
+    // Healing the farmer or a protector is exempt from the proximity requirement.
+    s.mainHealth = 10; s.inventory.medicine = 1;
+    expect(() => command(s, { type: 'heal', targetId: 'main' })).not.toThrow();
+    s.guards[0].health = 1; s.inventory.medicine = 1;
+    expect(() => command(s, { type: 'heal', targetId: 'guard-1' })).not.toThrow();
   });
 });

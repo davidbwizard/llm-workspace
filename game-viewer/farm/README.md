@@ -6,7 +6,16 @@ agents, and does not import or modify the host app.
 
 ## Run
 
-From `game-viewer/` with the existing asset pack and generated manifest:
+From `game-viewer/`:
+
+```sh
+./run.sh
+```
+
+That generates the asset catalog if it is missing, starts the server, and opens a
+browser. `./run.sh --rebuild` regenerates the catalog first, `--port 4180` picks a
+port, `--no-open` skips the browser, and `--test` runs the suite instead. To start
+the server on its own, with the pack and manifest already in place:
 
 ```sh
 node farm/serve.mjs
@@ -28,41 +37,80 @@ read-only; save data is in the browser, not written through HTTP.
 
 ## Play
 
-The farm starts with twelve plots, three working demo farmers, a cow, a sheep,
-a scout, seeds, feed, medicine, and 120 coins.
+A new farm starts with three unlocked plots, three working demo farmers, a cow,
+a sheep, one scout, six seeds, eight feed, one tonic, and 35 coins. Nine more
+plots can be bought individually: 50 coins for the first, then 25 more per plot.
 
 - Farmers automatically prepare, plant, water, weed, feed animals, and collect
   ready milk/wool. Choose an assignment to reserve a farmer for a plot or livestock.
+  A helper physically walks to the plot or the specific animal it is caring for —
+  routed around the farmhouse and pond, and scaling with 1×/2×/4× like the rest of
+  the simulation — before its work actually progresses; a plot destroyed by a
+  monster stays ruined until a helper walks over to clear and replant it. Planting
+  a seed uses a throwing-items pose instead of the hoe.
 - Select a plot in the scene or with its numbered button. The main farmer can
-  help manually. Parsnips grow in 75 seconds of good conditions; wheat takes 120.
+  help manually. Parsnips need 180 seconds of good conditions; wheat needs 240.
+  Tend and Harvest need your farmer standing next to that plot; Milk/Shear, Heal
+  and Slaughter need it standing next to that animal. Too far, and the button
+  disables itself with its own label, e.g. "Walk closer to tend" — it re-enables
+  the moment you arrive, no popup. Buying, selling, choosing a crop, healing
+  yourself or a protector, and Harvest all ready all work from anywhere.
 - Click or Tab into the canvas, then use arrow keys to move your farmer. Press
-  Space near a ripe crop to harvest, or near a slime to swing a sword. An enemy
-  within reach takes priority over a crop. Actions have a short cooldown.
+  Space near a ripe crop to harvest, near ready livestock to collect milk/wool,
+  or near a monster to swing a sword. An enemy within reach takes priority. Actions have a short cooldown.
   Moving away from the canvas releases the keys; other app controls keep their
   normal keyboard behavior. Movement pauses with the game and stays at the same
-  speed under 1×/2×/4×. Buildings, the pond, and map edges block movement.
+  speed under 1×/2×/4×. Buildings, the pond, map edges, and enemy bodies block movement.
+  The nearby-action hint updates as you move. Empty swings are harmless.
 - Harvest ready crops yourself, or enable automatic harvest in Farm settings.
   Sell goods from Store & trade, or separately enable automatic selling.
 - Buy seeds, feed, medicine, cows, and sheep. Milk and wool are recurring outputs.
+  Milk and wool take 180 seconds to replenish; the Livestock panel shows the
+  countdown and Milk/Shear buttons. With automatic collection enabled, helpers
+  may already have moved ready products into Store & trade.
   Slaughter requires selecting and confirming one animal; it produces meat/hides
   and permanently removes that animal and its future production.
 - Scouts carry swords, knights carry swords and shields, and rangers use bows.
-  They differ in price, health, and strength. Patrols intercept approaching slimes
-  with visible attacks; each protector focuses one threat. Defeated slimes dissolve
-  and show the 12-coin reward. Deploy a protector on an expedition for money or send it
-  home to recover. Injured protectors retreat. Medicine heals the farmer, animals,
-  or protectors; automatic healing can be disabled.
+  They differ in price, health, and strength. Assign patrols to Farm, Garden, or Pasture. Upgrade a protector twice to
+  improve health and attack power. Fighters use their actual on-screen positions
+  and strike as soon as they enter reach. Defeated enemies dissolve and show
+  their reward (2–6 coins, depending on type). Deploy a protector on an expedition for money or send it
+  home to heal. Expeditions take three minutes and always leave a protector with at
+  least a little health. Protectors fight to the death and never retreat on their own;
+  a protector reduced to zero health in combat is lost for good, upgrades included. Send
+  a wounded protector home yourself, or leave it on patrol at your own risk. A protector
+  sent home returns to patrol automatically once fully healed. Medicine heals the farmer,
+  animals, or protectors; automatic healing can be disabled.
+- Successful plot harvests advance the threat tier at 6, 18, and 36 harvests.
+  Raids grow from one weak slime to mixed groups with fast spear goblins, ranged
+  spore spitters, and armored brutes. Entries rotate among all four sides. Monsters
+  attack reachable crops, animals, and fighters; neglected defense can lose a
+  harvest or an animal. The threat panel shows the next milestone.
 - Expand Session simulator to add/finish a session, change working/idle states,
   ask or resolve a demo question, add child agents, or trigger an encounter.
   A root and its children appear as one farmer. Demo question controls affect
   only the simulator. Farmers show a question bubble and a Read question action.
+- **Balance** next to Pause opens a live base-stat editor beside the game, so you can
+  tune while you watch. It covers all eleven damageable types: your farmer, a plot of
+  land, each animal, each protector, and each monster. Health and defense apply to
+  every type; attack, interval, reach, and speed apply to the fighters. Drag a slider
+  for a quick feel or type an exact number. Changes take effect immediately and are
+  saved with the farm. Anything already alive keeps its current health percentage, so
+  raising a cap heals nothing and lowering one kills nothing; a ruined plot stays
+  ruined. Defense subtracts a flat amount from each incoming hit, down to no damage,
+  and does not protect against thirst or starvation. **Restore default stats** puts
+  everything back without touching coins, harvests, or progress.
+- Owned land can be attacked whether or not something is growing in it. The bed and
+  its crop share one health pool. Land reduced to zero is ruined but still yours:
+  tend it to repair the ground, then plant again. Locked land is never attacked.
 - Use Pause and the 1×/2×/4× speed selector. Hidden pages, sleeping computers,
   and closed pages accrue no elapsed game time. Idle sessions supply no labor:
   crops can wither when the visible game remains open without care.
 
 Free starter seeds are available only when you have none and cannot afford more.
-The main farmer recovers when safe, and can eventually repel an intruder even
-without protectors. A loss therefore leaves a route to rebuilding.
+The main farmer recovers when safe; a protector sent home heals there and returns
+to patrol on its own. Starter seeds let you replant after losses. Slaughter, supplies,
+land expansion, healing, and better defenders compete for the same limited coins.
 
 ## Saves
 
@@ -80,8 +128,15 @@ the same origin from simultaneously running and overwriting the farm.
 Saves contain game state, not session identifiers, prompt text, working flags, or
 time-away calculations. Workers are reconciled from the current session source
 on every mount. An old save never grants work from sessions that no longer exist.
-Your farmer's position and facing are saved too. Earlier v1 saves without a
-position remain compatible and start the farmer by the farmhouse.
+Version3 saves include combat positions, patrols, upgrades, purchased plots,
+harvested-plot milestones, and your base-stat settings. Earlier v1 and v2 saves
+migrate without losing resources or their accessible plots; crop and animal
+production percentages are preserved, and they arrive on the shipped default stats.
+Unrecorded harvest history starts at zero.
+
+Use **New farm…** to try the new three-plot opening. The confirmation exports
+your current farm before replacing it; cancelling keeps it. Existing saves are
+never reset automatically.
 
 ## Connect the app later
 
@@ -152,7 +207,7 @@ by `ART` in `art.mjs`, with the same sprite regions. Observe the abort signal,
 report individual failures through `onError`, and reject for total loading failure.
 Omit this option to use the current local catalog/image endpoints. The host can
 supply its own protocol without editing the game's renderer. UI and simulation are
-separate: `createFarm`, `command`, `applySessionSnapshot`, and `advanceFarm` also
+separate: `createFarm`, `command`, `upgradeFarm`, `applySessionSnapshot`, and `advanceFarm` also
 run under Node without a DOM. If the host needs simulation while its farm view is
 hidden, run the model with the host's scheduler and adapt the view accordingly;
 the standalone mount deliberately owns a visible-page clock.
@@ -181,7 +236,7 @@ The connected browser was unavailable during this build. DOM interaction tests,
 HTTP checks, asset-region inspection, and simulation tests do not substitute for
 a visual playtest in a browser; that final visual check remains outstanding.
 Reported gameplay problems are recorded in [KNOWN_ISSUES.md](./KNOWN_ISSUES.md),
-including the attack-reach issue from the first user playtest.
+including the original attack-reach report and its spatial-combat changes.
 
 Artwork: Farm RPG by EmanuelleDev, used from the user's existing local asset pack.
 Original artwork is not changed or copied into the source deliverable.

@@ -1,0 +1,208 @@
+{
+  "version": 1,
+  "farm": {
+    "version": 1,
+    "time": 45,
+    "remainder": 0,
+    "coins": 321,
+    "mainHealth": 100,
+    "mainCooldown": 0,
+    "farmer": {
+      "x": 166,
+      "y": 105,
+      "facing": "down",
+      "action": "idle",
+      "actionTime": 0
+    },
+    "nextId": 101,
+    "raidTimer": 180,
+    "wave": 0,
+    "connected": true,
+    "sessionRevision": -1,
+    "plots": [
+      {
+        "id": "p1",
+        "crop": "parsnip",
+        "stage": "growing",
+        "growth": 50,
+        "water": 60,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p2",
+        "crop": "parsnip",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p3",
+        "crop": "parsnip",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p4",
+        "crop": "parsnip",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p5",
+        "crop": "parsnip",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p6",
+        "crop": "parsnip",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p7",
+        "crop": "parsnip",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p8",
+        "crop": "parsnip",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p9",
+        "crop": "wheat",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p10",
+        "crop": "wheat",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p11",
+        "crop": "wheat",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      },
+      {
+        "id": "p12",
+        "crop": "wheat",
+        "stage": "empty",
+        "growth": 0,
+        "water": 0,
+        "health": 100,
+        "neglect": 0,
+        "weeds": 0
+      }
+    ],
+    "animals": [
+      {
+        "id": "cow-1",
+        "kind": "cow",
+        "name": "Clover",
+        "health": 100,
+        "hunger": 80,
+        "production": 45,
+        "produce": 0
+      },
+      {
+        "id": "sheep-1",
+        "kind": "sheep",
+        "name": "Willow",
+        "health": 100,
+        "hunger": 80,
+        "production": 0,
+        "produce": 0
+      }
+    ],
+    "guards": [
+      {
+        "id": "guard-1",
+        "kind": "scout",
+        "health": 60,
+        "maxHealth": 60,
+        "mode": "patrol",
+        "progress": 0
+      }
+    ],
+    "monsters": [
+      {
+        "id": "monster-100",
+        "health": 18,
+        "maxHealth": 30,
+        "progress": 0.5
+      }
+    ],
+    "workers": [],
+    "inventory": {
+      "parsnip": 0,
+      "wheat": 0,
+      "milk": 0,
+      "wool": 7,
+      "meat": 0,
+      "hide": 0,
+      "seeds": 20,
+      "feed": 20,
+      "medicine": 3
+    },
+    "policy": {
+      "autoHarvest": false,
+      "autoSell": false,
+      "autoCollect": true,
+      "autoHeal": true
+    },
+    "events": [
+      {
+        "id": 1,
+        "time": 0,
+        "text": "Welcome home. Your workers will tend the farm while their sessions work."
+      }
+    ]
+  }
+}

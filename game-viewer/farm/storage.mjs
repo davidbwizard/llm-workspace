@@ -1,4 +1,4 @@
-import { validateFarm } from './validation.mjs';
+import { validateFarm, upgradeFarm } from './validation.mjs';
 import { createFarmer } from './world.mjs';
 
 export const SAVE_KEY = 'hearthfield.farm.v1';
@@ -7,7 +7,7 @@ const MAX_SAVE_BYTES = 1_048_576;
 
 /** Session identifiers/questions are transient, not part of the player's farm. */
 function offlineFarm(state) {
-  const farm = structuredClone(state);
+  const farm = structuredClone(upgradeFarm(state));
   farm.workers = []; farm.connected = false; farm.sessionRevision = -1;
   farm.farmer ??= createFarmer();
   farm.farmer.action = 'idle'; farm.farmer.actionTime = 0;
@@ -16,7 +16,7 @@ function offlineFarm(state) {
 
 export function serializeFarm(state) {
   validateFarm(state);
-  const json = JSON.stringify({ version: 1, farm: offlineFarm(state) });
+  const json = JSON.stringify({ version: 3, farm: offlineFarm(state) });
   if (json.length > MAX_SAVE_BYTES) throw new Error('Farm save is too large.');
   return json;
 }
@@ -26,7 +26,7 @@ export function parseFarm(json) {
   let document;
   try { document = JSON.parse(json); }
   catch (error) { throw new Error('Farm save contains invalid JSON.', { cause: error }); }
-  if (!document || document.version !== 1 || !document.farm || document.farm.version !== 1) throw new Error('Unsupported farm save version.');
+  if (!document || ![1, 2, 3].includes(document.version) || !document.farm || document.farm.version !== document.version) throw new Error('Unsupported farm save version.');
   validateFarm(document.farm);
   return offlineFarm(document.farm);
 }
