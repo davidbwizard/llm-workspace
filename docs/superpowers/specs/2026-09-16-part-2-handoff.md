@@ -146,6 +146,9 @@ turn now that user text is the quieter side.
 
 ## Things worth knowing before touching this
 
+- **Superseded 2026-09-17:** since better-sqlite3 13 (a Node-API addon whose one
+  binary loads in Node and Electron), the app and the suite run side by side with no
+  rebuild. The note below is kept for history.
 - **The app and the test suite cannot both run.** better-sqlite3 has to be
   built for Electron for the app and for Node for the suite. Order: eyes-on,
   stop the app, build and test, restart.
