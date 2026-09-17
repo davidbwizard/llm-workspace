@@ -10,6 +10,7 @@ import { ProviderMark } from './ProviderMark.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import { useSettings } from '../state/settings.ts';
 import { useSessionLive } from '../state/useSessionLive.ts';
+import { addPending, pendingFor, dropPending, matchPending, markQueued, tickIdle, NOT_SEEN_AFTER_MS } from '../state/pending.ts';
 import './ConversationView.css';
 
 /** Transcript text is untrusted, so markdown rendering is locked down:
@@ -391,7 +392,7 @@ function readFile(file: File, as: 'dataUrl' | 'bytes'): Promise<string | ArrayBu
 
 type Attachment = { id: string; name: string; kind: AttachKind; thumb: string | null };
 
-function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
+function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef, onPendingChange }: {
   pid: number | null;
   /** Which recorded session this pid is, used ONLY to prove a stored draft
    *  belongs to the session now on screen. Null when the app cannot tell,
@@ -401,6 +402,14 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
   onOpenTerminal: () => void;
   /** Set while this box can take an image, for the pane's drop handler. */
   attachRef?: MutableRefObject<((files: File[]) => void) | null>;
+  /** Notified after every mutation of the pid's pending-message store
+   *  (src/renderer/state/pending.ts) this box makes -- a send going up
+   *  optimistically, its queued flag settling, or its entry coming back
+   *  down on a refusal. That store is a plain module-level Map, not React
+   *  state, so ConversationView (the turn list's owner, not this box) has
+   *  no other way to learn a mutation happened and re-render the pending
+   *  entries it renders below page.turns. */
+  onPendingChange: () => void;
 }) {
   // Seeded from the draft store, so a remount (Open Terminal and back, or a
   // session switch) restores what was typed rather than starting blank.
@@ -510,6 +519,28 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
     setSending(true);
     setMessage(null);
     setChoiceOpen(false);
+    // Shown in the conversation the instant Enter is pressed, rather than
+    // waiting on the agent's own log to pick it up -- which can lag behind
+    // by the fleet sweep's full 5s, longer still if the agent is mid-turn.
+    // The draft is dropped here too: it is no longer a draft, it is either
+    // in flight to the session or about to be restored below if that fails.
+    const key = addPending(pid, { text, attachments, sentAt: Date.now(), queued: false });
+    setText('');
+    setAttachments([]);
+    drafts.delete(pid);
+    onPendingChange();
+    // Puts the box back exactly as it was before the optimistic clear
+    // above on a failed send -- the DRAFT store too, not just the visible
+    // text, since that clear deleted it as well. Without restoring it
+    // here, a prompt_open refusal's own remedy would break it: Open
+    // Terminal unmounts this component (MainPane's ternary, see the
+    // `drafts` doc comment above), and only the draft store, never
+    // component state, survives that.
+    const restoreDraft = () => {
+      setText(text);
+      setAttachments(attachments);
+      if (sessionId !== null) drafts.set(pid, { sessionId, text });
+    };
     try {
       const attach = {
         images: attachments.filter(a => a.kind === 'image').map(a => a.id),
@@ -518,20 +549,34 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
       const r: KeysResult | undefined = attachments.length
         ? await window.fleet?.sendKeys(pid, text, attach)
         : await window.fleet?.sendKeys(pid, text);
-      // Sent is the one outcome that discards the draft -- it is no longer
-      // a draft, it is in the session. The attachments went with it.
-      if (r?.status === 'sent') { setText(''); setAttachments([]); drafts.delete(pid); return; }
-      // The text is deliberately KEPT on a refusal: the person can fix
-      // whatever was wrong (answer the choice, reattach) and press Enter
-      // again, rather than retyping what they already wrote.
+      if (r?.status === 'sent') {
+        // The entry itself already went up above, optimistically -- all
+        // that is left to settle is its queued label, if any, until the
+        // turn-list effect in ConversationView matches it against the log.
+        markQueued(pid, key, r.queued);
+        onPendingChange();
+        return;
+      }
+      // Nothing reached the session, so the conversation must not keep a
+      // message claiming otherwise: the entry comes back down, and the
+      // text and its attachments come back exactly as they were typed, for
+      // the person to fix (answer the choice, reattach) and press Enter
+      // again -- the same restore a refusal has always done here, just
+      // undoing the optimistic clear above as well now.
+      dropPending(pid, key);
+      onPendingChange();
+      restoreDraft();
       setMessage(r ? REFUSAL_TEXT[r.reason] : 'Could not reach the app.');
       setChoiceOpen(r?.status === 'refused' && r.reason === 'prompt_open');
     } catch (err) {
       // A rejected sendKeys means the message did NOT go out, and the one
-      // thing that must never happen is the box looking like it did. Narrow
-      // (it wraps a single await, so it cannot swallow a render error) and
-      // never silent: the cause is logged, the person is told, and the text
-      // is kept for a retry exactly as on a returned refusal above.
+      // thing that must never happen is the conversation looking like it
+      // did. Same restore as a returned refusal above, plus the log: never
+      // silent, and never a pending entry left claiming a message arrived
+      // that in fact never left this box.
+      dropPending(pid, key);
+      onPendingChange();
+      restoreDraft();
       console.error('Conversation message send failed:', err);
       setMessage('Could not reach the app.');
     } finally {
@@ -685,6 +730,13 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // bridge, or main's fs.watch failed) or a payload was dropped for
   // arriving mid session-switch (see useSessionLive's own doc comment).
   const live = useSessionLive(pid);
+  // Forces a re-render so the pending entries rendered below page.turns --
+  // a plain module-level store (src/renderer/state/pending.ts), not React
+  // state, so a pending send survives a session switch the same way a
+  // draft does -- pick up a mutation (a new send, a match against the log,
+  // an idle tick) the moment it happens. Only the setter is used; the count
+  // itself has no meaning of its own, same as WorkingStrip's own retick.
+  const [, retickPending] = useState(0);
   const [page, setPage] = useState<ConversationPage | null>(null);
   // The message box registers here while it can take an image; the pane's
   // drop handler forwards dropped files to it.
@@ -822,6 +874,36 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     return () => { alive = false; };
   }, [sessionId, events, live]);
 
+  // Drops a pending entry the instant the agent's OWN log actually has the
+  // message, so the person is never shown their own message twice -- once
+  // optimistically, once for real. Runs whenever the turns list changes
+  // (mount, a load-more prepend, or either refresh effect above), which is
+  // exactly when a newly-landed turn could match one still pending.
+  useEffect(() => {
+    if (pid === null || page === null) return;
+    const matched = matchPending(pendingFor(pid), page.turns);
+    if (matched.length === 0) return;
+    for (const key of matched) dropPending(pid, key);
+    retickPending(t => t + 1);
+  }, [pid, page]);
+
+  // Counts how long each of this pid's pending entries has gone unmatched,
+  // but ONLY while the session is genuinely idle: counting while the agent
+  // is working, or while no live push has arrived at all (activity null),
+  // would warn about a message that is simply waiting its turn, never one
+  // that actually failed to arrive. tickIdle advances EVERY pending entry
+  // at this pid, which is deliberate (its own doc comment in pending.ts): a
+  // second message stuck behind a first one must warn too.
+  useEffect(() => {
+    if (pid === null) return;
+    const id = setInterval(() => {
+      if (live?.activity !== 'idle') return;
+      tickIdle(pid, 1000);
+      retickPending(t => t + 1);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [pid, live?.activity]);
+
   /** Scroll bookkeeping for CONTENT changes -- new turns landing, or an
    *  older page prepended -- keyed on `page` alone, in a LAYOUT effect so it
    *  runs before the browser paints: landing at the bottom or restoring a
@@ -956,7 +1038,12 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     body = note(`This session's conversation could not be loaded. Reopening the session will try again.`);
   } else if (page === null) {
     body = note('Loading…');
-  } else if (page.turns.length === 0) {
+  } else if (page.turns.length === 0 && (pid === null || pendingFor(pid).length === 0)) {
+    // The one exception to "empty means say so": a message just sent, still
+    // waiting on the agent's log to catch up, is not nothing -- "no
+    // conversation recorded" would be sitting right above the very message
+    // that contradicts it. A pending entry, when there is one, earns the
+    // convstack branch below instead of this note.
     body = note('No conversation recorded for this session.');
   }
 
@@ -1055,6 +1142,59 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                 </Fragment>
               );
             })}
+            {/* Pending sends (Task 9), after every loaded turn -- they are
+                always the newest thing in the pane. Reuses the same
+                article/meta/turn-text markup as a landed user turn, so a
+                pending message looks identical to one that has already
+                arrived, per the mockup David chose over a "Sending..."
+                label. Gone the instant the matchPending effect above finds
+                it in the log; until then it carries at most one label:
+                Queued while Codex is busy, or -- once genuinely idle for
+                NOT_SEEN_AFTER_MS -- a warning with the one real remedy this
+                box has, the Terminal. Claude's queued flag is simply false
+                whenever its status file cannot be read, so no Queued label
+                is an intentional, honest silence, not a missing state. */}
+            {pid !== null && pendingFor(pid).map(p => {
+              const warn = p.idleMs >= NOT_SEEN_AFTER_MS;
+              return (
+                <article className="turn user pending" key={p.key}>
+                  <div className="meta">
+                    <span className="who">you</span>
+                    <span className="when">{formatTime(new Date(p.sentAt).toISOString())}</span>
+                  </div>
+                  {p.text && <p className="turn-text">{p.text}</p>}
+                  {p.attachments.length > 0 && (
+                    // A separate class from the composer's own .convchip
+                    // (ConversationView.css) on purpose: this chip is not
+                    // editable (no remove button), and reusing .convchip
+                    // would make a pending entry's chip count toward the
+                    // composer's own chip count in anything that queries
+                    // for it, which is exactly the mix-up this avoids.
+                    <div className="turn-chips">
+                      {p.attachments.map(a => (
+                        <div className="turn-chip" key={a.id}>
+                          {a.thumb
+                            ? <img src={a.thumb} alt="" />
+                            : (
+                              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+                                strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z" /><path d="M14 3.5v5h5" />
+                              </svg>
+                            )}
+                          <span>{a.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {warn ? (
+                    <div className="turn-state warn">
+                      <span>Not seen by {PROVIDER_NAME[provider]}</span>
+                      <button type="button" className="convsend" onClick={onOpenTerminal}>Open Terminal</button>
+                    </div>
+                  ) : p.queued && <div className="turn-state">Queued</div>}
+                </article>
+              );
+            })}
             </SessionIdContext.Provider>
           </div>
         )}
@@ -1067,7 +1207,8 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           session that produced them, and none should carry over to the
           next one. */}
       <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux}
-        onOpenTerminal={onOpenTerminal} attachRef={attachRef} />
+        onOpenTerminal={onOpenTerminal} attachRef={attachRef}
+        onPendingChange={() => retickPending(t => t + 1)} />
     </div>
   );
 }

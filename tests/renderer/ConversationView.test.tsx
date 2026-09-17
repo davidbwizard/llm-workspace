@@ -8,6 +8,7 @@ import { ConversationView, nearOlderEdge, nearBottom, restoredScrollTop, mergeNe
 // src/main/**. See the drift test below.
 import { MAX_REPLY_CHARS as MAIN_MAX_REPLY_CHARS } from '../../src/main/outbound.ts';
 import { reloadSettings, setSettings } from '../../src/renderer/state/settings.ts';
+import { clearPending } from '../../src/renderer/state/pending.ts';
 
 const turns = [
   { id: 1, ts: '2026-09-12T10:00:00Z', role: 'user', text: 'run the farm tests' },
@@ -38,6 +39,12 @@ beforeEach(() => {
   // demonstrated failure, not a theoretical one -- running the Shift+Enter
   // test and the empty-box test together makes the latter send.
   clearDrafts();
+  // Same reasoning as clearDrafts above, for src/renderer/state/pending.ts's
+  // own module-level store (Task 8): it is keyed by pid, every test here
+  // renders at the same default pid (4821), and it is deliberately built to
+  // outlive a component unmount -- so without this, a pending entry one
+  // test's send left behind would still be there for the next.
+  clearPending();
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
     conversation: async () => ({ turns, nextCursor: null }),
   };
@@ -1434,6 +1441,175 @@ describe('ConversationView -- the message box', () => {
     };
     renderConv();
     expect(await screen.findByLabelText('Message this session')).toBeTruthy();
+  });
+});
+
+// Task 9 (2026-09-17-live-conversation-feedback): the message you send
+// appears in the conversation the instant you press Enter, rather than
+// waiting on the agent's own log (which the fleet sweep alone can lag by up
+// to 5s, longer while the agent is mid-turn). src/renderer/state/pending.ts
+// (Task 8) holds the module-level store this all reads and writes; these
+// tests pin how ConversationView renders it and reconciles it against the
+// real log, not the store's own matching rules (pending.test.ts's job).
+describe('ConversationView -- pending messages (Task 9)', () => {
+  // The keyDown itself, not just the change, is wrapped in an async act()
+  // that also drains one macrotask: send() awaits window.fleet.sendKeys
+  // before its continuation (markQueued/dropPending, the second
+  // onPendingChange) runs, and without this the continuation's state
+  // update lands outside any act() this file's tests wrap around it --
+  // exactly the "not wrapped in act(...)" warning React raises for a real
+  // bug (a state update React cannot account for), not a cosmetic one.
+  // Draining it here does not undercut what "shows your message straight
+  // away" tests below: the pending entry is not removed by this
+  // resolution, only by the turn-list effect matching it against the log.
+  async function typeAndSend(text: string) {
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.change(box, { target: { value: text } });
+    await act(async () => {
+      fireEvent.keyDown(box, { key: 'Enter' });
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+  }
+
+  it('shows your message straight away, before the log has it', async () => {
+    withSendKeys({ status: 'sent', queued: false });
+    renderConv();
+    await typeAndSend('ship it');
+    expect(screen.getByText('ship it')).toBeTruthy();
+    expect(document.querySelector('.turn.user.pending')).toBeTruthy();
+  });
+
+  it('shows no label at all for a plain sent message -- Queued and the warning are both opt-in', async () => {
+    withSendKeys({ status: 'sent', queued: false });
+    renderConv();
+    await typeAndSend('ship it');
+    await waitFor(() => expect(document.querySelector('.turn.user.pending')).toBeTruthy());
+    expect(document.querySelector('.turn.user.pending .turn-state')).toBeNull();
+  });
+
+  it('puts the text back in the box when the send is refused, and drops the pending entry', async () => {
+    withSendKeys({ status: 'refused', reason: 'session_gone' });
+    renderConv();
+    await typeAndSend('ship it');
+    await waitFor(() => expect(screen.getByText('That session has ended.')).toBeTruthy());
+    expect(document.querySelector('.turn.user.pending')).toBe(null);
+    expect((screen.getByLabelText('Message this session') as HTMLTextAreaElement).value).toBe('ship it');
+  });
+
+  it('labels a queued message', async () => {
+    withSendKeys({ status: 'sent', queued: true });
+    renderConv();
+    await typeAndSend('ship it');
+    await waitFor(() => expect(screen.getByText('Queued')).toBeTruthy());
+  });
+
+  // The exact regression a reviewer flagged on this plan: an implementation
+  // that leaves the pending entry on screen once the real turn lands would
+  // show the person their own message TWICE. The mount fetch returns no
+  // turns at all, so if the pending entry were not dropped on a match, the
+  // second (bumped-events) fetch landing the real turn would leave two
+  // `.turn.user` elements on screen instead of one.
+  it('replaces the pending entry when the log has the message, never showing it twice', async () => {
+    let call = 0;
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => {
+        call += 1;
+        if (call === 1) return { turns: [], nextCursor: null };
+        return {
+          turns: [{ id: 9, ts: new Date().toISOString(), role: 'user', text: 'ship it' }],
+          nextCursor: null,
+        };
+      },
+      sendKeys: vi.fn(async () => ({ status: 'sent', queued: false })),
+    };
+    const { rerender } = renderConv({ events: 1 });
+    await typeAndSend('ship it');
+    await waitFor(() => expect(document.querySelector('.turn.user.pending')).toBeTruthy());
+
+    // A higher events count is what the app's own refresh effect already
+    // treats as "go fetch the newest page again" (see the "live refresh
+    // from the events count" describe block above) -- the same mechanism a
+    // real session:live push or fleet sweep would trigger.
+    rerender(<ConversationView sessionId="s1" provider="claude" events={2}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+
+    await waitFor(() => expect(document.querySelectorAll('.turn.user')).toHaveLength(1));
+    expect(document.querySelector('.pending')).toBe(null);
+  });
+
+  // Guards against the two wrong implementations a countdown invites: one
+  // that ticks regardless of activity (would warn while Claude is still
+  // working on an earlier message) and one that never stops (irrelevant
+  // here, but the same interval also has to actually clear on unmount,
+  // covered separately below). vi.useFakeTimers with shouldAdvanceTime is
+  // the same combination OpenSessionCard.test.tsx already uses to keep
+  // Testing Library's own polling (findByLabelText, waitFor) working
+  // underneath fake interval timers.
+  it('warns after fifteen seconds of idle, and not while working', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pushLive: (payload: unknown) => void = () => {};
+      (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+        conversation: async () => ({ turns, nextCursor: null }),
+        sendKeys: vi.fn(async () => ({ status: 'sent', queued: false })),
+        watchSession: vi.fn().mockResolvedValue(true),
+        onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+      };
+      renderConv();
+      await typeAndSend('ship it');
+      await waitFor(() => expect(document.querySelector('.turn.user.pending')).toBeTruthy());
+
+      act(() => {
+        pushLive({ version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: Date.now(), events: 1 });
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(screen.queryByText('Not seen by Claude')).toBeNull();
+
+      act(() => {
+        pushLive({ version: 1, pid: 4821, sessionId: 's1', activity: 'idle', since: null, events: 1 });
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+
+      expect(screen.getByText('Not seen by Claude')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Open Terminal' })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens the Terminal from the warning label', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pushLive: (payload: unknown) => void = () => {};
+      (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+        conversation: async () => ({ turns, nextCursor: null }),
+        sendKeys: vi.fn(async () => ({ status: 'sent', queued: false })),
+        watchSession: vi.fn().mockResolvedValue(true),
+        onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+      };
+      const onOpenTerminal = vi.fn();
+      renderConv({ onOpenTerminal });
+      await typeAndSend('ship it');
+      act(() => {
+        pushLive({ version: 1, pid: 4821, sessionId: 's1', activity: 'idle', since: null, events: 1 });
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Open Terminal' }));
+      expect(onOpenTerminal).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears its pending-idle interval on unmount, rather than leaking a timer per pane', async () => {
+    withSendKeys({ status: 'sent', queued: false });
+    const clearSpy = vi.spyOn(globalThis, 'clearInterval');
+    const { unmount } = renderConv();
+    await screen.findByLabelText('Message this session');
+    unmount();
+    expect(clearSpy).toHaveBeenCalled();
+    clearSpy.mockRestore();
   });
 });
 
