@@ -1535,10 +1535,16 @@ describe('ConversationView -- one-click copy', () => {
     const md = '**Done.** Run `npm test` next.';
     const { container } = showOne({ role: 'assistant', text: md });
     await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
-    const btn = container.querySelector('.turn.assistant .meta .copy-btn') as HTMLButtonElement;
-    expect(btn.textContent).toBe('Copy');
+    // At the bottom of the reply, not in its meta line; an icon whose hover
+    // tooltip reads Copy.
+    expect(container.querySelector('.turn.assistant .meta .copy-btn')).toBeNull();
+    const btn = container.querySelector('.turn.assistant > .turn-actions .copy-btn') as HTMLButtonElement;
+    expect(btn.querySelector('svg')).toBeTruthy();
+    expect(btn.title).toBe('Copy');
+    expect(btn.getAttribute('aria-label')).toBe('Copy reply');
     fireEvent.click(btn);
-    await waitFor(() => expect(btn.textContent).toBe('Copied'));
+    await waitFor(() => expect(btn.dataset.state).toBe('copied'));
+    expect(btn.getAttribute('aria-label')).toBe('Copied');
     expect(writeText).toHaveBeenCalledWith(md);
   });
 
@@ -1554,8 +1560,9 @@ describe('ConversationView -- one-click copy', () => {
     const { container } = showOne({ role: 'assistant', text: 'Fix:\n\n```js\nfunction parse(s) {\n  return s.trim()\n}\n```\n' });
     await waitFor(() => expect(container.querySelector('pre')).toBeTruthy());
     const btn = container.querySelector('.md-codeblock .copy-btn') as HTMLButtonElement;
+    expect(btn.title).toBe('Copy');
     fireEvent.click(btn);
-    await waitFor(() => expect(btn.textContent).toBe('Copied'));
+    await waitFor(() => expect(btn.dataset.state).toBe('copied'));
     expect(writeText).toHaveBeenCalledWith('function parse(s) {\n  return s.trim()\n}\n');
   });
 
@@ -1564,9 +1571,10 @@ describe('ConversationView -- one-click copy', () => {
     const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { container } = showOne({ role: 'assistant', text: 'x' });
     await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
-    const btn = container.querySelector('.turn.assistant .meta .copy-btn') as HTMLButtonElement;
+    const btn = container.querySelector('.turn.assistant > .turn-actions .copy-btn') as HTMLButtonElement;
     fireEvent.click(btn);
-    await waitFor(() => expect(btn.textContent).toBe('Copy failed'));
+    await waitFor(() => expect(btn.dataset.state).toBe('failed'));
+    expect(btn.getAttribute('aria-label')).toBe('Copy failed');
     expect(errs).toHaveBeenCalledWith('clipboard write failed:', expect.any(Error));
     errs.mockRestore();
   });

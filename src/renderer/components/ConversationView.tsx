@@ -54,8 +54,13 @@ function CopyButton({ getText, what }: { getText: () => string; what: string }) 
   };
   return (
     <button type="button" className="copy-btn" data-state={state} onClick={copy}
-      aria-label={state === 'idle' ? `Copy ${what}` : COPY_LABEL[state]}>
-      {COPY_LABEL[state]}
+      title={COPY_LABEL[state]} aria-label={state === 'idle' ? `Copy ${what}` : COPY_LABEL[state]}>
+      <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
+        strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        {state === 'copied' ? <path d="m3.5 8.5 3 3 6-7" />
+          : state === 'failed' ? <path d="M8 4.5v4M8 11.2v.1M8 1.8 14.5 13.5h-13z" />
+            : <><rect x="5.5" y="5.5" width="8" height="8" rx="1.6" /><path d="M10.5 5.5V3.6c0-.9-.7-1.6-1.6-1.6H3.6c-.9 0-1.6.7-1.6 1.6v5.3c0 .9.7 1.6 1.6 1.6h1.9" /></>}
+      </svg>
     </button>
   );
 }
@@ -786,7 +791,6 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                         </span>
                       )}
                     <span className="when">{formatTime(t.ts)}</span>
-                    {t.role !== 'user' && <CopyButton what="reply" getText={() => t.text} />}
                   </div>
                   {t.role === 'user'
                     ? <p className="turn-text">{t.text}</p>
@@ -795,6 +799,9 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                         <div className="turn-text md"><MarkdownText text={t.text} /></div>
                       </div>
                     )}
+                  {t.role !== 'user' && (
+                    <div className="turn-actions"><CopyButton what="reply" getText={() => t.text} /></div>
+                  )}
                 </article>
                 </Fragment>
               );
