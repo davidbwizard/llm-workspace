@@ -513,6 +513,88 @@ describe('ConversationView', () => {
   });
 });
 
+describe('ConversationView -- live push refresh (Task 7)', () => {
+  // main can now push this pid's live state within ~250ms (Task 6:
+  // src/main/sessionLive.ts's watchSessionFor/notifySessionChanged) instead
+  // of leaving the pane to the 5s fleet sweep alone -- this proves the pane
+  // actually listens, not merely that useSessionLive itself does (that is
+  // useSessionLive.test.tsx's job). A ConversationView that never wired the
+  // hook's `events` into its existing refresh effect would fail this: the
+  // `events` PROP never changes across the push below, so only a wrong
+  // implementation that reads solely from the prop would leave the second
+  // call unmade.
+  it('refreshes the conversation when a session:live push reports a newer event count than the events prop', async () => {
+    let pushLive: (payload: unknown) => void = () => {};
+    const calls: Array<unknown[]> = [];
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        return { turns, nextCursor: null };
+      },
+      watchSession: vi.fn().mockResolvedValue(true),
+      onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+    };
+    renderConv({ events: 4 });
+    await waitFor(() => expect(calls).toHaveLength(1));
+
+    act(() => {
+      pushLive({ version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: Date.now(), events: 5 });
+    });
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1]).toEqual(['s1', undefined]); // the newest page, not a page walk
+  });
+
+  // The events PROP stays the authoritative floor: a push reporting a
+  // count no higher than what the prop already covered must not fire a
+  // redundant refetch on its own.
+  it('does not refetch when the live push reports the same event count the prop already covered', async () => {
+    let pushLive: (payload: unknown) => void = () => {};
+    const calls: Array<unknown[]> = [];
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        return { turns, nextCursor: null };
+      },
+      watchSession: vi.fn().mockResolvedValue(true),
+      onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+    };
+    renderConv({ events: 4 });
+    await waitFor(() => expect(calls).toHaveLength(1));
+
+    act(() => {
+      pushLive({ version: 1, pid: 4821, sessionId: 's1', activity: 'idle', since: null, events: 4 });
+    });
+    await Promise.resolve();
+    expect(calls).toHaveLength(1);
+  });
+
+  // A push for a DIFFERENT pid than the one the pane has open must not
+  // refresh anything -- useSessionLive.test.tsx already proves the hook
+  // filters it at the source; this proves the pane does not somehow still
+  // react to it another way (e.g. by reading `events` off the raw payload
+  // instead of through the hook).
+  it('ignores a live push for a different pid entirely', async () => {
+    let pushLive: (payload: unknown) => void = () => {};
+    const calls: Array<unknown[]> = [];
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async (sessionId: string, cursor?: unknown) => {
+        calls.push([sessionId, cursor]);
+        return { turns, nextCursor: null };
+      },
+      watchSession: vi.fn().mockResolvedValue(true),
+      onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+    };
+    renderConv({ events: 4 });
+    await waitFor(() => expect(calls).toHaveLength(1));
+
+    act(() => {
+      pushLive({ version: 1, pid: 9999, sessionId: 's9', activity: 'working', since: Date.now(), events: 99 });
+    });
+    await Promise.resolve();
+    expect(calls).toHaveLength(1);
+  });
+});
+
 function showOne(turn: Record<string, unknown>) {
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
     conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', ...turn }], nextCursor: null }),

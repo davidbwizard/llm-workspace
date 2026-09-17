@@ -9,6 +9,7 @@ import type { StageRefusal } from '../../main/staging.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import { useSettings } from '../state/settings.ts';
+import { useSessionLive } from '../state/useSessionLive.ts';
 import './ConversationView.css';
 
 /** Transcript text is untrusted, so markdown rendering is locked down:
@@ -674,6 +675,16 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   onOpenTerminal: () => void;
 }) {
   const settings = useSettings();
+  // Task 7 (2026-09-17-live-conversation-feedback): main can now push this
+  // pid's live state within ~250ms (src/main/sessionLive.ts's
+  // watchSessionFor/notifySessionChanged) instead of leaving the pane to
+  // the 5s fleet sweep alone. Folded into the refresh effect below as a
+  // second source for `events`, not a replacement for the prop -- the push
+  // is what gets a reply on screen at watcher speed, and the fleet-sweep
+  // prop is still what recovers if the push channel never started (no
+  // bridge, or main's fs.watch failed) or a payload was dropped for
+  // arriving mid session-switch (see useSessionLive's own doc comment).
+  const live = useSessionLive(pid);
   const [page, setPage] = useState<ConversationPage | null>(null);
   // The message box registers here while it can take an image; the pane's
   // drop handler forwards dropped files to it.
@@ -766,19 +777,28 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     return () => { alive = false; };
   }, [sessionId]);
 
-  /** Live updates (spec §3.3). No conversation data is pushed today --
-   *  fleet:update carries open-session cards only -- but `events` on those
-   *  cards is a per-session monotonic count that changes on exactly the
-   *  transitions that matter. When it moves, fetch the NEWEST page (no
-   *  cursor) and merge; pages the reader loaded above stay put, and so does
-   *  the cursor they are paging from, which must not be replaced by the
-   *  newest page's own or the next "load older" would walk history the
-   *  reader already has. */
+  /** Live updates (spec §3.3). No conversation TEXT is pushed -- only a
+   *  per-session monotonic event count, from two sources now: the `events`
+   *  prop (fleet:update's open-session cards, on the 5s sweep) and `live`
+   *  (Task 7, above, on main's push). When either moves further than what
+   *  this pane has already fetched for, fetch the NEWEST page (no cursor)
+   *  and merge; pages the reader loaded above stay put, and so does the
+   *  cursor they are paging from, which must not be replaced by the newest
+   *  page's own or the next "load older" would walk history the reader
+   *  already has. */
   useEffect(() => {
-    if (sessionId === null || events === null) return;
-    if (seenEventsRef.current === null) { seenEventsRef.current = events; return; }
-    if (seenEventsRef.current === events) return;
-    seenEventsRef.current = events;
+    // Whichever of the two sources has moved further -- see the doc
+    // comment on `live` above for why this is a fold, not a substitution.
+    // null only when BOTH are null: the fleet sweep never gave this pid a
+    // unique match and no live push has arrived either, which is exactly
+    // when there is nothing to refresh against.
+    const combined = events === null ? live?.events ?? null
+      : live === null ? events
+        : Math.max(events, live.events);
+    if (sessionId === null || combined === null) return;
+    if (seenEventsRef.current === null) { seenEventsRef.current = combined; return; }
+    if (seenEventsRef.current === combined) return;
+    seenEventsRef.current = combined;
     let alive = true;
     void window.fleet?.conversation(sessionId).then(next => {
       if (!alive) return;
@@ -800,7 +820,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
       console.error('Conversation refresh fetch failed:', err);
     });
     return () => { alive = false; };
-  }, [sessionId, events]);
+  }, [sessionId, events, live]);
 
   /** Scroll bookkeeping for CONTENT changes -- new turns landing, or an
    *  older page prepended -- keyed on `page` alone, in a LAYOUT effect so it
