@@ -15,6 +15,14 @@ import type { NormalizedEvent, ParseResumeContext, TailLine } from '../../core/t
 // ingestFileOnce (src/watch/watcher.ts) take the delete-then-reparse path
 // (staleParser) instead of the append-only path, which is what actually
 // re-derives and replaces those rows. Bumped 1 -> 2.
+//
+// Task 1 (2026-09-17): turn_aborted mapping added, NOT bumping version.
+// The mapping applies to newly appended lines, which is exactly the bug David
+// hit. A stale unparsed turn_aborted row can only affect a session whose last
+// event is under 30 minutes old (ACTIVE_MS in src/fleet/state.ts), so the
+// cost of leaving historical files stale is negligible. A full re-read costs
+// 33.5 seconds of blocked main process (measured 2026-09-17: 617 files), making
+// it not worth the cost on the next launch.
 export const CODEX_PARSER_VERSION = 2;
 
 /** Codex separates prose from tool calls explicitly, so this mapping is
@@ -25,7 +33,7 @@ const KNOWN_EVENT_MSG = new Set([
   'token_count', 'agent_reasoning', 'error',
   // Spec §5.6: the item_completed envelope, and a settings record that is
   // known but not mapped in v1.
-  'item_completed', 'thread_settings_applied',
+  'item_completed', 'thread_settings_applied', 'turn_aborted',
 ]);
 const KNOWN_RESPONSE_ITEM = new Set([
   'message', 'function_call', 'function_call_output', 'reasoning',
@@ -277,6 +285,19 @@ export function parseCodexLines(
           }, ts, threadAgentId, p.turn_id ?? null));
           break;
         }
+        case 'turn_aborted':
+          // Codex writes this instead of task_complete when a turn is
+          // interrupted (Esc), and writes no task_complete afterwards.
+          // Without it the last kind is never a turn end, so the session
+          // reads as working for as long as its process lives -- the card
+          // bug confirmed in the index on 2026-09-17.
+          out.push(base(line, 'turn.completed', {
+            durationMs: null,
+            turnId: p.turn_id ?? null,
+            aborted: true,
+            reason: typeof p.reason === 'string' ? p.reason : null,
+          }, ts, threadAgentId, p.turn_id ?? null));
+          break;
         case 'item_completed':
           // Spec §5.6: the alternative envelope some rollout files use
           // instead of flat agent_message/user_message/task_complete
