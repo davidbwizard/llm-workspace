@@ -1545,6 +1545,8 @@ describe('ConversationView -- one-click copy', () => {
     fireEvent.click(btn);
     await waitFor(() => expect(btn.dataset.state).toBe('copied'));
     expect(btn.getAttribute('aria-label')).toBe('Copied');
+    // Visible confirmation, not just an icon swap.
+    expect(btn.querySelector('.copy-note')?.textContent).toBe('Copied');
     expect(writeText).toHaveBeenCalledWith(md);
   });
 
@@ -1575,6 +1577,7 @@ describe('ConversationView -- one-click copy', () => {
     fireEvent.click(btn);
     await waitFor(() => expect(btn.dataset.state).toBe('failed'));
     expect(btn.getAttribute('aria-label')).toBe('Copy failed');
+    expect(btn.querySelector('.copy-note')?.textContent).toBe('Copy failed');
     expect(errs).toHaveBeenCalledWith('clipboard write failed:', expect.any(Error));
     errs.mockRestore();
   });

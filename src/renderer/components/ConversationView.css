@@ -165,15 +165,21 @@
 .convsend:hover { border-color:color-mix(in srgb,var(--accent) 40%,transparent); }
 
 /* One-click copy: an always-visible icon under each agent reply and in the
-   bottom-right corner of each code block. The native tooltip reads Copy;
-   after a click the icon becomes a check (or a warning if the write failed)
-   for a moment. */
-.copy-btn { display:inline-grid; place-items:center; width:24px; height:22px; padding:0;
-  color:var(--faint); background:none; border:1px solid transparent; border-radius:6px; cursor:pointer; }
-.copy-btn svg { width:14px; height:14px; display:block; }
+   bottom-right corner of each code block; its native tooltip reads Copy.
+   A click shows the result for two seconds -- a check and "Copied" on an
+   accent tint, or a warning and "Copy failed" on a red one -- so it is
+   obvious the press registered. */
+.copy-btn { display:inline-flex; align-items:center; gap:5px; min-width:24px; height:22px;
+  padding:0 4px; color:var(--faint); background:none; border:1px solid transparent;
+  border-radius:6px; cursor:pointer; }
+.copy-btn svg { width:14px; height:14px; display:block; flex:none; }
 .copy-btn:hover { color:var(--ink); border-color:var(--line); }
-.copy-btn[data-state="copied"] { color:var(--accent); }
-.copy-btn[data-state="failed"] { color:var(--critical); }
+.copy-note { font-family:var(--f-mono); font-size:11px; line-height:1; white-space:nowrap; }
 .turn-actions { display:flex; margin:4px 0 0 -4px; }
 .md-codeblock { position:relative; }
 .md-codeblock > .copy-btn { position:absolute; right:6px; bottom:6px; background:var(--raised); }
+/* After the corner rule above, so a result tint wins over its background. */
+.copy-btn[data-state="copied"] { color:var(--accent); background:var(--accent-soft);
+  border-color:color-mix(in srgb, var(--accent) 45%, transparent); }
+.copy-btn[data-state="failed"] { color:var(--critical); background:var(--critical-soft);
+  border-color:color-mix(in srgb, var(--critical) 45%, transparent); }

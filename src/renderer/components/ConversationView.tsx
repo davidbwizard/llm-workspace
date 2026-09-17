@@ -42,7 +42,7 @@ function CopyButton({ getText, what }: { getText: () => string; what: string }) 
     if (!alive.current) return;
     setState(next);
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => { if (alive.current) setState('idle'); }, 1500);
+    timer.current = setTimeout(() => { if (alive.current) setState('idle'); }, 2000);
   };
   const copy = () => {
     Promise.resolve()
@@ -61,6 +61,7 @@ function CopyButton({ getText, what }: { getText: () => string; what: string }) 
           : state === 'failed' ? <path d="M8 4.5v4M8 11.2v.1M8 1.8 14.5 13.5h-13z" />
             : <><rect x="5.5" y="5.5" width="8" height="8" rx="1.6" /><path d="M10.5 5.5V3.6c0-.9-.7-1.6-1.6-1.6H3.6c-.9 0-1.6.7-1.6 1.6v5.3c0 .9.7 1.6 1.6 1.6h1.9" /></>}
       </svg>
+      {state !== 'idle' && <span className="copy-note">{COPY_LABEL[state]}</span>}
     </button>
   );
 }
