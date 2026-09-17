@@ -108,7 +108,13 @@ export function newSession(
 }
 
 /** -l is mandatory. Without it tmux reads the text as a KEY NAME: sending
- *  the three characters "C-c" delivers a real Ctrl-C instead. */
+ *  the three characters "C-c" delivers a real Ctrl-C instead.
+ *
+ *  No production caller since 2026-09-17: sendKeysFor (ipc.ts) now delivers
+ *  every message as a bracketed paste, because Codex's paste-burst
+ *  heuristic swallowed the Enter that followed text typed this way. Kept,
+ *  with its own coverage in tests/main/tmux.test.ts, as the one safe way to
+ *  type text into a pane -- and a warning about the unsafe one. */
 export function sendLiteral(name: string, text: string, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
   return exec(['send-keys', '-t', target(name), '-l', text]);

@@ -4,48 +4,50 @@ Things that are wrong, or only true under conditions worth naming, with what
 is actually known rather than assumed. Each entry says how it was observed,
 so the next person does not have to rediscover it.
 
-## OPEN: a message sent to a Codex session sits in its composer, unsubmitted
+## FIXED 2026-09-17: a single-line message to Codex sat in its composer, unsubmitted
 
-**Observed twice by David on 2026-09-16, in the running app.** Cause unknown.
+**Observed by David on 2026-09-16 at 21:28**, sending `Test`. The message
+landed in Codex's composer and was never submitted; the app reported `sent`
+and cleared the box. Codex's session log shows `Test` submitted at 21:30:44 --
+by an Enter sent by hand, not the app's.
 
-**What happens.** The message lands in Codex's composer, complete, and is never
-submitted. The app reports `sent` and clears the message box, so the message
-looks sent and is not.
+**The cause.** Codex's composer has a paste-burst heuristic (`paste_burst` in
+the 0.154 binary, switchable with `disable_paste_burst`). A run of characters
+arriving at once reads as a paste, and an Enter right behind it reads as part
+of that paste rather than a submit. The app typed single-line text with
+`send-keys -l` and sent Enter immediately after -- exactly that shape.
 
-**What was measured on the second occurrence (21:28, single-line `Test`).**
-The running bundle already contained the copy-mode fix below. The pane was
-*not* in copy-mode (`pane_in_mode=0`), requested bracketed paste
-(`bracket_paste_flag=1`), used the default key mode (`pane_key_mode=VT10x`),
-and had no attached client. The text arriving means `send-keys -l` succeeded,
-and a failed Enter is logged -- nothing was logged, so tmux accepted the Enter
-too. A `tmux send-keys -t <target> Enter` sent by hand a few seconds later
-submitted the message immediately.
+**Measured**, with Codex's own rollout file as the verdict, and the detector
+proven first against a known submit and a known strand:
 
-So Codex was able to take an Enter from tmux on that pane. The one the app sent
-alongside the text did not submit. Why is not known.
+| send | submitted on the first Enter |
+|---|---|
+| `send-keys -l`, Enter immediately (the old single-line path) | **2 of 13** |
+| `send-keys -l`, Enter 25ms or more later | 17 of 17 |
+| bracketed paste, Enter 0-100ms later | 16 of 16 |
 
-**The first occurrence (13:40, multi-line)** is the one this file originally
-recorded. The session was mid-way through a 2m24s task at the time, and the
-pane's mode was never checked, so copy-mode may or may not explain it.
+Claude Code, measured the same way, submitted every send on every path.
 
-**Do not trust the follow-up measurements from that night.** Several probe runs
-reported the failure reproducing on a fresh Codex session, at delays up to 2s
-and through the paste path too. All of them are void:
+**The fix.** `sendKeysFor` delivers every message as a bracketed paste, single
+line included. A bracketed paste declares itself, so there is no heuristic
+left to trip -- this removes the race rather than out-waiting a threshold
+Codex could change. Verified end to end by driving the real `sendKeysFor`,
+production defaults throughout, into live sessions: Codex 10/10 single-line
+and 3/3 multi-line, Claude Code 6/6 and 2/2.
 
-- The detector grepped the pane for `› <text>`. Codex renders a *submitted*
-  message in exactly that form in its transcript, so the check matched both
-  outcomes.
-- Probe scripts pressed Escape between runs to "reset". In Codex that enters
-  backtrack mode, where typed text goes nowhere and Enter means "edit message".
-- Codex was sometimes still working, and a busy Codex footer reads "tab to
-  queue message": Enter is not the submit key in that state.
+**Still unexplained: the first report, 13:40 the same day.** That message was
+multi-line, went out on the paste path, and stranded on a fresh, idle
+session -- the paste path never stranded once in any measurement above.
+Copy-mode (below) reproduces it exactly, but the pane's mode was not checked
+at the time. If a multi-line send strands again, capture `#{pane_in_mode}`
+and the session's rollout file before changing anything.
 
-**Next step.** Re-measure with a detector proven to separate the two outcomes
-before any run is trusted: check it once against a known submit and once
-against a known strand. Codex's own rollout file under `~/.codex/sessions`
-gaining the user message is an objective signal that does not depend on reading
-the screen. Test idle and busy separately, and never send a "reset" key without
-knowing what it does in Codex.
+**Method note.** Probe runs on 2026-09-16 reported this failure reproducing
+at every delay and on the paste path. They were void: the detector grepped
+the screen for `› <text>`, which Codex also renders for a *submitted*
+message; Escape presses between runs put Codex in backtrack mode; and a busy
+Codex does not submit on Enter at all ("tab to queue message"). Codex's own
+session log settled what the screen could not.
 
 ## FIXED 2026-09-16: a message sent to a pane in copy-mode was never submitted
 
@@ -113,11 +115,11 @@ detect it. See the doc comment in `src/main/outbound.ts`.
 cleanly. tmux exiting cleanly means tmux accepted the bytes. It says nothing
 about whether the receiving program acted on them.
 
-This is why both issues above lose messages silently rather than failing
+This is why both issues above lost messages silently rather than failing
 visibly: the app clears the message box on `sent`, discarding the draft.
 
-**Still open.** Copy-mode was one way for an Enter to go nowhere; the Codex
-issue above shows it is not the only one. `sendKeysFor` still returns `sent` when the
+**Still open.** Copy-mode and Codex's paste-burst heuristic were two ways for
+an Enter to go nowhere; there is no reason to think they are the only two. `sendKeysFor` still returns `sent` when the
 Enter itself fails -- that failure is logged, never surfaced -- so the same
 silent loss remains reachable. It stays deliberate for now: the text has already
 been pasted into a live session by then, and refusing would invite a retry that
