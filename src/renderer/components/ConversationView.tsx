@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ComponentProps } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationTurn } from '../../store/conversation.ts';
@@ -27,9 +27,55 @@ import './ConversationView.css';
  *  mark, and neither hears nor sees the word "agent". */
 const PROVIDER_NAME: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
 
+const COPY_LABEL = { idle: 'Copy', copied: 'Copied', failed: 'Copy failed' } as const;
+
+/** One-click copy that reports what actually happened for a moment. A
+ *  failed write says "Copy failed" and logs why -- never a false "Copied".
+ *  The write is wrapped so a missing clipboard API (which throws rather
+ *  than rejecting) lands in the same failure path. */
+function CopyButton({ getText, what }: { getText: () => string; what: string }) {
+  const [state, setState] = useState<keyof typeof COPY_LABEL>('idle');
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; clearTimeout(timer.current); }, []);
+  const settle = (next: keyof typeof COPY_LABEL) => {
+    if (!alive.current) return;
+    setState(next);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => { if (alive.current) setState('idle'); }, 1500);
+  };
+  const copy = () => {
+    Promise.resolve()
+      .then(() => navigator.clipboard.writeText(getText()))
+      .then(() => settle('copied'), (err: unknown) => {
+        console.error('clipboard write failed:', err);
+        settle('failed');
+      });
+  };
+  return (
+    <button type="button" className="copy-btn" data-state={state} onClick={copy}
+      aria-label={state === 'idle' ? `Copy ${what}` : COPY_LABEL[state]}>
+      {COPY_LABEL[state]}
+    </button>
+  );
+}
+
+/** A fenced code block with its own Copy button. The text is read from the
+ *  rendered <pre> at click time, so what is copied is exactly what shows. */
+function CodeBlock(props: ComponentProps<'pre'>) {
+  const ref = useRef<HTMLPreElement>(null);
+  return (
+    <div className="md-codeblock">
+      <pre ref={ref} {...props} />
+      <CopyButton what="code" getText={() => ref.current?.textContent ?? ''} />
+    </div>
+  );
+}
+
 const MARKDOWN_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   img: ({ alt }) => <span className="md-image">{alt || 'image'}</span>,
+  pre: ({ node: _node, ...props }) => <CodeBlock {...props} />,
 };
 
 function MarkdownText({ text }: { text: string }) {
@@ -740,6 +786,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                         </span>
                       )}
                     <span className="when">{formatTime(t.ts)}</span>
+                    {t.role !== 'user' && <CopyButton what="reply" getText={() => t.text} />}
                   </div>
                   {t.role === 'user'
                     ? <p className="turn-text">{t.text}</p>

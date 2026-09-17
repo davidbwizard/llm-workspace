@@ -1522,3 +1522,52 @@ describe('ConversationView -- the reading settings', () => {
     await waitFor(() => expect(container.querySelector('.conv')!.getAttribute('data-style')).toBe('c'));
   });
 });
+
+describe('ConversationView -- one-click copy', () => {
+  function mockClipboard(write: (text: string) => Promise<void>) {
+    const writeText = vi.fn(write);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    return writeText;
+  }
+
+  it('copies an agent reply as its original markdown, and says so', async () => {
+    const writeText = mockClipboard(async () => {});
+    const md = '**Done.** Run `npm test` next.';
+    const { container } = showOne({ role: 'assistant', text: md });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    const btn = container.querySelector('.turn.assistant .meta .copy-btn') as HTMLButtonElement;
+    expect(btn.textContent).toBe('Copy');
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.textContent).toBe('Copied'));
+    expect(writeText).toHaveBeenCalledWith(md);
+  });
+
+  it('gives your own messages no copy button', async () => {
+    mockClipboard(async () => {});
+    const { container } = showOne({ role: 'user', text: 'hello' });
+    await waitFor(() => expect(container.querySelector('.turn.user')).toBeTruthy());
+    expect(container.querySelector('.turn.user .copy-btn')).toBeNull();
+  });
+
+  it('copies exactly the code from a code block', async () => {
+    const writeText = mockClipboard(async () => {});
+    const { container } = showOne({ role: 'assistant', text: 'Fix:\n\n```js\nfunction parse(s) {\n  return s.trim()\n}\n```\n' });
+    await waitFor(() => expect(container.querySelector('pre')).toBeTruthy());
+    const btn = container.querySelector('.md-codeblock .copy-btn') as HTMLButtonElement;
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.textContent).toBe('Copied'));
+    expect(writeText).toHaveBeenCalledWith('function parse(s) {\n  return s.trim()\n}\n');
+  });
+
+  it('says the copy failed, and logs why, instead of claiming success', async () => {
+    mockClipboard(async () => { throw new Error('denied'); });
+    const errs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { container } = showOne({ role: 'assistant', text: 'x' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    const btn = container.querySelector('.turn.assistant .meta .copy-btn') as HTMLButtonElement;
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.textContent).toBe('Copy failed'));
+    expect(errs).toHaveBeenCalledWith('clipboard write failed:', expect.any(Error));
+    errs.mockRestore();
+  });
+});

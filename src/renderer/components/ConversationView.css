@@ -163,3 +163,19 @@
 .convsend { margin-left:8px; font-family:var(--f-mono); font-size:11px; color:var(--accent);
   background:none; border:1px solid var(--line); border-radius:20px; padding:3px 10px; cursor:pointer; }
 .convsend:hover { border-color:color-mix(in srgb,var(--accent) 40%,transparent); }
+
+/* One-click copy: a quiet mono button on each agent reply (right end of the
+   meta line) and each code block (top-right corner). Hidden until the reply
+   or block is hovered, or the button has keyboard focus; stays visible while
+   it reports Copied / Copy failed. */
+.copy-btn { font-family:var(--f-mono); font-size:11px; line-height:1.4; color:var(--faint);
+  background:none; border:1px solid transparent; border-radius:6px; padding:1px 7px;
+  cursor:pointer; opacity:0; transition:opacity .12s; }
+.copy-btn:hover { color:var(--ink); border-color:var(--line); }
+.copy-btn[data-state="failed"] { color:var(--critical); }
+.turn .meta .copy-btn { margin-left:auto; }
+.turn:hover > .meta .copy-btn, .md-codeblock:hover > .copy-btn, .copy-btn:focus-visible,
+.copy-btn[data-state="copied"], .copy-btn[data-state="failed"] { opacity:1; }
+.md-codeblock { position:relative; }
+.md-codeblock > .copy-btn { position:absolute; top:6px; right:6px; background:var(--raised); }
+@media (prefers-reduced-motion: reduce) { .copy-btn { transition:none; } }
