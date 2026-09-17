@@ -109,6 +109,11 @@
    neither should compete with the turns below. */
 .conv-end, .conv-loading-more { margin:0 0 6px; padding-bottom:8px;
   border-bottom:1px solid var(--line-soft); font-size:11px; color:var(--muted); }
+/* Day divider, from the Conversation Pane Mockup: the date in faint mono
+   caps with a hairline running to the right edge. */
+.conv-day { display:flex; align-items:center; gap:10px; margin:0 0 16px; font-family:var(--f-mono);
+  font-size:11px; color:var(--faint); letter-spacing:.05em; text-transform:uppercase; }
+.conv-day::after { content:""; flex:1; border-top:1px solid var(--line-soft); }
 /* Style C, the alternative David asked to keep available: YOUR messages in
    a neutral bubble on the right, the agent's left-aligned and unaccented.
    Selected by data-style on the conversation root (SettingsModal); style A
