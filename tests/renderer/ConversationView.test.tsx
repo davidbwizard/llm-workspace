@@ -1756,6 +1756,54 @@ describe('ConversationView -- pending messages (Task 9)', () => {
       vi.useRealTimers();
     }
   });
+
+  // Finding 5 residual (team-lead follow-up, 2026-09-17): pendingFor now
+  // takes sessionId (finding 4), so the idle-tick interval's closure needs
+  // a FRESH sessionId on every tick, not the one captured when the effect
+  // last ran -- useSessionLive is keyed on pid ALONE (its own doc comment),
+  // so live.activity staying 'idle' across a session resolving from
+  // unidentified to a real id does not itself recreate this interval; only
+  // the sessionId dependency does. Without it, the interval's closure stays
+  // fixed on sessionId=null forever, pendingFor(pid, null) always returns
+  // [] (see its own doc comment), and "Not seen" can never fire for any
+  // message sent after the session resolves -- silently disabling finding
+  // 4's own sibling feature. Reproduces the exact sequence: mount
+  // unidentified, go idle (creating the interval with sessionId still
+  // null), THEN resolve to a real session with pid and activity both
+  // unchanged (sessionId is the only dependency that moves), THEN send.
+  it('still counts idle time toward "Not seen" after the session resolves from unidentified to a real id', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pushLive: (payload: unknown) => void = () => {};
+      (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+        conversation: async () => ({ turns: [], nextCursor: null }),
+        sendKeys: vi.fn(async () => ({ status: 'sent', queued: false })),
+        watchSession: vi.fn().mockResolvedValue(true),
+        onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+      };
+      const { rerender } = renderConv({ sessionId: null, match: 'unknown' });
+      await screen.findByLabelText('Message this session');
+
+      // Goes idle while still unidentified -- the idle-tick effect's
+      // interval is created (or recreated) here, closed over sessionId null.
+      act(() => {
+        pushLive({ version: 1, pid: 4821, sessionId: null, activity: 'idle', since: null, events: 0 });
+      });
+
+      // Resolves to a real session. pid and live.activity both stay exactly
+      // as they were -- sessionId is the only thing that changed.
+      rerender(<ConversationView sessionId="s1" provider="claude" events={null}
+        pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+
+      await typeAndSend('ship it');
+      await waitFor(() => expect(document.querySelector('.turn.user.pending')).toBeTruthy());
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(screen.getByText('Not seen by Claude')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // A reviewer suggested `maxLength` on the textarea; rejected because
