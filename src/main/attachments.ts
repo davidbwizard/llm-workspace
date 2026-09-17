@@ -1,4 +1,11 @@
-// Images a person attached to a Claude prompt, for the conversation pane.
+// Images a person attached to a prompt, for the conversation pane.
+//
+// Codex is handled the same way with one difference: the line its prompt is
+// indexed at (an item_completed record) names an attached image only by
+// path, and that path is often a temp file that will not last. The pixels
+// are inline in the same turn's response_item user message, written just
+// before it, so main reads backwards to that message -- stopping at the
+// turn's own task_started, so an earlier turn's image can never be taken.
 //
 // Claude Code writes an attached image into the transcript itself, as a
 // base64 block beside the prompt's text (which carries an "[Image #N]"
@@ -8,13 +15,17 @@
 // renderer never supplies a path -- confirms the file is under Claude's
 // projects folder, reads that one line (capped), and returns each inline
 // PNG, JPEG, GIF or WebP whose bytes agree, up to MAX_ATTACHMENTS.
-import { open, realpath, stat } from 'node:fs/promises';
+import { open, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { MAX_IMAGE_BYTES, sniffImage, within } from './images.ts';
 
 export const MAX_ATTACHMENTS = 20;
 /** One prompt line with its images inline; beyond this it is not read. */
 const MAX_LINE_BYTES = 64 * 1024 * 1024;
 const ALLOWED = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+/** How far back a Codex prompt may look for its turn's inline images. */
+const MAX_SCAN_BYTES = 64 * 1024 * 1024;
+const MAX_SCAN_LINES = 200;
+const CHUNK = 256 * 1024;
 
 export type TurnSource = {
   provider: string; kind: string; agentId: string | null; sourceFile: string; sourceOffset: number;
@@ -25,8 +36,9 @@ export type AttachmentResult = { ok: true; images: string[] } | { ok: false; rea
 type Deps = {
   /** The turn's event row, from main's own index, or null. */
   sourceFor: (turnId: number) => TurnSource | null;
-  /** Claude's projects folder (~/.claude/projects). */
-  projectsRoot: string;
+  /** Where each provider's transcripts live: ~/.claude/projects and
+   *  ~/.codex/sessions. A file outside its provider's folder is refused. */
+  roots: { claude: string; codex: string };
 };
 
 const refuse = (reason: AttachmentRefusal): AttachmentResult => ({ ok: false, reason });
@@ -66,12 +78,13 @@ export async function readTurnImages(turnId: unknown, deps: Deps): Promise<Attac
   if (typeof turnId !== 'number' || !Number.isInteger(turnId) || turnId <= 0) return refuse('invalid');
   const src = deps.sourceFor(turnId);
   if (!src) return refuse('not_found');
-  // Only what a person typed into a top-level Claude session: subagent
-  // prompts and tool results can carry images too, but they are not "yours".
-  if (src.provider !== 'claude' || src.kind !== 'prompt.submitted' || src.agentId !== null) return refuse('invalid');
+  // Only what a person typed into a top-level session: subagent prompts and
+  // tool results can carry images too, but they are not "yours".
+  if ((src.provider !== 'claude' && src.provider !== 'codex')
+    || src.kind !== 'prompt.submitted' || src.agentId !== null) return refuse('invalid');
   if (!Number.isInteger(src.sourceOffset) || src.sourceOffset < 0) return refuse('invalid');
 
-  const [file, root] = await Promise.all([realOrNull(src.sourceFile), realOrNull(deps.projectsRoot)]);
+  const [file, root] = await Promise.all([realOrNull(src.sourceFile), realOrNull(deps.roots[src.provider])]);
   if (!file) return refuse('not_found');
   if (!root || !within(file, root)) return refuse('outside_roots');
 
@@ -82,21 +95,92 @@ export async function readTurnImages(turnId: unknown, deps: Deps): Promise<Attac
 
   let record: unknown;
   try { record = JSON.parse(raw.toString('utf8')); } catch { return refuse('unreadable'); }
+  if (src.provider === 'codex') return { ok: true, images: await codexImagesFor(file, src.sourceOffset, record) };
   const content = (record as { message?: { content?: unknown } } | null)?.message?.content;
-  if (!Array.isArray(content)) return { ok: true, images: [] };
+  return { ok: true, images: Array.isArray(content) ? claudeImages(content) : [] };
+}
 
+/** Bytes that really are one of the accepted formats, as a data: URL. */
+function toDataUrl(declared: unknown, base64: unknown): string | null {
+  if (typeof declared !== 'string' || !ALLOWED.has(declared)) return null;
+  if (typeof base64 !== 'string' || base64.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) return null;
+  const bytes = Buffer.from(base64, 'base64');
+  const actual = sniffImage(bytes);
+  return actual ? `data:${actual};base64,${bytes.toString('base64')}` : null;
+}
+
+function claudeImages(content: unknown[]): string[] {
   const images: string[] = [];
   for (const block of content) {
     if (images.length >= MAX_ATTACHMENTS) break;
-    const source = (block as { type?: unknown; source?: Record<string, unknown> })?.type === 'image'
-      ? (block as { source?: Record<string, unknown> }).source : undefined;
-    if (!source || source.type !== 'base64' || typeof source.data !== 'string') continue;
-    if (typeof source.media_type !== 'string' || !ALLOWED.has(source.media_type)) continue;
-    if (source.data.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) continue;
-    const bytes = Buffer.from(source.data, 'base64');
-    const actual = sniffImage(bytes);
-    if (!actual) continue;
-    images.push(`data:${actual};base64,${bytes.toString('base64')}`);
+    const b = block as { type?: unknown; source?: { type?: unknown; media_type?: unknown; data?: unknown } } | null;
+    if (b?.type !== 'image' || b.source?.type !== 'base64') continue;
+    const u = toDataUrl(b.source.media_type, b.source.data);
+    if (u) images.push(u);
   }
-  return { ok: true, images };
+  return images;
+}
+
+const DATA_URL = /^data:([^;,]+);base64,([A-Za-z0-9+/=]*)$/;
+
+function codexImages(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const images: string[] = [];
+  for (const block of content) {
+    if (images.length >= MAX_ATTACHMENTS) break;
+    const b = block as { type?: unknown; image_url?: unknown } | null;
+    if (b?.type !== 'input_image' || typeof b.image_url !== 'string') continue;
+    const m = DATA_URL.exec(b.image_url);
+    const u = m ? toDataUrl(m[1], m[2]) : null;
+    if (u) images.push(u);
+  }
+  return images;
+}
+
+type CodexRecord = { type?: unknown; payload?: { type?: unknown; role?: unknown; turn_id?: unknown; content?: unknown } } | null;
+const isCodexUserMessage = (r: CodexRecord) =>
+  r?.type === 'response_item' && r.payload?.type === 'message' && r.payload?.role === 'user';
+
+async function codexImagesFor(file: string, offset: number, indexed: unknown): Promise<string[]> {
+  const rec = indexed as CodexRecord;
+  if (isCodexUserMessage(rec)) return codexImages(rec!.payload!.content);
+  const turn = rec?.payload?.turn_id;
+  if (typeof turn !== 'string') return [];
+  const fh = await open(file, 'r');
+  try {
+    let lines = 0;
+    for await (const line of linesBackward(fh, offset)) {
+      if (++lines > MAX_SCAN_LINES) break;
+      let r: CodexRecord;
+      try { r = JSON.parse(line.toString('utf8')) as CodexRecord; } catch { continue; }
+      if (r?.type === 'event_msg' && r.payload?.type === 'task_started' && r.payload?.turn_id === turn) break;
+      if (isCodexUserMessage(r)) return codexImages(r!.payload!.content);
+    }
+    return [];
+  } finally {
+    await fh.close();
+  }
+}
+
+/** The file's lines ending before `end`, nearest first, within
+ *  MAX_SCAN_BYTES. A long line is gathered from its pieces and joined once. */
+async function* linesBackward(fh: FileHandle, end: number): AsyncGenerator<Buffer> {
+  let pos = end;
+  let parts: Buffer[] = [];   // the line being assembled, in file order
+  while (pos > 0 && end - pos < MAX_SCAN_BYTES) {
+    const size = Math.min(CHUNK, pos);
+    pos -= size;
+    const buf = Buffer.alloc(size);
+    const { bytesRead } = await fh.read(buf, 0, size, pos);
+    let stop = bytesRead;
+    for (let i = bytesRead - 1; i >= 0; i--) {
+      if (buf[i] !== 0x0a) continue;
+      const line = Buffer.concat([buf.subarray(i + 1, stop), ...parts]);
+      parts = [];
+      stop = i;
+      if (line.length > 0) yield line;
+    }
+    if (stop > 0) parts.unshift(Buffer.from(buf.subarray(0, stop)));
+  }
+  if (pos === 0 && parts.length > 0) yield Buffer.concat(parts);
 }

@@ -43,7 +43,7 @@ afterAll(() => rmSync(join(root, '..'), { recursive: true, force: true }));
 const prompt = (sourceOffset: number, sourceFile = transcript): TurnSource =>
   ({ provider: 'claude', kind: 'prompt.submitted', agentId: null, sourceFile, sourceOffset });
 const read = (id: unknown, src: TurnSource | null) =>
-  readTurnImages(id, { sourceFor: () => src, projectsRoot: root });
+  readTurnImages(id, { sourceFor: () => src, roots: { claude: root, codex: join(root, '..', 'codex-sessions') } });
 
 describe('readTurnImages', () => {
   it('returns every attached image on the line, in order, as data URLs', async () => {
@@ -70,9 +70,11 @@ describe('readTurnImages', () => {
     expect(r.ok && r.images.length).toBe(MAX_ATTACHMENTS);
   });
 
-  it('refuses anything that is not a top-level Claude prompt', async () => {
+  it('refuses anything that is not a top-level prompt from a known provider', async () => {
     expect(await read(7, { ...prompt(offsets.two!), kind: 'prose' })).toEqual({ ok: false, reason: 'invalid' });
-    expect(await read(7, { ...prompt(offsets.two!), provider: 'codex' })).toEqual({ ok: false, reason: 'invalid' });
+    expect(await read(7, { ...prompt(offsets.two!), provider: 'gemini' })).toEqual({ ok: false, reason: 'invalid' });
+    // A Codex row must point into Codex's own folder, not Claude's.
+    expect(await read(7, { ...prompt(offsets.two!), provider: 'codex' })).toEqual({ ok: false, reason: 'outside_roots' });
     expect(await read(7, { ...prompt(offsets.two!), agentId: 'sub' })).toEqual({ ok: false, reason: 'invalid' });
     expect(await read(7, null)).toEqual({ ok: false, reason: 'not_found' });
   });
@@ -93,5 +95,69 @@ describe('readTurnImages', () => {
     for (const id of ['7', 0, -1, 1.5, null, Number.NaN]) {
       expect(await read(id, prompt(offsets.two!)), String(id)).toEqual({ ok: false, reason: 'invalid' });
     }
+  });
+});
+
+describe('readTurnImages -- Codex', () => {
+  // Codex indexes a prompt at its item_completed record, which names an
+  // attached image only by path. The pixels are inline in the same turn's
+  // response_item user message, written earlier in the file.
+  let codexRoot: string;
+  let rollout: string;
+  const at: Record<string, number> = {};
+  const url = (b: Buffer, media = 'image/png') => `data:${media};base64,${b.toString('base64')}`;
+  const rec = (type: string, payload: unknown) => JSON.stringify({ timestamp: 't', type, payload }) + '\n';
+  const started = (turn: string) => rec('event_msg', { type: 'task_started', turn_id: turn });
+  const userMsg = (...content: unknown[]) => rec('response_item', { type: 'message', role: 'user', content });
+  const completed = (turn: string) => rec('event_msg', { type: 'item_completed', turn_id: turn,
+    item: { type: 'UserMessage', content: [{ type: 'local_image', path: '/gone.png' }, { type: 'text', text: '[Image #1] hi' }] } });
+
+  beforeAll(() => {
+    codexRoot = join(root, '..', 'codex-sessions');
+    mkdirSync(join(codexRoot, '2026'), { recursive: true });
+    rollout = join(codexRoot, '2026', 'rollout-x.jsonl');
+    const lines: Array<[string, string]> = [
+      ['t0start', started('T0')],
+      ['t0msg', userMsg({ type: 'input_image', image_url: url(PNG) })],   // an EARLIER turn's image
+      ['t0done', completed('T0')],
+      ['t1start', started('T1')],
+      ['t1ctx', rec('turn_context', { turn_id: 'T1' })],
+      ['t1msg', userMsg({ type: 'input_text', text: '' }, { type: 'input_image', image_url: url(PNG) },
+        { type: 'input_image', image_url: url(Buffer.from('<svg/>'), 'image/svg+xml') },
+        { type: 'input_image', image_url: 'https://example.com/a.png' },
+        { type: 'input_image', image_url: url(Buffer.from('not png')) },
+        { type: 'input_text', text: '' })],
+      ['t1done', completed('T1')],
+      ['t2start', started('T2')],
+      ['t2msg', userMsg({ type: 'input_text', text: 'no images' })],
+      ['t2done', completed('T2')],
+      ['t3start', started('T3')],
+      ['t3done', completed('T3')],     // no user message of its own in the turn
+    ];
+    let o = 0, body = '';
+    for (const [name, text] of lines) { at[name] = o; o += Buffer.byteLength(text); body += text; }
+    writeFileSync(rollout, body);
+  });
+
+  const codex = (sourceOffset: number, sourceFile = rollout): TurnSource =>
+    ({ provider: 'codex', kind: 'prompt.submitted', agentId: null, sourceFile, sourceOffset });
+  const readCodex = (src: TurnSource) =>
+    readTurnImages(9, { sourceFor: () => src, roots: { claude: root, codex: codexRoot } });
+
+  it("returns the turn's inline images, skipping any that are not real pictures", async () => {
+    expect(await readCodex(codex(at.t1done!))).toEqual({ ok: true, images: [url(PNG)] });
+  });
+
+  it("never reaches back into an earlier turn's images", async () => {
+    expect(await readCodex(codex(at.t2done!))).toEqual({ ok: true, images: [] });
+    expect(await readCodex(codex(at.t3done!))).toEqual({ ok: true, images: [] });
+  });
+
+  it('reads a user message indexed at its own line too', async () => {
+    expect(await readCodex(codex(at.t0msg!))).toEqual({ ok: true, images: [url(PNG)] });
+  });
+
+  it('requires the rollout to be under the Codex sessions folder', async () => {
+    expect(await readCodex(codex(at.two ?? 0, transcript))).toEqual({ ok: false, reason: 'outside_roots' });
   });
 });
