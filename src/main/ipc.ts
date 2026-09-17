@@ -1320,7 +1320,8 @@ export function registerIpc(
   // main's own index points at; see src/main/attachments.ts.
   ipcMain.handle('session:attachments', async (_event, turnId: unknown) => {
     const result = await readTurnImages(turnId, {
-      sourceFor: id => turnSource(db, id), projectsRoot: resolvePaths(homedir()).claudeProjects,
+      sourceFor: id => turnSource(db, id),
+      roots: { claude: resolvePaths(homedir()).claudeProjects, codex: resolvePaths(homedir()).codexSessions },
     });
     if (!result.ok && result.reason !== 'invalid') console.error('session:attachments refused:', result.reason);
     return result;
