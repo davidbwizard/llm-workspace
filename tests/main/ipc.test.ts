@@ -422,7 +422,7 @@ describe('parseConversationCursor', () => {
 // buildFleetListPayload reads discovery/live.ts's process cache (populated
 // by src/main/index.ts's interval, out of reach here) rather than
 // triggering a sweep itself -- these drive that cache directly via
-// refreshLiveProcesses, with an injected exec, so no real pgrep/ps/lsof
+// refreshLiveProcesses, with an injected exec, so no real ps/lsof
 // calls happen in tests.
 //
 // David's correction goes further than the original brief: fleet:list
@@ -441,8 +441,7 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
   // (refreshLiveProcesses -> the process cache -> buildFleetListPayload).
   it('wires openSessions end to end, one card per live process, regardless of transcript match', async () => {
     await refreshLiveProcesses(async (bin, args) => {
-      if (bin === 'pgrep' && args[1] === 'claude') return '100\n';
-      if (bin === 'pgrep' && args[1] === 'codex') return '200\n';
+      if (bin === 'ps' && args[0] === '-axo') return '100 claude\n200 codex\n';
       return '';
     });
 
@@ -463,7 +462,7 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
     const db = openDb(':memory:');
     insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/live' } })]);
     await refreshLiveProcesses(async (bin, args) => {
-      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'ps' && args[0] === '-axo') return '4242 claude\n';
       if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
       return '';
     });
@@ -484,7 +483,7 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
   // Same gate as SessionState/Blocker above, for OpenSession.
   it('classifies every open-session field as sanitised or structural, with none left over', async () => {
     await refreshLiveProcesses(async (bin, args) => {
-      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'ps' && args[0] === '-axo') return '4242 claude\n';
       return '';
     });
     const open = buildFleetListPayload().openSessions[0]!;
@@ -509,7 +508,7 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
     try {
       registerSession(4242, 'llmws-claude-abc');
       await refreshLiveProcesses(async (bin, args) => {
-        if (bin === 'pgrep' && args[1] === 'claude') return '4242\n5555\n';
+        if (bin === 'ps' && args[0] === '-axo') return '4242 claude\n5555 claude\n';
         return '';
       });
       const byPid = new Map(buildFleetListPayload().openSessions.map(o => [o.pid, o]));
@@ -527,7 +526,7 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
   it("sanitises an open card's cwd/project", async () => {
     const RLO = '\u202e';
     await refreshLiveProcesses(async (bin, args) => {
-      if (bin === 'pgrep' && args[1] === 'claude') return '555\n';
+      if (bin === 'ps' && args[0] === '-axo') return '555 claude\n';
       if (bin === 'lsof') return `p555\nfcwd\nn/Users/me/proj${RLO}ect\n`;
       return '';
     });
@@ -557,7 +556,7 @@ describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
       ev({ kind:'prose', payload:{ text:'Reused the JWT helper.' }, contentHash:'b', subIndex:1 }),
     ]);
     const processes = await refreshLiveProcesses(async (bin, args) => {
-      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'ps' && args[0] === '-axo') return '4242 claude\n';
       if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
       return '';
     });
@@ -579,7 +578,7 @@ describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
     const db = openDb(':memory:');
     insertEvents(db, [ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
     const processes = await refreshLiveProcesses(async (bin, args) => {
-      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'ps' && args[0] === '-axo') return '4242 claude\n';
       if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
       return '';
     });
@@ -601,7 +600,7 @@ describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
       ev({ kind:'prose', payload:{ text:`bad ${RLO} text` }, contentHash:'b', subIndex:1 }),
     ]);
     const processes = await refreshLiveProcesses(async (bin, args) => {
-      if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+      if (bin === 'ps' && args[0] === '-axo') return '4242 claude\n';
       if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
       return '';
     });
@@ -639,7 +638,7 @@ describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
       ]);
       registerSession(4242, 'llmws-claude-abc', Date.parse('2026-09-10T11:15:00Z'));
       const processes = await refreshLiveProcesses(async (bin, args) => {
-        if (bin === 'pgrep' && args[1] === 'claude') return '4242\n';
+        if (bin === 'ps' && args[0] === '-axo') return '4242 claude\n';
         if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/shared\n';
         return '';
       });
@@ -749,7 +748,7 @@ describe('killSession', () => {
   // very call -- only then does a signal go out, and it is always SIGTERM.
   it('signals a freshly discovered pid with SIGTERM, never SIGKILL', async () => {
     const signal = vi.fn();
-    const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4242\n' : '');
+    const exec: ExecFn = async (bin, args) => (bin === 'ps' && args[0] === '-axo' ? '4242 claude\n' : '');
     expect(await killSession(4242, { hop: noAncestors, exec, signal })).toEqual({ status: 'killed' });
     expect(signal).toHaveBeenCalledTimes(1);
     expect(signal).toHaveBeenCalledWith(4242, 'SIGTERM');
@@ -763,19 +762,19 @@ describe('killSession', () => {
     await refreshLiveProcesses(async () => '');
     expect(getCachedLiveProcesses().some(p => p.pid === 5555)).toBe(false);
     const signal = vi.fn();
-    const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'codex' ? '5555\n' : '');
+    const exec: ExecFn = async (bin, args) => (bin === 'ps' && args[0] === '-axo' ? '5555 codex\n' : '');
     expect(await killSession(5555, { hop: noAncestors, exec, signal })).toEqual({ status: 'killed' });
   });
 
   it('reports already_gone, not an error or a crash, when the process exits between validation and the signal', async () => {
-    const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4242\n' : '');
+    const exec: ExecFn = async (bin, args) => (bin === 'ps' && args[0] === '-axo' ? '4242 claude\n' : '');
     const esrch = Object.assign(new Error('No such process'), { code: 'ESRCH' });
     const signal = vi.fn(() => { throw esrch; });
     expect(await killSession(4242, { hop: noAncestors, exec, signal })).toEqual({ status: 'already_gone' });
   });
 
   it('reports refused/signal_failed, not a throw, when the OS refuses the signal for another reason', async () => {
-    const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4242\n' : '');
+    const exec: ExecFn = async (bin, args) => (bin === 'ps' && args[0] === '-axo' ? '4242 claude\n' : '');
     const eperm = Object.assign(new Error('Operation not permitted'), { code: 'EPERM' });
     const signal = vi.fn(() => { throw eperm; });
     expect(await killSession(4242, { hop: noAncestors, exec, signal }))
@@ -792,7 +791,7 @@ describe('killSession', () => {
     clearRegistry();
     try {
       registerSession(4242, 'llmws-claude-abc');
-      const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4242\n' : '');
+      const exec: ExecFn = async (bin, args) => (bin === 'ps' && args[0] === '-axo' ? '4242 claude\n' : '');
       expect(await killSession(4242, { hop: noAncestors, exec, signal: vi.fn() })).toEqual({ status: 'killed' });
       expect(tmuxNameForPid(4242)).toBeNull();
     } finally {
@@ -804,7 +803,7 @@ describe('killSession', () => {
     clearRegistry();
     try {
       registerSession(4242, 'llmws-claude-abc');
-      const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4242\n' : '');
+      const exec: ExecFn = async (bin, args) => (bin === 'ps' && args[0] === '-axo' ? '4242 claude\n' : '');
       const esrch = Object.assign(new Error('No such process'), { code: 'ESRCH' });
       const signal = vi.fn(() => { throw esrch; });
       expect(await killSession(4242, { hop: noAncestors, exec, signal })).toEqual({ status: 'already_gone' });
@@ -888,7 +887,7 @@ describe('revealSession', () => {
   it('opens the application main resolved for the host, not one the caller named', async () => {
     const open = vi.fn();
     const exec: ExecFn = async (bin, args) =>
-      bin === 'pgrep' && args[1] === 'claude' ? '4242\n'
+      bin === 'ps' && args[0] === '-axo' ? '4242 claude\n'
       : bin === 'ps' && args.includes('-o') ? '1 iTerm2\n' : '';
     const result = await revealSession(4242, { exec, open });
     if (result.status === 'revealed') {

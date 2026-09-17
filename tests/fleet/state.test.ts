@@ -335,7 +335,7 @@ describe('fleetState', () => {
     });
 
     // Spec 7.1a: discovery is enrichment, never a filter. A sweep that
-    // found NOTHING at all (pgrep missing, or discovery otherwise broken)
+    // found NOTHING at all (ps missing, or discovery otherwise broken)
     // must not be able to empty the working group -- that would be a worse
     // failure than the stuck-mid-turn bug this task fixes. Falls back to
     // the prior turn-boundary-only rule when there is no live signal at all.
@@ -474,7 +474,7 @@ describe('openSessions', () => {
   });
 
   // provider is not enrichment: it is the one field discovery already knows
-  // with certainty for every process (which `pgrep -x <bin>` found it),
+  // with certainty for every process (which binary it is running),
   // independent of any transcript match -- see the openSessions doc
   // comment. A process discovered as 'codex' reports 'codex' even when it
   // matches a 'claude' session's cwd, because provider answers "which CLI

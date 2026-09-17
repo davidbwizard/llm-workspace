@@ -1,15 +1,33 @@
 import { describe, it, expect } from 'vitest';
-import { parsePgrep, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost } from '../../src/discovery/parse.ts';
+import { parseProcessList, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost } from '../../src/discovery/parse.ts';
 
-describe('parsePgrep', () => {
-  it('extracts pids, one per line', () => {
-    expect(parsePgrep('7994\n11328\n12014\n')).toEqual([7994, 11328, 12014]);
+describe('parseProcessList', () => {
+  it('extracts pid and command, one process per line', () => {
+    expect(parseProcessList('7994 claude\n11328 codex\n12014 zsh\n')).toEqual([
+      { pid: 7994, comm: 'claude' },
+      { pid: 11328, comm: 'codex' },
+      { pid: 12014, comm: 'zsh' },
+    ]);
   });
-  it('ignores blank lines and junk', () => {
-    expect(parsePgrep('\n7994\n\nnope\n')).toEqual([7994]);
+  it('keeps a full path intact, spaces and all -- only the first field is the pid', () => {
+    expect(parseProcessList('42 /Applications/ChatGPT.app/Contents/Resources/codex\n')).toEqual([
+      { pid: 42, comm: '/Applications/ChatGPT.app/Contents/Resources/codex' },
+    ]);
+    expect(parseProcessList('43 /Applications/My App/Contents/MacOS/claude\n')).toEqual([
+      { pid: 43, comm: '/Applications/My App/Contents/MacOS/claude' },
+    ]);
+  });
+  it('tolerates the leading whitespace ps pads pids with', () => {
+    expect(parseProcessList('  501 claude\n 1234 codex\n')).toEqual([
+      { pid: 501, comm: 'claude' },
+      { pid: 1234, comm: 'codex' },
+    ]);
+  });
+  it('ignores blank lines and lines with no command', () => {
+    expect(parseProcessList('\n7994 claude\n\n12014\nnope\n')).toEqual([{ pid: 7994, comm: 'claude' }]);
   });
   it('returns empty when nothing is running', () => {
-    expect(parsePgrep('')).toEqual([]);
+    expect(parseProcessList('')).toEqual([]);
   });
 });
 

@@ -287,7 +287,7 @@ describe('reattachSession', () => {
   it('clears the old pid from the tmux registry once reattach kills it, through the real killSession', async () => {
     registerSession(4821, 'llmws-claude-old');
     const noAncestors = async () => '';
-    const exec: ExecFn = async (bin, args) => (bin === 'pgrep' && args[1] === 'claude' ? '4821\n' : '');
+    const exec: ExecFn = async (bin, args) => (bin === 'ps' && args[0] === '-axo' ? '4821 claude\n' : '');
     const realKill = (pid: number) => killSession(pid, { hop: noAncestors, exec, signal: vi.fn() });
 
     const r = await reattachSession(4821, 120, 40, {
