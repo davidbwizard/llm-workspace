@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { addPending, pendingFor, matchPending, normalise, clearPending, tickIdle, NOT_SEEN_AFTER_MS } from '../../src/renderer/state/pending.ts';
+import { addPending, pendingFor, matchPending, normalise, clearPending, tickIdle, markQueued, NOT_SEEN_AFTER_MS } from '../../src/renderer/state/pending.ts';
 
 const turn = (id: number, ts: string, text: string, role: 'user' | 'assistant' = 'user') => ({ id, ts, role, text });
 
@@ -59,10 +59,23 @@ describe('matchPending', () => {
     ];
     expect(matchPending(list, [turn(1, '2026-09-17T10:00:02Z', 'no match')])).toEqual([]);
   });
+
+  it('enforces exclusivity when two entries have identical text', () => {
+    const base = Date.parse('2026-09-17T10:00:00Z');
+    const list = [
+      { key: 'k1', text: 'deploy', attachments: [], sentAt: base, queued: false, idleMs: 0 },
+      { key: 'k2', text: 'deploy', attachments: [], sentAt: base + 100, queued: false, idleMs: 0 },
+    ];
+    const turns = [
+      turn(1, '2026-09-17T10:00:01Z', 'deploy'),
+      turn(2, '2026-09-17T10:00:03Z', 'deploy'),
+    ];
+    expect(matchPending(list, turns)).toEqual(['k1', 'k2']);
+  });
 });
 
 describe('tickIdle', () => {
-  it('only advances the entry it names', () => {
+  it('advances all entries by the same amount', () => {
     addPending(1, { text: 'a', attachments: [], sentAt: 100, queued: false });
     addPending(1, { text: 'b', attachments: [], sentAt: 200, queued: false });
     const before = pendingFor(1);
@@ -75,6 +88,24 @@ describe('tickIdle', () => {
     const after = pendingFor(1);
     expect(after.length).toBe(2);
     expect(after[0]?.idleMs).toBe(50);
-    expect(after[1]?.idleMs).toBe(0);
+    expect(after[1]?.idleMs).toBe(50);
+  });
+});
+
+describe('markQueued', () => {
+  it('sets queued flag for an existing entry', () => {
+    const key = addPending(1, { text: 'hello', attachments: [], sentAt: 100, queued: false });
+    const before = pendingFor(1);
+    expect(before[0]?.queued).toBe(false);
+
+    markQueued(1, key, true);
+
+    const after = pendingFor(1);
+    expect(after[0]?.queued).toBe(true);
+  });
+
+  it('does not throw when key does not exist', () => {
+    addPending(1, { text: 'hello', attachments: [], sentAt: 100, queued: false });
+    expect(() => markQueued(1, 'nonexistent', true)).not.toThrow();
   });
 });

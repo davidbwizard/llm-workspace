@@ -119,18 +119,18 @@ export function matchPending(list: Pending[], turns: ConversationTurn[]): string
 }
 
 /**
- * Advances the idleMs for the oldest pending entry at the given pid.
+ * Advances the idleMs for every unmatched pending entry at the given pid.
  * This is called when rendering pending entries to track how long they have
- * been waiting to appear in the log. Only the first (oldest) entry is updated;
- * other entries remain unchanged until their turn comes.
+ * been waiting to appear in the log. Each unmatched entry counts down
+ * independently, so if one message is stuck while others match later,
+ * it still warns when its countdown expires.
  */
 export function tickIdle(pid: number, ms: number): void {
   const list = pending.get(pid);
   if (!list || list.length === 0) return;
 
-  const first = list[0];
-  if (first) {
-    first.idleMs += ms;
+  for (const entry of list) {
+    entry.idleMs += ms;
   }
 }
 
