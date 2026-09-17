@@ -430,7 +430,7 @@ describe('sessions — spec §7.1a end-to-end (store activity survives zero live
 
     // Exactly the composition `sessions` (cli.ts) performs: store activity
     // -> sessionRefs, annotated against whatever live processes were found.
-    // An empty process list stands in for "pgrep found nothing at all" --
+    // An empty process list stands in for "nothing is running at all" --
     // the real bug this guards against made the session vanish entirely
     // rather than list with quality unknown.
     const annotated = annotateSessionsWithProcesses(sessionRefs(db, NOW), []);

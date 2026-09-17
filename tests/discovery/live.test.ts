@@ -20,8 +20,7 @@ const NO_SESSION_FILE: DiscoveryDeps = {
 describe('discoverLiveProcesses', () => {
   it('finds processes for both providers concurrently and reports pid/provider/tty/cwd/host/age/memory', async () => {
     const exec = fakeExec({
-      'pgrep -x claude': '100\n',
-      'pgrep -x codex': '200\n',
+      'ps -axo pid=,comm=': '100 claude\n200 codex\n300 zsh\n',
       'ps -o tty= -p 100': 'ttys001\n',
       'lsof -a -p 100 -d cwd -Fn': 'p100\nfcwd\nn/repo/a\n',
       'ps -o etime=,rss= -p 100': '05:23  1234\n',
@@ -37,10 +36,11 @@ describe('discoverLiveProcesses', () => {
     expect(procs).toHaveLength(2);
     const byPid = new Map(procs.map(p => [p.pid, p]));
 
-    // provider comes from WHICH pgrep found the pid (100 from 'pgrep -x
-    // claude' above, 200 from 'pgrep -x codex'), not from any per-pid
-    // lookup -- it is known before any of the other fields are, and
-    // unlike them is never subject to a ps/lsof call failing soft.
+    // provider comes from the command name in the process list (100 is
+    // 'claude', 200 is 'codex'), not from any per-pid lookup -- it is
+    // known before any of the other fields are, and unlike them is never
+    // subject to a ps/lsof call failing soft. 300 runs neither binary and
+    // is not reported at all.
     expect(byPid.get(100)).toEqual({
       pid: 100, provider: 'claude', tty: 'ttys001', cwd: '/repo/a', host: 'iterm2',
       ageSeconds: 5 * 60 + 23, rssBytes: 1234 * 1024,
@@ -61,14 +61,14 @@ describe('discoverLiveProcesses', () => {
   // never be able to reach that list. These three pin fail-soft at
   // increasing levels of severity.
   describe('fails soft', () => {
-    it('resolves to an empty list when pgrep is unavailable (the real ENOENT path: exec fails soft to empty output)', async () => {
+    it('resolves to an empty list when ps is unavailable (the real ENOENT path: exec fails soft to empty output)', async () => {
       const exec: ExecFn = async () => '';
       await expect(discoverLiveProcesses(exec)).resolves.toEqual([]);
     });
 
-    it('still reports a pid pgrep found even when every per-pid lookup for it comes back empty', async () => {
+    it('still reports a pid the process list found even when every per-pid lookup for it comes back empty', async () => {
       const exec: ExecFn = async (bin, args) =>
-        bin === 'pgrep' && args[1] === 'claude' ? '100\n' : '';
+        bin === 'ps' && args[0] === '-axo' ? '100 claude\n' : '';
       const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
       expect(procs).toEqual([
         { pid: 100, provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null },
@@ -81,16 +81,46 @@ describe('discoverLiveProcesses', () => {
     });
   });
 
+  // The bug this closes: discovery used `pgrep -x <bin>`, and pgrep does
+  // not report the CALLING process's own ancestors. The app is routinely
+  // launched from inside an agent session (a person asks their agent to
+  // start it), and that session was then the one session discovery could
+  // never see. Measured 2026-09-16: the same `pgrep -x claude` returned
+  // four pids from an unrelated process tree and three from inside one of
+  // them -- the missing pid being the session that launched the app.
+  // Enumerating with ps and filtering in-process is caller-independent.
+  it('enumerates with ps rather than pgrep, whose results depend on who is asking', async () => {
+    const calls: string[][] = [];
+    const exec: ExecFn = async (bin, args) => {
+      calls.push([bin, ...args]);
+      return bin === 'ps' && args[0] === '-axo' ? '42 claude\n' : '';
+    };
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(procs.map(p => p.pid)).toEqual([42]);
+    expect(calls.some(c => c[0] === 'pgrep')).toBe(false);
+    expect(calls).toContainEqual(['ps', '-axo', 'pid=,comm=']);
+  });
+
+  it('matches on the basename, so a provider binary run from a full path still counts', async () => {
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '30651 /Applications/ChatGPT.app/Contents/Resources/codex\n',
+      'ps -o ppid=,comm= -p 30651': '1 ChatGPT\n',
+    });
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(procs.map(p => ({ pid: p.pid, provider: p.provider }))).toEqual([{ pid: 30651, provider: 'codex' }]);
+  });
+
   it('never interpolates the pid into a shell string -- each ps/lsof call receives it as its own argv entry', async () => {
     const calls: string[][] = [];
     const exec: ExecFn = async (bin, args) => {
       calls.push([bin, ...args]);
-      if (bin === 'pgrep') return '42\n';
+      if (bin === 'ps' && args[0] === '-axo') return '42 claude\n';
       return '';
     };
     await discoverLiveProcesses(exec, NO_SESSION_FILE);
     for (const call of calls) {
-      if (call[0] === 'pgrep') continue;
+      // The enumeration call names no pid at all, so it has nothing to check.
+      if (call[1] === '-axo') continue;
       // The pid appears as its own array element (String(42) === '42'),
       // never concatenated into a combined string like '-p 42' or embedded
       // inside another argument.
@@ -100,10 +130,11 @@ describe('discoverLiveProcesses', () => {
   });
 });
 
-// A matched pid (pgrep -x claude/codex found it) is a session only if no
+// A matched pid (the process list showed it running a provider binary)
+// is a session only if no
 // OTHER matched pid is its ancestor -- a session's own helper subprocesses
-// (a sandbox permission wrapper, an app-server) still match `pgrep -x
-// codex` by binary name, but are reachable from the real session through
+// (a sandbox permission wrapper, an app-server) still run the same
+// binary, but are reachable from the real session through
 // their own parent chain. These fixtures mirror one real machine's actual
 // process tree that motivated the fix:
 //
@@ -116,7 +147,7 @@ describe('discoverLiveProcesses', () => {
 describe('ancestry filtering (session vs. helper subprocess)', () => {
   it('drops a matched pid descended from another matched pid through a non-matching intermediate (grandchild)', async () => {
     const exec = fakeExec({
-      'pgrep -x codex': '85962\n56549\n',
+      'ps -axo pid=,comm=': '85962 codex\n56549 codex\n',
       'ps -o ppid=,comm= -p 85962': '20133 codex\n', // 85962's own ppid/comm
       'ps -o ppid=,comm= -p 20133': '1 zsh\n',
       // 56549's parent is 86022 (node_repl) -- unmatched, not "codex" --
@@ -131,9 +162,9 @@ describe('ancestry filtering (session vs. helper subprocess)', () => {
 
   it('keeps a matched pid whose parent chain contains no other matched pid', async () => {
     const exec = fakeExec({
-      'pgrep -x codex': '85962\n',
+      'ps -axo pid=,comm=': '85962 codex\n',
       'ps -o ppid=,comm= -p 85962': '20133 codex\n',
-      'ps -o ppid=,comm= -p 20133': '1 zsh\n', // zsh's own pid never appears in pgrep's matched set
+      'ps -o ppid=,comm= -p 20133': '1 zsh\n', // zsh never appears in the matched set
     });
 
     const procs = await discoverLiveProcesses(exec);
@@ -142,10 +173,10 @@ describe('ancestry filtering (session vs. helper subprocess)', () => {
 
   it('keeps a matched pid with no tty and no matched ancestor, parented directly by an unmatched app process', async () => {
     // Pins the ChatGPT-desktop-app case explicitly: no tty, and its only
-    // parent is an app process that never matched pgrep -x codex -- the
+    // parent is an app process that is not a provider binary -- the
     // rule must keep it, not treat "no tty" as a signal to drop.
     const exec = fakeExec({
-      'pgrep -x codex': '30651\n',
+      'ps -axo pid=,comm=': '30651 codex\n',
       'ps -o tty= -p 30651': '??\n',
       'ps -o ppid=,comm= -p 30651': '412 codex\n',
       'ps -o ppid=,comm= -p 412': '1 ChatGPT\n',
@@ -163,7 +194,7 @@ describe('ancestry filtering (session vs. helper subprocess)', () => {
     // soft means unknown must resolve to "no known matched ancestor" (kept),
     // never to "looks suspicious, drop it".
     const exec = fakeExec({
-      'pgrep -x codex': '1\n2\n',
+      'ps -axo pid=,comm=': '1 codex\n2 codex\n',
       'ps -o ppid=,comm= -p 1': '999 codex\n',
       'ps -o ppid=,comm= -p 2': 'not a valid ppid/comm line\n',
     });
@@ -174,7 +205,7 @@ describe('ancestry filtering (session vs. helper subprocess)', () => {
 
   it('the real-machine tree: drops all three codex helpers, keeps the real session and the ChatGPT-app session', async () => {
     const exec = fakeExec({
-      'pgrep -x codex': '85962\n56549\n56550\n56553\n30651\n',
+      'ps -axo pid=,comm=': '85962 codex\n56549 codex\n56550 codex\n56553 codex\n30651 codex\n',
       'ps -o ppid=,comm= -p 85962': '20133 codex\n',
       'ps -o ppid=,comm= -p 20133': '1 zsh\n',
       'ps -o ppid=,comm= -p 56549': '86022 codex\n',
@@ -205,7 +236,7 @@ describe('process cache', () => {
     vi.resetModules();
     const mod: typeof import('../../src/discovery/live.ts') = await import('../../src/discovery/live.ts');
     const exec = async (bin: string, args: string[]) =>
-      bin === 'pgrep' && args[1] === 'claude' ? '100\n' : '';
+      bin === 'ps' && args[0] === '-axo' ? '100 claude\n' : '';
 
     const result = await mod.refreshLiveProcesses(exec, NO_SESSION_FILE);
     const expected = [
@@ -219,7 +250,7 @@ describe('process cache', () => {
     vi.resetModules();
     const mod = await import('../../src/discovery/live.ts');
     await mod.refreshLiveProcesses(async (bin: string, args: string[]) =>
-      bin === 'pgrep' && args[1] === 'claude' ? '100\n' : '', NO_SESSION_FILE);
+      bin === 'ps' && args[0] === '-axo' ? '100 claude\n' : '', NO_SESSION_FILE);
     expect(mod.getCachedLiveProcesses()).toHaveLength(1);
 
     await mod.refreshLiveProcesses(async () => ''); // nothing found this time
@@ -258,7 +289,7 @@ describe('execFileSoft', () => {
 // regard for whether the previous sweep already finished, and killSession
 // can trigger a sweep at any moment too. Before this fix, a sweep stuck on
 // one hung exec call meant a fresh, fully concurrent sweep -- another
-// ~13 processes' worth of pgrep/ps/lsof calls -- stacked on top of it every
+// ~13 processes' worth of ps/lsof calls -- stacked on top of it every
 // single tick, forever (and, since nothing timed out either, no sweep in
 // that pile ever finished). These prove the in-flight guard: a caller that
 // arrives while a sweep is already running joins that SAME sweep instead of
@@ -269,25 +300,25 @@ describe('refreshLiveProcesses — in-flight sweep guard', () => {
     vi.resetModules();
     const mod = await import('../../src/discovery/live.ts');
 
-    let pgrepCalls = 0;
+    let listCalls = 0;
     const resolvers: Array<(v: string) => void> = [];
-    const hangingExec: ExecFn = (bin) => {
-      if (bin !== 'pgrep') return Promise.resolve('');
-      pgrepCalls++;
+    const hangingExec: ExecFn = (bin, args) => {
+      if (!(bin === 'ps' && args[0] === '-axo')) return Promise.resolve('');
+      listCalls++;
       return new Promise<string>(resolve => resolvers.push(resolve));
     };
 
     const first = mod.refreshLiveProcesses(hangingExec);
     // Let the synchronous/microtask portion of the first sweep run --
-    // discoverLiveProcesses fires both providers' pgrep calls before it
-    // awaits anything else.
+    // discoverLiveProcesses fires its process-list call before it awaits
+    // anything else.
     await new Promise(resolve => setImmediate(resolve));
-    const callsWhileFirstPending = pgrepCalls;
+    const callsWhileFirstPending = listCalls;
     expect(callsWhileFirstPending).toBeGreaterThan(0);
 
     const second = mod.refreshLiveProcesses(hangingExec); // arrives while first is still hung
     await new Promise(resolve => setImmediate(resolve));
-    expect(pgrepCalls).toBe(callsWhileFirstPending); // no new sweep -- no new subprocess calls
+    expect(listCalls).toBe(callsWhileFirstPending); // no new sweep -- no new subprocess calls
 
     resolvers.forEach(resolve => resolve('')); // let the hung sweep resolve, as a real timeout eventually would
     await expect(first).resolves.toEqual([]);
@@ -303,10 +334,10 @@ describe('refreshLiveProcesses — in-flight sweep guard', () => {
     vi.resetModules();
     const mod = await import('../../src/discovery/live.ts');
 
-    let resolvePgrep: ((v: string) => void) | undefined;
+    let resolveList: ((v: string) => void) | undefined;
     const exec: ExecFn = async (bin, args) => {
-      if (bin === 'pgrep' && args[1] === 'claude') {
-        return new Promise<string>(resolve => { resolvePgrep = resolve; });
+      if (bin === 'ps' && args[0] === '-axo') {
+        return new Promise<string>(resolve => { resolveList = resolve; });
       }
       return '';
     };
@@ -315,7 +346,7 @@ describe('refreshLiveProcesses — in-flight sweep guard', () => {
     await new Promise(resolve => setImmediate(resolve));
     const second = mod.refreshLiveProcesses(exec, NO_SESSION_FILE);
 
-    resolvePgrep!('100\n');
+    resolveList!('100 claude\n');
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult).toEqual(secondResult);
     expect(firstResult.map(p => p.pid)).toEqual([100]);
@@ -326,7 +357,7 @@ describe('discoverLiveProcesses: live session file', () => {
   const NOW = 1_789_500_000_000;
   // 05:23 elapsed = 323 s, so the process started at NOW - 323_000.
   const claudeExec = fakeExec({
-    'pgrep -x claude': '100\n',
+    'ps -axo pid=,comm=': '100 claude\n',
     'ps -o tty= -p 100': 'ttys001\n',
     'lsof -a -p 100 -d cwd -Fn': 'p100\nfcwd\nn/repo/a\n',
     'ps -o etime=,rss= -p 100': '05:23  1234\n',
@@ -382,7 +413,7 @@ describe('discoverLiveProcesses: live session file', () => {
   it('warns once per app run, not per pid, when the sessions directory is missing', async () => {
     const warn = vi.fn();
     const exec = fakeExec({
-      'pgrep -x claude': '100\n101\n',
+      'ps -axo pid=,comm=': '100 claude\n101 claude\n',
       'ps -o etime=,rss= -p 100': '05:23  1\n', 'ps -o ppid=,comm= -p 100': '1 claude\n',
       'ps -o etime=,rss= -p 101': '05:23  1\n', 'ps -o ppid=,comm= -p 101': '1 claude\n',
     });
@@ -395,7 +426,7 @@ describe('discoverLiveProcesses: live session file', () => {
   it('never reads a session file for a Codex process', async () => {
     const readLiveSession = vi.fn((): LiveSessionRead => ({ ok: true, file: file() }));
     const exec = fakeExec({
-      'pgrep -x codex': '200\n',
+      'ps -axo pid=,comm=': '200 codex\n',
       'ps -o etime=,rss= -p 200': '05:23  1\n',
       'ps -o ppid=,comm= -p 200': '1 codex\n',
     });

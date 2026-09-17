@@ -24,7 +24,7 @@ import { promisify } from 'node:util';
 import { basename } from 'node:path';
 import { homedir } from 'node:os';
 import {
-  parsePgrep, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost, type LiveProcess,
+  parseProcessList, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost, type LiveProcess,
 } from './parse.ts';
 import { parseProcessChainHop, resolvePaths } from '../config.ts';
 import {
@@ -256,12 +256,25 @@ function filterToSessions(inspected: InspectedPid[], matchedPids: ReadonlySet<nu
  *  Matches every PROVIDER_BINS pid first (both providers, so the matched
  *  set filterToSessions checks ancestry against is complete before any pid
  *  is inspected), then inspects them all concurrently, then drops helper
- *  processes -- a session's own subprocesses that also happen to match
- *  `pgrep -x codex`/`pgrep -x claude` by binary name (see filterToSessions). */
+ *  processes -- a session's own subprocesses that also happen to run the
+ *  same binary (see filterToSessions).
+ *
+ *  ONE `ps` enumeration, filtered here, rather than `pgrep -x <bin>` per
+ *  provider. pgrep is unusable for this: it does not report the calling
+ *  process's own ancestors, so an app launched from inside an agent
+ *  session could never discover that session -- and that is precisely the
+ *  session someone is most likely to have launched it from. Measured
+ *  2026-09-16 on this machine: `pgrep -x claude` returned four pids from
+ *  an unrelated process tree and three from inside one of them, the
+ *  missing one being the session that started the app. `ps -axo` sees the
+ *  same table regardless of who asks. */
 export async function discoverLiveProcesses(exec: ExecFn = defaultExec, deps: DiscoveryDeps = {}): Promise<LiveProcess[]> {
   try {
-    const matched = (await Promise.all(PROVIDER_BINS.map(async bin =>
-      parsePgrep(await exec('pgrep', ['-x', bin])).map(pid => ({ pid, provider: bin }))))).flat();
+    const matched = parseProcessList(await exec('ps', ['-axo', 'pid=,comm=']))
+      .flatMap(({ pid, comm }) => {
+        const provider = PROVIDER_BINS.find(bin => bin === basename(comm));
+        return provider ? [{ pid, provider }] : [];
+      });
     const matchedPids = new Set(matched.map(m => m.pid));
 
     const inspected = await Promise.all(matched.map(({ pid, provider }) => inspectPid(pid, provider, exec, deps)));

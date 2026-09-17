@@ -34,12 +34,28 @@ export interface LiveProcess {
   liveSession?: LiveSessionFile;
 }
 
-/** Parse `pgrep -x claude` output. */
-export function parsePgrep(out: string): number[] {
-  return out.split('\n')
-    .map(l => l.trim())
-    .filter(l => /^\d+$/.test(l))
-    .map(Number);
+/** Parse `ps -axo pid=,comm=` output: one process per line, pid first,
+ *  then the executable as `ps` reports it -- sometimes a bare name
+ *  (`claude`), sometimes a full path
+ *  (`/Applications/ChatGPT.app/Contents/Resources/codex`). A path can
+ *  contain spaces, so only the FIRST field is read as the pid and
+ *  everything after it is the command verbatim; the caller takes the
+ *  basename.
+ *
+ *  This replaced `pgrep -x <bin>`, which cannot be used for discovery:
+ *  pgrep does not report the calling process's own ancestors, so an app
+ *  launched FROM an agent session could never see that session -- the one
+ *  session a person is most likely to have launched it from. Measured
+ *  2026-09-16: the same `pgrep -x claude` returned four pids from an
+ *  unrelated process tree and three from inside one of them. Enumerating
+ *  with `ps` and filtering here is caller-independent. */
+export function parseProcessList(out: string): Array<{ pid: number; comm: string }> {
+  const rows: Array<{ pid: number; comm: string }> = [];
+  for (const line of out.split('\n')) {
+    const m = /^\s*(\d+)\s+(\S.*?)\s*$/.exec(line);
+    if (m) rows.push({ pid: Number(m[1]), comm: m[2]! });
+  }
+  return rows;
 }
 
 /** Parse `ps -o tty= -p <pid>`. `??` means no controlling terminal. */
