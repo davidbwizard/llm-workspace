@@ -1,5 +1,10 @@
-// better-sqlite3 and node-pty are both native addons (V8-direct, not
-// Node-API for better-sqlite3; a real dlopen either way) compiled against
+// Since better-sqlite3 13 (2026-09-17) that package is a Node-API addon
+// with a prebuilt binary that loads under both Node and Electron, so it
+// normally passes both checks below without a rebuild. What follows was
+// written when both addons were V8-direct, and still describes node-pty.
+//
+// better-sqlite3 and node-pty were both native addons (a real dlopen
+// either way) compiled against
 // one specific NODE_MODULE_VERSION -- the ABI of whichever V8/Node build
 // they were built against. Plain Node and Electron embed different,
 // incompatible V8 builds (verified on this machine: Node 24 is ABI 137,
@@ -49,8 +54,10 @@ type NativePackage = {
   /** Relative to ROOT. */
   pkgDir: string;
   /** Relative to pkgDir -- gates MISSING vs FAIL, same as before this
-   *  script covered more than one package. */
-  addonPath: string;
+   *  script covered more than one package. Omitted when the package picks
+   *  its own binary at load time (better-sqlite3 13's per-platform
+   *  prebuilds), where only loading it can say whether it works. */
+  addonPath?: string;
   /** Touches the native addon currently on disk, under whatever runtime
    *  this runs in, with no OTHER observable side effect -- constructing
    *  against ':memory:' for better-sqlite3 (no filesystem side effect),
@@ -65,7 +72,6 @@ const PACKAGES: NativePackage[] = [
   {
     name: 'better-sqlite3',
     pkgDir: `${ROOT}node_modules/better-sqlite3`,
-    addonPath: 'build/Release/better_sqlite3.node',
     async load() {
       const { default: Database } = await import('better-sqlite3');
       const db = new Database(':memory:');
@@ -88,7 +94,7 @@ const PACKAGES: NativePackage[] = [
  *  'MISSING' -- so both the in-process (Node) and subprocess (Electron,
  *  via runElectronProbe() below) callers can read the same shape. */
 async function probeReport(pkg: NativePackage): Promise<string> {
-  if (!existsSync(`${pkg.pkgDir}/${pkg.addonPath}`)) return 'MISSING';
+  if (pkg.addonPath && !existsSync(`${pkg.pkgDir}/${pkg.addonPath}`)) return 'MISSING';
   try {
     await pkg.load();
     return `OK ${process.versions.modules}`;
