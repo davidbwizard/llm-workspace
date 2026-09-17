@@ -125,8 +125,10 @@ cp ~/.llm-workspace/index.sqlite /tmp/reindex-check.sqlite
 time node --experimental-strip-types --input-type=module -e "
 import { openDb } from './src/store/db.ts';
 import { ingestAll } from './src/watch/watcher.ts';
-import { paths } from './src/config.ts';
+import { resolvePaths } from './src/config.ts';
+import { homedir } from 'node:os';
 // roots() is private to src/main/index.ts:37 -- this is the same list.
+const paths = resolvePaths(homedir());
 const roots = [
   { dir: paths.codexSessions, provider: 'codex', glob: /rollout-.*\.jsonl\$/ },
 ];
