@@ -23,8 +23,18 @@ describe('parseLiveSessionFile', () => {
   it('reads the fields the app uses from the real shape', () => {
     expect(parseLiveSessionFile(text(REAL_SHAPE), 14041)).toEqual({
       sessionId: '00000000-0000-4000-8000-000000000001', cwd: '/Users/me/trellome',
-      startedAtMs: 1789408337635, status: 'idle',
+      startedAtMs: 1789408337635, status: 'idle', statusUpdatedAtMs: 1789410297851,
     });
+  });
+
+  // buildSessionLive (src/main/sessionLive.ts) times a busy Claude session
+  // from this field -- a missing or non-numeric value must fall back to no
+  // "since" signal, the same tolerance startedAt gets, rather than
+  // rejecting a file that is otherwise valid.
+  it('nulls statusUpdatedAtMs when statusUpdatedAt is missing or not a number, without rejecting the file', () => {
+    const { statusUpdatedAt: _omit, ...noStatusUpdatedAt } = REAL_SHAPE;
+    expect(parseLiveSessionFile(text(noStatusUpdatedAt), 14041)?.statusUpdatedAtMs).toBeNull();
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, statusUpdatedAt: 'later' }), 14041)?.statusUpdatedAtMs).toBeNull();
   });
 
   it('accepts waiting and busy', () => {
