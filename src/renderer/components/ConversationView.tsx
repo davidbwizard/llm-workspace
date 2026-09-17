@@ -113,6 +113,42 @@ function LinkedImage({ src, alt }: { src?: string; alt?: string }) {
   return <img className="md-thumb" src={dataUrl} alt={alt ?? ''} title={src} />;
 }
 
+/** Claude Code's placeholder for an image attached to a prompt. */
+const IMAGE_MARKER = /\[Image #\d+\]/;
+const IMAGE_MARKERS = /\[Image #\d+\][ \t]*/g;
+
+/** Your message, plus any images you attached to it. Only a message that
+ *  carries Claude Code's "[Image #N]" placeholder is looked up -- main reads
+ *  the pixels back from the transcript (src/main/attachments.ts). Once they
+ *  arrive the placeholders are dropped from the text; if they never do, the
+ *  text shows exactly as it always did. The images live in this component's
+ *  state, so live refreshes of the list do not read the file again. */
+function UserText({ id, text }: { id: number; text: string }) {
+  const [images, setImages] = useState<string[]>([]);
+  const hinted = IMAGE_MARKER.test(text);
+  useEffect(() => {
+    setImages([]);
+    if (!hinted || !window.fleet?.attachments) return;
+    let current = true;
+    window.fleet.attachments(id).then(
+      r => { if (current && r.ok) setImages(r.images); },
+      (err: unknown) => console.error('session:attachments failed:', err),
+    );
+    return () => { current = false; };
+  }, [id, hinted]);
+  const shown = images.length ? text.replace(IMAGE_MARKERS, '').trim() : text;
+  return (
+    <>
+      {shown && <p className="turn-text">{shown}</p>}
+      {images.length > 0 && (
+        <div className="turn-thumbs">
+          {images.map((src, i) => <img key={i} src={src} alt={`Attached image ${i + 1}`} />)}
+        </div>
+      )}
+    </>
+  );
+}
+
 const MARKDOWN_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   img: ({ src, alt }) => <LinkedImage src={typeof src === 'string' ? src : undefined} alt={alt} />,
@@ -839,7 +875,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                     <span className="when">{formatTime(t.ts)}</span>
                   </div>
                   {t.role === 'user'
-                    ? <p className="turn-text">{t.text}</p>
+                    ? <UserText id={t.id} text={t.text} />
                     : (
                       <div className="turn-body">
                         <div className="turn-text md"><MarkdownText text={t.text} /></div>

@@ -41,8 +41,9 @@ describe('renderer security posture', () => {
       'app:theme',
       'dialog:directory',
       'fleet:history', 'fleet:list',
-      // session:image: read-only, and every check lives in src/main/images.ts.
-      'session:attach', 'session:conversation', 'session:detach', 'session:image', 'session:keys',
+      // session:image and session:attachments: read-only; their checks live
+      // in src/main/images.ts and src/main/attachments.ts.
+      'session:attach', 'session:attachments', 'session:conversation', 'session:detach', 'session:image', 'session:keys',
       'session:kill', 'session:launch', 'session:raw', 'session:reattach',
       'session:resize', 'session:resume', 'session:reveal',
     ]);

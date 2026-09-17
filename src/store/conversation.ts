@@ -188,3 +188,17 @@ export function conversationFor(
   }
   return { turns, nextCursor };
 }
+
+/** Where a turn's event came from: the transcript file and the byte offset
+ *  of its line. Main uses this to read an attached image back on demand
+ *  (src/main/attachments.ts) -- the index keeps only a prompt's text. */
+export function turnSource(db: Db, id: number): {
+  provider: string; kind: string; agentId: string | null; sourceFile: string; sourceOffset: number;
+} | null {
+  const row = db.prepare(`SELECT provider, kind, agent_id, source_file, source_offset FROM events WHERE id = ?`)
+    .get(id) as { provider: string; kind: string; agent_id: string | null; source_file: string; source_offset: number } | undefined;
+  return row ? {
+    provider: row.provider, kind: row.kind, agentId: row.agent_id,
+    sourceFile: row.source_file, sourceOffset: row.source_offset,
+  } : null;
+}

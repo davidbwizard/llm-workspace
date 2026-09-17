@@ -24,6 +24,7 @@ import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveS
 import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { readSessionImage } from './images.ts';
+import { readTurnImages } from './attachments.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import {
   sendKeyName, capturePane, setSessionOption, loadBuffer, pasteBuffer, deleteBuffer,
@@ -31,7 +32,7 @@ import {
   type TmuxResult, type TmuxExec,
 } from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
-import { conversationFor, type ConversationCursor } from '../store/conversation.ts';
+import { conversationFor, turnSource, type ConversationCursor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
 import { launchSession, reattachSession, resumeSession, type LaunchResult } from './launch.ts';
 
@@ -1280,6 +1281,15 @@ export function registerIpc(
   ipcMain.handle('session:image', async (_event, sessionId: unknown, src: unknown) => {
     const result = await readSessionImage(sessionId, src, { cwdFor: id => sessionCwd(db, id) });
     if (!result.ok && result.reason !== 'invalid') console.error('session:image refused:', result.reason);
+    return result;
+  });
+  // Images a person attached to a prompt, read back from the transcript line
+  // main's own index points at; see src/main/attachments.ts.
+  ipcMain.handle('session:attachments', async (_event, turnId: unknown) => {
+    const result = await readTurnImages(turnId, {
+      sourceFor: id => turnSource(db, id), projectsRoot: resolvePaths(homedir()).claudeProjects,
+    });
+    if (!result.ok && result.reason !== 'invalid') console.error('session:attachments refused:', result.reason);
     return result;
   });
   ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown) => sendKeysFor(pid, text));

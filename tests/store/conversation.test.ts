@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { conversationFor, unwrapSlashCommand, type ConversationTurn } from '../../src/store/conversation.ts';
+import { conversationFor, unwrapSlashCommand, turnSource, type ConversationTurn } from '../../src/store/conversation.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 
 let nextOffset = 0;
@@ -350,5 +350,21 @@ describe('conversationFor', () => {
       'you: c (newer half of the tie)', 'agent: d (newest)',
       'you: a (oldest)', 'agent: b (older half of the tie)',
     ]);
+  });
+});
+
+describe('turnSource', () => {
+  it("returns a turn's provider, kind and transcript location, or null", () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [{
+      provider: 'claude', sessionId: 's1', runId: 'r1', agentId: null, ts: '2026-09-17T10:00:00Z',
+      kind: 'prompt.submitted', payload: { text: '[Image #1] hi' }, nativeId: null,
+      sourceFile: '/p/s1.jsonl', sourceOffset: 1234, contentHash: 'h', subIndex: 0, parserVersion: 1,
+    } as NormalizedEvent]);
+    const id = (db.prepare('SELECT id FROM events').get() as { id: number }).id;
+    expect(turnSource(db, id)).toEqual({
+      provider: 'claude', kind: 'prompt.submitted', agentId: null, sourceFile: '/p/s1.jsonl', sourceOffset: 1234,
+    });
+    expect(turnSource(db, id + 1)).toBeNull();
   });
 });
