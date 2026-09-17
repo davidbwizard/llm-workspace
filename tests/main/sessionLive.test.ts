@@ -227,17 +227,21 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   const CLAUDE_PATH = `${homedir()}/.claude/sessions/4821.json`;
 
   // A fake fs.watch: records every path it is asked to watch and lets a
-  // test fire that path's own registered 'error' handler, or close it,
-  // without ever touching the real filesystem or leaving a real watcher
-  // running past the test.
+  // test fire that path's own registered 'error' or 'change' handler, or
+  // close it, without ever touching the real filesystem or leaving a real
+  // watcher running past the test.
   function fakeWatch() {
     const errorHandlers = new Map<string, (err: Error) => void>();
+    const changeHandlers = new Map<string, () => void>();
     const active = new Set<string>();
     let closedCount = 0;
     const watch = (path: string): WatchHandle => {
       active.add(path);
       return {
-        on: (event, cb) => { if (event === 'error') errorHandlers.set(path, cb); },
+        on: ((event: 'error' | 'change', cb: ((err: Error) => void) | (() => void)) => {
+          if (event === 'error') errorHandlers.set(path, cb as (err: Error) => void);
+          else changeHandlers.set(path, cb as () => void);
+        }) as WatchHandle['on'],
         close: () => { active.delete(path); closedCount += 1; },
       };
     };
@@ -246,6 +250,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
       watchedPaths: () => [...active],
       closedCount: () => closedCount,
       triggerError: (path: string, err: Error) => errorHandlers.get(path)?.(err),
+      triggerChange: (path: string) => changeHandlers.get(path)?.(),
     };
   }
 
@@ -360,6 +365,56 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
     notifySessionChanged(new Set(['s1']));
     vi.advanceTimersByTime(250);
     expect(sent).toEqual([payload]);
+  });
+
+  // Finding 2 (final review, 2026-09-17): the watch was opened but nothing
+  // ever subscribed to 'change', so the second of the spec's three triggers
+  // (Claude's own status file flipping) delivered nothing -- a status flip
+  // with no accompanying transcript write, most visibly Claude entering a
+  // question or permission prompt, reached the pane only on the 5s sweep.
+  it('pushes on a change to the watched claude status file, coalesced the same as any other trigger', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1 };
+    const { deps, sent, fake } = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload });
+    watchSessionFor(4821, deps);
+    sent.length = 0; // clear the immediate push watchSessionFor itself sent
+
+    vi.useFakeTimers();
+    fake.triggerChange(CLAUDE_PATH);
+    expect(sent).toEqual([]); // coalesced, not sent synchronously
+    vi.advanceTimersByTime(250);
+    expect(sent).toEqual([payload]);
+  });
+
+  it('coalesces a change on the status file with an ordinary notifySessionChanged in the same window', () => {
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1 };
+    const { deps, sent, fake } = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload });
+    watchSessionFor(4821, deps);
+    sent.length = 0;
+
+    vi.useFakeTimers();
+    fake.triggerChange(CLAUDE_PATH);
+    notifySessionChanged(new Set(['s1']));
+    vi.advanceTimersByTime(250);
+    expect(sent).toHaveLength(1);
+  });
+
+  // A change on a watcher that startClaudeWatch has already superseded (a
+  // fast session switch) must never schedule a push for whatever pid is
+  // watched now -- the same guard the 'error' handler already applies.
+  it('ignores a change on a watcher that has since been replaced', () => {
+    const payload1: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1 };
+    const first = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload1 });
+    watchSessionFor(4821, first.deps);
+
+    const payload2: SessionLivePayload = { version: 1, pid: 4822, sessionId: 's2', activity: 'idle', since: null, events: 2 };
+    const second = makeDeps({ processes: [proc({ pid: 4822, provider: 'claude' })], buildPayload: () => payload2 });
+    watchSessionFor(4822, second.deps);
+    second.sent.length = 0;
+
+    vi.useFakeTimers();
+    first.fake.triggerChange(CLAUDE_PATH); // the now-closed watcher for 4821
+    vi.advanceTimersByTime(250);
+    expect(second.sent).toEqual([]);
   });
 
   it('pushes at most one payload per 250ms burst', () => {

@@ -245,14 +245,16 @@ export function buildSessionLive(
 // (the coalesced bridge from those pushes to a session:live send).
 // ---------------------------------------------------------------------
 
-/** The one thing this module needs from a real fs.watch -- close(), and the
+/** The one thing this module needs from a real fs.watch -- close(), the
  *  error event a real FSWatcher can emit after the fact (a directory
- *  removed, a filesystem going away). Kept narrow rather than importing
- *  fs.FSWatcher itself so a test's fake never has to impersonate the whole
- *  EventEmitter surface, only the two things watchSessionFor actually
+ *  removed, a filesystem going away), and the change event that is the
+ *  whole reason startClaudeWatch opens one. Kept narrow rather than
+ *  importing fs.FSWatcher itself so a test's fake never has to impersonate
+ *  the whole EventEmitter surface, only the things watchSessionFor actually
  *  calls. */
 export interface WatchHandle {
   on(event: 'error', listener: (err: Error) => void): void;
+  on(event: 'change', listener: () => void): void;
   close(): void;
 }
 
@@ -346,6 +348,22 @@ function startClaudeWatch(pid: number, watch: (path: string) => WatchHandle): Wa
       handle.close();
       if (watchState && watchState.watcher === handle) watchState.watcher = null;
     });
+    // The whole point of this watch: a status flip (working/idle/waiting)
+    // with no accompanying transcript write -- most visibly Claude entering
+    // a question or permission prompt, which by definition stops writing --
+    // otherwise reaches the pane only on the 5s sweep. Guarded on `handle`
+    // still being the tracked watcher, same as the 'error' handler above,
+    // so a change on a watcher that has already been superseded (a fast
+    // session switch) or closed on error cannot schedule a push for
+    // whatever is watched now.
+    //
+    // Caveat: if Claude Code ever rewrites this file by atomic rename
+    // rather than writing it in place, fs.watch on the path stops emitting
+    // after the first write (a Node/OS limitation, not fixable here). The
+    // 5s sweep remains the real backstop regardless of whether this fires.
+    handle.on('change', () => {
+      if (watchState?.watcher === handle) schedulePush();
+    });
     return handle;
   } catch (err) {
     console.error('session live watch failed to start, falling back to the 5s sweep:', { pid, path, error: err });
@@ -425,18 +443,28 @@ export function pushSessionLive(): void {
   watchState.deps.send(payload);
 }
 
-/** The bridge from the app's ordinary change signals (the watcher/spool/
- *  ingest triggers src/main/index.ts already coalesces fleet:update from)
- *  to the conversation pane: a push only when one of `sessionIds` is the
- *  session currently being watched, coalesced at 250ms so a burst of writes
- *  -- an agent streaming a long response -- still costs at most one push
- *  per window, the same trade pushFleet's own pushTimer already makes. */
-export function notifySessionChanged(sessionIds: Set<string>): void {
-  if (!watchState || watchState.sessionId === null || !sessionIds.has(watchState.sessionId)) return;
-  if (watchState.timer) return;
+/** Coalesces a push at 250ms, so a burst of triggers in the same window --
+ *  an agent streaming a long response, or Claude's status file flipping
+ *  through busy/waiting in quick succession -- still costs at most one push,
+ *  the same trade pushFleet's own pushTimer already makes. Shared by
+ *  notifySessionChanged (the watcher/spool/ingest triggers, below) and
+ *  startClaudeWatch's own 'change' subscription (above), so the two can
+ *  never double the push rate by both firing in the same window. No-op with
+ *  nothing watched, or with a coalesce already pending. */
+function schedulePush(): void {
+  if (!watchState || watchState.timer) return;
   const state = watchState;
   state.timer = setTimeout(() => {
     state.timer = null;
     pushSessionLive();
   }, 250);
+}
+
+/** The bridge from the app's ordinary change signals (the watcher/spool/
+ *  ingest triggers src/main/index.ts already coalesces fleet:update from)
+ *  to the conversation pane: a push only when one of `sessionIds` is the
+ *  session currently being watched. */
+export function notifySessionChanged(sessionIds: Set<string>): void {
+  if (!watchState || watchState.sessionId === null || !sessionIds.has(watchState.sessionId)) return;
+  schedulePush();
 }
