@@ -737,6 +737,11 @@ type KeysDeps = {
    *  cannot be told. Injected so tests never touch a real rollout file or
    *  status file. Production passes the closure built in registerIpc. */
   busy?: (pid: number) => boolean | null;
+  /** Which provider is at this pid, or null when it cannot be told. Used
+   *  only to gate Tab-to-queue (see the key choice in sendKeysFor below) --
+   *  it is not consulted for anything else here. Production passes the
+   *  closure built in registerIpc; tests inject a fixed answer. */
+  provider?: (pid: number) => Provider | null;
 };
 
 /** Counter behind nextPasteBuffer, below. */
@@ -1006,12 +1011,25 @@ export function sendKeysFor(
   // interleaves into the running turn about nine seconds later instead of
   // being silently stranded), so this only queues on a definite `true`.
   //
+  // `queued` (the label) and the KEY are two different questions, and
+  // conflating them was a real bug caught in review: busyForPid
+  // (registerIpc) answers "is this pid mid-turn" for Claude too, since that
+  // is also what the label needs, but Tab is a Codex-only affordance --
+  // discovered from Codex's own "tab to queue message" hint, never verified
+  // to mean anything in Claude Code's TUI (plausibly autocomplete or a mode
+  // key there). Claude already queues a message sent on Enter while busy
+  // by itself, so sending it Tab instead would risk leaving it unsubmitted
+  // in the input line -- exactly the failure this task removes for Codex.
+  // Tab therefore fires only when BOTH are true: busy, and deps.provider
+  // affirmatively says codex -- unset, unresolvable (null), or any other
+  // provider all fall back to Enter, same as an unset or null busy does.
+  //
   // The paste has already landed in the session by this point, so a failed
   // key send is logged, not refused: refusing here would tell the user the
   // send failed and invite a retry, which would submit a duplicate of text
   // that is already sitting in the pane's input line.
   const queued = deps.busy?.(pid) === true;
-  const key = queued ? 'Tab' : 'Enter';
+  const key = queued && deps.provider?.(pid) === 'codex' ? 'Tab' : 'Enter';
   const entered = sendKeyName(name, key, deps.send);
   if (!entered.ok) console.error(`tmux send-keys (${key}) failed:`, entered.error);
   return { status: 'sent', queued };
@@ -1382,6 +1400,16 @@ export function registerIpc(
     });
     return target === null ? null : isCodexBusy(db, target.sessionId);
   };
+  // sendKeysFor's provider dep -- gates Tab-to-queue to Codex alone (fix
+  // round 1, review finding: busyForPid above answers "mid-turn" for both
+  // providers, because `queued` needs that for both, but the KEY must not
+  // -- see the comment at sendKeysFor's key choice). The same discovery
+  // lookup busyForPid already opens, read again here rather than folded
+  // into one dep: KeysDeps keeps busy/provider as two independently
+  // injectable questions, so a test can answer one without faking the
+  // other.
+  const providerForPid = (pid: number): Provider | null =>
+    getCachedLiveProcesses().find(p => p.pid === pid)?.provider ?? null;
   ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown, attach: unknown): KeysResult => {
     // Ids the stagers issued, resolved to the files they wrote. An id they
     // do not know (a stale chip after an app restart, or anything forged)
@@ -1396,7 +1424,7 @@ export function registerIpc(
     const images = imageIds.map(id => stager.pathFor(id));
     const files = fileIds.map(id => fileStager.pathFor(id));
     if ([...images, ...files].some(p => p === null)) return gone;
-    return sendKeysFor(pid, text, { busy: busyForPid }, images as string[], files as string[]);
+    return sendKeysFor(pid, text, { busy: busyForPid, provider: providerForPid }, images as string[], files as string[]);
   });
   ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
 

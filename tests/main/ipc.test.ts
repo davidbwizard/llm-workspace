@@ -1521,10 +1521,55 @@ describe('session:keys', () => {
       capture: () => ({ ok: true, stdout: '' }),
       sleep: () => {},
       busy: () => true,
+      provider: () => 'codex',
     });
     expect(r).toEqual({ status: 'sent', queued: true });
     expect(calls.at(-1)).toContain('Tab');
     expect(calls.flat()).not.toContain('Enter');
+  });
+
+  // Fix round 1 (review finding): the pre-fix key choice was `queued ?
+  // 'Tab' : 'Enter'' with no provider check, and busyForPid (registerIpc)
+  // answers "is this pid mid-turn" for Claude too, to drive `queued` (the
+  // label) for both providers -- so a busy CLAUDE was sent Tab. Tab is a
+  // Codex affordance, discovered from Codex's own "tab to queue message"
+  // hint (KNOWN_ISSUES.md 2026-09-17) and never verified to mean anything
+  // in Claude Code's TUI -- plausibly autocomplete or a mode key there.
+  // Claude already queues a message sent on Enter while busy by itself
+  // (KeysDeps.busy's own doc comment), so sending Tab instead would risk
+  // leaving it unsubmitted in the input line -- exactly the failure this
+  // task removes for Codex. These two pin that Tab now fires only when
+  // busy AND the provider is affirmatively codex.
+  it('does not send Tab to a busy Claude -- Claude queues on Enter by itself', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'hello', {
+      has: () => true,
+      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+      capture: () => ({ ok: true, stdout: '' }),
+      sleep: () => {},
+      busy: () => true,
+      provider: () => 'claude',
+    });
+    expect(r).toEqual({ status: 'sent', queued: true });
+    expect(calls.at(-1)).toContain('Enter');
+    expect(calls.flat()).not.toContain('Tab');
+  });
+
+  it('sends Enter, not Tab, when busy is true but the provider cannot be told', () => {
+    registerSession(4821, 'llmws-codex-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'hello', {
+      has: () => true,
+      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+      capture: () => ({ ok: true, stdout: '' }),
+      sleep: () => {},
+      busy: () => true,
+      provider: () => null,
+    });
+    expect(r).toEqual({ status: 'sent', queued: true });
+    expect(calls.at(-1)).toContain('Enter');
+    expect(calls.flat()).not.toContain('Tab');
   });
 
   it('submits with Enter when the agent is idle', () => {
