@@ -72,6 +72,29 @@ describe('matchPending', () => {
     ];
     expect(matchPending(list, turns)).toEqual(['k1', 'k2']);
   });
+
+  // Finding 1 (final review, 2026-09-17): "each turn matches at most one
+  // entry" only held within a single call -- the `taken` set above is local.
+  // ConversationView re-runs matchPending from scratch, against the full
+  // turn list, on every page change, so without a set that survives across
+  // calls a turn that already matched one entry is free to match a
+  // DIFFERENT entry the next time the same turn is walked again. `used`
+  // (threaded in by the caller as a ref) is what closes that gap.
+  it('does not let a turn matched on an earlier call match a different entry on a later one', () => {
+    const base = Date.parse('2026-09-17T10:00:00Z');
+    const turns = [turn(1, '2026-09-17T10:00:01Z', 'continue')];
+    const used = new Set<number>();
+
+    const first = [{ key: 'k1', text: 'continue', attachments: [], sentAt: base, queued: false, idleMs: 0 }];
+    expect(matchPending(first, turns, used)).toEqual(['k1']);
+
+    // k1 is gone from the caller's list now (ConversationView drops a
+    // matched entry immediately), but the same turn is still in the full
+    // turn list on the next call -- exactly what an unrelated turn landing
+    // (an agent reply, nothing new from the person) triggers.
+    const second = [{ key: 'k2', text: 'continue', attachments: [], sentAt: base + 100, queued: false, idleMs: 0 }];
+    expect(matchPending(second, turns, used)).toEqual([]);
+  });
 });
 
 describe('tickIdle', () => {

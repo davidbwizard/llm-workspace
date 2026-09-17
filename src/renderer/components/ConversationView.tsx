@@ -852,6 +852,13 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
    *  session so the very first value is recorded, not acted on: the mount
    *  fetch has already covered it. */
   const seenEventsRef = useRef<number | null>(null);
+  /** Turn ids matchPending has already matched to a pending entry, across
+   *  every call for this session -- see matchPending's own doc comment
+   *  (src/renderer/state/pending.ts) for why this must survive between
+   *  separate runs of the effect below rather than being a local inside it.
+   *  Reset alongside the other per-session refs on a genuine session switch;
+   *  never on a mere page change, or it would defeat its own purpose. */
+  const matchedTurnsRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -867,6 +874,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     landedRef.current = false;
     lastTurnKeyRef.current = null;
     seenEventsRef.current = null;
+    matchedTurnsRef.current = new Set();
     void window.fleet?.conversation(sessionId).then(p => {
       if (alive) setPage(p);
     }).catch(err => {
@@ -933,7 +941,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // exactly when a newly-landed turn could match one still pending.
   useEffect(() => {
     if (pid === null || page === null) return;
-    const matched = matchPending(pendingFor(pid), page.turns);
+    const matched = matchPending(pendingFor(pid), page.turns, matchedTurnsRef.current);
     if (matched.length === 0) return;
     for (const key of matched) dropPending(pid, key);
     retickPending(t => t + 1);

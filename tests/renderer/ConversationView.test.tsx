@@ -1647,6 +1647,53 @@ describe('ConversationView -- pending messages (Task 9)', () => {
     expect(clearSpy).toHaveBeenCalledTimes(1);
     clearSpy.mockRestore();
   });
+
+  // Finding 1 (final review, 2026-09-17), reproduced end to end through the
+  // real component: two identical sends ("continue" twice), the first
+  // landing in the log, then an ORDINARY event bump with no second user
+  // turn in it (the agent starting to reply, exactly what a rapid re-send
+  // most often races against). Before the fix, the turn that already
+  // matched the first "continue" is free to match the second one too on the
+  // next matchPending run, silently deleting it -- the person's own message
+  // vanishes from the pane with no warning, since the "Not seen" countdown
+  // needs the entry to still exist to fire.
+  it('does not delete a second identical pending send when an unrelated turn lands afterward', async () => {
+    let call = 0;
+    const now = () => new Date().toISOString();
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => {
+        call += 1;
+        if (call === 1) return { turns: [], nextCursor: null }; // mount fetch
+        if (call === 2) return { turns: [{ id: 9, ts: now(), role: 'user', text: 'continue' }], nextCursor: null }; // first send lands
+        // The agent's reply arrives -- an ordinary event bump, nothing new
+        // from the person -- appending an assistant turn, not a second user one.
+        return {
+          turns: [
+            { id: 9, ts: now(), role: 'user', text: 'continue' },
+            { id: 10, ts: now(), role: 'assistant', text: 'On it.' },
+          ],
+          nextCursor: null,
+        };
+      },
+      sendKeys: vi.fn(async () => ({ status: 'sent', queued: false })),
+    };
+    const { rerender } = renderConv({ events: 1 });
+    await typeAndSend('continue');
+    await typeAndSend('continue');
+    await waitFor(() => expect(document.querySelectorAll('.turn.user.pending')).toHaveLength(2));
+
+    rerender(<ConversationView sessionId="s1" provider="claude" events={2}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(document.querySelectorAll('.turn.user.pending')).toHaveLength(1));
+
+    rerender(<ConversationView sessionId="s1" provider="claude" events={3}
+      pid={4821} tmux={true} onOpenTerminal={() => {}} />);
+    await waitFor(() => expect(screen.getByText('On it.')).toBeTruthy());
+    // The second "continue" must still be on screen -- as its own pending
+    // entry, since the log never actually got a second user turn.
+    expect(document.querySelectorAll('.turn.user.pending')).toHaveLength(1);
+    expect(document.querySelectorAll('.turn.user')).toHaveLength(2);
+  });
 });
 
 // A reviewer suggested `maxLength` on the textarea; rejected because

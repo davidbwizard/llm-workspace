@@ -95,13 +95,24 @@ export function normalise(text: string): string {
  * The log may add image markers like "[Image #1]" and file-path prefixes when
  * recording the message, so we use "contains" matching rather than equality.
  * This lets a single pending entry match even if Codex added context around it.
+ *
+ * `used`, if given, is a set of turn ids this function has already matched on
+ * an EARLIER call and must not match again. The `taken` set below only
+ * enforces "each turn matches at most one entry" within this one call --
+ * ConversationView re-runs matchPending from scratch, against the full turn
+ * list, every time the page changes (a load-more prepend, or an unrelated
+ * turn landing), so without `used` a turn that already consumed one entry on
+ * a prior call is free to consume a DIFFERENT entry on the next one. Caller
+ * owns the set (a ref, so it survives across renders) and must reset it
+ * itself on a genuine session switch -- this function only ever adds to it.
  */
-export function matchPending(list: Pending[], turns: ConversationTurn[]): string[] {
+export function matchPending(list: Pending[], turns: ConversationTurn[], used?: Set<number>): string[] {
   const matched: string[] = [];
   const taken = new Set<string>();
 
   for (const t of turns) {
     if (t.role !== 'user') continue;
+    if (used?.has(t.id)) continue;
     const ts = Date.parse(t.ts);
     if (!Number.isFinite(ts)) continue;
 
@@ -111,6 +122,7 @@ export function matchPending(list: Pending[], turns: ConversationTurn[]): string
 
     if (hit) {
       taken.add(hit.key);
+      used?.add(t.id);
       matched.push(hit.key);
     }
   }
