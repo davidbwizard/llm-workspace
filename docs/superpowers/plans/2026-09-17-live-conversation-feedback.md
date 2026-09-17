@@ -122,16 +122,20 @@ Time the re-read against a copy of the real index, so the app's own database is 
 
 ```bash
 cp ~/.llm-workspace/index.sqlite /tmp/reindex-check.sqlite
-time node --experimental-strip-types -e "
+time node --experimental-strip-types --input-type=module -e "
 import { openDb } from './src/store/db.ts';
 import { ingestAll } from './src/watch/watcher.ts';
-import { roots } from './src/config.ts';
+import { paths } from './src/config.ts';
+// roots() is private to src/main/index.ts:37 -- this is the same list.
+const roots = [
+  { dir: paths.codexSessions, provider: 'codex', glob: /rollout-.*\.jsonl\$/ },
+];
 const db = openDb('/tmp/reindex-check.sqlite');
-ingestAll(db, roots());
+console.log(ingestAll(db, roots));
 "
 ```
 
-Check the exports first — `ingestAll` and `roots` are used this way in `src/main/index.ts:118`, so copy that call site if the names differ. Write the elapsed time in the commit message. 617 Codex files, 260 MB on this machine. If it takes more than 10 seconds, stop and report before going further: re-reading in the background is a separate decision for David.
+Only the Codex root matters here: the Claude parser's version is unchanged, so its files are not re-read. Write the elapsed time in the commit message. 617 Codex files, 260 MB on this machine. If it takes more than 10 seconds, stop and report before going further: re-reading in the background is a separate decision for David.
 
 - [ ] **Step 7: Commit**
 
