@@ -87,7 +87,7 @@ const noopResume = async () => ({ status: 'failed' as const, reason: 'not exerci
 // already does.
 let sendKeys: ReturnType<typeof vi.fn>;
 beforeEach(() => {
-  sendKeys = vi.fn(async () => ({ status: 'sent' }));
+  sendKeys = vi.fn(async () => ({ status: 'sent', queued: false }));
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = { sendKeys };
   // The resize width is persisted here (see readStoredRailWidth/
   // writeStoredRailWidth in SessionRail.tsx) -- without clearing it, one

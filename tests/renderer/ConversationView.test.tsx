@@ -1085,7 +1085,7 @@ function withSendKeys(result: unknown) {
 
 describe('ConversationView -- the message box', () => {
   it('sends what was typed through sendKeys, and clears the box', async () => {
-    const sendKeys = withSendKeys({ status: 'sent' });
+    const sendKeys = withSendKeys({ status: 'sent', queued: false });
     renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'commit it' } });
@@ -1098,7 +1098,7 @@ describe('ConversationView -- the message box', () => {
   // Shift+Enter is the newline, so a multi-line message is typed, not pasted
   // in from somewhere else.
   it('inserts a newline on Shift+Enter rather than sending', async () => {
-    const sendKeys = withSendKeys({ status: 'sent' });
+    const sendKeys = withSendKeys({ status: 'sent', queued: false });
     renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'line one' } });
@@ -1108,7 +1108,7 @@ describe('ConversationView -- the message box', () => {
   });
 
   it('sends a multi-line message as one message', async () => {
-    const sendKeys = withSendKeys({ status: 'sent' });
+    const sendKeys = withSendKeys({ status: 'sent', queued: false });
     renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'one\ntwo\nthree' } });
@@ -1118,7 +1118,7 @@ describe('ConversationView -- the message box', () => {
   });
 
   it('sends nothing at all for an empty box', async () => {
-    const sendKeys = withSendKeys({ status: 'sent' });
+    const sendKeys = withSendKeys({ status: 'sent', queued: false });
     renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.keyDown(box, { key: 'Enter' });
@@ -1137,7 +1137,7 @@ describe('ConversationView -- the message box', () => {
   // something actively puts focus back, which is exactly the property
   // being pinned.
   it('puts focus back in the box after a send, so the next message can just be typed', async () => {
-    const sendKeys = withSendKeys({ status: 'sent' });
+    const sendKeys = withSendKeys({ status: 'sent', queued: false });
     renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'commit it' } });
@@ -1164,7 +1164,7 @@ describe('ConversationView -- the message box', () => {
   // transition and nowhere else. An effect that simply focused whenever it
   // ran would steal the caret every time a session is opened.
   it('does not grab focus on mount -- opening a session must not steal the caret', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     renderConv();
     const box = await screen.findByLabelText('Message this session');
     expect(document.activeElement).not.toBe(box);
@@ -1218,7 +1218,7 @@ describe('ConversationView -- the message box', () => {
   });
 
   it('drops the draft once the message actually goes out', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     const first = renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'commit it' } });
@@ -1330,7 +1330,7 @@ describe('ConversationView -- the message box', () => {
   // Spec §7.1: never hidden. A box that vanishes reads as a missing
   // feature; a disabled one reads as a state.
   it('shows the box disabled, with a reason, for a session that is not tmux-backed', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     renderConv({ tmux: false });
     const box = await screen.findByLabelText('Message this session');
     expect((box as HTMLTextAreaElement).disabled).toBe(true);
@@ -1338,7 +1338,7 @@ describe('ConversationView -- the message box', () => {
   });
 
   it('shows the box disabled, with a reason, for a session with no live process', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     renderConv({ pid: null });
     const box = await screen.findByLabelText('Message this session');
     expect((box as HTMLTextAreaElement).disabled).toBe(true);
@@ -1396,7 +1396,7 @@ describe('messageCounter', () => {
 
 describe('ConversationView -- the message box\'s length counter', () => {
   it('shows no counter element at all while the message is comfortably short', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     const { container } = renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'a'.repeat(3599) } });
@@ -1404,7 +1404,7 @@ describe('ConversationView -- the message box\'s length counter', () => {
   });
 
   it('appears at the 3,600-character threshold reading the remaining budget', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     const { container } = renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'a'.repeat(3600) } });
@@ -1413,7 +1413,7 @@ describe('ConversationView -- the message box\'s length counter', () => {
   });
 
   it('reads "0 left" and takes the warning styling at exactly the cap', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     const { container } = renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'a'.repeat(4000) } });
@@ -1454,7 +1454,7 @@ describe('ConversationView -- the message box\'s length counter', () => {
   // every keystroke while visible, and a screen reader announcing that
   // continuously would be unusable.
   it('carries no aria-live attribute on the visible counter itself', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     const { container } = renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'a'.repeat(4500) } });
@@ -1465,7 +1465,7 @@ describe('ConversationView -- the message box\'s length counter', () => {
   // The separate, screen-reader-only announcement: fires once on the
   // transition into being over the cap, not on every keystroke below it.
   it('says nothing in the live region while comfortably under the cap', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     const { container } = renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'a'.repeat(3700) } });
@@ -1473,7 +1473,7 @@ describe('ConversationView -- the message box\'s length counter', () => {
   });
 
   it('announces once on crossing over the cap, and does not keep re-announcing while still over', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     const { container } = renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'a'.repeat(4001) } });
@@ -1486,7 +1486,7 @@ describe('ConversationView -- the message box\'s length counter', () => {
   });
 
   it('does not announce merely for reaching the cap exactly, only for going past it', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     const { container } = renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'a'.repeat(4000) } });
@@ -1494,7 +1494,7 @@ describe('ConversationView -- the message box\'s length counter', () => {
   });
 
   it('clears the announcement once the message drops back under the cap', async () => {
-    withSendKeys({ status: 'sent' });
+    withSendKeys({ status: 'sent', queued: false });
     const { container } = renderConv();
     const box = await screen.findByLabelText('Message this session');
     fireEvent.change(box, { target: { value: 'a'.repeat(4500) } });
@@ -1693,7 +1693,7 @@ describe('ConversationView -- attaching images and files', () => {
   const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const png = (name = 'shot.png') => new File([PNG_BYTES], name, { type: 'image/png' });
   function withFleet(stage: (b: ArrayBuffer) => Promise<unknown> = async () => ({ ok: true, id: 'id-1' })) {
-    const sendKeys = vi.fn(async () => ({ status: 'sent' }));
+    const sendKeys = vi.fn(async () => ({ status: 'sent', queued: false }));
     const stageImage = vi.fn(stage);
     const stageFile = vi.fn(async () => ({ ok: true, id: 'file-1' }));
     (globalThis as never as { window: { fleet: unknown } }).window.fleet = {

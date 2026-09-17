@@ -36,6 +36,7 @@ import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './strea
 import { conversationFor, turnSource, type ConversationCursor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
 import { launchSession, reattachSession, resumeSession, type LaunchResult } from './launch.ts';
+import { isCodexBusy } from './codexBusy.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -713,7 +714,9 @@ export async function revealSession(rawPid: unknown, opts: {
 }
 
 export type KeysRefusalReason = 'not_tmux' | 'session_gone' | 'invalid_pid' | 'prompt_open' | 'attachment_gone' | OutboundRefusal;
-export type KeysResult = { status: 'sent' } | { status: 'refused'; reason: KeysRefusalReason };
+export type KeysResult =
+  | { status: 'sent'; queued: boolean }
+  | { status: 'refused'; reason: KeysRefusalReason };
 
 type KeysDeps = {
   has?: (n: string) => boolean;
@@ -730,6 +733,10 @@ type KeysDeps = {
    *  waitForPasteToSettle (below) uses -- see defaultSleep's doc comment.
    *  The one production caller never passes this. */
   sleep?: (ms: number) => void;
+  /** Whether the receiving agent is mid-turn: true, false, or null when it
+   *  cannot be told. Injected so tests never touch a real rollout file or
+   *  status file. Production passes the closure built in registerIpc. */
+  busy?: (pid: number) => boolean | null;
 };
 
 /** Counter behind nextPasteBuffer, below. */
@@ -986,13 +993,28 @@ export function sendKeysFor(
       if (now.ok) before = now.stdout;
     }
   }
-  // The paste has already landed in the session by this point, so a
-  // failed Enter is logged, not refused: refusing here would tell the
-  // user the send failed and invite a retry, which would submit a
-  // duplicate of text that is already sitting in the pane's input line.
-  const entered = sendKeyName(name, 'Enter', deps.send);
-  if (!entered.ok) console.error('tmux send-keys (Enter) failed:', entered.error);
-  return { status: 'sent' };
+  // A busy Codex does not submit on Enter at all -- it shows "tab to queue
+  // message" and leaves the text in its input line, which used to be
+  // reported here as a successful send (KNOWN_ISSUES.md, measured
+  // 2026-09-16). Tab queues it instead, and the caller is told, so the
+  // conversation can label the message Queued rather than claim it landed.
+  // deps.busy is asked, never assumed: `undefined` (no dep given, e.g.
+  // every existing test above) and `null` (the real check could not tell,
+  // src/main/codexBusy.ts) both fall through to today's Enter behaviour --
+  // a wrong "busy" reading now files a message into the wrong turn rather
+  // than losing it (measured 2026-09-17: an Enter sent while Codex is busy
+  // interleaves into the running turn about nine seconds later instead of
+  // being silently stranded), so this only queues on a definite `true`.
+  //
+  // The paste has already landed in the session by this point, so a failed
+  // key send is logged, not refused: refusing here would tell the user the
+  // send failed and invite a retry, which would submit a duplicate of text
+  // that is already sitting in the pane's input line.
+  const queued = deps.busy?.(pid) === true;
+  const key = queued ? 'Tab' : 'Enter';
+  const entered = sendKeyName(name, key, deps.send);
+  if (!entered.ok) console.error(`tmux send-keys (${key}) failed:`, entered.error);
+  return { status: 'sent', queued };
 }
 
 // ---------------------------------------------------------------------
@@ -1337,6 +1359,29 @@ export function registerIpc(
   // Bytes only, never a path: see src/main/staging.ts.
   ipcMain.handle('session:stage-image', (_event, bytes: unknown) => stager.stage(bytes));
   ipcMain.handle('session:stage-file', (_event, bytes: unknown, name: unknown) => fileStager.stage(bytes, name));
+  // sendKeysFor's busy dep -- the real check, as opposed to the injected
+  // fakes every test above drives. Claude decides on its own live-session
+  // status file, read fresh the same way Reattach/Reply already trust
+  // (freshLiveSession); Codex has no such file, so it goes through its
+  // rollout tail instead (isCodexBusy, src/main/codexBusy.ts), for whichever
+  // session resolveReattachTarget resolves this pid to -- the same lookup
+  // Reattach uses, so this cannot land on a different session than the one
+  // the rest of the app already treats this pid as belonging to. Both
+  // branches return null on anything they cannot resolve, and sendKeysFor
+  // treats null exactly like "no busy dep at all": Enter, queued: false.
+  const busyForPid = (pid: number): boolean | null => {
+    const proc = getCachedLiveProcesses().find(p => p.pid === pid);
+    if (!proc) return null;
+    if (proc.provider === 'claude') {
+      // Claude queues on Enter by itself; this only decides the label.
+      const live = freshLiveSession(pid, getCachedLiveProcesses(), readLiveSession);
+      return live === null ? null : live.status === 'busy';
+    }
+    const target = resolveReattachTarget(pid, {
+      cached: cachedPushOpenSessions, processes: getCachedLiveProcesses(), read: readLiveSession,
+    });
+    return target === null ? null : isCodexBusy(db, target.sessionId);
+  };
   ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown, attach: unknown): KeysResult => {
     // Ids the stagers issued, resolved to the files they wrote. An id they
     // do not know (a stale chip after an app restart, or anything forged)
@@ -1351,7 +1396,7 @@ export function registerIpc(
     const images = imageIds.map(id => stager.pathFor(id));
     const files = fileIds.map(id => fileStager.pathFor(id));
     if ([...images, ...files].some(p => p === null)) return gone;
-    return sendKeysFor(pid, text, {}, images as string[], files as string[]);
+    return sendKeysFor(pid, text, { busy: busyForPid }, images as string[], files as string[]);
   });
   ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
 
