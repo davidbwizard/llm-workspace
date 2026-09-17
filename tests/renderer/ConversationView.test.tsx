@@ -1550,6 +1550,26 @@ describe('ConversationView -- one-click copy', () => {
     expect(writeText).toHaveBeenCalledWith(md);
   });
 
+  // The app renders under React.StrictMode (src/renderer/main.tsx), which in
+  // dev mounts, unmounts and remounts every component. The first version's
+  // "still mounted" flag was cleared by that unmount and never set again, so
+  // in the running app the copy happened but "Copied" never showed.
+  it('shows Copied under React.StrictMode, as the app renders', async () => {
+    mockClipboard(async () => {});
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', role: 'assistant', text: 'x' }], nextCursor: null }),
+    };
+    const { container } = render(
+      <ConversationView sessionId="s1" provider="claude" events={null}
+        pid={4821} tmux={true} onOpenTerminal={() => {}} />,
+      { wrapper: React.StrictMode },
+    );
+    await waitFor(() => expect(container.querySelector('.turn-actions .copy-btn')).toBeTruthy());
+    const btn = container.querySelector('.turn-actions .copy-btn') as HTMLButtonElement;
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.querySelector('.copy-note')?.textContent).toBe('Copied'));
+  });
+
   it('gives your own messages no copy button', async () => {
     mockClipboard(async () => {});
     const { container } = showOne({ role: 'user', text: 'hello' });

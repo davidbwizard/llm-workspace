@@ -37,7 +37,13 @@ function CopyButton({ getText, what }: { getText: () => string; what: string }) 
   const [state, setState] = useState<keyof typeof COPY_LABEL>('idle');
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; clearTimeout(timer.current); }, []);
+  // Set on every mount, not just initialised: StrictMode (main.tsx) mounts,
+  // unmounts and remounts in dev, and a flag only ever cleared stayed false,
+  // so the copy ran but its result was never shown.
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; clearTimeout(timer.current); };
+  }, []);
   const settle = (next: keyof typeof COPY_LABEL) => {
     if (!alive.current) return;
     setState(next);
