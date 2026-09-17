@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationTurn } from '../../store/conversation.ts';
@@ -36,16 +36,16 @@ function MarkdownText({ text }: { text: string }) {
   return <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{text}</Markdown>;
 }
 
-/** "Sep 12" -- no year, no weekday. Grouped with the time below rather than
- *  spelled out on every row (see showDate in the render loop). Pinned to
+/** "Sep 12" -- no year, no weekday. Shown once per day, on the divider above
+ *  that day's first turn (see showDate in the render loop). Pinned to
  *  en-US rather than the runtime's default locale so this renders the same
  *  format on every machine (and so tests can assert an exact string). */
 function formatDate(ts: string): string {
   return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-/** e.g. "10:32 AM" -- the one piece of every row's timestamp; the date above
- *  it only reappears when it changes. Same en-US pin as formatDate, for the
+/** e.g. "10:32 AM" -- every row's whole timestamp; the date lives on the day
+ *  divider instead. Same en-US pin as formatDate, for the
  *  same reason. */
 function formatTime(ts: string): string {
   return new Date(ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -722,7 +722,14 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
               const showDate = date !== prevDate;
               prevDate = date;
               return (
-                <article key={t.id} className={`turn ${t.role}`}>
+                <Fragment key={t.id}>
+                {showDate && (
+                  // The day, on its own rule above that day's first turn
+                  // (Conversation Pane Mockup), so each turn's meta line
+                  // carries only the time.
+                  <div className="conv-day" role="separator" aria-label={date}>{date}</div>
+                )}
+                <article className={`turn ${t.role}`}>
                   <div className="meta">
                     {t.role === 'user'
                       ? <span className="who">you</span>
@@ -732,7 +739,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                           <span className="wholabel">{PROVIDER_NAME[provider]}</span>
                         </span>
                       )}
-                    <span className="when">{showDate ? `${date} ${formatTime(t.ts)}` : formatTime(t.ts)}</span>
+                    <span className="when">{formatTime(t.ts)}</span>
                   </div>
                   {t.role === 'user'
                     ? <p className="turn-text">{t.text}</p>
@@ -742,6 +749,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                       </div>
                     )}
                 </article>
+                </Fragment>
               );
             })}
           </div>

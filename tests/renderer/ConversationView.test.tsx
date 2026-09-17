@@ -464,16 +464,22 @@ describe('ConversationView', () => {
     consoleError.mockRestore();
   });
 
-  it('renders a compact human timestamp on each turn', async () => {
+  // Day dividers, per the Conversation Pane Mockup: the date sits on its own
+  // rule above the first turn of each day, and every turn's meta line shows
+  // the time alone.
+  it('opens the day with a divider and shows only the time on the turn', async () => {
     const [first] = turns;
     const { container } = renderConv();
     await waitFor(() => expect(container.querySelector('.when')).toBeTruthy());
-    // Lone/first entry always shows its date -- there is no prior entry to
-    // compare against.
-    expect(container.querySelector('.when')?.textContent).toBe(`${fmtDate(first!.ts)} ${fmtTime(first!.ts)}`);
+    const day = container.querySelector('.conv-day');
+    expect(day?.textContent).toBe(fmtDate(first!.ts));
+    expect(day?.getAttribute('role')).toBe('separator');
+    // The divider comes before the turn it dates.
+    expect(day!.compareDocumentPosition(container.querySelector('.turn')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('.when')?.textContent).toBe(fmtTime(first!.ts));
   });
 
-  it('does not repeat the date on a second entry from the same day', async () => {
+  it('adds no second divider for another entry from the same day', async () => {
     const sameDay = [
       { id: 1, ts: '2026-09-12T09:00:00Z', role: 'user', text: 'first' },
       { id: 2, ts: '2026-09-12T15:30:00Z', role: 'assistant', text: 'second' },
@@ -483,13 +489,12 @@ describe('ConversationView', () => {
     };
     const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.when')).toHaveLength(2));
-    const [whenFirst, whenSecond] = [...container.querySelectorAll('.when')];
-    expect(whenFirst!.textContent).toBe(`${fmtDate(sameDay[0]!.ts)} ${fmtTime(sameDay[0]!.ts)}`);
-    // No date prefix on the second same-day entry -- just the time.
-    expect(whenSecond!.textContent).toBe(fmtTime(sameDay[1]!.ts));
+    expect([...container.querySelectorAll('.conv-day')].map(d => d.textContent)).toEqual([fmtDate(sameDay[0]!.ts)]);
+    expect([...container.querySelectorAll('.when')].map(w => w.textContent))
+      .toEqual([fmtTime(sameDay[0]!.ts), fmtTime(sameDay[1]!.ts)]);
   });
 
-  it('shows the date again once the day changes', async () => {
+  it('puts a divider before the first turn of each new day', async () => {
     const twoDays = [
       { id: 1, ts: '2026-09-11T09:00:00Z', role: 'user', text: 'day one' },
       { id: 2, ts: '2026-09-12T09:00:00Z', role: 'assistant', text: 'day two' },
@@ -499,9 +504,12 @@ describe('ConversationView', () => {
     };
     const { container } = renderConv();
     await waitFor(() => expect(container.querySelectorAll('.when')).toHaveLength(2));
-    const [whenFirst, whenSecond] = [...container.querySelectorAll('.when')];
-    expect(whenFirst!.textContent).toBe(`${fmtDate(twoDays[0]!.ts)} ${fmtTime(twoDays[0]!.ts)}`);
-    expect(whenSecond!.textContent).toBe(`${fmtDate(twoDays[1]!.ts)} ${fmtTime(twoDays[1]!.ts)}`);
+    // Document order: divider, turn, divider, turn.
+    const order = [...container.querySelectorAll('.conv-day, .turn')].map(el =>
+      el.classList.contains('conv-day') ? `day:${el.textContent}` : 'turn');
+    expect(order).toEqual([`day:${fmtDate(twoDays[0]!.ts)}`, 'turn', `day:${fmtDate(twoDays[1]!.ts)}`, 'turn']);
+    expect([...container.querySelectorAll('.when')].map(w => w.textContent))
+      .toEqual([fmtTime(twoDays[0]!.ts), fmtTime(twoDays[1]!.ts)]);
   });
 });
 
