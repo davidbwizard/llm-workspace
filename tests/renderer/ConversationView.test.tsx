@@ -1688,3 +1688,131 @@ describe('ConversationView -- images you attached', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 });
+
+describe('ConversationView -- attaching images', () => {
+  const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const png = (name = 'shot.png') => new File([PNG_BYTES], name, { type: 'image/png' });
+  function withFleet(stage: (b: ArrayBuffer) => Promise<unknown> = async () => ({ ok: true, id: 'id-1' })) {
+    const sendKeys = vi.fn(async () => ({ status: 'sent' }));
+    const stageImage = vi.fn(stage);
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns, nextCursor: null }), sendKeys, stageImage,
+    };
+    return { sendKeys, stageImage };
+  }
+  const chips = (c: HTMLElement) => [...c.querySelectorAll('.convchip span')].map(s => s.textContent);
+
+  it('attaches a picked image as a chip, sending its bytes to main', async () => {
+    const { stageImage } = withFleet();
+    const { container } = renderConv();
+    const input = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement);
+    expect(input.accept).toBe('image/png,image/jpeg,image/gif,image/webp');
+    fireEvent.change(input, { target: { files: [png()] } });
+    await waitFor(() => expect(chips(container)).toEqual(['shot.png']));
+    const sent = stageImage.mock.calls[0]![0] as ArrayBuffer;
+    expect(new Uint8Array(sent)).toEqual(PNG_BYTES);
+    expect((container.querySelector('.convchip img') as HTMLImageElement).src).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it('the image button opens the file picker', async () => {
+    withFleet();
+    const { container } = renderConv();
+    const btn = await screen.findByRole('button', { name: 'Attach image' });
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const click = vi.spyOn(input, 'click');
+    fireEvent.click(btn);
+    expect(click).toHaveBeenCalled();
+  });
+
+  it('sends the staged image ids with the text, then clears text and chips', async () => {
+    const { sendKeys } = withFleet();
+    const { container } = renderConv();
+    const input = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement);
+    fireEvent.change(input, { target: { files: [png()] } });
+    await waitFor(() => expect(chips(container)).toHaveLength(1));
+    const box = screen.getByLabelText('Message this session') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'what is this?' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, 'what is this?', ['id-1']));
+    await waitFor(() => expect(chips(container)).toEqual([]));
+    expect(box.value).toBe('');
+  });
+
+  it('sends an image with no text', async () => {
+    const { sendKeys } = withFleet();
+    const { container } = renderConv();
+    const input = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement);
+    fireEvent.change(input, { target: { files: [png()] } });
+    await waitFor(() => expect(chips(container)).toHaveLength(1));
+    fireEvent.keyDown(screen.getByLabelText('Message this session'), { key: 'Enter' });
+    await waitFor(() => expect(sendKeys).toHaveBeenCalledWith(4821, '', ['id-1']));
+  });
+
+  it('keeps the chips when the send is refused', async () => {
+    const { sendKeys } = withFleet();
+    sendKeys.mockResolvedValueOnce({ status: 'refused', reason: 'attachment_gone' } as never);
+    const { container } = renderConv();
+    const input = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement);
+    fireEvent.change(input, { target: { files: [png()] } });
+    await waitFor(() => expect(chips(container)).toHaveLength(1));
+    fireEvent.keyDown(screen.getByLabelText('Message this session'), { key: 'Enter' });
+    await screen.findByText('An attached image is no longer available. Remove it and attach it again.');
+    expect(chips(container)).toHaveLength(1);
+  });
+
+  it('removes a chip with its button', async () => {
+    withFleet();
+    const { container } = renderConv();
+    const input = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement);
+    fireEvent.change(input, { target: { files: [png('a.png')] } });
+    await waitFor(() => expect(chips(container)).toEqual(['a.png']));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove a.png' }));
+    expect(chips(container)).toEqual([]);
+  });
+
+  it('attaches an image pasted into the message box', async () => {
+    const { stageImage } = withFleet();
+    const { container } = renderConv();
+    const box = await screen.findByLabelText('Message this session');
+    fireEvent.paste(box, { clipboardData: { files: [png('')], getData: () => '' } });
+    await waitFor(() => expect(chips(container)).toEqual(['Pasted image']));
+    expect(stageImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('attaches an image dropped on the conversation, showing a drop target while dragging', async () => {
+    withFleet();
+    const { container } = renderConv();
+    await screen.findByLabelText('Message this session');
+    const pane = container.querySelector('.convwrap') as HTMLElement;
+    const dataTransfer = { types: ['Files'], files: [png('dropped.png')], dropEffect: '' };
+    fireEvent.dragOver(pane, { dataTransfer });
+    expect(container.querySelector('.convdrop')).toBeTruthy();
+    fireEvent.drop(pane, { dataTransfer });
+    await waitFor(() => expect(chips(container)).toEqual(['dropped.png']));
+    expect(container.querySelector('.convdrop')).toBeNull();
+  });
+
+  it('says so, and adds no chip, when main refuses a file', async () => {
+    withFleet(async () => ({ ok: false, reason: 'not_image' }));
+    const { container } = renderConv();
+    const input = await waitFor(() => container.querySelector('input[type="file"]') as HTMLInputElement);
+    fireEvent.change(input, { target: { files: [png('fake.png')] } });
+    await screen.findByText('fake.png is not a PNG, JPEG, GIF or WebP image.');
+    expect(chips(container)).toEqual([]);
+  });
+
+  it('offers no attaching for a session that cannot be typed into', async () => {
+    withFleet();
+    renderConv({ tmux: false });
+    const btn = await screen.findByRole('button', { name: 'Attach image' });
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+// src/renderer/** may not import values from src/main/**; this pins the
+// renderer's attachment cap to the one main enforces.
+it('keeps the renderer attachment cap equal to main\'s', async () => {
+  const { MAX_ATTACHMENTS } = await import('../../src/main/attachments.ts');
+  const { MAX_ATTACH } = await import('../../src/renderer/components/ConversationView.tsx');
+  expect(MAX_ATTACH).toBe(MAX_ATTACHMENTS);
+});

@@ -4,6 +4,7 @@ import type { TerminalDataPayload } from '../main/stream.ts';
 import type { LaunchResult } from '../main/launch.ts';
 import type { ImageResult } from '../main/images.ts';
 import type { AttachmentResult } from '../main/attachments.ts';
+import type { StageResult } from '../main/staging.ts';
 
 declare global {
   interface Window {
@@ -21,7 +22,9 @@ declare global {
       onFleet: (cb: (payload: FleetListPayload) => void) => () => void;
       // Main sanitises and revalidates pid and text on every call; this
       // typing narrows nothing at the trust boundary itself.
-      sendKeys: (pid: number, text: string) => Promise<KeysResult>;
+      sendKeys: (pid: number, text: string, imageIds?: string[]) => Promise<KeysResult>;
+      // An image's bytes, checked and held by main until sent.
+      stageImage: (bytes: ArrayBuffer) => Promise<StageResult>;
       // cursor pages backward (older) from a prior page's nextCursor;
       // omitted for the first, newest page.
       conversation: (sessionId: string, cursor?: ConversationCursor) => Promise<ConversationPage>;
