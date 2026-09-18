@@ -132,3 +132,33 @@ message in the same form as an unsent one). What worked, all day:
   one in a click from the launch bar. Open: provider per favourite or the
   launch bar's current one; favourites only or also recent folders. The app has
   no recent-folders list today.
+
+## Quick answers: open follow-ups (2026-09-18)
+
+- **Multi-select "Other"** is not offered (its key sequence was never measured);
+  the card says to use Terminal. Measure it, then enable.
+- **Packaged builds cannot install hooks:** `src/hooks/helper.sh` is not in
+  `electron-builder.yml`'s files. The helper source path is also duplicated in
+  `src/main/index.ts` and `src/main/ipc.ts`.
+- **Data at rest:** `~/.llm-workspace/index.sqlite` is 0644 and `signal_events`
+  is never pruned; with hooks on it keeps commands, plans and file contents.
+- **`ReplyPopover.tsx/.css`** have no production caller (ConversationView still
+  imports `REFUSAL_TEXT` from it). Keep or delete.
+- **A read-only (0400) settings.json** is installed into when the switch is
+  flipped (mode kept). Refusing it is a product call.
+- **Switch off on a malformed hooks shape:** `removeByCommand` throws on a
+  non-array `hooks[event]`, so `hooks:set` rejects with no message.
+- **Plan feedback typed in the terminal first:** if feedback is already typed
+  before the card reads the screen, option 3 reads as a plain button.
+- **Probe vs uninstall ownership:** `probeCapabilities` counts any
+  `sh '...helper.sh'` hook as installed; Off removes only the stable-path one.
+- **Other tools' permission prompts** (WebFetch, MCP, NotebookEdit) anchor on the
+  tool name and likely stay read-only until measured.
+- **Wrapped typed text / review lines** wider than the pane end as
+  `unconfirmed_partial` (safe) until wrapped fixtures exist.
+- **Replies saved only as thinking:** Claude Code occasionally records a reply
+  as a short thinking block with no text block (seen 2026-09-18); the pane hides
+  thinking, so such a reply shows nothing.
+- Ideas from David, not scheduled: switch permission mode from the Conversation
+  view (mockup first); a right-click edit menu in text boxes; the agent graph view
+  (worktree `../llm-workspace-agent-graph`, branch `agent-graph`).
