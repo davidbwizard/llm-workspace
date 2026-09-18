@@ -49,6 +49,30 @@ message; Escape presses between runs put Codex in backtrack mode; and a busy
 Codex does not submit on Enter at all ("tab to queue message"). Codex's own
 session log settled what the screen could not.
 
+## FIXED 2026-09-17: an interrupted Codex turn read as working forever
+
+Codex emits `turn_aborted` instead of `task_complete` when a turn is
+interrupted (Esc), and never sends `task_complete` afterwards. The parser
+did not recognize `turn_aborted` as a turn end, so the session's last kind
+was never a turn end, and the card read "working" for as long as the Codex
+process stayed alive.
+
+**The fix.** The `event_msg` switch now treats `turn_aborted` as a turn end
+too, emitting `turn.completed` with `aborted: true` and the reason from the
+payload (`src/providers/codex/parse.ts`).
+
+**The parser version was deliberately not bumped.** A version bump would
+force a full re-read of every historical Codex file on next launch -- 33.5
+seconds of blocked main process, measured against 617 files (260 MB) on
+2026-09-17. Skipping it means a `turn_aborted` record written before this
+fix stays stored under the old, unparsed reading. That cannot matter in
+practice: a session only reads as "working" while its last event is within
+`ACTIVE_MS` (30 minutes, `src/fleet/state.ts`) of now, so a session old
+enough to carry a pre-fix `turn_aborted` has already aged out of "working"
+by the time the fix lands.
+
+Commit: `3effd6d`.
+
 ## Sending to a busy Codex (measured 2026-09-17)
 
 The entry above's method note found that a busy Codex does not submit on
@@ -93,6 +117,47 @@ differently from "submitted" here (the "Queued follow-up inputs" panel),
 unlike the submitted/unsubmitted case the entry above warns about. The
 verdict was still the rollout file throughout, per the standing rule --
 the screen was read only to sanity-check it, never to replace it.
+
+## A slow trust-prompt accept can permanently hide a session's waiting card
+
+Found live on 2026-09-17, driving two throwaway Claude sessions in `tmux`.
+
+Claude rewrites `~/.claude/sessions/<pid>.json`'s `startedAt` when the
+folder-trust prompt is accepted, to the moment session identity was
+re-established, not the moment the OS process actually started.
+`readLiveSession`'s `startTimeAgrees` check (`src/providers/claude/
+liveSession.ts`) compares that `startedAt` against the process's real age
+from `ps`, with a 5-second tolerance. If the trust screen is left open
+longer than that, the check never agrees again, for the life of the
+process -- `freshLiveSession` returns `null` for that pid permanently, so
+`liveStatus` never reaches `deriveActivity`, and that session never shows a
+waiting card for a permission prompt, a plan approval, or a question. It is
+logged (`session file ignored (start time does not match the process)`)
+and nothing else surfaces it.
+
+**Measured**: accepting the trust prompt in ~1.5s left the session reading
+correctly for its whole life; accepting it in ~15s (reading the security
+notice, getting distracted -- plausible on a first run) broke it
+permanently.
+
+**Likely fix, not yet tried.** The same status file carries a separate
+`procStart` field holding the process's actual start time. Comparing
+against that instead of the rewritten `startedAt` would not be fooled by a
+slow accept. Needs its own measurement before changing anything.
+
+This is Part 1's exact-session-identity code, not this feature's, and
+predates this branch.
+
+## Claude hooks are not installed on this machine
+
+`probeCapabilities()` reports `hooksInstalled: false`. The hooks in
+`~/.claude/settings.json` are all the user's own (`block-env-read.sh`,
+`block-destructive-bash.sh`, `claude-notify.sh`); none match
+`isOwnedHookCommand`. That means `openBlockers` (`src/store/signals.ts`)
+never has a row to find, for any session, so on this machine `waiting` can
+only ever come from Claude's own live-session status file, never from the
+hook-based blocker path the code also supports. Part 4 (quick responses)
+needs a decision on this.
 
 ## FIXED 2026-09-16: a message sent to a pane in copy-mode was never submitted
 
