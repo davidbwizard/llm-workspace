@@ -330,9 +330,14 @@ function sameOptions(screen: string[], q: PromptQuestion): boolean {
     && screen.every((label, i) => label.replace(/\s*✔$/, '') === q.options[i]!.label);
 }
 
+/** Labels compared with all whitespace removed (final review M2): a long
+ *  label (e.g. a folder path) wraps at the pane width, even mid-word, so a
+ *  resize between reading the prompt and answering it moves where the
+ *  reader joined lines with a space without changing the choice. */
 function sameChoices(a: PromptChoice[], b: PromptChoice[]): boolean {
+  const bare = (s: string) => s.replace(/\s+/g, '');
   return a.length === b.length
-    && a.every((c, i) => c.key === b[i]!.key && c.label === b[i]!.label && c.takesText === b[i]!.takesText);
+    && a.every((c, i) => c.key === b[i]!.key && bare(c.label) === bare(b[i]!.label) && c.takesText === b[i]!.takesText);
 }
 
 function isQuestion(s: Shot): s is { raw: string; read: QuestionRead } {

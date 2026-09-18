@@ -109,6 +109,17 @@ describe('PromptCard -- questions', () => {
     await waitFor(() => expect(fleet.answerPrompt).toHaveBeenCalledWith(4821, 'evt-1', { kind: 'chat' }));
   });
 
+  // Final review M1.
+  it('titles one question "Claude has a question" and several by their count', () => {
+    setFleet();
+    const one: PromptView = { ...questionPrompt, questions: [questionPrompt.questions![0]!] };
+    const { unmount } = render(<PromptCard pid={4821} prompt={one} onOpenTerminal={() => {}} />);
+    expect(screen.getByRole('heading', { name: 'Claude has a question' })).toBeTruthy();
+    unmount();
+    render(<PromptCard pid={4821} prompt={questionPrompt} onOpenTerminal={() => {}} />);
+    expect(screen.getByRole('heading', { name: 'Claude has 2 questions' })).toBeTruthy();
+  });
+
   it('renders a question label literally, as text -- never as html', () => {
     setFleet();
     const prompt: PromptView = {

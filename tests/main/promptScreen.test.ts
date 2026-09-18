@@ -131,6 +131,45 @@ describe('readPromptScreen -- permission anchor ignores whitespace', () => {
   });
 });
 
+// Final review M12: the text-taking row is found by its label, not by
+// being option 3 -- a dialog with a different number of options must never
+// mark a Yes row as the one that takes text.
+describe('readPromptScreen -- takesText follows the label', () => {
+  const dialog = (options: string[], question = 'Do you want to proceed?') => [
+    '────────────────────────────────────────',
+    ' Bash command',
+    '',
+    '   touch perm-probe.txt',
+    '',
+    ` ${question}`,
+    ...options.map((o, i) => `${i === 0 ? ' ❯' : '  '} ${i + 1}. ${o}`),
+    '',
+    ' Esc to cancel',
+  ].join('\n');
+
+  it('a two-option permission dialog: the No row takes text, the Yes row does not', () => {
+    const result = readPromptScreen(dialog(['Yes', 'No']), permExpect('touch perm-probe.txt'));
+    if (!result.match || result.kind !== 'permission') throw new Error('expected permission match');
+    expect(result.choices.map(c => [c.key, c.takesText])).toEqual([['1', false], ['2', true]]);
+  });
+
+  it('a four-option permission dialog: only the No row takes text, not the third Yes', () => {
+    const result = readPromptScreen(dialog([
+      'Yes', 'Yes, allow all edits during this session', "Yes, and don't ask again for touch", 'No',
+    ]), permExpect('touch perm-probe.txt'));
+    if (!result.match || result.kind !== 'permission') throw new Error('expected permission match');
+    expect(result.choices.map(c => c.takesText)).toEqual([false, false, false, true]);
+  });
+
+  it('a four-option plan dialog: only the Tell Claude row takes text', () => {
+    const result = readPromptScreen(dialog([
+      'Yes, and auto-accept edits', 'Yes, and bypass permissions', 'Yes, manually approve edits', 'Tell Claude what to change',
+    ], 'Would you like to proceed?'), planExpect());
+    if (!result.match || result.kind !== 'plan') throw new Error('expected plan match');
+    expect(result.choices.map(c => c.takesText)).toEqual([false, false, false, true]);
+  });
+});
+
 describe('readPromptScreen -- plan dialogs', () => {
   it.each(['80-plan-dialog', '90-plan2-dialog'])('matches %s: three choices, option 3 takes text', (file) => {
     const result = readPromptScreen(screen(file), planExpect());
@@ -303,6 +342,37 @@ describe('readPromptScreen -- questions', () => {
       askExpect(ASK_HEADERS, ['Which colour?', 'Which pets?']), // "colour" -- deliberately not what's on screen
     );
     expect(result.match).toBe(false);
+  });
+
+  // Final review M4: both sides are whitespace-normalised before the exact
+  // match -- the hook's text can carry a newline or a double space that the
+  // screen shows collapsed, and the screen can carry a run the hook lacks.
+  it('matches a question whose hook text has a newline and a double space the screen does not', () => {
+    const capture = [
+      '←  ☐ Auth  ☐ Region  ✔ Submit  →',
+      '',
+      'Which login provider',
+      'should we use?',
+      '',
+      '❯ 1. Google',
+      '  2. GitHub',
+      '  3. Type something.',
+      '',
+    ].join('\n');
+    const result = readPromptScreen(
+      capture,
+      askExpect(['Auth', 'Region'], ['Which login provider\nshould we  use?', 'Which region?']),
+    );
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.current).toBe(0);
+  });
+
+  it('matches a question whose screen line has a whitespace run the hook text does not', () => {
+    const capture = screen('10-ask-q1').replace(/^Which color\?$/m, 'Which   color?');
+    expect(capture).toContain('\nWhich   color?\n');
+    const result = readPromptScreen(capture, askExpect());
+    expect(result.match).toBe(true);
   });
 
   it('16-ask-left-back still finds current 0 by matching the question text', () => {

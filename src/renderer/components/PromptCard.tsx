@@ -48,7 +48,10 @@ function oneLine(text: string): string {
 }
 
 function titleFor(prompt: PromptView): string {
-  if (prompt.kind === 'question') return `Claude has ${prompt.questions?.length ?? 0} questions`;
+  if (prompt.kind === 'question') {
+    const n = prompt.questions?.length ?? 0;
+    return n === 1 ? 'Claude has a question' : `Claude has ${n} questions`;
+  }
   if (prompt.kind === 'plan') return "Claude's plan is ready";
   if (prompt.command !== undefined) return 'Claude wants to run a command';
   if (prompt.filePath !== undefined) return 'Claude wants to edit a file';

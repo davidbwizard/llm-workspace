@@ -426,6 +426,18 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
     expect(pane.keys()).toEqual(['3']);
   });
 
+  // Final review M2: the pane was resized after the prompt was read, so a
+  // long choice label now wraps at a different point (mid-path). The
+  // choices are the same; only where the reader joined lines differs.
+  it('Bash choice 1 still sends when a long choice label re-wrapped since it was read', async () => {
+    registered();
+    const view = viewFor(BASH_YES, screen('50-perm-bash-dialog'));
+    const rewrapped = screen('50-perm-bash-dialog').replace('claude-502/-Users', 'claude-502/\n      -Users');
+    const pane = fakePane([rewrapped, screen('51-perm-bash-after-1')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'choice', key: '1' }, deps(pane, view))).toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['1']);
+  });
+
   it('leaves copy-mode before checking the screen and pressing', async () => {
     registered();
     const view = viewFor(BASH_YES, screen('50-perm-bash-dialog'));

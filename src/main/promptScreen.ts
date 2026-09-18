@@ -43,7 +43,15 @@ function findDialogBlock(lines: string[]): string[] | null {
   return null;
 }
 
-function parseDialogChoices(block: string[]): ParsedDialog {
+/** The row that takes typed text, found by its label (final review M12),
+ *  never by position: a dialog with two or four options must never mark a
+ *  Yes row as the one that takes text. Permission: the No row ("No", or
+ *  "No, ..." once amended). Plan: "Tell Claude what to change". */
+function takesTextLabel(kind: DialogExpect['kind'], label: string): boolean {
+  return kind === 'permission' ? /^No\b/.test(label) : label.startsWith('Tell Claude');
+}
+
+function parseDialogChoices(block: string[], kind: DialogExpect['kind']): ParsedDialog {
   const choices: PromptChoice[] = [];
   let cursor: string | null = null;
   let i = 0;
@@ -65,7 +73,7 @@ function parseDialogChoices(block: string[]): ParsedDialog {
       label += ` ${trimmed}`;
       j++;
     }
-    choices.push({ key, label, takesText: key === '3' });
+    choices.push({ key, label, takesText: takesTextLabel(kind, label) });
     i = j;
   }
   return { choices, cursor };
@@ -87,7 +95,7 @@ function readDialog(lines: string[], expect: DialogExpect): ScreenRead {
   const block = findDialogBlock(lines);
   if (!block) return { match: false, why: 'no_dialog_on_screen' };
 
-  const { choices, cursor } = parseDialogChoices(block);
+  const { choices, cursor } = parseDialogChoices(block, expect.kind);
   if (choices.length === 0) return { match: false, why: 'no_options_found' };
 
   if (expect.kind === 'plan') {
@@ -175,8 +183,9 @@ function readQuestion(lines: string[], headers: string[], questions: string[]): 
   }
 
   // The question's title can wrap onto more than one line; join with a
-  // single space, then match it verbatim against the hook's question
-  // texts. Headers are short chips (e.g. "Auth method") that usually do not
+  // single space, then match it against the hook's question texts with
+  // whitespace runs collapsed on both sides (final review M4) -- the hook's
+  // text can carry a newline or a double space the screen shows as one. Headers are short chips (e.g. "Auth method") that usually do not
   // appear in the question text, so they cannot be used to find `current`.
   let qIdx = 0;
   while (qIdx < rest.length && (rest[qIdx] ?? '').trim() === '') qIdx++;
@@ -192,7 +201,8 @@ function readQuestion(lines: string[], headers: string[], questions: string[]): 
   const title = titleParts.join(' ').trim();
   if (titleParts.length === 0 || !title.endsWith('?')) return { match: false, why: 'no_question_title_found' };
 
-  const current = questions.findIndex((q) => q === title);
+  const collapse = (t: string) => t.replace(/\s+/g, ' ').trim();
+  const current = questions.findIndex((q) => collapse(q) === collapse(title));
   if (current === -1) return { match: false, why: 'question_text_mismatch' };
 
   const options: string[] = [];
