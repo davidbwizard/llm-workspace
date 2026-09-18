@@ -156,9 +156,20 @@ message in the same form as an unsent one). What worked, all day:
   tool name and likely stay read-only until measured.
 - **Wrapped typed text / review lines** wider than the pane end as
   `unconfirmed_partial` (safe) until wrapped fixtures exist.
-- **Replies saved only as thinking:** Claude Code occasionally records a reply
-  as a short thinking block with no text block (seen 2026-09-18); the pane hides
-  thinking, so such a reply shows nothing.
+- **FIXED 2026-09-18 (477225e): replies saved only as thinking.** Claude Code
+  (Opus 5) records some replies as a short summary in a thinking block with no
+  text; the pane now shows them as dim italic notes (parser v4 re-read every
+  transcript). The full wording of those replies is not on disk anywhere.
+- **FIXED 2026-09-18 (477225e): long questions wrap with a "│ " border** and were
+  refused; the reader strips it (fixture 98).
+- **Questions with previews** (side-by-side layout) are read-only on the card;
+  measure that layout to support it.
+- **Context chip (next, David's spec):** short form (2k, 20k, 200k) plus "% left"
+  before auto-compact, on session cards and the conversation header. Used =
+  last reply's input + cache write + cache read. Windows: Opus 5 / Sonnet 5 /
+  Fable 5.1 1M, Haiku 4.5 200k (documented). The compact point is NOT
+  documented (CLI: `--autocompact <auto|100k-1M>`), so a "Compacts at" setting
+  defaults to 83% of the window, marked as an estimate.
 - Ideas from David, not scheduled: switch permission mode from the Conversation
   view (mockup first); a right-click edit menu in text boxes; the agent graph view
   (worktree `../llm-workspace-agent-graph`, branch `agent-graph`).
