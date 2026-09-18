@@ -43,6 +43,11 @@ describe('renderer security posture', () => {
       'app:theme',
       'dialog:directory',
       'fleet:history', 'fleet:list',
+      // Quick answers switch: main re-probes settings.json fresh on every
+      // call (src/hooks/switch.ts) and writes it only through the existing
+      // atomic, mode-preserving, exact-command-match install/uninstall
+      // path -- see tests/hooks/switch.test.ts.
+      'hooks:get', 'hooks:set',
       // Quick answers: main re-derives the prompt and checks the answer and
       // the pane before any key -- see tests/main/answer.test.ts's guards.
       'session:answer',

@@ -10,7 +10,14 @@ let chooseDirectory: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   launch = vi.fn(async () => ({ status: 'launched', pid: 4821 }));
   chooseDirectory = vi.fn(async () => null);
-  (globalThis as never as { window: { fleet: unknown } }).window.fleet = { launch, chooseDirectory };
+  // LaunchBar's settings gear mounts the real SettingsModal (below), which
+  // reads Quick answers' state via hooksGet on open -- stubbed here purely
+  // so that mount doesn't throw; its own behaviour is covered by
+  // tests/renderer/SettingsModal.test.tsx.
+  const hooksGet = vi.fn(async () => ({ installed: false, error: null }));
+  const hooksSet = vi.fn(async (on: boolean) => ({ installed: on, error: null }));
+  (globalThis as never as { window: { fleet: unknown } }).window.fleet =
+    { launch, chooseDirectory, hooksGet, hooksSet };
 });
 
 describe('LaunchBar', () => {

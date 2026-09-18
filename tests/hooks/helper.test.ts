@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readdirSync, readFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync, readFileSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -46,5 +46,20 @@ describe('hook helper', () => {
 
   it('exits 0 even on malformed input, so it never blocks the agent', () => {
     expect(() => run('not json')).not.toThrow();
+  });
+
+  // Spec §4 "Spool privacy": the spool now holds commands and plan text, so
+  // a directory the helper creates itself must not be left group/other
+  // readable. mkdir -p has no chmod step of its own -- everything rides on
+  // umask -- so this actually creates the leaf directory (a fresh path
+  // under the temp dir, not the already-existing mkdtempSync one) rather
+  // than asserting on a directory that existed before the helper ran.
+  it('creates a not-yet-existing spool directory 0700, via its own umask', () => {
+    const freshSpool = join(spool, 'nested', 'spool');
+    execFileSync('sh', [helper], {
+      input: '{"hook_event_name":"Stop"}',
+      env: { ...process.env, LLMWS_SPOOL: freshSpool },
+    });
+    expect(statSync(freshSpool).mode & 0o777).toBe(0o700);
   });
 });

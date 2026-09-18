@@ -1,10 +1,11 @@
 import { app, BrowserWindow, shell, nativeTheme } from 'electron';
 import { join } from 'node:path';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { openDb, type Db } from '../store/db.ts';
 import { ingestAll, startWatcher, type Watcher, type WatchRoot } from '../watch/watcher.ts';
 import { ingestSpool, rotateSpool } from '../hooks/spool.ts';
+import { refreshHelperIfInstalled } from '../hooks/switch.ts';
 import { resolvePaths } from '../config.ts';
 import { registerIpc, pushFleet, refreshPushEnrichment } from './ipc.ts';
 import { refreshLiveProcesses } from '../discovery/live.ts';
@@ -149,6 +150,23 @@ function startBackgroundWork(): void {
 
 app.whenReady().then(() => {
   mkdirSync(join(homedir(), '.llm-workspace'), { recursive: true });
+
+  // Quick answers, spec §4 "Spool privacy": the spool now holds commands
+  // and plan text. mkdirSync's `mode` is only honoured on creation, so an
+  // already-existing spool from before this app enforced 0700 (or one the
+  // helper created before its own umask fix) needs its own chmod to be
+  // tightened, not just created narrow going forward.
+  mkdirSync(paths.spool, { recursive: true, mode: 0o700 });
+  try { chmodSync(paths.spool, 0o700); } catch { /* best-effort; must not block startup */ }
+
+  // Quick answers, spec §4: "On every app start with hooks installed,
+  // refresh the copy if its content differs." src/hooks/helper.sh is not
+  // part of the bundled build output today (electron-builder.yml ships
+  // only out/**), so app.getAppPath() -- the project root in dev, the
+  // asar/app root when packaged -- is the one resolution that works in
+  // both without a packaging change of its own.
+  refreshHelperIfInstalled(paths, join(app.getAppPath(), 'src/hooks/helper.sh'));
+
   db = openDb(paths.db);
 
   // Before createWindow, not after: backgroundColor below is read once, at

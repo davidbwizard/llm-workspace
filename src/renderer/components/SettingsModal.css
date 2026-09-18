@@ -137,6 +137,23 @@
   background:var(--raised); border:1px solid var(--line-soft); border-radius:var(--r-md); padding:8px 12px; }
 .settingsprev[data-style="c"] .settingsprevturn-user .settingsprevmeta { justify-content:flex-end; }
 
+/* Quick answers (design §4): a standard on/off switch, next to its label --
+   the segmented control above is for one-of-several choices, this is a
+   single boolean, so it gets its own row and its own ARIA role (switch,
+   not a pressed button) rather than reusing .settingsseg. */
+.settingsswitchrow { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.settingsswitch { position:relative; flex:none; width:36px; height:20px; padding:0;
+  border:1px solid var(--line); border-radius:999px; background:var(--raised); cursor:pointer; }
+.settingsswitch[aria-checked="true"] { background:var(--accent); border-color:var(--accent); }
+.settingsswitch:disabled { opacity:.5; cursor:default; }
+.settingsswitchknob { position:absolute; top:1px; left:1px; width:16px; height:16px;
+  border-radius:50%; background:var(--surface); transition:transform .12s ease; }
+.settingsswitch[aria-checked="true"] .settingsswitchknob { transform:translateX(16px); background:var(--ground); }
+/* --critical is this app's existing error-text colour (OpenSessionCard.css's
+   .kill-status.error / .reattach-status.error, FleetView.css's .empty.error)
+   -- reused here rather than inventing a second red. */
+.settingserror { margin:0; font-size:11px; color:var(--critical); }
+
 .settingsfoot { display:flex; align-items:center; justify-content:space-between; gap:12px;
   border-top:1px solid var(--line-soft); }
 .settingscaption { margin:0; font-size:11px; color:var(--muted); }

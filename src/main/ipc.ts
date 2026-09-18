@@ -41,6 +41,7 @@ import {
   buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, type WatchDeps,
 } from './sessionLive.ts';
 import { answerPrompt, type AnswerResult } from './answer.ts';
+import { hooksState, setHooks, type HooksResult } from '../hooks/switch.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -1267,6 +1268,17 @@ export function applyThemeChoice(raw: unknown, deps: ThemeDeps = {}): ThemeResul
   return { status: 'set', theme };
 }
 
+/** Quick answers (src/hooks/switch.ts): which copy of src/hooks/helper.sh
+ *  to install from. src/hooks/helper.sh is not part of the bundled build
+ *  output today (electron-builder.yml ships only out/**), so
+ *  app.getAppPath() -- the project root in dev, the asar/app root when
+ *  packaged -- is the one resolution that works in both without a
+ *  packaging change of its own. Matches src/main/index.ts's own startup
+ *  refresh, which resolves the same path the same way. */
+function helperSourcePath(): string {
+  return join(app.getAppPath(), 'src/hooks/helper.sh');
+}
+
 /** The complete set of channels main answers. Adding one means adding it to
  *  the preload's enumerated list as well; tests/main/ipc.test.ts asserts
  *  they match.
@@ -1429,6 +1441,17 @@ export function registerIpc(
       )?.prompt ?? null,
     }));
   ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
+
+  // Quick answers (src/hooks/switch.ts): the Settings switch's own reads
+  // and writes. `on` is the renderer's whole say in what happens --
+  // anything other than a literal `true` is treated as `false` (turn it
+  // off), never trusted as-is, same boundary discipline as every other
+  // channel here. helperSourcePath() below is the one thing main supplies
+  // that the renderer cannot: which copy of src/hooks/helper.sh to install
+  // from.
+  ipcMain.handle('hooks:get', (): HooksResult => hooksState(resolvePaths(homedir())));
+  ipcMain.handle('hooks:set', (_event, on: unknown): HooksResult =>
+    setHooks(resolvePaths(homedir()), on === true, helperSourcePath()));
 
   // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing
   // Task 6's TEMPORARY not_implemented stubs in place -- not a second

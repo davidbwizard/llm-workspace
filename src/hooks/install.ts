@@ -1,4 +1,6 @@
-import { readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import {
+  readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, statSync, chmodSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** Spec §5.2. Sparse lifecycle only. MessageDisplay is deliberately absent:
@@ -72,10 +74,22 @@ function removeByCommand(hooks: any, command: string): void {
  *  rename over the original. Never truncate in place — a crash mid-write
  *  would leave the user with an unparseable config and a broken Claude
  *  Code. Shared by applyInstall and uninstall so the two write paths
- *  cannot drift apart. */
+ *  cannot drift apart.
+ *
+ *  Task 4: the temp file is created with Node's default mode, so without
+ *  this a 0600 settings.json would silently become 0644 the first time
+ *  this app wrote to it. `stat`s the original (when there is one) and
+ *  `chmod`s the temp file to match before the rename, so the file's mode
+ *  is never changed as a side effect of a hooks install/uninstall. A
+ *  missing original (first-ever write) leaves the temp file's own default
+ *  mode alone. */
 function writeJsonAtomic(settingsPath: string, data: any): void {
   const tmp = join(dirname(settingsPath), `.settings.json.llmws.${process.pid}.tmp`);
   writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  try {
+    const { mode } = statSync(settingsPath);
+    chmodSync(tmp, mode & 0o777);
+  } catch { /* no original file yet -- nothing to match */ }
   const fd = openSync(tmp, 'r+');
   try { fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(tmp, settingsPath);
@@ -123,9 +137,23 @@ export function applyInstall(settingsPath: string, plan: InstallPlan & { baseTex
 
 /** Removes only entries whose `hooks[].command` exactly equals the
  *  manifest's recorded command. Anything the user added or edited by hand
- *  is left alone. */
+ *  is left alone.
+ *
+ *  Task 4: tolerates a missing settings.json -- turning Quick answers off
+ *  when there is nothing to uninstall (never installed, or the file was
+ *  deleted by hand) is a no-op, not an error. An existing file that fails
+ *  to parse still throws, same as before: the caller (src/hooks/switch.ts)
+ *  decides how to surface that, and this must never guess at content it
+ *  cannot read. */
 export function uninstall(settingsPath: string, manifest: Manifest): void {
-  const cfg = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  let raw: string;
+  try {
+    raw = readFileSync(settingsPath, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw e;
+  }
+  const cfg = JSON.parse(raw);
   removeByCommand(cfg.hooks, manifest.command);
   writeJsonAtomic(settingsPath, cfg);
 }

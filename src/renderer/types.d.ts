@@ -8,6 +8,7 @@ import type { StageResult } from '../main/staging.ts';
 import type { SessionLivePayload } from '../main/sessionLive.ts';
 import type { AnswerResult } from '../main/answer.ts';
 import type { Answer } from '../core/prompt.ts';
+import type { HooksResult } from '../hooks/switch.ts';
 
 declare global {
   interface Window {
@@ -73,6 +74,12 @@ declare global {
       // (applyThemeChoice); this typing narrows nothing at the trust
       // boundary itself.
       setTheme: (theme: string) => Promise<unknown>;
+      // Quick answers (Settings): the switch's real state, re-read fresh
+      // from settings.json on every call, and the toggle itself. Main
+      // never trusts the renderer's own copy of `installed` -- this typing
+      // narrows nothing at the trust boundary itself.
+      hooksGet: () => Promise<HooksResult>;
+      hooksSet: (on: boolean) => Promise<HooksResult>;
     };
   }
 }

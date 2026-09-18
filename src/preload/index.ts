@@ -112,6 +112,12 @@ const api = {
   // value against its own three literals (applyThemeChoice); this typing
   // narrows nothing at the trust boundary, same as every other channel here.
   setTheme: (theme: string) => ipcRenderer.invoke('app:theme', theme),
+  // Quick answers (Settings): the switch's own state and its toggle. Main
+  // re-probes settings.json fresh on every call (src/hooks/switch.ts) --
+  // this typing narrows nothing at the trust boundary, same as every other
+  // channel here.
+  hooksGet: () => ipcRenderer.invoke('hooks:get'),
+  hooksSet: (on: boolean) => ipcRenderer.invoke('hooks:set', on),
 };
 
 contextBridge.exposeInMainWorld('fleet', api);

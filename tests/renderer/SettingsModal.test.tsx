@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, within, fireEvent } from '@testing-library/react';
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { SettingsModal } from '../../src/renderer/components/SettingsModal.tsx';
 import { DEFAULT_SETTINGS, getSettings, reloadSettings } from '../../src/renderer/state/settings.ts';
 
@@ -7,6 +7,12 @@ beforeEach(() => {
   localStorage.clear();
   reloadSettings();
   document.documentElement.className = '';
+  // Left undefined outside the Quick answers tests below (its own
+  // beforeEach sets it): SettingsModal's hooksGet/hooksSet calls are
+  // guarded by `window.fleet?`, so every test unrelated to the switch runs
+  // exactly as it did before that feature existed, with no promise for an
+  // unrelated test to have to wait out.
+  (globalThis as never as { window: { fleet: unknown } }).window.fleet = undefined;
 });
 
 describe('SettingsModal', () => {
@@ -160,6 +166,113 @@ describe('SettingsModal', () => {
       fireEvent.click(within(screen.getByRole('group', { name: 'Message style' }))
         .getByRole('button', { name: /C · Your messages in a bubble/ }));
       expect(preview(container).getAttribute('data-style')).toBe('c');
+    });
+  });
+
+  // Design §4/§9: a switch (not a segmented control) that reads and writes
+  // the app's real hooks state through window.fleet.hooksGet/hooksSet,
+  // re-reading fresh every time the modal opens.
+  describe('Quick answers', () => {
+    // A fake window.fleet, same pattern as LaunchBar.test.tsx. Scoped to
+    // this describe block (not the file's top-level beforeEach) so every
+    // other test in this file keeps window.fleet undefined and never has a
+    // hooksGet/hooksSet promise of its own to settle.
+    let hooksGet: ReturnType<typeof vi.fn>;
+    let hooksSet: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      hooksGet = vi.fn(async () => ({ installed: false, error: null }));
+      hooksSet = vi.fn(async (on: boolean) => ({ installed: on, error: null }));
+      (globalThis as never as { window: { fleet: unknown } }).window.fleet = { hooksGet, hooksSet };
+    });
+
+    it('shows the exact design sentence', async () => {
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      expect(screen.getByText(
+        "Adds the app's hooks to ~/.claude/settings.json so it can show what Claude is asking. Turning this off removes them.",
+      )).toBeTruthy();
+      // Lets the initial hooksGet() resolve inside this test's act() scope,
+      // rather than after it returns.
+      await waitFor(() => expect(hooksGet).toHaveBeenCalled());
+    });
+
+    it('reads the real state from hooksGet when the modal opens, not a guess', async () => {
+      hooksGet.mockResolvedValue({ installed: true, error: null });
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'Quick answers' }).getAttribute('aria-checked')).toBe('true');
+      });
+    });
+
+    it('starts the switch disabled until the initial read resolves', async () => {
+      let resolve!: (v: { installed: boolean; error: null }) => void;
+      hooksGet.mockReturnValue(new Promise(r => { resolve = r; }));
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(true);
+      resolve({ installed: false, error: null });
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false);
+      });
+    });
+
+    it('re-reads hooksGet every time the modal is reopened', async () => {
+      const { rerender } = render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(hooksGet).toHaveBeenCalledTimes(1));
+      rerender(<SettingsModal open={false} onClose={() => {}} />);
+      rerender(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(hooksGet).toHaveBeenCalledTimes(2));
+    });
+
+    it('turns quick answers on via hooksSet and reflects the result', async () => {
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false));
+      fireEvent.click(screen.getByRole('switch', { name: 'Quick answers' }));
+      expect(hooksSet).toHaveBeenCalledWith(true);
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'Quick answers' }).getAttribute('aria-checked')).toBe('true');
+      });
+    });
+
+    it('turns quick answers off via hooksSet when it was already on', async () => {
+      hooksGet.mockResolvedValue({ installed: true, error: null });
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'Quick answers' }).getAttribute('aria-checked')).toBe('true');
+      });
+      fireEvent.click(screen.getByRole('switch', { name: 'Quick answers' }));
+      expect(hooksSet).toHaveBeenCalledWith(false);
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'Quick answers' }).getAttribute('aria-checked')).toBe('false');
+      });
+    });
+
+    it('shows the error line when hooksSet refuses, and leaves the switch reflecting the real state', async () => {
+      hooksSet.mockResolvedValue({ installed: false, error: 'Settings changed while installing -- try again' });
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false));
+      fireEvent.click(screen.getByRole('switch', { name: 'Quick answers' }));
+      await waitFor(() => {
+        expect(screen.getByRole('alert').textContent).toBe('Settings changed while installing -- try again');
+      });
+      expect(screen.getByRole('switch', { name: 'Quick answers' }).getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('disables the switch while a toggle request is in flight, and re-enables after it settles', async () => {
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false));
+      let resolve!: (v: { installed: boolean; error: null }) => void;
+      hooksSet.mockReturnValue(new Promise(r => { resolve = r; }));
+      fireEvent.click(screen.getByRole('switch', { name: 'Quick answers' }));
+      expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(true);
+      resolve({ installed: true, error: null });
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false);
+      });
+    });
+
+    it('does not crash when window.fleet is unavailable (a failed preload)', () => {
+      (globalThis as never as { window: { fleet: unknown } }).window.fleet = undefined;
+      expect(() => render(<SettingsModal open={true} onClose={() => {}} />)).not.toThrow();
+      expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(true);
     });
   });
 });

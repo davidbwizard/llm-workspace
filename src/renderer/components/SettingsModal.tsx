@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   APPEARANCES, COMPACT_CARDS, DEFAULT_SETTINGS, MESSAGE_STYLES, TEXT_SIZES, setSettings, useSettings,
   type Appearance, type CompactCards, type MessageStyle, type TextSize,
@@ -26,6 +26,10 @@ const MESSAGE_STYLE_LABEL: Record<MessageStyle, string> = {
 const COMPACT_HELP =
   "Compact cards show the logo, name, status and terminal. The folder path always appears at the top of a session's conversation.";
 const FOOTER_CAPTION = 'Changes apply right away and are remembered.';
+
+/** Design §4, verbatim. */
+const QUICK_ANSWERS_HELP =
+  "Adds the app's hooks to ~/.claude/settings.json so it can show what Claude is asking. Turning this off removes them.";
 
 /** Fixed sample turns for the live preview -- never real session data, so the
  *  preview cannot leak transcript content into a settings panel, and never
@@ -135,6 +139,33 @@ function SettingsPreview({ textSize, messageStyle }: { textSize: TextSize; messa
   );
 }
 
+/** The Quick answers switch (design §4/§9): a standard ARIA `switch`
+ *  (aria-checked, not aria-pressed -- this is an on/off setting, not one
+ *  option among several the way the segmented controls above are).
+ *  `checked` is `null` while the initial `hooksGet()` is still in flight, in
+ *  which case the switch renders off but disabled -- there is nothing true
+ *  yet to show as on. */
+function QuickAnswersSwitch({ checked, disabled, labelId, onToggle }: {
+  checked: boolean | null;
+  disabled: boolean;
+  labelId: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked === true}
+      aria-labelledby={labelId}
+      className="settingsswitch"
+      disabled={disabled}
+      onClick={onToggle}
+    >
+      <span className="settingsswitchknob" aria-hidden="true" />
+    </button>
+  );
+}
+
 /** A native <dialog>, not a hand-rolled overlay: it supplies the top layer,
  *  the focus trap and the inert background for free, and this renderer has
  *  no focus-trap infrastructure to borrow (ReplyPopover is an inline
@@ -149,6 +180,46 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const compactLabelId = useId();
   const textSizeLabelId = useId();
   const styleLabelId = useId();
+  const quickAnswersLabelId = useId();
+
+  // Quick answers (design §4): `null` means "not yet read" -- distinct from
+  // `false`, so the switch can render disabled rather than a possibly-wrong
+  // "off" while the very first hooksGet() is in flight. Re-read every time
+  // the modal opens (not just once on mount), per design §4: "re-read each
+  // time Settings opens, so a hand edit cannot make it lie" -- the modal
+  // stays mounted by its owner, so `open` going false-then-true is the only
+  // signal a reopen gives this component.
+  const [hooksInstalled, setHooksInstalled] = useState<boolean | null>(null);
+  const [hooksError, setHooksError] = useState<string | null>(null);
+  const [hooksBusy, setHooksBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const api = window.fleet;
+    if (!api) return;
+    let alive = true;
+    setHooksInstalled(null);
+    setHooksError(null);
+    // Two-arg .then, not a bare .then/chained .catch (same reasoning as
+    // useFleet.ts): ipcRenderer.invoke rejects rather than hangs when main
+    // has no handler, and an unhandled rejection here would leave the
+    // switch stuck disabled with no indication why.
+    void api.hooksGet().then(
+      r => { if (alive) { setHooksInstalled(r.installed); setHooksError(r.error); } },
+      err => { if (alive) setHooksError(err instanceof Error ? err.message : String(err)); },
+    );
+    return () => { alive = false; };
+  }, [open]);
+
+  const onToggleHooks = () => {
+    const api = window.fleet;
+    if (!api || hooksBusy || hooksInstalled === null) return;
+    setHooksBusy(true);
+    void api.hooksSet(!hooksInstalled).then(
+      r => { setHooksInstalled(r.installed); setHooksError(r.error); setHooksBusy(false); },
+      err => { setHooksError(err instanceof Error ? err.message : String(err)); setHooksBusy(false); },
+    );
+  };
 
   useEffect(() => {
     const el = dialogRef.current;
@@ -273,6 +344,23 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           </div>
 
           <SettingsPreview textSize={settings.textSize} messageStyle={settings.messageStyle} />
+        </section>
+
+        <section className="settingssection">
+          <h3 className="settingssectitle">Quick answers</h3>
+          <div className="settingsfield">
+            <div className="settingsswitchrow">
+              <div className="settingslabel" id={quickAnswersLabelId}>Quick answers</div>
+              <QuickAnswersSwitch
+                checked={hooksInstalled}
+                disabled={hooksInstalled === null || hooksBusy}
+                labelId={quickAnswersLabelId}
+                onToggle={onToggleHooks}
+              />
+            </div>
+            <p className="settingshelp">{QUICK_ANSWERS_HELP}</p>
+            {hooksError !== null && <p className="settingserror" role="alert">{hooksError}</p>}
+          </div>
         </section>
 
         <div className="settingsfoot">
