@@ -50,7 +50,9 @@ Suite: 1187 tests, typecheck clean. `KNOWN_ISSUES.md` is current.
      first and reuse it. If there is nothing reliable, the rollout's
      `task_started` / `task_complete` events tracked busy/idle correctly in every
      measurement on 2026-09-17.
-2. **Quick responses in the cards and the conversation.** This is Part 4 of the
+2. **DONE 2026-09-18 (branch quick-answers):** spec
+   `2026-09-17-quick-answers-design.md`, plan `plans/2026-09-17-quick-answers.md`,
+   checked by eye by David. **Quick responses in the cards and the conversation.** This is Part 4 of the
    plan, pulled ahead of Part 3 at David's request: answer a waiting session's
    question, permission or plan-approval prompt with buttons, from its card and
    from the conversation pane. The Conversation Pane Mockup already designs all of

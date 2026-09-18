@@ -145,10 +145,12 @@ feedback" on plans; whether `PermissionDenied` fires on a user's No.
 A session has an **open prompt** when all of these hold:
 1. Its live status file says `status: "waiting"`.
 2. Among that session's `signal_events`, the newest `PermissionRequest`
-   occurred at or after **waitingSince - 2 s**. The 2 s covers the helper's
-   whole-second timestamps.
-3. No other event from that session (except `Notification`) is newer than that
-   `PermissionRequest`.
+   occurred at or after **waitingSince floored to the whole second**. (Built
+   2026-09-18; this replaced a 2 s slack. The status flips 15-30 ms before the
+   PermissionRequest is written and the helper stamps whole seconds, so the
+   floor is exact and a just-answered prompt cannot pass for the next one.)
+3. No other event from that session (except `Notification`, `PreToolUse`,
+   `SubagentStart` and `SubagentStop`) is newer than that `PermissionRequest`.
 
 `waitingSince` is the status file's `updatedAt` from the first read in which the
 watcher saw `waiting` for this pid, held until the status changes. If the first

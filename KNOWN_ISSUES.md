@@ -154,7 +154,14 @@ slow accept. Needs its own measurement before changing anything.
 This is Part 1's exact-session-identity code, not this feature's, and
 predates this branch.
 
-## Claude hooks are not installed on this machine
+## RESOLVED 2026-09-18: Claude hooks are not installed on this machine
+
+Settings now has a **Quick answers** switch (`src/hooks/switch.ts`) that installs
+and removes the app's hooks, pointing at a stable helper copy in
+`~/.llm-workspace/bin/helper.sh`. With hooks on, a live status file outranks any
+hook blocker (`deriveActivity`, `src/fleet/state.ts`), because a PermissionRequest
+carries no tool_use_id and a No or Esc fires no event. Original note below.
+
 
 `probeCapabilities()` reports `hooksInstalled: false`. The hooks in
 `~/.claude/settings.json` are all the user's own (`block-env-read.sh`,
