@@ -93,18 +93,20 @@ describe('MainPane', () => {
     expect((window as unknown as { fleet: { revealSession: ReturnType<typeof vi.fn> } }).fleet.revealSession).toHaveBeenCalledWith(1);
   });
 
-  // Reply guard: Answer on a waiting session must route to the Terminal
-  // view (select this pid, then switch), never open a text box that would
-  // just pick the highlighted choice option.
-  it('routes a waiting card straight to the terminal view via Answer -> Open Terminal', () => {
+  // Task 5 (quick-answers design §9): Answer on a waiting session now
+  // routes straight to the Conversation view (selects this pid, then
+  // switches) -- this replaces the old route through Open Terminal, since
+  // the prompt card (or its waiting-card fallback) lives in the
+  // Conversation view, not the Terminal one.
+  it('routes a waiting card straight to the conversation view via Answer', () => {
     const waiting = [{ pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'waiting_input', lastProse: 'Pick a color?', cwd: '/a', host: 'iterm2', ageSeconds: 1, rssBytes: 1, events: 1, sessionId: 's1', tmux: true }] as never[];
     const onSelect = vi.fn();
     const onSetView = vi.fn();
     render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={waiting} onSelect={onSelect} onSetView={onSetView} onClear={() => {}} railSide="left" />);
     fireEvent.click(screen.getByRole('button', { name: /answer llm-workspace, pid 1/i }));
-    fireEvent.click(screen.getByRole('button', { name: /open terminal/i }));
     expect(onSelect).toHaveBeenCalledWith(1);
-    expect(onSetView).toHaveBeenCalledWith('terminal');
+    expect(onSetView).toHaveBeenCalledWith('conversation');
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   // Spec §3.7: the rail already names the project, so the pane header

@@ -2451,3 +2451,64 @@ describe('ConversationView -- the waiting card (Task 11)', () => {
     expect(box.placeholder).toMatch(/not running inside tmux/i);
   });
 });
+
+describe('ConversationView -- the prompt card (Task 5)', () => {
+  const permissionPrompt = {
+    id: 'evt-1', kind: 'permission', answerable: true, reason: null,
+    toolName: 'Bash', command: 'echo hi',
+    choices: [{ key: '1', label: 'Yes', takesText: false }],
+  };
+
+  function withLivePush(fleetOverrides: Record<string, unknown> = {}) {
+    let pushLive: (payload: unknown) => void = () => {};
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns, nextCursor: null }),
+      watchSession: vi.fn().mockResolvedValue(true),
+      onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+      hooksGet: vi.fn().mockResolvedValue({ installed: true, error: null }),
+      answerPrompt: vi.fn().mockResolvedValue({ status: 'sent' }),
+      ...fleetOverrides,
+    };
+    return (payload: Record<string, unknown>) => act(() => { pushLive(payload); });
+  }
+
+  it('shows the prompt card, not the waiting card, once live.prompt is present', async () => {
+    const push = withLivePush();
+    renderConv();
+    await screen.findByLabelText('Message this session');
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: permissionPrompt });
+    await waitFor(() => expect(screen.getByText('Claude wants to run a command')).toBeTruthy());
+    expect(screen.queryByText('Answer in the Terminal')).toBeNull();
+  });
+
+  it('falls back to the waiting card once the prompt is null again', async () => {
+    const push = withLivePush();
+    renderConv();
+    await screen.findByLabelText('Message this session');
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: permissionPrompt });
+    await waitFor(() => expect(screen.getByText('Claude wants to run a command')).toBeTruthy());
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null });
+    await waitFor(() => expect(screen.getByText('Answer in the Terminal')).toBeTruthy());
+  });
+
+  // Task 5's own ruling: hooksOn is a real fact read from main
+  // (window.fleet.hooksGet), never inferred from live.prompt being null --
+  // a session that IS hooked up but simply has no open prompt right now
+  // must not be told to go turn the switch on.
+  it('tells the reader to turn on Quick answers when hooks are off and nothing is open', async () => {
+    const push = withLivePush({ hooksGet: vi.fn().mockResolvedValue({ installed: false, error: null }) });
+    renderConv();
+    await screen.findByLabelText('Message this session');
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null });
+    await waitFor(() => expect(screen.getByText('Turn on Quick answers in Settings to answer here.')).toBeTruthy());
+  });
+
+  it('says nothing about Quick answers once hooks are confirmed on', async () => {
+    const push = withLivePush({ hooksGet: vi.fn().mockResolvedValue({ installed: true, error: null }) });
+    renderConv();
+    await screen.findByLabelText('Message this session');
+    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null });
+    await waitFor(() => expect(screen.getByText('Answer in the Terminal')).toBeTruthy());
+    expect(screen.queryByText('Turn on Quick answers in Settings to answer here.')).toBeNull();
+  });
+});

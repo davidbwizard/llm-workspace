@@ -72,11 +72,13 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
     <div className="mainpane split">
       <SessionRail sessions={sessions} selectedPid={selection.pid} onSelect={onSelect} onKill={killSession}
         onReveal={revealSession} onReattach={reattachSession} onResume={resumeSession}
-        // Reply guard: Answer on a waiting session routes here instead of a
-        // text box -- select this pid, then flip to the Terminal view, the
+        // Task 5 (quick-answers design §9): Answer on a waiting session
+        // selects this pid, then switches to the Conversation view -- the
         // same select-then-switch pairing App.tsx's own openInTerminal uses
-        // for LaunchBar (see its doc comment there).
-        onOpenTerminal={pid => { onSelect(pid); onSetView('terminal'); }}
+        // for LaunchBar (see its doc comment there), just to the
+        // Conversation view instead of the Terminal one, since that's
+        // where the prompt card (or its waiting-card fallback) lives.
+        onAnswer={pid => { onSelect(pid); onSetView('conversation'); }}
         side={railSide} />
       <section className="pane">
         <header className="panehead">
