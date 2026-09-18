@@ -180,3 +180,13 @@ describe('ConversationView.css: no class name shared with the card stylesheets',
     });
   }
 });
+
+describe('ConversationView.css: readable line length', () => {
+  // Edge-to-edge lines are hard to read on a wide window; 45-75 characters
+  // is the usual range. The approved mockup caps message text at 72ch
+  // (`.text { max-width:72ch }`). `ch` tracks the text-size setting, so the
+  // cap stays about 72 characters at 14 to 17px.
+  it('caps every turn\'s text at 72ch', () => {
+    expect(blockAfter('.turn .turn-text {')).toMatch(/max-width:\s*72ch/);
+  });
+});

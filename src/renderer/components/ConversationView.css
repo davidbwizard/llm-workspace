@@ -68,8 +68,11 @@
    font-weight difference between the two any more: the colour-independent
    cue for the user's side is the border-left rule's absence here (style A)
    or the bubble/border/right-alignment below (style C), not a heavier cut. */
+/* 72ch keeps lines in the readable 45-75 character range on a wide window,
+   matching the design artifact's `.text { max-width:72ch }`. `ch` follows
+   --conv-size, so the cap holds at every text size. */
 .turn .turn-text { margin:0; font-size:1em; line-height:inherit; color:var(--ink);
-  white-space:pre-wrap; min-width:0; }
+  white-space:pre-wrap; min-width:0; max-width:72ch; }
 .turn.user .turn-text { color:var(--ink-2); }
 /* Agent replies render as markdown (.turn-text.md) inside .turn-body.
    pre-wrap is off for markdown: react-markdown emits newline text nodes
