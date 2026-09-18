@@ -90,6 +90,21 @@ describe('PromptCard -- questions', () => {
     ));
   });
 
+  // Bug (David, by eye): the card scrolls internally (max-height,
+  // PromptCard.css), so a text box revealed by a click can land below the
+  // visible part of the card. jsdom has no scrollIntoView at all -- stubbed
+  // fresh here so the assertion only sees this test's own call.
+  it('moves focus into the Something else box and scrolls it into view when revealed', () => {
+    setFleet();
+    Element.prototype.scrollIntoView = vi.fn();
+    render(<PromptCard pid={4821} prompt={questionPrompt} onOpenTerminal={() => {}} />);
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.click(screen.getByRole('radio', { name: 'Something else' }));
+    const box = screen.getByRole('textbox', { name: 'Your own answer' });
+    expect(document.activeElement).toBe(box);
+    expect(box.scrollIntoView).toHaveBeenCalled();
+  });
+
   it('sends the typed text for a single-select Other pick, with options empty', async () => {
     const fleet = setFleet();
     render(<PromptCard pid={4821} prompt={questionPrompt} onOpenTerminal={() => {}} />);
@@ -173,6 +188,17 @@ describe('PromptCard -- permission', () => {
     ));
   });
 
+  it('moves focus into the "tell Claude what to do instead" box and scrolls it into view when revealed', () => {
+    setFleet();
+    Element.prototype.scrollIntoView = vi.fn();
+    render(<PromptCard pid={4821} prompt={permissionPrompt} onOpenTerminal={() => {}} />);
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.click(screen.getByRole('button', { name: 'and tell Claude what to do instead' }));
+    const box = screen.getByRole('textbox');
+    expect(document.activeElement).toBe(box);
+    expect(box.scrollIntoView).toHaveBeenCalled();
+  });
+
   it('disables Send to Claude while the text box is empty or over 2000 characters', () => {
     setFleet();
     render(<PromptCard pid={4821} prompt={permissionPrompt} onOpenTerminal={() => {}} />);
@@ -237,6 +263,17 @@ describe('PromptCard -- plan', () => {
     await waitFor(() => expect(fleet.answerPrompt).toHaveBeenCalledWith(
       4821, 'evt-3', { kind: 'choice_text', key: '3', text: 'skip step 2' },
     ));
+  });
+
+  it('moves focus into the plan feedback box and scrolls it into view when revealed', () => {
+    setFleet();
+    Element.prototype.scrollIntoView = vi.fn();
+    render(<PromptCard pid={4821} prompt={planPrompt} onOpenTerminal={() => {}} />);
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.click(screen.getByRole('button', { name: '3 Tell Claude what to change' }));
+    const box = screen.getByRole('textbox', { name: 'What should change?' });
+    expect(document.activeElement).toBe(box);
+    expect(box.scrollIntoView).toHaveBeenCalled();
   });
 
   it('opens the feedback box for the takesText choice at key 4, and sends choice_text on key 4', async () => {

@@ -47,6 +47,14 @@ function oneLine(text: string): string {
   return text.replace(/[\r\n]/g, '');
 }
 
+/** True when the OS/browser asked for no non-essential motion. Guarded --
+ *  jsdom (this file's own tests) has no `matchMedia` at all, and a defensive
+ *  check here is cheap insurance against any other host that doesn't either. */
+function prefersReducedMotion(): boolean {
+  return typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 function titleFor(prompt: PromptView): string {
   if (prompt.kind === 'question') {
     const n = prompt.questions?.length ?? 0;
@@ -85,6 +93,26 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
   const [noText, setNoText] = useState('');
   const [planFeedbackOpen, setPlanFeedbackOpen] = useState(false);
   const [planFeedback, setPlanFeedback] = useState('');
+
+  // Bug (David, by eye): the card scrolls internally (max-height,
+  // PromptCard.css), so a text box revealed by a click -- the question's
+  // "Something else" box, the permission's "and tell Claude what to do
+  // instead" box, the plan's feedback box -- can land below the visible
+  // part of the card. `pendingFocusRef` names which one was *just* revealed
+  // (keyed `other-<qi>` / `noText` / `planFeedback`); the effect below reads
+  // it once per commit and clears it, so this only ever fires right after a
+  // reveal click -- never on first render, never on an unrelated re-render.
+  const pendingFocusRef = useRef<string | null>(null);
+  const fieldRefs = useRef<Record<string, HTMLInputElement | HTMLTextAreaElement | null>>({});
+  useEffect(() => {
+    const key = pendingFocusRef.current;
+    pendingFocusRef.current = null;
+    if (key === null) return;
+    const el = fieldRefs.current[key];
+    if (!el) return;
+    el.focus();
+    el.scrollIntoView({ block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+  });
 
   // Guards every setState below a `setTimeout`/an awaited call against
   // firing after this card has been unmounted -- e.g. the prompt closed
@@ -167,6 +195,7 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
   }
 
   function pickOther(qi: number): void {
+    if (answers[qi]?.other === undefined) pendingFocusRef.current = `other-${qi}`;
     setAnswers(prev => ({ ...prev, [qi]: { options: [], other: prev[qi]?.other ?? '' } }));
   }
 
@@ -224,6 +253,7 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
             <small>Type your own answer.</small>
             {otherOpen && (
               <input type="text" className="other" aria-label="Your own answer"
+                ref={el => { fieldRefs.current[`other-${qi}`] = el; }}
                 maxLength={MAX_TEXT_LEN}
                 value={picked?.other ?? ''}
                 disabled={sending}
@@ -271,12 +301,16 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
                 {choice.takesText && (
                   <>
                     <button type="button" className="btn quiet" disabled={sending}
-                      onClick={() => setNoTextOpen(o => !o)}>
+                      onClick={() => {
+                        if (!noTextOpen) pendingFocusRef.current = 'noText';
+                        setNoTextOpen(!noTextOpen);
+                      }}>
                       and tell Claude what to do instead
                     </button>
                     {noTextOpen && (
                       <div className="feedback">
                         <input type="text" aria-label="and tell Claude what to do instead"
+                          ref={el => { fieldRefs.current.noText = el; }}
                           maxLength={MAX_TEXT_LEN} disabled={sending}
                           value={noText}
                           onChange={e => setNoText(oneLine(e.target.value))} />
@@ -319,7 +353,10 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
               // takesText key unless the prompt is a permission, so plan
               // can never send one for it regardless.
               choice.takesText
-                ? choiceButton(choice, () => setPlanFeedbackOpen(true))
+                ? choiceButton(choice, () => {
+                    if (!planFeedbackOpen) pendingFocusRef.current = 'planFeedback';
+                    setPlanFeedbackOpen(true);
+                  })
                 : choiceButton(choice, () => void send({ kind: 'choice', key: choice.key }))
             ))}
           </div>
@@ -328,6 +365,7 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
           <div className="feedback">
             <label className="hint" htmlFor="prompt-plan-feedback">What should change?</label>
             <textarea id="prompt-plan-feedback" maxLength={MAX_TEXT_LEN} disabled={sending}
+              ref={el => { fieldRefs.current.planFeedback = el; }}
               value={planFeedback}
               onChange={e => setPlanFeedback(oneLine(e.target.value))} />
             <div>
