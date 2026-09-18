@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   discoverLiveProcesses, execFileSoft, resetLiveSessionWarnings, type ExecFn, type DiscoveryDeps,
 } from '../../src/discovery/live.ts';
@@ -127,6 +129,124 @@ describe('discoverLiveProcesses', () => {
       expect(call).toContain('42');
       expect(call.some(a => a !== '42' && a.includes('42'))).toBe(false);
     }
+  });
+});
+
+// Codex exact identity: which rollout files each Codex process holds open.
+// Measured 2026-09-18: a Codex CLI whose folder was moved mid-session keeps
+// its session_meta cwd at the OLD path, so cwd matching can never find it --
+// but the process still holds its rollouts open. Fixture recorded from
+// `lsof -Fpn -p 45781,45783,46619,80187` on that machine (see
+// tests/discovery/parse.test.ts).
+describe('open Codex rollouts', () => {
+  const LSOF_FPN = readFileSync(resolve('tests/fixtures/discovery/lsof-Fpn-codex.txt'), 'utf8');
+  const HOME = '/Users/exampleuser00';
+  const ROOT = `${HOME}/.codex/sessions`;
+  const DAY = `${ROOT}/2026/09/17`;
+  const DEPS: DiscoveryDeps = { ...NO_SESSION_FILE, codexSessions: ROOT };
+  const APP_CODEX = '/Applications/ChatGPT.app/Contents/Resources/codex';
+  const PS = `45781 ${APP_CODEX}\n45783 ${APP_CODEX}\n46619 ${APP_CODEX}\n80187 codex\n100 claude\n`;
+  const LSOF_KEY = 'lsof -Fpn -p 45781,45783,46619,80187';
+  const MOVED_CWD = `${HOME}/Documents/ExampleOrg/Education/educational-farm`;
+
+  it('lists every rollout the process holds open, root and subagent threads alike, in lsof order', async () => {
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': PS,
+      'lsof -a -p 80187 -d cwd -Fn': `p80187\nfcwd\nn${MOVED_CWD}\n`,
+      [LSOF_KEY]: LSOF_FPN,
+    });
+    const procs = await discoverLiveProcesses(exec, DEPS);
+    const byPid = new Map(procs.map(p => [p.pid, p]));
+    expect(byPid.get(80187)).toMatchObject({ provider: 'codex', cwd: MOVED_CWD });
+    expect(byPid.get(80187)!.openRollouts).toEqual([
+      `${DAY}/rollout-2026-09-17T10-11-56-01a0b05a-8289-7881-97cc-1507cfd4b7b3.jsonl`,
+      `${DAY}/rollout-2026-09-17T10-06-25-01a0b055-739c-7822-860d-016ebc9d8f9c.jsonl`,
+      `${DAY}/rollout-2026-09-17T07-21-08-01a0afbe-22ea-73b1-a35e-3ecb24fa063f.jsonl`,
+      `${DAY}/rollout-2026-09-17T07-21-08-01a0afbe-2356-7480-b351-901c66764f90.jsonl`,
+      `${DAY}/rollout-2026-09-17T10-06-25-01a0b055-7358-7323-ada2-fc70aa2ed4da.jsonl`,
+      `${DAY}/rollout-2026-09-17T10-04-30-01a0b053-b307-7da0-bc12-8fea466f79c2.jsonl`,
+    ]);
+    // No rollout open (the desktop app's processes here), and never a
+    // Claude process: the field is omitted, so their shape is as before.
+    for (const pid of [45781, 45783, 46619, 100]) expect(byPid.get(pid)).not.toHaveProperty('openRollouts');
+  });
+
+  it('runs ONE lsof for every Codex pid together, never per pid, and never for a Claude pid', async () => {
+    const calls: Array<{ bin: string; args: string[]; opts: unknown }> = [];
+    const exec: ExecFn = async (bin, args, opts) => {
+      calls.push({ bin, args, opts });
+      if (bin === 'ps' && args[0] === '-axo') return PS;
+      return [bin, ...args].join(' ') === LSOF_KEY ? LSOF_FPN : '';
+    };
+    await discoverLiveProcesses(exec, DEPS);
+    const rolloutCalls = calls.filter(c => c.bin === 'lsof' && c.args.includes('-Fpn'));
+    expect(rolloutCalls).toEqual([
+      // lsof exits 1 when any listed pid has gone, but still prints every
+      // one it found -- so exit 1 keeps its output.
+      { bin: 'lsof', args: ['-Fpn', '-p', '45781,45783,46619,80187'], opts: { okExitCodes: [1] } },
+    ]);
+  });
+
+  it('skips the lookup entirely when there is no Codex process', async () => {
+    const calls: string[][] = [];
+    const exec: ExecFn = async (bin, args) => {
+      calls.push([bin, ...args]);
+      return bin === 'ps' && args[0] === '-axo' ? '100 claude\n' : '';
+    };
+    await discoverLiveProcesses(exec, DEPS);
+    expect(calls.some(c => c.includes('-Fpn'))).toBe(false);
+  });
+
+  it('ignores anything outside the Codex sessions folder or not named like a rollout', async () => {
+    const good = `${DAY}/rollout-2026-09-17T07-21-08-good.jsonl`;
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '80187 codex\n',
+      'lsof -Fpn -p 80187': [
+        'p80187', 'f30', `n${good}`,
+        'f31', `n${good}`, // a second fd on the same file lists it once
+        'f32', 'n/tmp/rollout-2026-09-17T07-21-08-outside.jsonl',
+        'f33', `n${ROOT}/../evil/rollout-2026-09-17T07-21-08-dotdot.jsonl`,
+        'f34', `n${HOME}/.codex/sessions-evil/rollout-2026-09-17T07-21-08-prefix.jsonl`,
+        'f35', `n${DAY}/notes.jsonl`,
+        'f36', `n${DAY}/rollout-2026-09-17T07-21-08-x.jsonl.bak`,
+        'f37', 'nrollout-2026-09-17T07-21-08-relative.jsonl',
+        'f38', `n${HOME}/.codex/thread-writer-locks/01a0afbe-22ea-73b1-a35e-3ecb24fa063f.lock`,
+      ].join('\n') + '\n',
+    });
+    const [proc] = await discoverLiveProcesses(exec, DEPS);
+    expect(proc!.openRollouts).toEqual([good]);
+  });
+
+  describe('falls back to cwd matching (no openRollouts) and never loses the process', () => {
+    const base = {
+      'ps -axo pid=,comm=': '80187 codex\n',
+      'lsof -a -p 80187 -d cwd -Fn': `p80187\nfcwd\nn${MOVED_CWD}\n`,
+    };
+    const expectFallback = async (exec: ExecFn) => {
+      const procs = await discoverLiveProcesses(exec, DEPS);
+      expect(procs).toHaveLength(1);
+      expect(procs[0]).toMatchObject({ pid: 80187, provider: 'codex', cwd: MOVED_CWD });
+      expect(procs[0]).not.toHaveProperty('openRollouts');
+    };
+
+    it('when lsof fails or times out (execFileSoft resolves to empty output)', async () => {
+      await expectFallback(fakeExec({ ...base, 'lsof -Fpn -p 80187': '' }));
+    });
+
+    it('when lsof prints garbage', async () => {
+      await expectFallback(fakeExec({
+        ...base,
+        'lsof -Fpn -p 80187': 'lsof: illegal option character: F\nusage: [-?abhKlnNoOPRtUvVX]\n<html>\np\nn\npNaN\nn/x\n',
+      }));
+    });
+
+    it('when the exec for this one call rejects, against its own contract', async () => {
+      const inner = fakeExec(base);
+      await expectFallback(async (bin, args) => {
+        if (args.includes('-Fpn')) throw new Error('boom');
+        return inner(bin, args);
+      });
+    });
   });
 });
 
@@ -283,6 +403,18 @@ describe('execFileSoft', () => {
   it('still fails soft on a plain command failure (unaffected by adding the timeout option)', async () => {
     await expect(execFileSoft('a-binary-that-does-not-exist-anywhere', [])).resolves.toBe('');
   });
+
+  // lsof exits 1 when any pid it was asked about has gone, yet prints every
+  // one it did find. okExitCodes keeps that output; nothing else changes.
+  it('keeps stdout on an exit code the caller lists as ok, and only that one', async () => {
+    await expect(execFileSoft('sh', ['-c', 'printf partial; exit 1'], { okExitCodes: [1] })).resolves.toBe('partial');
+    await expect(execFileSoft('sh', ['-c', 'printf partial; exit 2'], { okExitCodes: [1] })).resolves.toBe('');
+    await expect(execFileSoft('sh', ['-c', 'printf partial; exit 1'])).resolves.toBe('');
+  });
+
+  it('still fails soft on a timeout even when exit 1 is ok -- a killed command has no exit code', async () => {
+    await expect(execFileSoft('sh', ['-c', 'printf partial; sleep 5'], { okExitCodes: [1] })).resolves.toBe('');
+  }, 8000);
 });
 
 // B2: pushAfterDiscoverySweep (main/index.ts) fires every 5 seconds with no

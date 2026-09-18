@@ -24,12 +24,13 @@ import { promisify } from 'node:util';
 import { basename } from 'node:path';
 import { homedir } from 'node:os';
 import {
-  parseProcessList, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost, type LiveProcess,
+  parseProcessList, parseTty, parseLsofCwd, parseLsofNames, parseEtime, parseRss, classifyHost, type LiveProcess,
 } from './parse.ts';
 import { parseProcessChainHop, resolvePaths } from '../config.ts';
 import {
   readLiveSessionFile, startTimeAgrees, type LiveSessionFile, type LiveSessionRead,
 } from '../providers/claude/liveSession.ts';
+import { isRolloutPath } from '../providers/codex/rolloutPath.ts';
 import type { Provider } from '../core/types.ts';
 
 const execFileP = promisify(execFile);
@@ -50,7 +51,13 @@ const PROVIDER_BINS = ['claude', 'codex'] as const;
  *  src/cli.ts's synchronous safeExec, which defaultExec below mirrors.
  *  discoverLiveProcesses also wraps its own top-level await in try/catch,
  *  as defence in depth against an exec that breaks this contract. */
-export type ExecFn = (bin: string, args: string[]) => Promise<string>;
+export type ExecFn = (bin: string, args: string[], opts?: ExecOpts) => Promise<string>;
+
+/** `okExitCodes`: non-zero exit codes whose stdout is still whole and worth
+ *  keeping. `lsof -p a,b` exits 1 when ANY listed pid has gone, yet prints
+ *  every pid it did find -- without this, one process exiting mid-sweep
+ *  would blank the answer for all the others. */
+export interface ExecOpts { okExitCodes?: readonly number[] }
 
 // B2 (whole-branch review, 2026-09-11): this used to call execFileP with no
 // `timeout`, so one unresponsive command (e.g. lsof stuck on a stale network
@@ -65,19 +72,28 @@ export type ExecFn = (bin: string, args: string[]) => Promise<string>;
 // the default SIGTERM either. Exported (not just used internally) so
 // main/ipc.ts's defaultHop can share the exact same bounded, fail-soft
 // behaviour instead of duplicating it with its own un-timed execFileP call.
-export async function execFileSoft(bin: string, args: string[]): Promise<string> {
+//
+// Output is bounded by execFile's default maxBuffer (1 MiB): past it the
+// command is killed and this resolves to '' like any other failure.
+export async function execFileSoft(bin: string, args: string[], opts: ExecOpts = {}): Promise<string> {
   try {
     const { stdout } = await execFileP(bin, args, {
       encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL',
     });
     return stdout;
-  } catch {
-    return '';
+  } catch (err) {
+    // Only a clean exit with a code the caller listed keeps its stdout. A
+    // killed command (timeout) has a signal and no numeric code, and a
+    // maxBuffer overflow a string code, so both still resolve to ''.
+    const e = err as { code?: unknown; signal?: unknown; killed?: unknown; stdout?: unknown };
+    const ok = typeof e.code === 'number' && (opts.okExitCodes ?? []).includes(e.code)
+      && e.signal == null && e.killed !== true && typeof e.stdout === 'string';
+    return ok ? e.stdout as string : '';
   }
 }
 
-async function defaultExec(bin: string, args: string[]): Promise<string> {
-  return execFileSoft(bin, args);
+async function defaultExec(bin: string, args: string[], opts?: ExecOpts): Promise<string> {
+  return execFileSoft(bin, args, opts);
 }
 
 /** Injectable pieces of the live session lookup, so tests never read the
@@ -86,6 +102,9 @@ export type DiscoveryDeps = {
   readLiveSession?: (pid: number) => LiveSessionRead;
   now?: () => number;
   warn?: (message: string) => void;
+  /** The Codex rollouts folder open files must sit in; defaults to
+   *  ~/.codex/sessions. Tests point it at a fixture's redacted home. */
+  codexSessions?: string;
 };
 
 /** The production reader. Exported for Reattach's fresh re-read
@@ -218,6 +237,36 @@ async function inspectPid(pid: number, provider: Provider, exec: ExecFn, deps: D
   };
 }
 
+/** Codex exact identity (the moved-folder fix, 2026-09-18): which rollout
+ *  files each Codex process holds open. A Codex CLI keeps its root rollout
+ *  open for its whole life, plus one per subagent thread, and the rollout
+ *  names the session even when the process's cwd no longer matches the
+ *  cwd the session recorded -- measured on a session whose folder was
+ *  moved while it ran, which cwd matching could never find.
+ *
+ *  ONE `lsof` for every Codex pid together, never one per pid. Measured
+ *  2026-09-18 on this machine: 4 Codex pids, ~6 KB of output, ~30 ms.
+ *  Only names that pass isRolloutPath (absolute, normalised, inside the
+ *  sessions folder, rollout-named) survive; everything else lsof lists is
+ *  dropped. Enrichment only: any failure -- lsof missing, timed out,
+ *  garbage, or an exec that rejects -- yields an empty map, and matching
+ *  falls back to cwd exactly as before. Never throws. */
+async function openRolloutsByPid(pids: number[], exec: ExecFn, codexRoot: string): Promise<Map<number, string[]>> {
+  const out = new Map<number, string[]>();
+  if (pids.length === 0) return out;
+  let listing: string;
+  try {
+    listing = await exec('lsof', ['-Fpn', '-p', pids.join(',')], { okExitCodes: [1] });
+  } catch {
+    return out;
+  }
+  for (const [pid, names] of parseLsofNames(listing, new Set(pids))) {
+    const rollouts = [...new Set(names.filter(n => isRolloutPath(n, codexRoot)))];
+    if (rollouts.length > 0) out.set(pid, rollouts);
+  }
+  return out;
+}
+
 /** A matched pid (found by `pgrep -x <bin>` for either provider) is a
  *  session only if no OTHER matched pid is its ancestor -- a helper process
  *  a session spawned (a sandbox wrapper, an app-server, ...) still matches
@@ -276,9 +325,17 @@ export async function discoverLiveProcesses(exec: ExecFn = defaultExec, deps: Di
         return provider ? [{ pid, provider }] : [];
       });
     const matchedPids = new Set(matched.map(m => m.pid));
+    const codexPids = matched.filter(m => m.provider === 'codex').map(m => m.pid);
 
-    const inspected = await Promise.all(matched.map(({ pid, provider }) => inspectPid(pid, provider, exec, deps)));
-    return filterToSessions(inspected, matchedPids);
+    const [inspected, rollouts] = await Promise.all([
+      Promise.all(matched.map(({ pid, provider }) => inspectPid(pid, provider, exec, deps))),
+      openRolloutsByPid(codexPids, exec, deps.codexSessions ?? resolvePaths(homedir()).codexSessions),
+    ]);
+    const withRollouts = inspected.map(i => {
+      const openRollouts = rollouts.get(i.process.pid);
+      return openRollouts ? { ...i, process: { ...i.process, openRollouts } } : i;
+    });
+    return filterToSessions(withRollouts, matchedPids);
   } catch {
     return [];
   }

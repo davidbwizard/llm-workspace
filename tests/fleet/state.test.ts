@@ -783,6 +783,93 @@ describe('openSessionsLive', () => {
     });
   });
 
+  // Codex exact identity from the rollouts a process holds open. Measured
+  // 2026-09-18: a Codex CLI whose folder was MOVED mid-session runs in the
+  // new folder, but its session_meta (and so the index) keeps the old cwd,
+  // which no longer exists -- cwd matching can never find it. The process
+  // still holds its root rollout open, plus one per subagent thread; every
+  // one of them shares the root's session id, and only a subagent's byte-0
+  // line also carries an agent-scoped agent.spawned row.
+  describe('open-rollout identity (Codex)', () => {
+    const OLD = '/Users/me/Documents/David/educational-farm';
+    const NEW = '/Users/me/Documents/ExampleOrg/Education/educational-farm';
+    const DAY = '/Users/me/.codex/sessions/2026/09/17';
+    const ROOT_FILE = `${DAY}/rollout-2026-09-17T07-21-08-root.jsonl`;
+    const SUB_FILE = `${DAY}/rollout-2026-09-17T10-06-25-sub.jsonl`;
+    const OTHER_ROOT = `${DAY}/rollout-2026-09-17T11-00-00-other.jsonl`;
+    const cx = (o: Partial<NormalizedEvent>) => ev({ provider:'codex', runId:null, ...o });
+
+    function movedSession(opts: { sessionAtNewPath?: boolean } = {}) {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        cx({ sessionId:'S', kind:'session.started', ts:at(300), payload:{ cwd:OLD }, sourceFile:ROOT_FILE, sourceOffset:0, contentHash:'r0' }),
+        cx({ sessionId:'S', kind:'prose', ts:at(2), payload:{ text:'from the root' }, sourceFile:ROOT_FILE, sourceOffset:900, contentHash:'r1' }),
+        cx({ sessionId:'S', kind:'session.started', ts:at(100), payload:{ cwd:OLD }, sourceFile:SUB_FILE, sourceOffset:0, contentHash:'s0' }),
+        cx({ sessionId:'S', agentId:'sub-1', kind:'agent.spawned', ts:at(100), payload:{ name:'Gibbs' }, sourceFile:SUB_FILE, sourceOffset:0, contentHash:'s0', subIndex:1 }),
+        ...(opts.sessionAtNewPath ? [
+          cx({ sessionId:'N', kind:'session.started', ts:at(50), payload:{ cwd:NEW }, sourceFile:OTHER_ROOT, sourceOffset:0, contentHash:'n0' }),
+        ] : []),
+      ]);
+      return db;
+    }
+    const codexProc = (o: Partial<LiveProcess> & { pid: number }) =>
+      proc({ provider:'codex', cwd:NEW, ageSeconds:6 * 3600, ...o });
+
+    it('matches the moved-folder session by the root rollout the process holds open', () => {
+      const db = movedSession();
+      // Pinned: cwd alone finds nothing, which is the bug.
+      expect(openSessionsLive(db, [codexProc({ pid:80187 })], NOW)[0]).toMatchObject({ match:'unknown', sessionId:null });
+
+      const [o] = openSessionsLive(db, [codexProc({ pid:80187, openRollouts:[SUB_FILE, ROOT_FILE] })], NOW);
+      expect(o).toMatchObject({ match:'unique', sessionId:'S', lastProse:'from the root', cwd:NEW });
+    });
+
+    it('wins over a cwd match that names another session in the new folder', () => {
+      const db = movedSession({ sessionAtNewPath: true });
+      expect(openSessionsLive(db, [codexProc({ pid:1 })], NOW)[0]).toMatchObject({ match:'unique', sessionId:'N' });
+      expect(openSessionsLive(db, [codexProc({ pid:1, openRollouts:[ROOT_FILE, SUB_FILE] })], NOW)[0])
+        .toMatchObject({ match:'unique', sessionId:'S' });
+    });
+
+    it('falls back to cwd matching unchanged when no open rollout is known to the index', () => {
+      const db = movedSession({ sessionAtNewPath: true });
+      const [o] = openSessionsLive(db, [codexProc({ pid:1, openRollouts:[`${DAY}/rollout-2026-09-17T12-00-00-new.jsonl`] })], NOW);
+      expect(o).toMatchObject({ match:'unique', sessionId:'N' });
+    });
+
+    it('never takes the identity from a subagent rollout alone', () => {
+      const db = movedSession();
+      expect(openSessionsLive(db, [codexProc({ pid:1, openRollouts:[SUB_FILE] })], NOW)[0])
+        .toMatchObject({ match:'unknown', sessionId:null });
+    });
+
+    it("never matches the parser's 'unknown' placeholder id (a session_meta with no id)", () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [cx({ sessionId:'unknown', kind:'session.started', payload:{ cwd:OLD }, sourceFile:ROOT_FILE, sourceOffset:0, contentHash:'u0' })]);
+      expect(openSessionsLive(db, [codexProc({ pid:1, openRollouts:[ROOT_FILE] })], NOW)[0])
+        .toMatchObject({ match:'unknown', sessionId:null });
+    });
+
+    it('falls back to cwd matching when the open root rollouts name two sessions', () => {
+      const db = movedSession({ sessionAtNewPath: true });
+      const [o] = openSessionsLive(db, [codexProc({ pid:1, openRollouts:[ROOT_FILE, OTHER_ROOT] })], NOW);
+      expect(o).toMatchObject({ match:'unique', sessionId:'N' }); // exactly what cwd alone says
+    });
+
+    it('looks every open rollout up in one query, and runs none when no process has one', () => {
+      const db = movedSession({ sessionAtNewPath: true });
+      const prepareSpy = vi.spyOn(db, 'prepare');
+      const rolloutQueries = () => prepareSpy.mock.calls.filter(([sql]) => typeof sql === 'string' && sql.includes('source_offset = 0'));
+      openSessionsLive(db, [codexProc({ pid:1 }), proc({ pid:2, cwd:'/repo/x' })], NOW);
+      expect(rolloutQueries()).toHaveLength(0);
+      openSessionsLive(db, [
+        codexProc({ pid:1, openRollouts:[ROOT_FILE, SUB_FILE] }),
+        codexProc({ pid:2, openRollouts:[OTHER_ROOT] }),
+      ], NOW);
+      expect(rolloutQueries()).toHaveLength(1);
+    });
+  });
+
   describe('activity from the live session status', () => {
     function oneSession(lastKind: 'turn.completed' | 'prose') {
       const db = openDb(':memory:');

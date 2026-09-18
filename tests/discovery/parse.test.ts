@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { parseProcessList, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost } from '../../src/discovery/parse.ts';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import {
+  parseProcessList, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost, parseLsofNames,
+} from '../../src/discovery/parse.ts';
 
 describe('parseProcessList', () => {
   it('extracts pid and command, one process per line', () => {
@@ -92,5 +96,31 @@ describe('classifyHost', () => {
   });
   it('falls back to unknown', () => {
     expect(classifyHost(['claude', 'sh', 'cron'])).toBe('unknown');
+  });
+});
+
+// Recorded 2026-09-18 from `lsof -Fpn -p 45781,45783,46619,80187` on the
+// machine with the moved-folder Codex session (username replaced with a
+// same-length placeholder, one IPv6 socket address with documentation ones).
+const LSOF_FPN = readFileSync(resolve('tests/fixtures/discovery/lsof-Fpn-codex.txt'), 'utf8');
+
+describe('parseLsofNames', () => {
+  it('groups every n line under the p line before it, skipping the f lines lsof always adds', () => {
+    const got = parseLsofNames(LSOF_FPN, new Set([45781, 45783, 46619, 80187]));
+    expect([...got.keys()]).toEqual([45781, 45783, 46619, 80187]);
+    expect(got.get(80187)![0]).toBe('/Users/exampleuser00/Documents/ExampleOrg/Education/educational-farm');
+    expect(got.get(80187)!.filter(n => n.includes('/rollout-'))).toHaveLength(6);
+    expect(got.get(46619)!.some(n => n.includes('/rollout-'))).toBe(false);
+    expect([...got.values()].flat().some(n => /^[pf]\d/.test(n))).toBe(false);
+  });
+
+  it('drops names under a pid that was not asked for, and names before any p line', () => {
+    const out = 'n/orphan\np1\nfcwd\nn/a\np2\nf3\nn/b\n';
+    expect(parseLsofNames(out, new Set([1]))).toEqual(new Map([[1, ['/a']]]));
+  });
+
+  it('returns nothing for empty or garbage output', () => {
+    expect(parseLsofNames('', new Set([1]))).toEqual(new Map());
+    expect(parseLsofNames('lsof: WARNING\n<html>\npnot-a-pid\nn/x\n', new Set([1]))).toEqual(new Map());
   });
 });
