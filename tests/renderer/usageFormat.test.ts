@@ -39,18 +39,25 @@ describe('contextTone -- the chip\'s colour thresholds', () => {
   });
 });
 
+// Usage design follow-up (David's own read of the real popover): a
+// same-day rate limit read fine as "2h 10m", but a weekly window sitting
+// days out read as a useless four-digit minute count. The scale now has
+// three tiers -- days+hours at 24h and up, hours+minutes from 1h up to a
+// day, bare minutes below that -- with the days tier always showing its
+// hour part (even "0h") so a duration just past midnight never silently
+// drops a whole unit, matching the hour tier's own long-standing rule of
+// dropping a genuinely-zero minute remainder (unchanged from before this
+// table: "resets in 3h", not "resets in 3h 0m").
 describe('formatResetIn', () => {
-  it('shows hours and minutes together when both are non-zero', () => {
-    expect(formatResetIn(2 * 3_600_000 + 10 * 60_000)).toBe('resets in 2h 10m');
-  });
-  it('drops the minutes when they round to exactly zero', () => {
-    expect(formatResetIn(3 * 3_600_000)).toBe('resets in 3h');
-  });
-  it('shows minutes alone under an hour', () => {
-    expect(formatResetIn(45 * 60_000)).toBe('resets in 45m');
-  });
-  it('rounds a sub-minute remainder up to 1m rather than showing 0m for a still-future time', () => {
-    expect(formatResetIn(10_000)).toBe('resets in 1m');
+  it.each([
+    [10_000, 'resets in 1m'], // sub-minute rounds up, never 0m for a still-future time
+    [45 * 60_000, 'resets in 45m'], // minutes alone, under an hour
+    [2 * 3_600_000 + 10 * 60_000, 'resets in 2h 10m'], // hours + minutes, both non-zero
+    [3 * 3_600_000, 'resets in 3h'], // exact hour drops the zero minutes
+    [24 * 3_600_000, 'resets in 1d 0h'], // exact day keeps the zero hours
+    [5 * 86_400_000 + 15 * 3_600_000, 'resets in 5d 15h'], // days + hours, both non-zero
+  ])('formats %d ms as %s', (deltaMs, expected) => {
+    expect(formatResetIn(deltaMs)).toBe(expected);
   });
 });
 
@@ -76,12 +83,24 @@ describe('resetTextFor -- only for a finite, future reset', () => {
   });
 });
 
+// Same scale as formatResetIn above (usage design follow-up), floored
+// rather than ceiled -- this is elapsed time, not a countdown, so "12.9m
+// ago" honestly reads as "12m ago", not "13m ago".
 describe('formatUpdatedAgo', () => {
-  it('reports whole minutes elapsed', () => {
-    expect(formatUpdatedAgo(1_000_000, 1_000_000 + 3 * 60_000)).toBe('updated 3 min ago');
+  it.each([
+    [0, 'updated just now'], // under a minute
+    [3 * 60_000, 'updated 3m ago'], // minutes alone, under an hour
+    [4 * 3_600_000 + 38 * 60_000, 'updated 4h 38m ago'], // hours + minutes, both non-zero
+    [2 * 60_000 + 3_600_000, 'updated 1h 2m ago'], // hours + minutes, both non-zero, single-digit
+    [2 * 3_600_000, 'updated 2h ago'], // exact hour drops the zero minutes
+    [2 * 86_400_000 + 3 * 3_600_000, 'updated 2d 3h ago'], // days + hours, both non-zero
+    [86_400_000, 'updated 1d 0h ago'], // exact day keeps the zero hours
+  ])('formats %d ms elapsed as %s', (elapsedMs, expected) => {
+    expect(formatUpdatedAgo(1_000_000, 1_000_000 + elapsedMs)).toBe(expected);
   });
+
   it('never goes negative -- clock skew reads as just now', () => {
-    expect(formatUpdatedAgo(1_000_000, 999_000)).toBe('updated 0 min ago');
+    expect(formatUpdatedAgo(1_000_000, 999_000)).toBe('updated just now');
   });
 });
 

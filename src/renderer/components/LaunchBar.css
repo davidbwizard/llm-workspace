@@ -55,4 +55,4 @@
   background:none; border:1px solid var(--line-soft); border-radius:6px; padding:5px 10px; cursor:pointer; }
 .launchusage:hover { color:var(--ink); border-color:var(--line); }
 .launchusage[aria-expanded="true"] { color:var(--ink); border-color:var(--line); }
-.usagewrap .usagepop { top:calc(100% + 6px); left:0; }
+.usagewrap .usagepop { top:calc(100% + 6px); right:0; }

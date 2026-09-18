@@ -9,6 +9,7 @@ import { SessionRail } from './SessionRail.tsx';
 import { ConversationView } from './ConversationView.tsx';
 import { TerminalView } from './TerminalView.tsx';
 import { ContextChip } from './ContextChip.tsx';
+import { abbreviateHome } from '../pathFormat.ts';
 import './MainPane.css';
 
 /** Falls back to a closed refusal rather than throwing when the bridge is
@@ -123,9 +124,13 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
           <button type="button" className="paneback" onClick={onClear}>All sessions</button>
           {/* The rail already names the project, so this carries the thing
               the rail cannot fit: the session's full working directory
-              (spec §3.7). `title` keeps the untruncated value reachable on
-              hover and to assistive tech once the CSS ellipsis bites. */}
-          <span className="panetitle" title={session?.cwd ?? undefined}>{session?.cwd ?? 'session'}</span>
+              (spec §3.7). `title` keeps the untruncated, un-abbreviated
+              value reachable on hover and to assistive tech once the CSS
+              ellipsis bites -- only the VISIBLE text is shortened, with
+              abbreviateHome's own "~" and the CSS start-truncation below. */}
+          <span className="panetitle" title={session?.cwd ?? undefined}>
+            {session?.cwd ? abbreviateHome(session.cwd) : 'session'}
+          </span>
           {/* Usage design, Part B: the context chip, hidden entirely (its
               own null check) until some source has a count for this
               session. */}
