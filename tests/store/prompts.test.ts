@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -86,16 +86,55 @@ describe('openPromptEvent', () => {
     expect(openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 800)?.kind).toBe('PermissionRequest');
   });
 
-  it('returns null once waitingSinceMs is more than 2s after the event', () => {
+  // Ledger ruling (final review M6): the status flips to waiting 15-30 ms
+  // BEFORE the PermissionRequest is written, and the helper stamps whole
+  // seconds, so the event's stamp is waitingSince floored to the second or
+  // later. A stamp from the previous second belongs to an earlier prompt.
+  it('matches a stamp in the same whole second as waitingSinceMs', () => {
+    const db = openDb(':memory:');
+    ingestFixture(db, ASK_PERMISSION_REQUEST);
+    expect(openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 999)?.kind).toBe('PermissionRequest');
+  });
+
+  it('returns null for a stamp in the second before waitingSinceMs', () => {
+    const db = openDb(':memory:');
+    ingestFixture(db, ASK_PERMISSION_REQUEST);
+    expect(openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 1000)).toBeNull();
+    expect(openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 1999)).toBeNull();
+  });
+
+  it('returns null once waitingSinceMs is seconds after the event', () => {
     const db = openDb(':memory:');
     ingestFixture(db, ASK_PERMISSION_REQUEST);
     expect(openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 3000)).toBeNull();
   });
 
-  it('still matches a stamp up to 1s earlier than waitingSinceMs (whole-second rounding)', () => {
+  // Final review M5: a background agent starting or finishing while the
+  // prompt is open does not answer it.
+  it('is not hidden by a newer SubagentStart or SubagentStop', () => {
     const db = openDb(':memory:');
     ingestFixture(db, ASK_PERMISSION_REQUEST);
-    expect(openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 999)?.kind).toBe('PermissionRequest');
+    ingestOther(db, SESSION, ASK_OCCURRED_AT_MS + 2000, 'SubagentStart');
+    ingestOther(db, SESSION, ASK_OCCURRED_AT_MS + 3000, 'SubagentStop');
+    expect(openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 800)?.kind).toBe('PermissionRequest');
+  });
+
+  it('is still hidden by a newer Stop', () => {
+    const db = openDb(':memory:');
+    ingestFixture(db, ASK_PERMISSION_REQUEST);
+    ingestOther(db, SESSION, ASK_OCCURRED_AT_MS + 2000, 'Stop');
+    expect(openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 800)).toBeNull();
+  });
+
+  // Final review M8: prepared once per Db, not on every push.
+  it('prepares its query once per database, not on every call', () => {
+    const db = openDb(':memory:');
+    ingestFixture(db, ASK_PERMISSION_REQUEST);
+    const prepare = vi.spyOn(db, 'prepare');
+    openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 800);
+    openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 800);
+    openPromptEvent(db, SESSION, ASK_OCCURRED_AT_MS + 800);
+    expect(prepare.mock.calls.length).toBeLessThanOrEqual(1);
   });
 
   it('ignores another session entirely, even one with a newer event', () => {
