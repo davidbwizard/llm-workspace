@@ -13,6 +13,7 @@ const OPTION_LINE = /^\s*(❯\s*)?(\d+)\.\s+(.*)$/;
 const TAB_ROW = /^←.*→$/;
 const HEADER_LINE = /^[☐☒]\s+\S/;
 const HINT_LINE = 'shift+tab to approve with this feedback';
+const WRAPPED_IN_WORD = /\S[-/]$/;
 const PERMISSION_NO_TEXT_DEFAULT = 'No, and tell Claude what to do differently';
 const PLAN_TEXT_DEFAULT = 'Tell Claude what to change';
 
@@ -75,7 +76,10 @@ function parseDialogChoices(block: string[], kind: DialogExpect['kind']): Parsed
       if (trimmed === '') break;
       if (OPTION_LINE.test(next)) break;
       if (trimmed === HINT_LINE) { hinted = key; j++; break; }
-      label += ` ${trimmed}`;
+      // A long path wraps at the pane width, often right after a "-" or
+      // "/" inside it: no space there (Task 6: "Documents- David-"). A dash
+      // or slash standing alone as a word keeps its space.
+      label += WRAPPED_IN_WORD.test(label) ? trimmed : ` ${trimmed}`;
       j++;
     }
     choices.push({ key, label, takesText: takesTextLabel(kind, label) });

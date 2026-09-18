@@ -131,6 +131,41 @@ describe('readPromptScreen -- permission anchor ignores whitespace', () => {
   });
 });
 
+// Task 6 (by eye): a long path in an option wraps at the pane width, often
+// right after a "-" or "/"; joining with a space showed "Documents- David-".
+// These screens are fixture 50 with its option-2 path wrapped differently.
+describe('readPromptScreen -- wrapped option labels', () => {
+  const PATH = '/private/tmp/claude-502/-Users-user000000000-Documents-David-llm-workspace/05ca161a-0ae7-4978-8680-b333894fe577/scratchpad/p4probe';
+  const label2 = (capture: string) => {
+    const result = readPromptScreen(capture, permExpect('touch perm-probe.txt'));
+    if (!result.match || result.kind !== 'permission') throw new Error('expected permission match');
+    return result.choices[1]!.label;
+  };
+  const rewrap = (at: string) => {
+    const capture = screen('50-perm-bash-dialog').replace(at, `${at}\n     `);
+    expect(capture).not.toBe(screen('50-perm-bash-dialog'));
+    return capture;
+  };
+
+  it('fixture 50 as captured: the space after "to" stays', () => {
+    expect(label2(screen('50-perm-bash-dialog'))).toBe(`Yes, and always allow access to ${PATH} from this project`);
+  });
+
+  it('adds no space when the wrapped part ends with "-"', () => {
+    expect(label2(rewrap('-Documents-'))).toBe(`Yes, and always allow access to ${PATH} from this project`);
+  });
+
+  it('adds no space when the wrapped part ends with "/"', () => {
+    expect(label2(rewrap('/tmp/claude-502/'))).toBe(`Yes, and always allow access to ${PATH} from this project`);
+  });
+
+  it('keeps the space after a dash or slash that stands alone as a word', () => {
+    const capture = screen('50-perm-bash-dialog').replace(
+      /^ {3}2\. Yes, and always allow access to$/m, '   2. Yes, and always allow access to a -');
+    expect(label2(capture)).toBe(`Yes, and always allow access to a - ${PATH} from this project`);
+  });
+});
+
 // Final review M12: the text-taking row is found by its label, not by
 // being option 3 -- a dialog with a different number of options must never
 // mark a Yes row as the one that takes text.
