@@ -176,6 +176,21 @@ describe('buildPromptView', () => {
     expect(good).toHaveBeenCalledTimes(1);
   });
 
+  // Measured today: any option with a `preview` field makes Claude Code
+  // draw a side-by-side layout this app has never measured, so the prompt
+  // must never claim it is answerable -- the card still gets the question
+  // content (read-only), just not a way to send it.
+  it('is read-only with unsupported_layout when an option has a preview field', () => {
+    const input = JSON.parse(readFileSync(new URL('one-question-preview-tool_input.json', EVENTS), 'utf8'));
+    const ev = event(ASK, 'e-preview');
+    ev.payload = { tool_name: 'AskUserQuestion', tool_input: input };
+    const capture = vi.fn();
+    const view = buildPromptView(ev, NAME, { capture });
+    expect(view).toMatchObject({ kind: 'question', answerable: false, reason: 'unsupported_layout' });
+    expect(view.questions?.[0]).toMatchObject({ question: 'How should these recovered summaries look in the conversation?' });
+    expect(capture).not.toHaveBeenCalled();
+  });
+
   it('caches a successful read by event id, so later builds read no screen', () => {
     const ev = event(BASH_YES, 'e-cache');
     buildPromptView(ev, NAME, { capture: () => ({ ok: true, stdout: screen('50-perm-bash-dialog') }) });
@@ -270,6 +285,18 @@ describe('answerPrompt guards -- each refusal presses nothing', () => {
     registered();
     const view: PromptView = { id: 'e-unread', kind: 'permission', answerable: false, reason: 'screen_unread', command: 'x' };
     await refusedWith(view, PID, 'e-unread', { kind: 'choice', key: '1' }, 'unconfirmed');
+  });
+
+  // A question with a preview is marked unsupported_layout (buildPromptView)
+  // -- never answerable, so it is refused here before any key, the same way
+  // as screen_unread above.
+  it('unconfirmed, before any key, for a question marked unsupported_layout', async () => {
+    registered();
+    const view: PromptView = {
+      id: 'e-preview', kind: 'question', answerable: false, reason: 'unsupported_layout',
+      questions: [{ question: 'Which?', header: 'H', multiSelect: false, options: [{ label: 'A', description: '' }] }],
+    };
+    await refusedWith(view, PID, 'e-preview', { kind: 'questions', picks: [{ options: [0] }] }, 'unconfirmed');
   });
 
   describe('invalid', () => {
@@ -792,6 +819,28 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
       expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [0] }] }, deps(pane, view)))
         .toEqual({ status: 'refused', reason: 'unconfirmed' });
       expect(pane.sent).toEqual([]);
+    });
+  });
+
+  // Measured today: the same header-line layout, but the title wraps across
+  // two lines, each drawn with a "│ " border (98). readPromptScreen strips
+  // that border before comparing to the hook's question text (Task: bordered
+  // wrapped question titles) -- answering must work exactly like 96/97.
+  describe('one question, wrapped bordered title (98 then 97 gone)', () => {
+    function wrappedView(): PromptView {
+      const ev = event(ASK, 'one-q-wrapped');
+      const input = JSON.parse(readFileSync(new URL('one-question-wrapped-tool_input.json', EVENTS), 'utf8'));
+      ev.payload = { tool_name: 'AskUserQuestion', tool_input: input };
+      return buildPromptView(ev, NAME, {});
+    }
+
+    it('answering option 1 sends exactly [\'1\'], then two gone reads count as sent', async () => {
+      registered();
+      const view = wrappedView();
+      const pane = fakePane([screen('98-ask-one-wrapped-title'), screen('97-ask-one-after-key2')]);
+      const result = await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [0] }] }, deps(pane, view));
+      expect(result).toEqual({ status: 'sent' });
+      expect(pane.keys()).toEqual(['1']);
     });
   });
 

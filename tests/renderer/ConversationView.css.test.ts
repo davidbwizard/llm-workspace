@@ -66,6 +66,15 @@ describe('ConversationView.css: user and agent turns are visually distinguishabl
   });
 });
 
+describe('ConversationView.css: a thinking-only reply reads as a muted note', () => {
+  it('dims and italicises .turn-text.note using a theme token, never a hardcoded hex', () => {
+    const rule = blockAfter('.turn-text.note {');
+    expect(rule).toMatch(/color:\s*var\(--muted\)/);
+    expect(rule).toMatch(/font-style:\s*italic/);
+    expect(rule).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
+});
+
 describe('ConversationView.css: one text size drives the whole pane', () => {
   // Spec §3.5: conversation text size is a CSS variable on the
   // conversation root, and every message-level size is expressed relative

@@ -74,6 +74,15 @@
 .turn .turn-text { margin:0; font-size:1em; line-height:inherit; color:var(--ink);
   white-space:pre-wrap; min-width:0; max-width:72ch; }
 .turn.user .turn-text { color:var(--ink-2); }
+/* A reply Claude Code saved only as a thinking summary (parse.ts's
+   note-flagged prose event, CLAUDE_PARSER_VERSION 4) -- same position in
+   the timeline as any other reply, dimmed and set in italics so it still
+   reads as a lighter-weight aside rather than a normal reply. Same --muted
+   token .convnote and .turn-state already use for de-emphasised, non-reply
+   copy in this pane, not --ink-2 (that one marks the USER's side, a
+   different distinction). Placed after the rules above so it wins the
+   color property at equal specificity. */
+.turn-text.note { color:var(--muted); font-style:italic; }
 /* Agent replies render as markdown (.turn-text.md) inside .turn-body.
    pre-wrap is off for markdown: react-markdown emits newline text nodes
    between block elements, and pre-wrap would show each one as a blank line.

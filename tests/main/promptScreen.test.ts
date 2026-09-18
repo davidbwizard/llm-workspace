@@ -561,6 +561,42 @@ describe('readPromptScreen -- one-question layout (header line, no tab row)', ()
   });
 });
 
+// Measured today: a long one-question title wraps, and Claude Code draws
+// each wrapped line with a left border prefix "│ " (fixture 98). Short
+// titles (96) have no border at all -- both forms must match.
+describe('readPromptScreen -- wrapped question title with a border prefix', () => {
+  const WRAPPED_Q = "Test question: please try answering this one from the app's card first (any option), "
+    + 'then answer here in the terminal if it says Couldn\'t confirm. Which should I do after this fix?';
+  const wrappedExpect = (question = WRAPPED_Q): ScreenExpect =>
+    ({ kind: 'question', headers: ['Next'], questions: [question] });
+
+  it('matches 98 with current 0 and the options from the payload', () => {
+    const result = readPromptScreen(screen('98-ask-one-wrapped-title'), wrappedExpect());
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.current).toBe(0);
+    expect(result.answered).toEqual([false]);
+    expect(result.options).toEqual(['Preview-question fix', 'Context chip', 'Both, in that order']);
+    expect(result.headerOnly).toBe(true);
+  });
+
+  it('a title with a "│" line whose text differs still gives match:false', () => {
+    const result = readPromptScreen(
+      screen('98-ask-one-wrapped-title'),
+      wrappedExpect('Test question: this is not the text on screen at all?'),
+    );
+    expect(result.match).toBe(false);
+  });
+
+  it('fixture 96 (a short, unbordered title) still matches', () => {
+    const result = readPromptScreen(
+      screen('96-ask-one-question'),
+      { kind: 'question', headers: ['Next step'], questions: ['Should I create qa-7.txt with the current timestamp now?'] },
+    );
+    expect(result.match).toBe(true);
+  });
+});
+
 describe('readPromptScreen -- negatives that prove the reader tells outcomes apart', () => {
   // Every one of these screens shows something other than the expected live
   // prompt: a trust dialog, an idle composer, a busy spinner, an answered

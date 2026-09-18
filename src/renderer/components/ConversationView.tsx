@@ -1259,7 +1259,13 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                     ? <UserText id={t.id} text={t.text} />
                     : (
                       <div className="turn-body">
-                        <div className="turn-text md"><MarkdownText text={t.text} /></div>
+                        {/* A reply Claude Code saved only as a thinking
+                            summary (parse.ts's note-flagged prose event)
+                            renders through the exact same markdown path as
+                            any other reply, at the same spot in the
+                            timeline -- only .note (ConversationView.css)
+                            sets it apart, muted and italic. */}
+                        <div className={`turn-text md${t.note ? ' note' : ''}`}><MarkdownText text={t.text} /></div>
                       </div>
                     )}
                   {t.role !== 'user' && (

@@ -92,6 +92,17 @@ function kindFor(toolName: string): PromptKind {
   return 'permission';
 }
 
+/** True when any option in the raw questions payload carries a `preview`
+ *  field. Claude Code then draws a side-by-side layout this app has never
+ *  measured, so such a prompt must never be marked answerable. */
+function hasPreview(raw: unknown): boolean {
+  if (!Array.isArray(raw)) return false;
+  return raw.some((q) => {
+    const o = record(q) ?? {};
+    return Array.isArray(o.options) && o.options.some((opt) => record(opt)?.preview !== undefined);
+  });
+}
+
 /** Strings only, and only the known fields. Indexes are kept aligned with
  *  the payload (a malformed entry becomes empty text, never a dropped row),
  *  because an option's index is the digit pressed for it. */
@@ -162,7 +173,10 @@ export function buildPromptView(event: SignalEvent, tmuxName: string | null, dep
 
   if (tmuxName === null) return { ...view, reason: 'not_tmux' };
   // Question choices are the hook's own options; no screen read needed.
-  if (view.kind === 'question') return { ...view, answerable: true };
+  if (view.kind === 'question') {
+    if (hasPreview(input.questions)) return { ...view, reason: 'unsupported_layout' };
+    return { ...view, answerable: true };
+  }
 
   const cached = choiceCache.get(view.id);
   if (cached) return { ...view, answerable: true, choices: cached.map(c => ({ ...c })) };

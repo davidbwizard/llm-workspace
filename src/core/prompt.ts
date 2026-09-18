@@ -14,7 +14,7 @@ export type PromptChoice = { key: string; label: string; takesText: boolean };
 
 export type PromptView = {
   id: string; kind: PromptKind; answerable: boolean;
-  reason: null | 'not_tmux' | 'screen_unread';
+  reason: null | 'not_tmux' | 'screen_unread' | 'unsupported_layout';
   questions?: PromptQuestion[];
   toolName?: string; command?: string; filePath?: string; description?: string;
   plan?: string;

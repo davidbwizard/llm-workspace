@@ -323,6 +323,18 @@ describe('PromptCard -- not answerable', () => {
     render(<PromptCard pid={4821} prompt={prompt} onOpenTerminal={() => {}} />);
     expect(screen.getByText(/couldn't read claude's choices/i)).toBeTruthy();
   });
+
+  it('shows a question with previews as read-only, with the unsupported_layout reason and Open Terminal', () => {
+    setFleet();
+    const onOpenTerminal = vi.fn();
+    const prompt: PromptView = { ...questionPrompt, answerable: false, reason: 'unsupported_layout' };
+    render(<PromptCard pid={4821} prompt={prompt} onOpenTerminal={onOpenTerminal} />);
+    // Content still shows, read-only.
+    expect(screen.getByText('Pick a color')).toBeTruthy();
+    expect(screen.getByText(/previews the app can't answer yet/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Terminal' }));
+    expect(onOpenTerminal).toHaveBeenCalled();
+  });
 });
 
 describe('PromptCard -- results', () => {

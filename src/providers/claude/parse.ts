@@ -10,7 +10,20 @@ import type { TailLine } from './tail.ts';
 // task notifications, command output) and queued_command attachments now
 // emit prompt.submitted. Both change already-ingested rows, so the same
 // reparse rule applies.
-export const CLAUDE_PARSER_VERSION = 3;
+// Bumped to 4: an assistant record with a non-empty `thinking` block now
+// also emits a `prose` event, `payload.note: true` -- Claude Code 2.1.276 +
+// Opus 5 sometimes saves a reply as ONLY a thinking summary, with no `text`
+// block at all. Measured on 5 recent sessions: every non-empty thinking
+// block sat in a message with no text block (20 of 213 messages in one
+// session), so before this bump those replies produced no event at all and
+// the conversation pane showed nothing for them, though the terminal showed
+// the summary line. A plain tail never revisits already-ingested bytes, so
+// without this bump those past replies would stay invisible forever; the
+// bump forces the same reparse-from-zero path as the prior two bumps
+// (spec §6.1 / store/ingest.ts's reparseFile), which deletes and re-inserts
+// this file's whole event set in one transaction -- so the new note events
+// backfill without duplicating anything already indexed.
+export const CLAUDE_PARSER_VERSION = 4;
 
 /** Record types this parser understands. Anything else becomes `unparsed`
  *  so format drift surfaces instead of vanishing (spec §6.2). */
@@ -111,6 +124,23 @@ function textFromContent(content: unknown): string {
     .join('\n');
 }
 
+/** Non-empty (trimmed) `thinking` block texts from an assistant record's
+ *  content array, in order. A `thinking` block with an empty string is
+ *  Claude Code's redacted/placeholder shape (real example: `{"type":
+ *  "thinking","thinking":"","signature":"..."}`) and must stay ignored --
+ *  only a genuine summary becomes a note. */
+function thinkingNotes(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const out: string[] = [];
+  for (const b of content) {
+    if (b && b.type === 'thinking' && typeof b.thinking === 'string') {
+      const trimmed = b.thinking.trim();
+      if (trimmed) out.push(trimmed);
+    }
+  }
+  return out;
+}
+
 function toolTarget(input: unknown): string | null {
   if (!input || typeof input !== 'object') return null;
   const i = input as Record<string, unknown>;
@@ -203,6 +233,14 @@ export function parseClaudeLines(
       const content = rec.message?.content;
       const text = textFromContent(content);
       if (text) out.push(base(line, 'prose', { text, role: 'assistant' }, agentId, ts, rec.uuid ?? null));
+
+      // A thinking-only reply (see CLAUDE_PARSER_VERSION's bump-to-4 comment)
+      // still needs its own event even when the record ALSO carried a text
+      // block above -- each is its own content block, so both are real and
+      // both are kept, note flagged separately from plain text.
+      for (const note of thinkingNotes(content)) {
+        out.push(base(line, 'prose', { text: note, role: 'assistant', note: true }, agentId, ts, rec.uuid ?? null));
+      }
 
       if (Array.isArray(content)) {
         for (const b of content) {
