@@ -12,6 +12,8 @@ import type { Provider } from '../core/types.ts';
 import type { PromptView } from '../core/prompt.ts';
 import { buildPromptView, type AnswerDeps } from './answer.ts';
 import { tmuxNameForPid } from './sessions.ts';
+import { contextFor, defaultContextOpts } from './usage.ts';
+import type { SessionContext } from '../core/usage.ts';
 
 /** The pane's own three-way activity -- collapsed from fleet/state.ts's
  *  five-way Activity because the pane has neither a fleet card's blocker
@@ -38,6 +40,10 @@ export type SessionLivePayload = {
    *  Content comes from the hook payload; permission and plan choices
    *  from the pane. */
   prompt: PromptView | null;
+  /** Context window use for the conversation header (usage design, Part
+   *  A) -- the same { usedTokens, windowTokens, leftPct } the session's
+   *  card carries, or null (Codex, no session, or no count yet). */
+  context: SessionContext | null;
 };
 
 /** The pid's live session file, re-read now, trusted only if its startedAt
@@ -132,6 +138,11 @@ export interface SessionLiveDeps {
    *  puts the event in the db for this very push, instead of the next 1 s
    *  spool tick. session:watch (src/main/ipc.ts) wires the real spool. */
   ingestSpool?: () => void;
+  /** Context for a Claude session id (usage design, Part A). Defaults to
+   *  src/main/usage.ts's contextFor with the real status line folder and
+   *  Compacts at setting; tests inject it so they never read the real home.
+   *  Never called for Codex. */
+  context?: (sessionId: string) => SessionContext | null;
 }
 
 /** Wraps `read` so a single buildSessionLive call never opens the same
@@ -179,7 +190,9 @@ export function buildSessionLive(
   // override exists at all.
   const resolveTarget = deps.resolveReattachTarget ?? resolveReattachTarget;
   const target = resolveTarget(pid, { cached: deps.cached ?? [], processes, read });
-  if (!target) return { version: 1, pid, sessionId: null, activity: null, since: null, events: 0, prompt: null };
+  if (!target) {
+    return { version: 1, pid, sessionId: null, activity: null, since: null, events: 0, prompt: null, context: null };
+  }
 
   // `last_kind`/`events` deliberately read every row for this session_id,
   // INCLUDING a Codex subagent thread's own rows (they share the root
@@ -287,7 +300,14 @@ export function buildSessionLive(
     })
     : null;
 
-  return { version: 1, pid, sessionId: target.sessionId, activity, since, events: row.events ?? 0, prompt };
+  // One small indexed query plus a stat of one snapshot file per push --
+  // the same source and rule as the cards (src/main/usage.ts).
+  const context = target.provider !== 'claude' ? null
+    : deps.context
+      ? deps.context(target.sessionId)
+      : contextFor(db, [target.sessionId], defaultContextOpts()).get(target.sessionId) ?? null;
+
+  return { version: 1, pid, sessionId: target.sessionId, activity, since, events: row.events ?? 0, prompt, context };
 }
 
 // ---------------------------------------------------------------------

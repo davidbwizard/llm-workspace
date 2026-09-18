@@ -5,6 +5,7 @@ import { compareOpenSessions, compareRank } from './order.ts';
 export { compareOpenSessions, compareRank } from './order.ts';
 import type { Db } from '../store/db.ts';
 import type { Provider } from '../core/types.ts';
+import type { SessionContext } from '../core/usage.ts';
 import { currentBlockers, type Blocker } from '../store/signals.ts';
 import { classifyMatch, applyExactMatches, type MatchQuality, type MatchResult } from '../discovery/match.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
@@ -640,6 +641,14 @@ export interface OpenSession {
    *  junk card would be promoted above a real session -- defeating the
    *  junk-last rule the sort exists to keep. */
   junk: boolean;
+  /** Context window use for the matched session (usage design, Part A):
+   *  tokens used, the window, and percent left before the Compacts at point.
+   *  Always null from openSessions/openSessionsLive themselves -- filled in
+   *  by src/main/usage.ts's withContext on the push path, which reads the
+   *  status line snapshots and the Compacts at setting this pure module has
+   *  no access to. Null for Codex, for an unmatched card, and when no
+   *  source has a count yet. */
+  context: SessionContext | null;
 }
 
 /** One card per live process (discovery, spec §7.1a) -- "ALL OPEN
@@ -688,6 +697,7 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
     activity: enrichment?.activity ?? null,
     tmux: isTmux(p.pid),
     junk: junkCwdKind(p.cwd) !== null,
+    context: null,
   };
 }
 

@@ -530,7 +530,7 @@ describe('openSessions', () => {
     expect(open).toEqual([{
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, lastProse:null, events:null, activity:null, tmux:false, junk:false,
+      sessionId:null, lastProse:null, events:null, activity:null, tmux:false, junk:false, context:null,
     }]);
   });
 
@@ -926,7 +926,7 @@ describe('openSessionsLive', () => {
     expect(open).toEqual([{
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, lastProse:null, events:null, activity:null, tmux:false, junk:false,
+      sessionId:null, lastProse:null, events:null, activity:null, tmux:false, junk:false, context:null,
     }]);
   });
 
@@ -1621,7 +1621,7 @@ describe('compareOpenSessions', () => {
     return {
       provider:'claude', host:'unknown', cwd:'/repo/x', project:'x', ageSeconds:null, rssBytes:null,
       match:'unknown', sessionId:null, lastProse:null, events:null, activity:null, tmux:false,
-      junk:false, ...o,
+      junk:false, context:null, ...o,
     };
   }
 

@@ -42,6 +42,12 @@ import {
 } from './sessionLive.ts';
 import { answerPrompt, type AnswerResult } from './answer.ts';
 import { hooksState, setHooks, type HooksResult } from '../hooks/switch.ts';
+import { usageSwitchState, setUsageSwitch, type UsageSwitchResult } from '../hooks/usageSwitch.ts';
+import {
+  withContext, defaultContextOpts, buildUsagePayload, applyCompactsAt, currentCompactsAt,
+  type ContextOpts, type CompactsAtResult,
+} from './usage.ts';
+import type { UsagePayload } from '../core/usage.ts';
 import { ingestSpool } from '../hooks/spool.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
@@ -162,6 +168,9 @@ export const OPEN_SESSION_SANITISED_FIELDS =
 export const OPEN_SESSION_STRUCTURAL_FIELDS = [
   'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity', 'tmux',
   'junk',
+  // Numbers only ({ usedTokens, windowTokens, leftPct } or null) -- nothing
+  // for a bidi or zero-width character to hide in.
+  'context',
 ] as const satisfies readonly (keyof OpenSession)[];
 
 /** Sanitises every field named in `fields` whose current value is a string
@@ -252,8 +261,18 @@ let cachedPushOpenSessions: OpenSession[] = [];
  *  seconds late, never a query on the push path itself -- exactly the
  *  fallback the team lead pre-authorized if the push-path cost did not
  *  hold up under measurement, which it did not. */
-export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: number = Date.now()): void {
-  cachedPushOpenSessions = openSessionsLive(db, processes, now, { isTmux: pidIsTmux, launchedAtForPid });
+export function refreshPushEnrichment(
+  db: Db, processes: LiveProcess[], now: number = Date.now(), contextOpts?: ContextOpts,
+): void {
+  // Context (usage design, Part A) is filled here, on the same 5s cadence
+  // and for the same bounded set of sessions: one extra query over the
+  // live sessions' ids, plus a stat per snapshot file (parsed only when it
+  // changed). contextOpts is injectable so tests never read the real home.
+  cachedPushOpenSessions = withContext(
+    db,
+    openSessionsLive(db, processes, now, { isTmux: pidIsTmux, launchedAtForPid }),
+    contextOpts ?? defaultContextOpts(),
+  );
 }
 
 // freshLiveSession/resolveReattachTarget now live in src/main/sessionLive.ts
@@ -1280,6 +1299,13 @@ function helperSourcePath(): string {
   return join(app.getAppPath(), 'src/hooks/helper.sh');
 }
 
+/** "Usage and context" (src/hooks/usageSwitch.ts): which copy of
+ *  src/hooks/statusline.sh to install from -- resolved exactly as
+ *  helperSourcePath above, for the same packaging reason. */
+function statusLineSourcePath(): string {
+  return join(app.getAppPath(), 'src/hooks/statusline.sh');
+}
+
 /** The complete set of channels main answers. Adding one means adding it to
  *  the preload's enumerated list as well; tests/main/ipc.test.ts asserts
  *  they match.
@@ -1472,6 +1498,19 @@ export function registerIpc(
   ipcMain.handle('hooks:get', (): HooksResult => hooksState(resolvePaths(homedir())));
   ipcMain.handle('hooks:set', (_event, on: unknown): HooksResult =>
     setHooks(resolvePaths(homedir()), on === true, helperSourcePath()));
+
+  // Usage and context (usage design, Part A). The switch mirrors Quick
+  // answers exactly: state re-read from settings.json on every call, and
+  // anything but a literal `true` means off. usage:get takes no argument;
+  // the Compacts at value is checked in applyCompactsAt, not trusted.
+  ipcMain.handle('usage:switch:get', (): UsageSwitchResult => usageSwitchState(resolvePaths(homedir())));
+  ipcMain.handle('usage:switch:set', (_event, on: unknown): UsageSwitchResult =>
+    setUsageSwitch(resolvePaths(homedir()), on === true, statusLineSourcePath()));
+  ipcMain.handle('usage:get', (): UsagePayload => buildUsagePayload(resolvePaths(homedir())));
+  ipcMain.handle('usage:compacts-at:get', (): { compactsAt: number } =>
+    ({ compactsAt: currentCompactsAt(resolvePaths(homedir()).usageSettings) }));
+  ipcMain.handle('usage:compacts-at:set', (_event, value: unknown): CompactsAtResult =>
+    applyCompactsAt(value, resolvePaths(homedir()).usageSettings));
 
   // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing
   // Task 6's TEMPORARY not_implemented stubs in place -- not a second

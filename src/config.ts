@@ -16,6 +16,10 @@ export interface Paths {
   codexHistoryDb: string;
   spool: string;
   appearance: string;
+  /** "Usage and context": the status line snapshots (src/hooks/statusline.sh)
+   *  and main's own copy of the Compacts at setting (src/main/usage.ts). */
+  statusLineDir: string;
+  usageSettings: string;
   db: string;
 }
 
@@ -29,6 +33,8 @@ export function resolvePaths(home: string): Paths {
     codexHistoryDb: join(home, '.codex/thread_history_1.sqlite'),
     spool: join(home, '.llm-workspace/spool'),
     appearance: join(home, '.llm-workspace/appearance.json'),
+    statusLineDir: join(home, '.llm-workspace/statusline'),
+    usageSettings: join(home, '.llm-workspace/usage.json'),
     db: join(home, '.llm-workspace/index.sqlite'),
   };
 }

@@ -118,6 +118,15 @@ const api = {
   // channel here.
   hooksGet: () => ipcRenderer.invoke('hooks:get'),
   hooksSet: (on: boolean) => ipcRenderer.invoke('hooks:set', on),
+  // Usage and context (Settings switch, Usage button, Compacts at). The
+  // switch is re-read from settings.json on every call, like Quick answers;
+  // main checks every value itself (src/main/usage.ts's applyCompactsAt) --
+  // this typing narrows nothing at the trust boundary.
+  usageSwitchGet: () => ipcRenderer.invoke('usage:switch:get'),
+  usageSwitchSet: (on: boolean) => ipcRenderer.invoke('usage:switch:set', on),
+  usageGet: () => ipcRenderer.invoke('usage:get'),
+  compactsAtGet: () => ipcRenderer.invoke('usage:compacts-at:get'),
+  compactsAtSet: (value: number) => ipcRenderer.invoke('usage:compacts-at:set', value),
 };
 
 contextBridge.exposeInMainWorld('fleet', api);

@@ -61,6 +61,11 @@ describe('renderer security posture', () => {
       // Which pid's conversation is on screen -- see the dedicated
       // watchSessionFor pid-validation tests below.
       'session:watch',
+      // Usage and context: the Compacts at value is checked in main
+      // (applyCompactsAt, tests/main/usage.test.ts); usage:get takes no
+      // argument and only reads; the switch writes settings.json only
+      // through the Quick answers switch's own path (tests/hooks/usageSwitch.test.ts).
+      'usage:compacts-at:get', 'usage:compacts-at:set', 'usage:get', 'usage:switch:get', 'usage:switch:set',
     ]);
   });
 });

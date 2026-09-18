@@ -528,7 +528,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   });
 
   it('watches the claude live-session file at the validated pid, and pushes once immediately', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     const { deps, sent, fake } = makeDeps({
       processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload,
     });
@@ -538,7 +538,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   });
 
   it('never opens a status-file watch for a non-claude process', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     const { deps, sent, fake } = makeDeps({
       processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => payload,
     });
@@ -548,12 +548,12 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   });
 
   it('closes the previous watcher before starting a new one for a different pid', () => {
-    const payload1: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload1: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     const first = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload1 });
     expect(watchSessionFor(4821, first.deps)).toBe(true);
     expect(first.fake.watchedPaths()).toEqual([CLAUDE_PATH]);
 
-    const payload2: SessionLivePayload = { version: 1, pid: 4822, sessionId: 's2', activity: 'idle', since: null, events: 2, prompt: null };
+    const payload2: SessionLivePayload = { version: 1, pid: 4822, sessionId: 's2', activity: 'idle', since: null, events: 2, prompt: null, context: null };
     const second = makeDeps({ processes: [proc({ pid: 4822, provider: 'claude' })], buildPayload: () => payload2 });
     expect(watchSessionFor(4822, second.deps)).toBe(true);
 
@@ -588,7 +588,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   });
 
   it('releases the watcher and timer on an explicit null', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     const { deps, fake } = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload });
     watchSessionFor(4821, deps);
     expect(watchSessionFor(null, deps)).toBe(false);
@@ -597,7 +597,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   });
 
   it('falls back to the sweep when the watch reports an error, without dropping the watched session', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     const { deps, sent, fake } = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload });
     watchSessionFor(4821, deps);
 
@@ -626,7 +626,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   // with no accompanying transcript write, most visibly Claude entering a
   // question or permission prompt, reached the pane only on the 5s sweep.
   it('pushes on a change to the watched claude status file, coalesced the same as any other trigger', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null, context: null };
     const { deps, sent, fake } = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload });
     watchSessionFor(4821, deps);
     sent.length = 0; // clear the immediate push watchSessionFor itself sent
@@ -639,7 +639,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   });
 
   it('coalesces a change on the status file with an ordinary notifySessionChanged in the same window', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null, context: null };
     const { deps, sent, fake } = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload });
     watchSessionFor(4821, deps);
     sent.length = 0;
@@ -655,11 +655,11 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   // fast session switch) must never schedule a push for whatever pid is
   // watched now -- the same guard the 'error' handler already applies.
   it('ignores a change on a watcher that has since been replaced', () => {
-    const payload1: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload1: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     const first = makeDeps({ processes: [proc({ pid: 4821, provider: 'claude' })], buildPayload: () => payload1 });
     watchSessionFor(4821, first.deps);
 
-    const payload2: SessionLivePayload = { version: 1, pid: 4822, sessionId: 's2', activity: 'idle', since: null, events: 2, prompt: null };
+    const payload2: SessionLivePayload = { version: 1, pid: 4822, sessionId: 's2', activity: 'idle', since: null, events: 2, prompt: null, context: null };
     const second = makeDeps({ processes: [proc({ pid: 4822, provider: 'claude' })], buildPayload: () => payload2 });
     watchSessionFor(4822, second.deps);
     second.sent.length = 0;
@@ -671,7 +671,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   });
 
   it('pushes at most one payload per 250ms burst', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     const { deps, sent } = makeDeps({ processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => payload });
     watchSessionFor(4821, deps);
     sent.length = 0; // clear the immediate push watchSessionFor itself sent
@@ -685,7 +685,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   });
 
   it('ignores changes to other sessions', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     const { deps, sent } = makeDeps({ processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => payload });
     watchSessionFor(4821, deps);
     sent.length = 0;
@@ -697,7 +697,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   });
 
   it('releases the watch when pushSessionLive finds the watched pid has left the discovery cache', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     let gone = false;
     const { deps, fake } = makeDeps({
       processes: [proc({ pid: 4821, provider: 'claude' })],
@@ -720,7 +720,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   // forever, not just for one push. Validate first, teardown only on the
   // success path.
   it('leaves an existing good watch running, and still pushing, when a new pid is refused', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     const { deps, sent } = makeDeps({
       processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => payload,
     });
@@ -738,7 +738,7 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
   });
 
   it('an explicit null still tears down the watch, and no further changes push anything', () => {
-    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null };
+    const payload: SessionLivePayload = { version: 1, pid: 4821, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null, context: null };
     const { deps, sent } = makeDeps({
       processes: [proc({ pid: 4821, provider: 'codex' })], buildPayload: () => payload,
     });
@@ -988,5 +988,46 @@ describe('buildSessionLive -- ingests the spool before looking up a waiting prom
     });
     expect(p).toMatchObject({ activity: 'waiting', prompt: null });
     expect(errors).toHaveBeenCalledWith(expect.stringContaining('spool'), 'EACCES: spool');
+  });
+});
+
+// Usage design, Part A: the conversation header's context, from the same
+// source and rule as the cards (src/main/usage.ts). `context` is injected so
+// nothing here reads the real ~/.llm-workspace.
+describe('buildSessionLive -- context', () => {
+  const ctx = { usedTokens: 462_000, windowTokens: 1_000_000, leftPct: 44 };
+
+  it("carries the Claude session's context, asked for by its own session id", () => {
+    const db = openDb(':memory:');
+    const processes = [proc({ pid: 4821, provider: 'claude', cwd: '/repo/claude' })];
+    const cached = [{ pid: 4821, provider: 'claude', cwd: '/repo/claude', sessionId: 'claude-1' } as OpenSession];
+    const asked: string[] = [];
+    const p = buildSessionLive(db, 4821, processes, Date.now(), {
+      cached, read: () => ({ ok: false, reason: 'missing' }) as LiveSessionRead,
+      context: id => { asked.push(id); return ctx; },
+    });
+    expect(p?.context).toEqual(ctx);
+    expect(asked).toEqual(['claude-1']);
+  });
+
+  it('is null for Codex, without asking', () => {
+    const db = openDb(':memory:');
+    const processes = [proc({ pid: 4821, provider: 'codex', cwd: '/repo/codex' })];
+    const cached = [{ pid: 4821, provider: 'codex', cwd: '/repo/codex', sessionId: 'codex-1' } as OpenSession];
+    let asked = false;
+    const p = buildSessionLive(db, 4821, processes, Date.now(), { cached, context: () => { asked = true; return ctx; } });
+    expect(p?.context).toBeNull();
+    expect(asked).toBe(false);
+  });
+
+  it('is null for a live process with no session', () => {
+    const db = openDb(':memory:');
+    const processes = [proc({ pid: 4821, provider: 'claude', cwd: '/repo/claude' })];
+    const p = buildSessionLive(db, 4821, processes, Date.now(), {
+      read: () => ({ ok: false, reason: 'missing' }) as LiveSessionRead, context: () => ctx,
+    });
+    expect(p).toEqual({
+      version: 1, pid: 4821, sessionId: null, activity: null, since: null, events: 0, prompt: null, context: null,
+    });
   });
 });
