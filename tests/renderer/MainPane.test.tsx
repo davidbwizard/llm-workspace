@@ -134,6 +134,18 @@ describe('MainPane', () => {
     expect(title.getAttribute('title')).toBe('/a');
   });
 
+  // David's own bug report: the header's folder path did not abbreviate the
+  // home directory. The visible text shortens to "~/...", but the title
+  // attribute (hover) keeps the full, real path -- never the abbreviated
+  // form -- so the exact underlying cwd is always reachable.
+  it('abbreviates a home-directory cwd to ~ in the header, while the title keeps the full path', () => {
+    const homeSession = [{ ...(sessions[0] as unknown as object), cwd: '/Users/davidbrabbins/Documents/David/llm-workspace' }] as never[];
+    const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={homeSession} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    const title = container.querySelector('.panetitle')!;
+    expect(title.textContent).toBe('~/Documents/David/llm-workspace');
+    expect(title.getAttribute('title')).toBe('/Users/davidbrabbins/Documents/David/llm-workspace');
+  });
+
   it('hands the conversation the session provider, so the agent glyph is that session\'s own', () => {
     const codex = [{ ...(sessions[0] as unknown as object), provider: 'codex' }] as never[];
     (window as unknown as { fleet: { conversation: ReturnType<typeof vi.fn> } }).fleet.conversation =

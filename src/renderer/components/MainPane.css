@@ -16,14 +16,36 @@
 .pane { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; order:1; }
 .panehead { display:flex; gap:10px; align-items:center; padding:7px 12px;
   border-bottom:1px solid var(--line); background:var(--surface); }
-/* A path, not a name: mono, quiet, and truncated from the right rather
-   than wrapping the header onto a second line. min-width:0 is what lets it
-   shrink inside the flex header at all. */
+/* A path, not a name: mono, quiet. This is the ONLY child in the header row
+   that may grow or shrink (flex:1 1 auto, with min-width:0 so it can
+   actually shrink below its own content size) -- every other child below
+   gets flex:none, so a narrow window takes space from the path first,
+   never clipping the Conversation/Terminal toggle off the header's right
+   edge (David's own bug report against the real, running window: "Term…"
+   was cut off because the path did not shrink and everything shrank
+   together instead).
+   Truncates from the START, not the end, so the actual project folder --
+   the part nearest the END of the path -- stays on screen instead of an
+   ever-longer, useless "/Users/name/Doc…" prefix. direction:rtl moves
+   text-overflow's ellipsis to the visual left edge of the box (browsers
+   place it at the box's "end", which RTL puts on the left); text-align:left
+   then keeps the text hugging the left edge when it isn't truncated, same
+   as before. unicode-bidi:plaintext is what keeps this safe: it makes the
+   browser resolve the path's own bidi paragraph direction from its actual
+   (LTR) content rather than inheriting rtl from the box, so the slash-
+   delimited segments are never visually reordered -- only where the
+   ellipsis lands changes. */
 .panetitle { font-family:var(--f-mono); font-size:11px; color:var(--muted);
-  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.paneback { background:none; border:0; color:var(--muted); font-size:11px; cursor:pointer; }
-.seg { margin-left:auto; display:inline-flex; border:1px solid var(--line);
+  flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  direction:rtl; text-align:left; unicode-bidi:plaintext; }
+.paneback { background:none; border:0; color:var(--muted); font-size:11px; cursor:pointer; flex:none; }
+.seg { flex:none; margin-left:auto; display:inline-flex; border:1px solid var(--line);
   border-radius:6px; overflow:hidden; }
 .seg button { background:none; border:0; color:var(--muted); font-size:11px;
   padding:3px 9px; cursor:pointer; }
 .seg button[aria-pressed="true"] { background:var(--raised); color:var(--ink); }
+/* Usage design, Part B's context chip: never shrinks in this row either
+   (see .panetitle above). Scoped here rather than in ContextChip.css
+   itself, since that component is also reused inside OpenSessionCard's
+   own, unrelated flex context, which this fix has no business touching. */
+.panehead .ctxchip { flex:none; }
