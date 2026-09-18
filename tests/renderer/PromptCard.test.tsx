@@ -324,6 +324,14 @@ describe('PromptCard -- not answerable', () => {
     expect(screen.getByText(/couldn't read claude's choices/i)).toBeTruthy();
   });
 
+  it('shows the multiple_prompts reason, with no choice buttons', () => {
+    setFleet();
+    const prompt: PromptView = { ...permissionPrompt, answerable: false, reason: 'multiple_prompts', choices: undefined };
+    const { container } = render(<PromptCard pid={4821} prompt={prompt} onOpenTerminal={() => {}} />);
+    expect(screen.getByText('Claude is asking more than one thing at once -- answer in Terminal.')).toBeTruthy();
+    expect(container.querySelectorAll('.choices').length).toBe(0);
+  });
+
   it('shows a question with previews as read-only, with the unsupported_layout reason and Open Terminal', () => {
     setFleet();
     const onOpenTerminal = vi.fn();

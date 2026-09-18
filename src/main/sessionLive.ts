@@ -6,7 +6,7 @@ import type { LiveProcess } from '../discovery/parse.ts';
 import { deriveActivity, type OpenSession } from '../fleet/state.ts';
 import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveSession.ts';
 import { readLiveSession } from '../discovery/live.ts';
-import { currentBlockers, openPromptEvent } from '../store/signals.ts';
+import { currentBlockers, hasMultiplePromptEvents, openPromptEvent } from '../store/signals.ts';
 import { resolvePaths } from '../config.ts';
 import type { Provider } from '../core/types.ts';
 import type { PromptView } from '../core/prompt.ts';
@@ -275,10 +275,17 @@ export function buildSessionLive(
   // pane is read at most once per push (buildPromptView); a tmux name from
   // the registry is enough to try -- session:answer re-verifies the
   // session is alive.
-  const promptEvent = fresh?.status === 'waiting' && typeof fresh.statusUpdatedAtMs === 'number'
-    ? openPromptEvent(db, target.sessionId, fresh.statusUpdatedAtMs)
+  const waitingSince = fresh?.status === 'waiting' && typeof fresh.statusUpdatedAtMs === 'number'
+    ? fresh.statusUpdatedAtMs
     : null;
-  const prompt = promptEvent ? buildPromptView(promptEvent, tmuxNameForPid(pid), deps.answer ?? {}) : null;
+  const promptEvent = waitingSince !== null ? openPromptEvent(db, target.sessionId, waitingSince) : null;
+  // Two PermissionRequests in one wait: shown, never answered (ambiguity
+  // guard; hasMultiplePromptEvents).
+  const prompt = promptEvent && waitingSince !== null
+    ? buildPromptView(promptEvent, tmuxNameForPid(pid), deps.answer ?? {}, {
+      multiplePrompts: hasMultiplePromptEvents(db, target.sessionId, waitingSince),
+    })
+    : null;
 
   return { version: 1, pid, sessionId: target.sessionId, activity, since, events: row.events ?? 0, prompt };
 }

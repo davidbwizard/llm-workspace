@@ -29,6 +29,8 @@ function stripBorder(line: string): string {
 function isBordered(line: string): boolean {
   return line.trimStart().startsWith('│');
 }
+/** Whitespace-insensitive on purpose: tmux reflows long lines at the pane
+ *  width (even mid-word) and multi-line commands carry "│" borders. */
 function bare(s: string): string {
   return s.replace(/\s+/g, '');
 }
@@ -195,7 +197,14 @@ function bashCommandEquals(above: string[], anchor: string, description: string 
  *  END of the hook command -- the dialog shows the command down to its last
  *  line -- and long enough not to match by accident (MIN_VISIBLE_TAIL, or
  *  the whole anchor when that is shorter). Nothing above it can be checked;
- *  that part is taken on trust from the tail. */
+ *  that part is taken on trust from the tail.
+ *
+ *  Residual risk, accepted: two commands that end in the same 40+ characters
+ *  but differ above the fold read as the same. That only matters when the
+ *  pane can show a different prompt from the card's -- two PermissionRequests
+ *  in one wait -- and the ambiguity guard (hasMultiplePromptEvents, store/
+ *  signals.ts) makes those cards read-only, which is what makes this
+ *  acceptable. */
 function tailMatchesAnchor(above: string[], anchor: string): boolean {
   const run: string[] = [];
   for (const line of above) {
