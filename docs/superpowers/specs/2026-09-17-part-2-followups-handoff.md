@@ -175,6 +175,16 @@ message in the same form as an unsent one). What worked, all day:
   in rollout `token_count` events (`rate_limits.primary.used_percent`,
   `window_minutes`, `resets_at`). Plan: status line feed first, then the context
   chip and the Usage panel read from it (mockup first).
+- **SHIPPED 2026-09-18 (e4c1c8d): context chip + Usage panel + "Usage and
+  context" switch.** Chip = used tokens and "% left" = unused share of the
+  model's whole window (100 - /context's used %, David's choice; verified:
+  /context 632.4k (63%) = chip 37% left). No compaction estimate (the measured
+  autocompact buffer is 33k on a 1M window, shown by /context but not used).
+  Claude plan limits need the switch on (status line JSON, token-free); Codex
+  weekly comes from rollouts. Not yet checked by eye: the Usage panel and the
+  switch (turning it on hides most Claude Code footer hints).
+- **FIXED 2026-09-18: questions not ending in "?"** were refused (reader now
+  relies on the exact text match only).
 - **Questions with previews** (side-by-side layout) are read-only on the card;
   measure that layout to support it.
 - **Context chip (next, David's spec):** short form (2k, 20k, 200k) plus "% left"
