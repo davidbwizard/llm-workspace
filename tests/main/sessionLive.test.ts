@@ -756,3 +756,79 @@ describe('spool ingest pushes the watched session', () => {
     expect(sent[1]?.prompt).toMatchObject({ id: 'pr-1', kind: 'question' });
   });
 });
+
+// Task 6 (by eye): the fallback card flashed before the prompt card. The
+// status-file push fires ~250 ms after the flip to waiting, while the
+// PermissionRequest lands in the spool ~20 ms after it -- so a push for a
+// waiting session ingests the spool first (the `ingestSpool` dependency,
+// wired to the real spool in src/main/ipc.ts's session:watch) and carries
+// the prompt at once instead of waiting for the 1 s tick.
+describe('buildSessionLive -- ingests the spool before looking up a waiting prompt', () => {
+  const EVENTS = 'tests/fixtures/quick-answers/events';
+  const SESSION = '319735a2-7eb7-445e-a620-bf9ab4fb12a1';
+  const PID = 4831;
+  const WAITING_SINCE = Date.parse('2026-09-17T21:40:14.300Z');
+  const NOW = WAITING_SINCE + 250;
+  const processes = [proc({
+    pid: PID, provider: 'claude', cwd: '/repo/claude',
+    liveSession: { sessionId: SESSION, cwd: '/repo/claude', startedAtMs: STARTED, status: 'waiting' },
+  })];
+  const readAs = (status: 'waiting' | 'busy' | 'idle') => (): LiveSessionRead => ({
+    ok: true,
+    file: {
+      sessionId: SESSION, cwd: '/repo/claude', startedAtMs: STARTED, status,
+      statusUpdatedAtMs: WAITING_SINCE, waitingFor: null,
+    },
+  });
+  let spool: string | null = null;
+
+  afterEach(() => {
+    clearPromptCache();
+    vi.restoreAllMocks();
+    if (spool) rmSync(spool, { recursive: true, force: true });
+    spool = null;
+  });
+
+  function spoolWithPrompt(): string {
+    spool = mkdtempSync(join(tmpdir(), 'llmws-spool-'));
+    const payload = JSON.parse(readFileSync(join(EVENTS, '1789706218.842-PermissionRequest-89928.json'), 'utf8'));
+    writeFileSync(join(spool, 'pr-1.json'), JSON.stringify({
+      event_id: 'pr-1', occurred_at: '2026-09-17T21:40:14.000Z', ppid: 1, payload,
+    }));
+    return spool;
+  }
+
+  it('a waiting push ingests first, so the prompt written just after the flip is already in the payload', () => {
+    const db = openDb(':memory:');
+    const dir = spoolWithPrompt();
+    const ingest = vi.fn(() => { ingestSpool(db, dir); });
+
+    const p = buildSessionLive(db, PID, processes, NOW, { read: readAs('waiting'), ingestSpool: ingest });
+    expect(ingest).toHaveBeenCalledTimes(1);
+    expect(p).toMatchObject({ activity: 'waiting', prompt: { id: 'pr-1', kind: 'question' } });
+  });
+
+  it('without the dependency the same push has no prompt yet (the flash this fixes)', () => {
+    const db = openDb(':memory:');
+    spoolWithPrompt();
+    const p = buildSessionLive(db, PID, processes, NOW, { read: readAs('waiting') });
+    expect(p).toMatchObject({ activity: 'waiting', prompt: null });
+  });
+
+  it.each(['busy', 'idle'] as const)('does not ingest when the live status is %s', (status) => {
+    const db = openDb(':memory:');
+    const ingest = vi.fn();
+    buildSessionLive(db, PID, processes, NOW, { read: readAs(status), ingestSpool: ingest });
+    expect(ingest).not.toHaveBeenCalled();
+  });
+
+  it('an ingest that throws is logged and the payload still goes out, without the prompt', () => {
+    const db = openDb(':memory:');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const p = buildSessionLive(db, PID, processes, NOW, {
+      read: readAs('waiting'), ingestSpool: () => { throw new Error('EACCES: spool'); },
+    });
+    expect(p).toMatchObject({ activity: 'waiting', prompt: null });
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining('spool'), 'EACCES: spool');
+  });
+});

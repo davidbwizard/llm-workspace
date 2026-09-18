@@ -125,6 +125,13 @@ export interface SessionLiveDeps {
    *  src/main/answer.ts). Only `capture` is used here; tests inject it so
    *  they never run a real tmux. */
   answer?: AnswerDeps;
+  /** Quick answers (Task 6 flash fix): called once, only when the live
+   *  status is `waiting`, before the open prompt is looked up. Claude
+   *  writes the PermissionRequest ~20 ms after it flips the status, and
+   *  the status-file push runs ~250 ms after the flip -- so ingesting here
+   *  puts the event in the db for this very push, instead of the next 1 s
+   *  spool tick. session:watch (src/main/ipc.ts) wires the real spool. */
+  ingestSpool?: () => void;
 }
 
 /** Wraps `read` so a single buildSessionLive call never opens the same
@@ -205,6 +212,15 @@ export function buildSessionLive(
   };
 
   const fresh = (deps.freshLiveSession ?? freshLiveSession)(pid, processes, read);
+  // A failed ingest must not stop the push: the prompt then arrives with
+  // the next spool tick, as before. Logged with its message, never swallowed.
+  if (fresh?.status === 'waiting' && deps.ingestSpool) {
+    try {
+      deps.ingestSpool();
+    } catch (err) {
+      console.error('Quick answers: spool ingest before the waiting push failed:', err instanceof Error ? err.message : String(err));
+    }
+  }
   // Quick answers §5.2: a live status file outranks a blocker, even one
   // whose status string this code does not recognise -- so the blocker
   // (a 24 h scan of signal_events) is only looked up with no status file at

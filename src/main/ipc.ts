@@ -42,6 +42,7 @@ import {
 } from './sessionLive.ts';
 import { answerPrompt, type AnswerResult } from './answer.ts';
 import { hooksState, setHooks, type HooksResult } from '../hooks/switch.ts';
+import { ingestSpool } from '../hooks/spool.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -1347,14 +1348,21 @@ export function registerIpc(
   // fresh on every call -- see WatchDeps' own doc comment -- so a session
   // that ends, or whose activity changes, between pushes is reflected on
   // the very next one rather than frozen at whatever it was when the watch
-  // started.
+  // started. `ingestSpool` runs only for a waiting session (buildSessionLive
+  // decides), so the PermissionRequest Claude spools just after flipping to
+  // waiting is in this push rather than the next 1 s tick; the fleet gets
+  // the same push the tick would have sent.
   ipcMain.handle('session:watch', (event, pid: unknown) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const validPid = typeof pid === 'number' ? pid : null;
+    const spoolDir = resolvePaths(homedir()).spool;
     const deps: WatchDeps = {
       processes: getCachedLiveProcesses,
       buildPayload: () => validPid === null ? null
-        : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), { cached: cachedPushOpenSessions }),
+        : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), {
+          cached: cachedPushOpenSessions,
+          ingestSpool: () => { if (ingestSpool(db, spoolDir, 'claude') > 0) pushFleet(win); },
+        }),
       send: payload => { if (win && !win.isDestroyed()) win.webContents.send('session:live', payload); },
     };
     return watchSessionFor(validPid, deps);
