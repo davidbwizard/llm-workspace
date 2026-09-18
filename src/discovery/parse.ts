@@ -32,6 +32,14 @@ export interface LiveProcess {
    *  null, otherwise -- so every fixture that predates it, every Codex
    *  process, and every rejected file look identical to before. */
   liveSession?: LiveSessionFile;
+  /** Codex only: the rollout files this process holds open (one `lsof` per
+   *  sweep, src/discovery/live.ts), each already checked to be an absolute,
+   *  normalised path inside ~/.codex/sessions with a rollout name. Root and
+   *  subagent threads alike -- telling them apart is the index's job
+   *  (src/fleet/state.ts's openSessionsLive). Omitted, never empty, when
+   *  there are none or the lookup failed, for the same reason as
+   *  liveSession. */
+  openRollouts?: string[];
 }
 
 /** Parse `ps -axo pid=,comm=` output: one process per line, pid first,
@@ -70,6 +78,28 @@ export function parseLsofCwd(out: string): string | null {
     if (line.startsWith('n')) return line.slice(1).trim() || null;
   }
   return null;
+}
+
+/** Parse `lsof -Fpn -p <pid,pid,...>`: a `p<pid>` line starts each
+ *  process, and every `n<name>` line after it is one of that process's
+ *  open files. Every other line -- the `f<fd>` line lsof always adds before
+ *  each name, a warning, garbage -- is skipped. Names before any `p` line,
+ *  or under a pid not in `pids`, are dropped. Pids with no names are left
+ *  out. */
+export function parseLsofNames(out: string, pids: ReadonlySet<number>): Map<number, string[]> {
+  const byPid = new Map<number, string[]>();
+  let current: number | null = null;
+  for (const line of out.split('\n')) {
+    if (line.startsWith('p')) {
+      const pid = /^p(\d+)$/.test(line) ? Number(line.slice(1)) : NaN;
+      current = pids.has(pid) ? pid : null;
+    } else if (line.startsWith('n') && current !== null && line.length > 1) {
+      const names = byPid.get(current);
+      if (names) names.push(line.slice(1));
+      else byPid.set(current, [line.slice(1)]);
+    }
+  }
+  return byPid;
 }
 
 /** Parse the elapsed-time field of `ps -o etime=,rss= -p <pid>` -- the first

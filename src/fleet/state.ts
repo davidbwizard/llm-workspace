@@ -7,7 +7,9 @@ import type { Db } from '../store/db.ts';
 import type { Provider } from '../core/types.ts';
 import type { SessionContext } from '../core/usage.ts';
 import { currentBlockers, type Blocker } from '../store/signals.ts';
-import { classifyMatch, applyExactMatches, type MatchQuality, type MatchResult } from '../discovery/match.ts';
+import {
+  classifyMatch, applyExactMatches, rolloutSessionIds, type MatchQuality, type MatchResult, type RolloutThread,
+} from '../discovery/match.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
 import type { LiveSessionStatus } from '../providers/claude/liveSession.ts';
 
@@ -783,6 +785,41 @@ export function openSessions(
   ));
 }
 
+/** What the index knows about each of these Codex rollout files, read off
+ *  the rows its session_meta line produced. That line is always at byte 0
+ *  (src/providers/codex/parse.ts) and yields a session.started carrying the
+ *  session id -- plus, in a SUBAGENT thread's file only, an agent.spawned
+ *  with a non-null agent_id, the same agent_id split the rest of the app
+ *  uses to tell subagent threads from the root. One query, bounded by the
+ *  number of open rollouts: `source_offset = 0` on a `source_file IN`
+ *  list is a seek on events_identity, whatever the files' sizes. A file
+ *  the index has not seen, or whose byte-0 rows name no usable session,
+ *  is simply absent. */
+function codexRolloutThreads(db: Db, files: string[]): Map<string, RolloutThread> {
+  const out = new Map<string, RolloutThread>();
+  const unique = [...new Set(files)];
+  if (unique.length === 0) return out;
+  const rows = db.prepare(`
+    SELECT source_file, session_id, kind, agent_id FROM events
+    WHERE provider = 'codex' AND source_offset = 0
+      AND kind IN ('session.started', 'agent.spawned')
+      AND source_file IN (${unique.map(() => '?').join(',')})
+  `).all(...unique) as { source_file: string; session_id: string; kind: string; agent_id: string | null }[];
+  const byFile = new Map<string, { ids: Set<string>; subagent: boolean }>();
+  for (const r of rows) {
+    const f = byFile.get(r.source_file) ?? { ids: new Set<string>(), subagent: false };
+    if (r.kind === 'session.started') f.ids.add(r.session_id);
+    if (r.agent_id !== null) f.subagent = true;
+    byFile.set(r.source_file, f);
+  }
+  for (const [file, f] of byFile) {
+    const [id] = f.ids;
+    // 'unknown' is the parser's placeholder for a session_meta with no id.
+    if (f.ids.size === 1 && id !== 'unknown') out.set(file, { sessionId: id!, root: !f.subagent });
+  }
+  return out;
+}
+
 /** The targeted alternative to `openSessions(fleetState(db, ...), ...)`:
  *  same output (open cards enriched with match/lastProse/events/activity
  *  on a unique transcript match), but bounded by the number of LIVE
@@ -855,7 +892,13 @@ export function openSessionsLive(
   }
 
   const refs = [...cwdBySession.entries()].map(([sessionId, cwd]) => ({ sessionId, cwd }));
-  const matches = applyExactMatches(processes, classifyMatch(processes, refs));
+  // Codex exact identity: the one known root rollout a process holds open
+  // names its session outright, even when its cwd no longer matches the
+  // session's (a folder moved mid-session). Same precedence as a Claude
+  // live session file; anything short of exactly one falls back to cwd.
+  const rolloutIds = rolloutSessionIds(
+    processes, codexRolloutThreads(db, processes.flatMap(p => p.openRollouts ?? [])));
+  const matches = applyExactMatches(processes, classifyMatch(processes, refs), rolloutIds);
 
   // Disambiguate an ambiguous match for a pid THIS APP launched: among the
   // several sessions sharing that cwd, the app's own session is the one

@@ -1,10 +1,10 @@
 import { homedir } from 'node:os';
-import { basename, isAbsolute, normalize, sep } from 'node:path';
 import type { Db } from '../store/db.ts';
 import { resolvePaths, type Paths } from '../config.ts';
 import type { OpenSession } from '../fleet/state.ts';
 import { readClaudeRateLimits, readClaudeSnapshot } from '../providers/claude/statusLine.ts';
 import { readCodexContext, readCodexRateLimits } from '../providers/codex/rateLimits.ts';
+import { isRolloutPath } from '../providers/codex/rolloutPath.ts';
 import type { Provider } from '../core/types.ts';
 import { buildContext, sessionContext, type SessionContext, type UsagePayload } from '../core/usage.ts';
 
@@ -75,8 +75,6 @@ export function claudeContextFor(db: Db, sessionIds: string[], opts: ContextOpts
   return out;
 }
 
-const ROLLOUT_NAME = /^rollout-.*\.jsonl$/;
-
 /** Which rollout file holds each Codex session: the source file of the
  *  session's latest ROOT-thread event (a subagent thread shares the root's
  *  session id but writes its own rollout, with its own usage). Comes from
@@ -94,11 +92,9 @@ export function codexRollouts(db: Db, sessionIds: string[], codexRoot: string): 
       ORDER BY x.ts DESC, x.id DESC LIMIT 1) AS sourceFile
     FROM json_each(?) j
   `).all(JSON.stringify(sessionIds)) as { sessionId: string; sourceFile: string | null }[];
-  const root = normalize(codexRoot).replace(/\/+$/, '') + sep;
   for (const r of rows) {
     const f = r.sourceFile;
-    if (typeof f !== 'string' || !isAbsolute(f) || normalize(f) !== f) continue;
-    if (!f.startsWith(root) || !ROLLOUT_NAME.test(basename(f))) continue;
+    if (!isRolloutPath(f, codexRoot)) continue;
     out.set(r.sessionId, f);
   }
   return out;
