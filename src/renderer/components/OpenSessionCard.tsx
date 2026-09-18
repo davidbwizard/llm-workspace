@@ -3,6 +3,7 @@ import type { OpenSession } from '../../fleet/state.ts';
 import type { KillResult, KillRefusalReason } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { ProviderMark } from './ProviderMark.tsx';
+import { ContextChip } from './ContextChip.tsx';
 import './OpenSessionCard.css';
 
 // One card per live process (David: "ALL OPEN SESSIONS should show. And
@@ -423,6 +424,11 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
 
       <div className="metrics">
         {!compact && state.events != null && <span>{state.events.toLocaleString()}</span>}
+        {/* Usage design, Part B: shown on both the full and compact card
+            (unlike events/procMeta above, which are full-card only) --
+            hidden entirely when there is no count yet (ContextChip's own
+            null check). */}
+        <ContextChip context={state.context} />
         {activityWord && (
           <span className={`state ${state.activity}`}>
             <span className="dot" aria-hidden="true" />

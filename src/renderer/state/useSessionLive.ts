@@ -4,6 +4,10 @@ import { useEffect, useState } from 'react';
 // core (types.d.ts's own `Answer`/`AnswerResult` imports follow the same
 // pattern).
 import type { PromptView } from '../../core/prompt.ts';
+// Type-only, from src/core/** -- same rule and same reasoning as the
+// PromptView import above (src/core/** carries no node import, unlike
+// src/main/**, so a type-only pull from it is safe here).
+import type { SessionContext } from '../../core/usage.ts';
 
 /** One session's live state for the conversation pane -- mirrors
  *  src/main/sessionLive.ts's SessionLivePayload, minus the pid/sessionId/
@@ -21,6 +25,12 @@ export type SessionLive = {
    *  straight off the payload -- PromptCard.tsx renders it, WaitingCard.tsx
    *  is the fallback when this is null. */
   prompt: PromptView | null;
+  /** Context window use for the conversation header (usage design, Part A/
+   *  B) -- the same { usedTokens, windowTokens, leftPct } shape as
+   *  OpenSession.context, or null (no session, or no count yet). This is
+   *  the freshest source: main recomputes it on every push, ahead of the
+   *  5s fleet sweep that keeps OpenSession.context. */
+  context: SessionContext | null;
 };
 
 /** Subscribes the open conversation pane to one pid's live push (Task 6:
@@ -76,7 +86,10 @@ export function useSessionLive(pid: number | null): SessionLive | null {
       // dropped rather than shown as if it belonged to the session now on
       // screen.
       if (payload.pid !== pid) return;
-      setState({ activity: payload.activity, since: payload.since, events: payload.events, prompt: payload.prompt ?? null });
+      setState({
+        activity: payload.activity, since: payload.since, events: payload.events,
+        prompt: payload.prompt ?? null, context: payload.context ?? null,
+      });
     });
 
     return () => {

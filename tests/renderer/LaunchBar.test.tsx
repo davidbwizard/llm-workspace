@@ -79,4 +79,60 @@ describe('LaunchBar', () => {
     fireEvent.click(screen.getByRole('button', { name: /^done$/i }));
     expect(document.activeElement).toBe(gear);
   });
+
+  // Usage design, Part B: a small non-modal popover, next to the gear.
+  describe('the Usage button and its popover', () => {
+    beforeEach(() => {
+      // Stubbed purely so UsagePopover's own mount effect doesn't throw --
+      // its own behaviour (bars, empty states, refresh) is covered by
+      // UsagePopover.test.tsx.
+      const api = (globalThis as never as { window: { fleet: Record<string, unknown> } }).window.fleet;
+      api.usageSwitchGet = vi.fn(async () => ({ installed: true, error: null }));
+      api.usageGet = vi.fn(async () => ({ claude: null, codex: null }));
+    });
+
+    it('opens the popover from a button beside the gear', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      expect(screen.queryByRole('dialog', { name: /usage/i })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: /^usage$/i }));
+      expect(screen.getByRole('dialog', { name: /usage/i })).toBeTruthy();
+    });
+
+    it('closes on Escape and returns focus to the button', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      const usageBtn = screen.getByRole('button', { name: /^usage$/i });
+      fireEvent.click(usageBtn);
+      expect(screen.getByRole('dialog', { name: /usage/i })).toBeTruthy();
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.queryByRole('dialog', { name: /usage/i })).toBeNull();
+      expect(document.activeElement).toBe(usageBtn);
+    });
+
+    it('closes on an outside click and returns focus to the button', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      const usageBtn = screen.getByRole('button', { name: /^usage$/i });
+      fireEvent.click(usageBtn);
+      expect(screen.getByRole('dialog', { name: /usage/i })).toBeTruthy();
+      fireEvent.mouseDown(document.body);
+      expect(screen.queryByRole('dialog', { name: /usage/i })).toBeNull();
+      expect(document.activeElement).toBe(usageBtn);
+    });
+
+    it('does not close on a click inside the popover itself', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      fireEvent.click(screen.getByRole('button', { name: /^usage$/i }));
+      const dialog = screen.getByRole('dialog', { name: /usage/i });
+      fireEvent.mouseDown(dialog);
+      expect(screen.getByRole('dialog', { name: /usage/i })).toBeTruthy();
+    });
+
+    it('toggles closed on a second click of the button itself', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      const usageBtn = screen.getByRole('button', { name: /^usage$/i });
+      fireEvent.click(usageBtn);
+      expect(screen.getByRole('dialog', { name: /usage/i })).toBeTruthy();
+      fireEvent.click(usageBtn);
+      expect(screen.queryByRole('dialog', { name: /usage/i })).toBeNull();
+    });
+  });
 });

@@ -1,0 +1,19 @@
+/* src/renderer/components/UsagePopover.css -- tokens only, theme.css owns
+   every colour. Same elevation/border language as ReplyPopover.css (this
+   app's other floating panel), sized for two short provider sections
+   rather than one line of text. */
+.usagepop { position:absolute; z-index:20; width:240px; padding:12px 14px;
+  background:var(--raised); border:1px solid var(--line);
+  border-radius:var(--r-md); box-shadow:var(--shadow-pop);
+  display:flex; flex-direction:column; gap:14px; }
+.usagesection + .usagesection { border-top:1px solid var(--line-soft); padding-top:12px; }
+.usagesectitle { margin:0 0 8px; font-family:var(--f-display); font-size:13px; color:var(--ink); }
+.usageempty { margin:0; font-size:11px; color:var(--muted); }
+.usagebar { display:flex; flex-direction:column; gap:4px; }
+.usagebar + .usagebar { margin-top:8px; }
+.usagebar-head { display:flex; justify-content:space-between; font-family:var(--f-mono);
+  font-size:11px; color:var(--ink-2); }
+.usagebar-track { height:6px; border-radius:4px; background:var(--ground); overflow:hidden; }
+.usagebar-fill { height:100%; background:var(--accent); border-radius:4px; }
+.usagebar-reset { margin:0; font-size:10.5px; color:var(--faint); }
+.usageupdated { margin:8px 0 0; font-size:10.5px; color:var(--faint); }

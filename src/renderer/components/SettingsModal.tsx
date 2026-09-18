@@ -3,6 +3,7 @@ import {
   APPEARANCES, COMPACT_CARDS, DEFAULT_SETTINGS, MESSAGE_STYLES, TEXT_SIZES, setSettings, useSettings,
   type Appearance, type CompactCards, type MessageStyle, type TextSize,
 } from '../state/settings.ts';
+import { COMPACTS_AT_DEFAULT, COMPACTS_AT_MIN, COMPACTS_AT_MAX } from '../../core/usage.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import './SettingsModal.css';
 
@@ -30,6 +31,16 @@ const FOOTER_CAPTION = 'Changes apply right away and are remembered.';
 /** Design §4, verbatim. */
 const QUICK_ANSWERS_HELP =
   "Adds the app's hooks to ~/.claude/settings.json so it can show what Claude is asking. Turning this off removes them.";
+
+/** Usage design, Part B, plus the coordinator's own review note: the base
+ *  two sentences are the design's exact text; the third names the two
+ *  preconditions (Part A's own concerns 1/2) that would otherwise leave
+ *  someone staring at "No data yet" with no idea why. */
+const USAGE_HELP =
+  "Adds a status line to ~/.claude/settings.json so the app can show context and plan usage. "
+  + "Claude Code hides most footer hints while any status line is set. "
+  + "Needs a trusted folder; off when hooks are disabled.";
+const COMPACTS_AT_HELP = 'An estimate: Claude Code does not document its auto-compact point.';
 
 /** Fixed sample turns for the live preview -- never real session data, so the
  *  preview cannot leak transcript content into a settings panel, and never
@@ -181,6 +192,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const textSizeLabelId = useId();
   const styleLabelId = useId();
   const quickAnswersLabelId = useId();
+  const usageLabelId = useId();
+  const compactsAtId = useId();
 
   // Quick answers (design §4): `null` means "not yet read" -- distinct from
   // `false`, so the switch can render disabled rather than a possibly-wrong
@@ -220,6 +233,94 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       err => { setHooksError(err instanceof Error ? err.message : String(err)); setHooksBusy(false); },
     );
   };
+
+  // Usage and context (usage design, Part B): same pattern as Quick answers
+  // above -- `null` means "not yet read", re-read fresh every time the
+  // modal opens, never trusting a remembered copy over what settings.json
+  // actually says right now.
+  const [usageInstalled, setUsageInstalled] = useState<boolean | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const [usageBusy, setUsageBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const api = window.fleet;
+    // Guarded on the specific method, not just `api` itself (unlike Quick
+    // answers' own effect above): several existing tests elsewhere in this
+    // app stub window.fleet with only the methods THEY exercise (e.g.
+    // LaunchBar.test.tsx's {launch, chooseDirectory, hooksGet, hooksSet}),
+    // and this modal mounts inside every one of them via the gear. Calling
+    // an absent usageSwitchGet would throw and take that unrelated test's
+    // render down with it.
+    if (!api?.usageSwitchGet) return;
+    let alive = true;
+    setUsageInstalled(null);
+    setUsageError(null);
+    void api.usageSwitchGet().then(
+      r => { if (alive) { setUsageInstalled(r.installed); setUsageError(r.error); } },
+      err => { if (alive) setUsageError(err instanceof Error ? err.message : String(err)); },
+    );
+    return () => { alive = false; };
+  }, [open]);
+
+  const onToggleUsage = () => {
+    const api = window.fleet;
+    if (!api?.usageSwitchSet || usageBusy || usageInstalled === null) return;
+    setUsageBusy(true);
+    void api.usageSwitchSet(!usageInstalled).then(
+      r => { setUsageInstalled(r.installed); setUsageError(r.error); setUsageBusy(false); },
+      err => { setUsageError(err instanceof Error ? err.message : String(err)); setUsageBusy(false); },
+    );
+  };
+
+  // Compacts at (usage design, Part B): main is the one copy (usage-a
+  // report's own decision) -- this reads and writes it over IPC, keeping no
+  // copy in localStorage. `raw` is the editable text (so typing "9" on the
+  // way to "90" doesn't get clamped mid-keystroke); it only commits to
+  // compactsAtSet -- and only then overwrites `raw` with whatever main
+  // actually stored -- on blur or Enter, never on every keystroke.
+  // `compactsAt === null` (not yet read) is what disables the field, same
+  // "null means unknown, not a guessed default" rule as hooksInstalled.
+  const [compactsAt, setCompactsAt] = useState<number | null>(null);
+  const [compactsAtRaw, setCompactsAtRaw] = useState('');
+  const [compactsAtBusy, setCompactsAtBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const api = window.fleet;
+    if (!api?.compactsAtGet) return;
+    let alive = true;
+    void api.compactsAtGet().then(
+      r => { if (alive) { setCompactsAt(r.compactsAt); setCompactsAtRaw(String(r.compactsAt)); } },
+      err => console.error('usage:compacts-at:get failed:', err),
+    );
+    return () => { alive = false; };
+  }, [open]);
+
+  function commitCompactsAt(): void {
+    const api = window.fleet;
+    const fallback = String(compactsAt ?? COMPACTS_AT_DEFAULT);
+    if (!api?.compactsAtSet) { setCompactsAtRaw(fallback); return; }
+    const n = Number(compactsAtRaw);
+    // A non-finite value (empty, "abc", a bare "-") is refused HERE, before
+    // it ever reaches main -- main's own applyCompactsAt would refuse it
+    // too, but there is nothing to gain by making the round trip just to
+    // be told no.
+    if (compactsAtRaw.trim() === '' || !Number.isFinite(n)) { setCompactsAtRaw(fallback); return; }
+    setCompactsAtBusy(true);
+    void api.compactsAtSet(n).then(
+      r => {
+        setCompactsAtBusy(false);
+        if (r.status === 'set') { setCompactsAt(r.compactsAt); setCompactsAtRaw(String(r.compactsAt)); }
+        else setCompactsAtRaw(fallback);
+      },
+      err => {
+        console.error('usage:compacts-at:set failed:', err);
+        setCompactsAtBusy(false);
+        setCompactsAtRaw(fallback);
+      },
+    );
+  }
 
   useEffect(() => {
     const el = dialogRef.current;
@@ -360,6 +461,42 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             </div>
             <p className="settingshelp">{QUICK_ANSWERS_HELP}</p>
             {hooksError !== null && <p className="settingserror" role="alert">{hooksError}</p>}
+          </div>
+        </section>
+
+        <section className="settingssection">
+          <h3 className="settingssectitle">Usage and context</h3>
+          <div className="settingsfield">
+            <div className="settingsswitchrow">
+              <div className="settingslabel" id={usageLabelId}>Usage and context</div>
+              <QuickAnswersSwitch
+                checked={usageInstalled}
+                disabled={usageInstalled === null || usageBusy}
+                labelId={usageLabelId}
+                onToggle={onToggleUsage}
+              />
+            </div>
+            <p className="settingshelp">{USAGE_HELP}</p>
+            {usageError !== null && <p className="settingserror" role="alert">{usageError}</p>}
+          </div>
+          <div className="settingsfield">
+            <div className="settingsswitchrow">
+              <label className="settingslabel" htmlFor={compactsAtId}>Compacts at</label>
+              <input
+                id={compactsAtId}
+                type="number"
+                className="settingscompactsat"
+                min={COMPACTS_AT_MIN}
+                max={COMPACTS_AT_MAX}
+                step={1}
+                value={compactsAtRaw}
+                disabled={compactsAt === null || compactsAtBusy}
+                onChange={e => setCompactsAtRaw(e.target.value)}
+                onBlur={commitCompactsAt}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitCompactsAt(); } }}
+              />
+            </div>
+            <p className="settingshelp">{COMPACTS_AT_HELP}</p>
           </div>
         </section>
 

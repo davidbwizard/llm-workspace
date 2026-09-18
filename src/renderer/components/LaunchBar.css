@@ -47,3 +47,12 @@
   background:none; border:1px solid var(--line-soft); border-radius:6px;
   padding:5px 9px; cursor:pointer; }
 .launchgear:hover { color:var(--ink); border-color:var(--line); }
+/* The Usage button and its popover (usage design, Part B). The wrapper is
+   the positioned ancestor for the popover AND the outside-click boundary
+   its own effect checks -- same shape as OpenSessionCard.css's .cardmenu. */
+.usagewrap { position:relative; -webkit-app-region:no-drag; }
+.launchusage { font-family:var(--f-mono); font-size:11px; color:var(--muted);
+  background:none; border:1px solid var(--line-soft); border-radius:6px; padding:5px 10px; cursor:pointer; }
+.launchusage:hover { color:var(--ink); border-color:var(--line); }
+.launchusage[aria-expanded="true"] { color:var(--ink); border-color:var(--line); }
+.usagewrap .usagepop { top:calc(100% + 6px); left:0; }

@@ -104,6 +104,34 @@ describe('OpenSessionCard', () => {
     expect(container.querySelector('.host')).toBeNull();
   });
 
+  // Usage design, Part B: the context chip (ContextChip.tsx). `base` above
+  // is context: null, so every test that doesn't override it already
+  // covers "hidden when null" -- this covers the shown case, on both the
+  // full and the compact card (unlike lastProse/events, this is NOT
+  // full-card only).
+  describe('the context chip', () => {
+    const withContext: OpenSession = {
+      ...base, context: { usedTokens: 462_400, windowTokens: 1_000_000, leftPct: 44 },
+    };
+
+    it('is absent from the full card when context is null', () => {
+      const { container } = render(
+        <OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />,
+      );
+      expect(container.querySelector('.ctxchip')).toBeNull();
+    });
+
+    it('shows the short form and percent left on the full card', () => {
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={withContext} />);
+      expect(screen.getByText('462k · 44% left')).toBeTruthy();
+    });
+
+    it('also shows on the compact card', () => {
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} compact state={withContext} />);
+      expect(screen.getByText('462k · 44% left')).toBeTruthy();
+    });
+  });
+
   // Enrichment (lastProse/events/activity) appears only on a unique
   // transcript match -- src/fleet/state.ts's openSessions doc comment.
   // provider is deliberately NOT part of this fixture's point: it is set

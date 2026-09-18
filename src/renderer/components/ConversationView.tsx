@@ -6,6 +6,9 @@ import type { MatchQuality } from '../../discovery/match.ts';
 import type { Provider } from '../../core/types.ts';
 import type { KeysResult } from '../../main/ipc.ts';
 import type { StageRefusal } from '../../main/staging.ts';
+// Type-only, from src/core/** (no node import there, unlike src/main/**) --
+// same rule MAX_REPLY_CHARS's own comment states for src/main imports.
+import type { SessionContext } from '../../core/usage.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import { WorkingStrip } from './WorkingStrip.tsx';
@@ -749,7 +752,7 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, onOpenTerminal, a
  *  in the moment right after it launches, before its first events are
  *  written and ingested; and no match info at all (match omitted) falls
  *  back to a neutral message rather than asserting either specific claim. */
-export function ConversationView({ sessionId, match, provider, events, pid, tmux, onOpenTerminal }: {
+export function ConversationView({ sessionId, match, provider, events, pid, tmux, onOpenTerminal, context = null, onContext }: {
   sessionId: string | null;
   match?: MatchQuality;
   /** Which CLI this session is, so the agent's meta line carries that
@@ -770,6 +773,21 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   /** Switches the pane to the Terminal view -- the only way to answer a
    *  choice, which this box deliberately cannot do. */
   onOpenTerminal: () => void;
+  /** OpenSession.context, straight off the fleet:update push MainPane
+   *  already receives -- same "5s sweep" source and shape as `events`
+   *  above. Optional/defaulted to null: existing callers (tests, mainly)
+   *  that don't care about the header chip need not pass it. Superseded by
+   *  `live.context` below the moment any live push has arrived, since main
+   *  recomputes context on every push, ahead of the sweep. */
+  context?: SessionContext | null;
+  /** Reports this pane's best-known context (the fold described above)
+   *  for MainPane's own header chip to render -- MainPane cannot read
+   *  `live` itself; only one component may hold the live-conversation
+   *  watch at a time (useSessionLive's own doc comment on main's single
+   *  watch slot), so this is a plain report-upward callback instead of a
+   *  second call to the hook. Optional: existing tests that don't wire it
+   *  render exactly as they did before this prop existed. */
+  onContext?: (context: SessionContext | null) => void;
 }) {
   const settings = useSettings();
   // Task 7 (2026-09-17-live-conversation-feedback): main can now push this
@@ -782,6 +800,15 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // bridge, or main's fs.watch failed) or a payload was dropped for
   // arriving mid session-switch (see useSessionLive's own doc comment).
   const live = useSessionLive(pid);
+  // Usage design, Part B: the freshest context this pane knows of -- once
+  // any live payload has arrived for this pid, `live.context` wins outright
+  // (main recomputes it on every push, ahead of the 5s sweep that keeps the
+  // `context` prop current); until then, the swept prop is what's shown, so
+  // the header is never blank for the many seconds before the first push
+  // lands. Reported upward on every change -- see `onContext`'s own doc
+  // comment above for why this is a callback rather than a second hook call.
+  const resolvedContext = live !== null ? live.context : context;
+  useEffect(() => { onContext?.(resolvedContext); }, [resolvedContext, onContext]);
   // Task 5 (quick-answers): whether the app's own hooks are installed --
   // read fresh from main (window.fleet.hooksGet), never inferred from
   // `live.prompt` being null, so a hooked-up session that simply has
