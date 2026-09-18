@@ -344,6 +344,7 @@ describe('refreshStatusLineIfInstalled', () => {
     writeSettings(userSettings());
     refreshStatusLineIfInstalled(paths, SOURCE);
     expect(existsSync(stableStatusLinePath(home))).toBe(false);
+    expect(existsSync(paths.statusLineDir)).toBe(false);
   });
 
   it('refreshes a stale copy, and leaves a fresh one alone', () => {
@@ -369,5 +370,33 @@ describe('refreshStatusLineIfInstalled', () => {
     } finally {
       errSpy.mockRestore();
     }
+  });
+
+  // Review finding: turnOn only tightens the statusline snapshot folder at
+  // the moment the switch is flipped on -- a folder loosened by hand (or
+  // left over from before this app enforced 0700) between app launches
+  // stays loose until the switch is toggled again. main/index.ts calls
+  // this function on EVERY app start when the switch is already installed
+  // (mirroring the spool folder's own startup re-chmod in
+  // src/main/index.ts's app.whenReady), so this is where that same
+  // re-tightening belongs for the statusline folder too.
+  it('re-tightens an existing, looser statusline folder to 0700 on every call, not just turnOn', () => {
+    writeSettings(userSettings());
+    setUsageSwitch(paths, true, SOURCE);
+    chmodSync(paths.statusLineDir, 0o755);
+
+    refreshStatusLineIfInstalled(paths, SOURCE);
+
+    expect(modeOf(paths.statusLineDir)).toBe(0o700);
+  });
+
+  it('creates the statusline folder at 0700 if it is missing entirely', () => {
+    writeSettings(userSettings());
+    setUsageSwitch(paths, true, SOURCE);
+    rmSync(paths.statusLineDir, { recursive: true, force: true });
+
+    refreshStatusLineIfInstalled(paths, SOURCE);
+
+    expect(modeOf(paths.statusLineDir)).toBe(0o700);
   });
 });

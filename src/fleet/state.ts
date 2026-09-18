@@ -642,12 +642,12 @@ export interface OpenSession {
    *  junk-last rule the sort exists to keep. */
   junk: boolean;
   /** Context window use for the matched session (usage design, Part A):
-   *  tokens used, the window, and percent left before the Compacts at point.
+   *  tokens used, the window, and percent of the window not yet used.
    *  Always null from openSessions/openSessionsLive themselves -- filled in
    *  by src/main/usage.ts's withContext on the push path, which reads the
-   *  status line snapshots, Codex rollouts and the Compacts at setting this
-   *  pure module has no access to. Null for an unmatched card, and when no
-   *  source has a count yet. */
+   *  status line snapshots and Codex rollouts this pure module has no
+   *  access to. Null for an unmatched card, and when no source has a count
+   *  yet. */
   context: SessionContext | null;
 }
 

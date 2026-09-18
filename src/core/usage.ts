@@ -20,24 +20,11 @@ export interface CodexUsage { primary?: CodexRateWindow; secondary?: CodexRateWi
 /** usage:get's reply. null means "no current data" for that provider. */
 export interface UsagePayload { claude: ClaudeUsage | null; codex: CodexUsage | null }
 
-/** Per-session context on the session payloads. `leftPct` is the percent
- *  left before the estimated compaction point, not before the hard window
- *  end. */
+/** Per-session context on the session payloads. `leftPct` is the percent of
+ *  the whole context window not yet used -- the same number Claude Code's
+ *  own /context reports as its inverse (100 minus /context's "used" %), not
+ *  an estimate of where auto-compact kicks in. */
 export interface SessionContext { usedTokens: number; windowTokens: number; leftPct: number }
-
-/** The auto-compact point is not documented (the CLI only takes
- *  `--autocompact <auto|100k-1M>`), so it is a setting, "Compacts at", with
- *  this default and range. */
-export const COMPACTS_AT_DEFAULT = 83;
-export const COMPACTS_AT_MIN = 50;
-export const COMPACTS_AT_MAX = 100;
-
-/** A finite number, rounded and clamped to 50-100; anything else is null
- *  (the caller refuses it, or falls back to the default). */
-export function clampCompactsAt(raw: unknown): number | null {
-  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null;
-  return Math.min(COMPACTS_AT_MAX, Math.max(COMPACTS_AT_MIN, Math.round(raw)));
-}
 
 /** Documented context windows (checked 2026-09-18). Anything else is null:
  *  a wrong window would show a confident, wrong "% left". */
@@ -68,16 +55,19 @@ export function contextWindowFor(modelId: string | null | undefined): number | n
   return null;
 }
 
-/** max(0, round(100 * (1 - used / (window * compactsAt/100)))). */
-export function leftPct(usedTokens: number, windowTokens: number, compactsAt: number): number {
-  const compactPoint = windowTokens * compactsAt / 100;
-  return Math.max(0, Math.round(100 * (1 - usedTokens / compactPoint)));
+/** max(0, round(100 * (window - used) / window)) -- the share of the whole
+ *  context window not yet used. No compaction estimate: David's decision
+ *  2026-09-18, "% left" is exactly 100 minus Claude Code's own /context
+ *  used % (measured: "605.2k/1m tokens (61%)" -> 39% left), for both
+ *  providers alike. `used > window` clamps to 0 rather than going negative. */
+export function leftPct(usedTokens: number, windowTokens: number): number {
+  return Math.max(0, Math.round(100 * (windowTokens - usedTokens) / windowTokens));
 }
 
-export function buildContext(usedTokens: number, windowTokens: number | null, compactsAt: number): SessionContext | null {
+export function buildContext(usedTokens: number, windowTokens: number | null): SessionContext | null {
   if (!Number.isFinite(usedTokens) || usedTokens < 0) return null;
   if (windowTokens === null || !Number.isFinite(windowTokens) || windowTokens <= 0) return null;
-  return { usedTokens, windowTokens, leftPct: leftPct(usedTokens, windowTokens, compactsAt) };
+  return { usedTokens, windowTokens, leftPct: leftPct(usedTokens, windowTokens) };
 }
 
 /** The two places context use can come from for one Claude session. */
@@ -95,13 +85,13 @@ export interface ContextSources {
  *  (the switch was turned off, so it stopped updating) loses to the turn.
  *  The window comes from the snapshot's own size when it has one, else the
  *  documented window for the model. */
-export function sessionContext(src: ContextSources, compactsAt: number): SessionContext | null {
+export function sessionContext(src: ContextSources): SessionContext | null {
   const { snapshot, turn } = src;
   if (snapshot && (!turn || snapshot.mtimeMs >= turn.tsMs)) {
     if (snapshot.usedTokens === null) return null;
-    return buildContext(snapshot.usedTokens, snapshot.windowTokens ?? contextWindowFor(snapshot.modelId), compactsAt);
+    return buildContext(snapshot.usedTokens, snapshot.windowTokens ?? contextWindowFor(snapshot.modelId));
   }
-  if (turn) return buildContext(turn.usedTokens, contextWindowFor(turn.modelId), compactsAt);
+  if (turn) return buildContext(turn.usedTokens, contextWindowFor(turn.modelId));
   return null;
 }
 

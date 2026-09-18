@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, utimesSync, existsSync, chmodSync,
+  mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, utimesSync, existsSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -10,7 +10,6 @@ import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { OpenSession } from '../../src/fleet/state.ts';
 import { resolvePaths } from '../../src/config.ts';
 import {
-  readStoredCompactsAt, writeStoredCompactsAt, applyCompactsAt, currentCompactsAt,
   latestTurns, claudeContextFor, codexRollouts, codexContextFor, withContext, buildUsagePayload,
 } from '../../src/main/usage.ts';
 
@@ -22,80 +21,6 @@ const CONTEXT_ROLLOUT = readFileSync(resolve('tests/fixtures/usage/codex-rollout
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'llmws-usage-main-')); });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
-
-const asRoot = process.getuid?.() === 0;
-
-describe('the Compacts at setting (persisted in main, like the appearance mirror)', () => {
-  const file = () => join(dir, 'usage.json');
-
-  it('reads 83 when the file is missing, malformed, or holds no usable number', () => {
-    expect(readStoredCompactsAt(file())).toBe(83);
-    writeFileSync(file(), '{ nope');
-    expect(readStoredCompactsAt(file())).toBe(83);
-    writeFileSync(file(), JSON.stringify({ compactsAt: '90' }));
-    expect(readStoredCompactsAt(file())).toBe(83);
-    writeFileSync(file(), JSON.stringify([90]));
-    expect(readStoredCompactsAt(file())).toBe(83);
-  });
-
-  it('reads a stored value, clamped to 50-100', () => {
-    writeFileSync(file(), JSON.stringify({ compactsAt: 90 }));
-    expect(readStoredCompactsAt(file())).toBe(90);
-    writeFileSync(file(), JSON.stringify({ compactsAt: 12 }));
-    expect(readStoredCompactsAt(file())).toBe(50);
-  });
-
-  it('round-trips through the file, creating its folder', () => {
-    const nested = join(dir, 'fresh', 'usage.json');
-    writeStoredCompactsAt(nested, 77);
-    expect(JSON.parse(readFileSync(nested, 'utf8'))).toEqual({ compactsAt: 77 });
-    expect(readStoredCompactsAt(nested)).toBe(77);
-  });
-
-  it.skipIf(asRoot)('never throws on an unwritable folder -- logs instead', () => {
-    const locked = join(dir, 'locked');
-    mkdirSync(locked);
-    chmodSync(locked, 0o500);
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      expect(() => writeStoredCompactsAt(join(locked, 'usage.json'), 90)).not.toThrow();
-      expect(errSpy).toHaveBeenCalled();
-    } finally {
-      errSpy.mockRestore();
-      chmodSync(locked, 0o700);
-    }
-  });
-
-  describe('applyCompactsAt -- the IPC boundary', () => {
-    it.each([[90, 90], [40, 50], [120, 100], [66.6, 67]])('accepts %d as %d, persists it and uses it', (raw, value) => {
-      const persisted: number[] = [];
-      expect(applyCompactsAt(raw, file(), { persist: (_p, n) => persisted.push(n) }))
-        .toEqual({ status: 'set', compactsAt: value });
-      expect(persisted).toEqual([value]);
-      expect(currentCompactsAt(file())).toBe(value);
-    });
-
-    it.each([
-      ['a string', '90'], ['NaN', Number.NaN], ['null', null], ['undefined', undefined], ['an object', { v: 90 }],
-    ])('refuses %s and persists nothing', (_label, raw) => {
-      let touched = false;
-      expect(applyCompactsAt(raw, file(), { persist: () => { touched = true; } })).toEqual({ status: 'refused' });
-      expect(touched).toBe(false);
-    });
-
-    it('writes the real file by default', () => {
-      applyCompactsAt(88, file());
-      expect(readStoredCompactsAt(file())).toBe(88);
-    });
-  });
-
-  it('currentCompactsAt reads the file once, then serves the value in memory', () => {
-    writeFileSync(file(), JSON.stringify({ compactsAt: 70 }));
-    expect(currentCompactsAt(file())).toBe(70);
-    writeFileSync(file(), JSON.stringify({ compactsAt: 95 }));
-    expect(currentCompactsAt(file())).toBe(70);
-  });
-});
 
 function ev(o: Partial<NormalizedEvent>): NormalizedEvent {
   return {
@@ -146,7 +71,7 @@ describe('claudeContextFor / codexContextFor / withContext', () => {
   let statusLineDir: string;
   let codexSessions: string;
   let rolloutPath: string;
-  const opts = (compactsAt = 83) => ({ statusLineDir, codexSessions, compactsAt });
+  const opts = () => ({ statusLineDir, codexSessions });
   beforeEach(() => {
     db = openDb(':memory:');
     statusLineDir = join(dir, 'statusline');
@@ -169,13 +94,9 @@ describe('claudeContextFor / codexContextFor / withContext', () => {
 
   it('uses the snapshot, else the latest turn, else null', () => {
     const got = claudeContextFor(db, [SNAP_ID, 'turn-only', 'nothing'], opts());
-    expect(got.get(SNAP_ID)).toEqual({ usedTokens: 462_000, windowTokens: 1_000_000, leftPct: 44 });
-    expect(got.get('turn-only')).toEqual({ usedTokens: 120_003, windowTokens: 200_000, leftPct: 28 });
+    expect(got.get(SNAP_ID)).toEqual({ usedTokens: 462_000, windowTokens: 1_000_000, leftPct: 54 });
+    expect(got.get('turn-only')).toEqual({ usedTokens: 120_003, windowTokens: 200_000, leftPct: 40 });
     expect(got.get('nothing')).toBeNull();
-  });
-
-  it('applies the Compacts at setting', () => {
-    expect(claudeContextFor(db, [SNAP_ID], opts(100)).get(SNAP_ID)?.leftPct).toBe(54);
   });
 
   function open(o: Partial<OpenSession> & { pid: number }): OpenSession {
@@ -187,10 +108,9 @@ describe('claudeContextFor / codexContextFor / withContext', () => {
   }
 
   it("gives a Codex session its rollout's latest usage against the model window", () => {
-    // 184,212 of 258,400, compacting at 83% (214,472): 1 - 0.8589 -> 14.
+    // 184,212 of 258,400: (258,400 - 184,212) / 258,400 -> 28.7 -> 29.
     expect(codexContextFor(db, ['codex-1', 'no-rollout'], opts()))
-      .toEqual(new Map([['codex-1', { usedTokens: 184_212, windowTokens: 258_400, leftPct: 14 }], ['no-rollout', null]]));
-    expect(codexContextFor(db, ['codex-1'], opts(100)).get('codex-1')?.leftPct).toBe(29);
+      .toEqual(new Map([['codex-1', { usedTokens: 184_212, windowTokens: 258_400, leftPct: 29 }], ['no-rollout', null]]));
   });
 
   it('fills context on Claude and Codex cards with a session, and leaves unmatched cards null', () => {
@@ -202,7 +122,7 @@ describe('claudeContextFor / codexContextFor / withContext', () => {
       open({ pid: 5, provider: 'codex', sessionId: null, match: 'ambiguous' }),
     ];
     const got = withContext(db, cards, opts());
-    expect(got.map(c => c.context?.leftPct ?? null)).toEqual([44, 28, null, 14, null]);
+    expect(got.map(c => c.context?.leftPct ?? null)).toEqual([54, 40, null, 29, null]);
     // Order and every other field untouched.
     expect(got.map(({ context: _c, ...rest }) => rest)).toEqual(cards.map(({ context: _c, ...rest }) => rest));
   });

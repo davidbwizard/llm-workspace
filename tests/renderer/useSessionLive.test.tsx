@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, render, act } from '@testing-library/react';
 import { useSessionLive } from '../../src/renderer/state/useSessionLive.ts';
 
 // A single fake session:live payload. `pid` is the only field these tests
@@ -148,5 +148,38 @@ describe('useSessionLive', () => {
     delete (globalThis as any).window.fleet;
     const { result } = renderHook(() => useSessionLive(4821));
     expect(result.current).toBeNull();
+  });
+
+  // Review finding: a useEffect-based reset only clears state AFTER the
+  // render with the new pid has already committed and painted, so the
+  // previous pid's context/prompt/activity shows for one frame under the
+  // new session's title. Rendered through a real component (not
+  // renderHook) so every render this hook produces -- including the one
+  // React discards before commit when it resets state during render, per
+  // React's "adjust state when a prop changes" idiom -- is captured, not
+  // just the value that survives to the end of the update.
+  it('never renders the previous pid\'s state for a new pid, not even for a discarded render', () => {
+    const seenForNewPid: unknown[] = [];
+    let push: (p: unknown) => void = () => {};
+    const watchSession = vi.fn().mockResolvedValue(true);
+    const onSessionLive = vi.fn((cb: (p: unknown) => void) => { push = cb; return () => {}; });
+    (globalThis as any).window.fleet = { watchSession, onSessionLive };
+
+    function Probe({ pid }: { pid: number }) {
+      const live = useSessionLive(pid);
+      if (pid === 5555) seenForNewPid.push(live);
+      return null;
+    }
+
+    const { rerender } = render(<Probe pid={4821} />);
+    act(() => { push(payload({ pid: 4821, events: 3 })); });
+
+    rerender(<Probe pid={5555} />);
+
+    // Every render Probe produced while pid was 5555 must be null -- the
+    // stale { events: 3, ... } reading from pid 4821 must never appear.
+    expect(seenForNewPid.length).toBeGreaterThan(0);
+    expect(seenForNewPid.every(v => v === null)).toBe(true);
+    delete (globalThis as any).window.fleet;
   });
 });

@@ -1,89 +1,24 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, normalize, sep } from 'node:path';
+import { basename, isAbsolute, normalize, sep } from 'node:path';
 import type { Db } from '../store/db.ts';
 import { resolvePaths, type Paths } from '../config.ts';
 import type { OpenSession } from '../fleet/state.ts';
 import { readClaudeRateLimits, readClaudeSnapshot } from '../providers/claude/statusLine.ts';
 import { readCodexContext, readCodexRateLimits } from '../providers/codex/rateLimits.ts';
 import type { Provider } from '../core/types.ts';
-import {
-  buildContext, clampCompactsAt, sessionContext, COMPACTS_AT_DEFAULT,
-  type SessionContext, type UsagePayload,
-} from '../core/usage.ts';
+import { buildContext, sessionContext, type SessionContext, type UsagePayload } from '../core/usage.ts';
 
-/** Usage and context (usage design, Part A), main side: the Compacts at
- *  setting, per-session context for the session payloads, and usage:get. */
-
-// --- Compacts at -------------------------------------------------------
-//
-// Kept in main, in ~/.llm-workspace/usage.json, for the same reason the
-// appearance choice is mirrored there (src/main/appearance.ts): main needs
-// the value itself -- leftPct is computed here, before the renderer
-// exists or asks -- and main cannot read the renderer's localStorage. Main
-// is the one copy: the renderer reads it (usage:compacts-at:get) and
-// changes it (usage:compacts-at:set), and keeps no copy of its own.
-
-/** Any failure (missing, unreadable, malformed, not a number) reads as the
- *  default; a number is clamped to 50-100. */
-export function readStoredCompactsAt(path: string): number {
-  try {
-    const raw: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return COMPACTS_AT_DEFAULT;
-    return clampCompactsAt((raw as Record<string, unknown>).compactsAt) ?? COMPACTS_AT_DEFAULT;
-  } catch {
-    return COMPACTS_AT_DEFAULT;
-  }
-}
-
-/** Best-effort, like writeStoredTheme: a failed write costs only the next
- *  launch's value, never this session's -- logged, never thrown. */
-export function writeStoredCompactsAt(path: string, compactsAt: number): void {
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({ compactsAt }));
-  } catch (err) {
-    console.error('writeStoredCompactsAt failed:', err);
-  }
-}
-
-let compactsAtCache: { path: string; value: number } | null = null;
-
-/** The value in force: read from the file once, then held in memory (it is
- *  read on every 5s enrichment refresh and every conversation push). */
-export function currentCompactsAt(path: string): number {
-  if (compactsAtCache?.path !== path) compactsAtCache = { path, value: readStoredCompactsAt(path) };
-  return compactsAtCache.value;
-}
-
-export type CompactsAtResult = { status: 'set'; compactsAt: number } | { status: 'refused' };
-
-/** usage:compacts-at:set. The renderer can send anything, so the value is
- *  checked HERE: a finite number, rounded and clamped to 50-100; anything
- *  else is refused and nothing is stored. Takes effect on the next push
- *  (the 5s sweep at the latest). */
-export function applyCompactsAt(
-  raw: unknown, path: string,
-  deps: { persist?: (path: string, compactsAt: number) => void } = {},
-): CompactsAtResult {
-  const compactsAt = clampCompactsAt(raw);
-  if (compactsAt === null) return { status: 'refused' };
-  compactsAtCache = { path, value: compactsAt };
-  (deps.persist ?? writeStoredCompactsAt)(path, compactsAt);
-  return { status: 'set', compactsAt };
-}
+/** Usage and context (usage design, Part A), main side: per-session context
+ *  for the session payloads, and usage:get. */
 
 // --- Per-session context -----------------------------------------------
 
-export interface ContextOpts { statusLineDir: string; codexSessions: string; compactsAt: number }
+export interface ContextOpts { statusLineDir: string; codexSessions: string }
 
-/** The real paths and the setting in force -- what production passes. */
+/** The real paths -- what production passes. */
 export function defaultContextOpts(): ContextOpts {
   const paths = resolvePaths(homedir());
-  return {
-    statusLineDir: paths.statusLineDir, codexSessions: paths.codexSessions,
-    compactsAt: currentCompactsAt(paths.usageSettings),
-  };
+  return { statusLineDir: paths.statusLineDir, codexSessions: paths.codexSessions };
 }
 
 export interface LatestTurn { usedTokens: number; modelId: string | null; tsMs: number }
@@ -135,7 +70,7 @@ export function claudeContextFor(db: Db, sessionIds: string[], opts: ContextOpts
       usedTokens: read.snapshot.usedTokens, windowTokens: read.snapshot.windowTokens,
       modelId: read.snapshot.modelId, mtimeMs: read.mtimeMs,
     } : null;
-    out.set(id, sessionContext({ snapshot, turn: turns.get(id) ?? null }, opts.compactsAt));
+    out.set(id, sessionContext({ snapshot, turn: turns.get(id) ?? null }));
   }
   return out;
 }
@@ -172,14 +107,14 @@ export function codexRollouts(db: Db, sessionIds: string[], codexRoot: string): 
 /** Context for Codex sessions: the rollout's latest token_count usage
  *  (src/providers/codex/rateLimits.ts's readCodexContext -- a tail read,
  *  cached by size and mtime) against its model_context_window, with the
- *  same Compacts at setting as Claude. */
+ *  same leftPct formula as Claude. */
 export function codexContextFor(db: Db, sessionIds: string[], opts: ContextOpts): Map<string, SessionContext | null> {
   const files = codexRollouts(db, sessionIds, opts.codexSessions);
   const out = new Map<string, SessionContext | null>();
   for (const id of sessionIds) {
     const file = files.get(id);
     const read = file ? readCodexContext(file) : null;
-    out.set(id, read && read.usedTokens !== null ? buildContext(read.usedTokens, read.windowTokens, opts.compactsAt) : null);
+    out.set(id, read && read.usedTokens !== null ? buildContext(read.usedTokens, read.windowTokens) : null);
   }
   return out;
 }

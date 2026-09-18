@@ -43,10 +43,7 @@ import {
 import { answerPrompt, type AnswerResult } from './answer.ts';
 import { hooksState, setHooks, type HooksResult } from '../hooks/switch.ts';
 import { usageSwitchState, setUsageSwitch, type UsageSwitchResult } from '../hooks/usageSwitch.ts';
-import {
-  withContext, defaultContextOpts, buildUsagePayload, applyCompactsAt, currentCompactsAt,
-  type ContextOpts, type CompactsAtResult,
-} from './usage.ts';
+import { withContext, defaultContextOpts, buildUsagePayload, type ContextOpts } from './usage.ts';
 import type { UsagePayload } from '../core/usage.ts';
 import { ingestSpool } from '../hooks/spool.ts';
 
@@ -1502,16 +1499,11 @@ export function registerIpc(
 
   // Usage and context (usage design, Part A). The switch mirrors Quick
   // answers exactly: state re-read from settings.json on every call, and
-  // anything but a literal `true` means off. usage:get takes no argument;
-  // the Compacts at value is checked in applyCompactsAt, not trusted.
+  // anything but a literal `true` means off. usage:get takes no argument.
   ipcMain.handle('usage:switch:get', (): UsageSwitchResult => usageSwitchState(resolvePaths(homedir())));
   ipcMain.handle('usage:switch:set', (_event, on: unknown): UsageSwitchResult =>
     setUsageSwitch(resolvePaths(homedir()), on === true, statusLineSourcePath()));
   ipcMain.handle('usage:get', (): UsagePayload => buildUsagePayload(resolvePaths(homedir())));
-  ipcMain.handle('usage:compacts-at:get', (): { compactsAt: number } =>
-    ({ compactsAt: currentCompactsAt(resolvePaths(homedir()).usageSettings) }));
-  ipcMain.handle('usage:compacts-at:set', (_event, value: unknown): CompactsAtResult =>
-    applyCompactsAt(value, resolvePaths(homedir()).usageSettings));
 
   // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing
   // Task 6's TEMPORARY not_implemented stubs in place -- not a second

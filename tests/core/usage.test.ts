@@ -1,8 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  contextWindowFor, leftPct, buildContext, sessionContext, clampCompactsAt, currentWindow,
-  COMPACTS_AT_DEFAULT,
-} from '../../src/core/usage.ts';
+import { contextWindowFor, leftPct, buildContext, sessionContext, currentWindow } from '../../src/core/usage.ts';
 
 describe('contextWindowFor -- the documented windows only', () => {
   it.each([
@@ -36,28 +33,29 @@ describe('contextWindowFor -- the documented windows only', () => {
   });
 });
 
-describe('leftPct -- percent left before the compaction point', () => {
-  it('is max(0, round(100 * (1 - used / (window * compactsAt/100))))', () => {
-    // 462k used of 1M, compacting at 83% (830k): 1 - 462/830 = 0.4434 -> 44.
-    expect(leftPct(462_000, 1_000_000, 83)).toBe(44);
-    expect(leftPct(0, 200_000, 83)).toBe(100);
-    expect(leftPct(100_000, 200_000, 100)).toBe(50);
+describe('leftPct -- the share of the whole window not yet used', () => {
+  it('is max(0, round(100 * (window - used) / window)) -- no compaction estimate', () => {
+    // David's decision 2026-09-18, measured against Claude Code's own
+    // /context: "605.2k/1m tokens (61%)" -> 39% left.
+    expect(leftPct(605_200, 1_000_000)).toBe(39);
+    expect(leftPct(754_732, 1_000_000)).toBe(25);
+    expect(leftPct(548_000, 1_000_000)).toBe(45);
   });
 
-  it('is 0, not negative, at or past the compaction point', () => {
-    expect(leftPct(830_000, 1_000_000, 83)).toBe(0);
-    expect(leftPct(990_000, 1_000_000, 83)).toBe(0);
+  it('works against a 200k window the same way', () => {
+    expect(leftPct(120_003, 200_000)).toBe(40);
+    expect(leftPct(0, 200_000)).toBe(100);
   });
 
-  it('moves with the setting', () => {
-    expect(leftPct(400_000, 1_000_000, 50)).toBe(20);
-    expect(leftPct(400_000, 1_000_000, 100)).toBe(60);
+  it('is 0, not negative, when used is at or past the window', () => {
+    expect(leftPct(1_000_000, 1_000_000)).toBe(0);
+    expect(leftPct(1_200_000, 1_000_000)).toBe(0);
   });
 });
 
 describe('buildContext', () => {
   it('carries used, window and leftPct', () => {
-    expect(buildContext(462_000, 1_000_000, 83)).toEqual({ usedTokens: 462_000, windowTokens: 1_000_000, leftPct: 44 });
+    expect(buildContext(605_200, 1_000_000)).toEqual({ usedTokens: 605_200, windowTokens: 1_000_000, leftPct: 39 });
   });
 
   it.each([
@@ -66,72 +64,53 @@ describe('buildContext', () => {
     ['a negative used count', -1, 200_000],
     ['a non-finite used count', Number.NaN, 200_000],
   ])('is null for %s', (_label, used, window) => {
-    expect(buildContext(used as number, window as number | null, 83)).toBeNull();
+    expect(buildContext(used as number, window as number | null)).toBeNull();
   });
 });
 
 describe('sessionContext -- which source, and which window', () => {
   const snapshot = (o: Partial<{ usedTokens: number | null; windowTokens: number | null; modelId: string | null; mtimeMs: number }> = {}) => ({
-    usedTokens: 462_000, windowTokens: 1_000_000, modelId: 'claude-opus-5', mtimeMs: 2_000, ...o,
+    usedTokens: 605_200, windowTokens: 1_000_000, modelId: 'claude-opus-5', mtimeMs: 2_000, ...o,
   });
   const turn = (o: Partial<{ usedTokens: number; modelId: string | null; tsMs: number }> = {}) => ({
-    usedTokens: 120_000, modelId: 'claude-haiku-4-5', tsMs: 1_000, ...o,
+    usedTokens: 120_003, modelId: 'claude-haiku-4-5', tsMs: 1_000, ...o,
   });
 
   it("uses the status line snapshot, with the snapshot's own window size", () => {
-    expect(sessionContext({ snapshot: snapshot({ windowTokens: 200_000 }), turn: null }, 83))
-      .toEqual({ usedTokens: 462_000, windowTokens: 200_000, leftPct: 0 });
+    expect(sessionContext({ snapshot: snapshot({ windowTokens: 200_000, usedTokens: 605_200 }), turn: null }))
+      .toEqual({ usedTokens: 605_200, windowTokens: 200_000, leftPct: 0 });
   });
 
   it("falls back to the model's documented window when the snapshot has no size", () => {
-    expect(sessionContext({ snapshot: snapshot({ windowTokens: null }), turn: null }, 83))
-      .toEqual({ usedTokens: 462_000, windowTokens: 1_000_000, leftPct: 44 });
+    expect(sessionContext({ snapshot: snapshot({ windowTokens: null }), turn: null }))
+      .toEqual({ usedTokens: 605_200, windowTokens: 1_000_000, leftPct: 39 });
   });
 
   it('prefers the snapshot over an older turn', () => {
-    expect(sessionContext({ snapshot: snapshot(), turn: turn({ tsMs: 1_000 }) }, 83)?.usedTokens).toBe(462_000);
+    expect(sessionContext({ snapshot: snapshot(), turn: turn({ tsMs: 1_000 }) })?.usedTokens).toBe(605_200);
   });
 
   it('uses the latest turn.completed when there is no snapshot, with the documented window for its model', () => {
-    expect(sessionContext({ snapshot: null, turn: turn() }, 83))
-      .toEqual({ usedTokens: 120_000, windowTokens: 200_000, leftPct: 28 });
+    expect(sessionContext({ snapshot: null, turn: turn() }))
+      .toEqual({ usedTokens: 120_003, windowTokens: 200_000, leftPct: 40 });
   });
 
   it('uses a newer turn over a stale snapshot (the switch was turned off)', () => {
-    expect(sessionContext({ snapshot: snapshot({ mtimeMs: 1_000 }), turn: turn({ tsMs: 5_000 }) }, 83)?.usedTokens)
-      .toBe(120_000);
+    expect(sessionContext({ snapshot: snapshot({ mtimeMs: 1_000 }), turn: turn({ tsMs: 5_000 }) })?.usedTokens)
+      .toBe(120_003);
   });
 
   it('is null right after /compact: a fresh snapshot with no current usage wins over the older, pre-compact turn', () => {
-    expect(sessionContext({ snapshot: snapshot({ usedTokens: null, mtimeMs: 9_000 }), turn: turn({ tsMs: 1_000 }) }, 83))
+    expect(sessionContext({ snapshot: snapshot({ usedTokens: null, mtimeMs: 9_000 }), turn: turn({ tsMs: 1_000 }) }))
       .toBeNull();
   });
 
   it('is null when a fallback turn has a model with no documented window', () => {
-    expect(sessionContext({ snapshot: null, turn: turn({ modelId: 'claude-opus-4-1' }) }, 83)).toBeNull();
+    expect(sessionContext({ snapshot: null, turn: turn({ modelId: 'claude-opus-4-1' }) })).toBeNull();
   });
 
   it('is null with neither source', () => {
-    expect(sessionContext({ snapshot: null, turn: null }, 83)).toBeNull();
-  });
-});
-
-describe('clampCompactsAt', () => {
-  it('defaults to 83', () => {
-    expect(COMPACTS_AT_DEFAULT).toBe(83);
-  });
-
-  it.each([
-    [83, 83], [50, 50], [100, 100], [49, 50], [0, 50], [-5, 50], [101, 100], [1e9, 100], [83.4, 83], [83.5, 84],
-  ])('%d -> %d', (raw, clamped) => {
-    expect(clampCompactsAt(raw)).toBe(clamped);
-  });
-
-  it.each([
-    ['NaN', Number.NaN], ['Infinity', Infinity], ['a string', '90'], ['null', null], ['undefined', undefined],
-    ['a boolean', true], ['an object', { compactsAt: 90 }],
-  ])('refuses %s', (_label, raw) => {
-    expect(clampCompactsAt(raw)).toBeNull();
+    expect(sessionContext({ snapshot: null, turn: null })).toBeNull();
   });
 });
 

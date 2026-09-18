@@ -285,13 +285,9 @@ describe('SettingsModal', () => {
   describe('Usage and context', () => {
     let usageSwitchGet: ReturnType<typeof vi.fn>;
     let usageSwitchSet: ReturnType<typeof vi.fn>;
-    let compactsAtGet: ReturnType<typeof vi.fn>;
-    let compactsAtSet: ReturnType<typeof vi.fn>;
     beforeEach(() => {
       usageSwitchGet = vi.fn(async () => ({ installed: false, error: null }));
       usageSwitchSet = vi.fn(async (on: boolean) => ({ installed: on, error: null }));
-      compactsAtGet = vi.fn(async () => ({ compactsAt: 83 }));
-      compactsAtSet = vi.fn(async (value: number) => ({ status: 'set', compactsAt: value }));
       // Quick answers' own hooksGet/hooksSet are stubbed purely so that
       // mount doesn't throw (its effect guards only on `window.fleet`
       // existing, not on the specific method) -- its own behaviour is
@@ -299,7 +295,7 @@ describe('SettingsModal', () => {
       const hooksGet = vi.fn(async () => ({ installed: false, error: null }));
       const hooksSet = vi.fn(async (on: boolean) => ({ installed: on, error: null }));
       (globalThis as never as { window: { fleet: unknown } }).window.fleet =
-        { usageSwitchGet, usageSwitchSet, compactsAtGet, compactsAtSet, hooksGet, hooksSet };
+        { usageSwitchGet, usageSwitchSet, hooksGet, hooksSet };
     });
 
     it('shows the exact hint sentence, including the trust/hooks preconditions', async () => {
@@ -310,12 +306,6 @@ describe('SettingsModal', () => {
         + "Needs a trusted folder; off when hooks are disabled.",
       )).toBeTruthy();
       await waitFor(() => expect(usageSwitchGet).toHaveBeenCalled());
-    });
-
-    it('shows the Compacts at hint', async () => {
-      render(<SettingsModal open={true} onClose={() => {}} />);
-      expect(screen.getByText('An estimate: Claude Code does not document its auto-compact point.')).toBeTruthy();
-      await waitFor(() => expect(compactsAtGet).toHaveBeenCalled());
     });
 
     it('reads the real state from usageSwitchGet when the modal opens', async () => {
@@ -370,83 +360,6 @@ describe('SettingsModal', () => {
       (globalThis as never as { window: { fleet: unknown } }).window.fleet = undefined;
       expect(() => render(<SettingsModal open={true} onClose={() => {}} />)).not.toThrow();
       expect(screen.getByRole('switch', { name: 'Usage and context' }).hasAttribute('disabled')).toBe(true);
-    });
-
-    describe('Compacts at', () => {
-      it('reads the stored value from compactsAtGet when the modal opens', async () => {
-        compactsAtGet.mockResolvedValue({ compactsAt: 90 });
-        render(<SettingsModal open={true} onClose={() => {}} />);
-        await waitFor(() => {
-          expect((screen.getByLabelText('Compacts at') as HTMLInputElement).value).toBe('90');
-        });
-      });
-
-      it('defaults to 83 when nothing is stored yet', async () => {
-        render(<SettingsModal open={true} onClose={() => {}} />);
-        await waitFor(() => {
-          expect((screen.getByLabelText('Compacts at') as HTMLInputElement).value).toBe('83');
-        });
-      });
-
-      it('commits a typed change to compactsAtSet on blur, and shows the clamped result', async () => {
-        compactsAtSet.mockResolvedValue({ status: 'set', compactsAt: 90 });
-        render(<SettingsModal open={true} onClose={() => {}} />);
-        const input = await screen.findByLabelText('Compacts at') as HTMLInputElement;
-        await waitFor(() => expect(input.value).toBe('83'));
-        fireEvent.change(input, { target: { value: '95' } });
-        fireEvent.blur(input);
-        expect(compactsAtSet).toHaveBeenCalledWith(95);
-        await waitFor(() => expect(input.value).toBe('90'));
-      });
-
-      it('commits on Enter as well as blur', async () => {
-        render(<SettingsModal open={true} onClose={() => {}} />);
-        const input = await screen.findByLabelText('Compacts at') as HTMLInputElement;
-        await waitFor(() => expect(input.value).toBe('83'));
-        fireEvent.change(input, { target: { value: '70' } });
-        fireEvent.keyDown(input, { key: 'Enter' });
-        expect(compactsAtSet).toHaveBeenCalledWith(70);
-        await waitFor(() => expect(input.value).toBe('70'));
-      });
-
-      // Coordinator review note (echoing main's own applyCompactsAt): a
-      // non-finite value must never reach usage:compacts-at:set, and the
-      // field reverts to the last known-good value rather than keeping
-      // whatever was typed.
-      it('refuses to send a non-numeric value, and reverts the field', async () => {
-        render(<SettingsModal open={true} onClose={() => {}} />);
-        const input = await screen.findByLabelText('Compacts at') as HTMLInputElement;
-        await waitFor(() => expect(input.value).toBe('83'));
-        fireEvent.change(input, { target: { value: 'abc' } });
-        fireEvent.blur(input);
-        expect(compactsAtSet).not.toHaveBeenCalled();
-        await waitFor(() => expect(input.value).toBe('83'));
-      });
-
-      it('reverts the field when main refuses the value', async () => {
-        compactsAtSet.mockResolvedValue({ status: 'refused' });
-        render(<SettingsModal open={true} onClose={() => {}} />);
-        const input = await screen.findByLabelText('Compacts at') as HTMLInputElement;
-        await waitFor(() => expect(input.value).toBe('83'));
-        fireEvent.change(input, { target: { value: '999' } });
-        fireEvent.blur(input);
-        await waitFor(() => expect(input.value).toBe('83'));
-      });
-
-      it('is disabled until the initial read resolves', async () => {
-        let resolve!: (v: { compactsAt: number }) => void;
-        compactsAtGet.mockReturnValue(new Promise(r => { resolve = r; }));
-        render(<SettingsModal open={true} onClose={() => {}} />);
-        expect((screen.getByLabelText('Compacts at') as HTMLInputElement).disabled).toBe(true);
-        resolve({ compactsAt: 83 });
-        await waitFor(() => expect((screen.getByLabelText('Compacts at') as HTMLInputElement).disabled).toBe(false));
-      });
-
-      it('does not crash when window.fleet is unavailable', () => {
-        (globalThis as never as { window: { fleet: unknown } }).window.fleet = undefined;
-        expect(() => render(<SettingsModal open={true} onClose={() => {}} />)).not.toThrow();
-        expect((screen.getByLabelText('Compacts at') as HTMLInputElement).disabled).toBe(true);
-      });
     });
   });
 });

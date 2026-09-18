@@ -120,12 +120,25 @@ export function setUsageSwitch(paths: Paths, on: boolean, source: string): Usage
 /** On app start with the switch on, refresh the stable copy if it differs
  *  from this app version's script -- touches only that file, never
  *  settings.json. Best-effort: logged, never thrown, so it cannot block
- *  startup. */
+ *  startup.
+ *
+ *  Also re-tightens the statusline snapshot folder to 0700 here, on every
+ *  start -- not just at the moment the switch is flipped on (turnOn's own
+ *  ensureStatusLineDir call, above). A folder loosened by hand between
+ *  launches would otherwise stay loose until the switch was toggled again.
+ *  Mirrors the spool folder's own startup re-chmod in src/main/index.ts's
+ *  app.whenReady: mkdirSync's `mode` only applies at creation, so an
+ *  already-existing folder needs its own chmod call too. */
 export function refreshStatusLineIfInstalled(paths: Paths, source: string): void {
   if (!usageSwitchState(paths).installed) return;
   try {
     refreshStableCopy(source, stableStatusLinePath(homeOf(paths)));
   } catch (e) {
     console.error('Usage and context: could not refresh the status line script copy:', e);
+  }
+  try {
+    ensureStatusLineDir(paths.statusLineDir);
+  } catch (e) {
+    console.error('Usage and context: could not tighten the statusline folder to 0700:', e);
   }
 }

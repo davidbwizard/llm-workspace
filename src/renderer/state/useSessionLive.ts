@@ -59,12 +59,25 @@ export type SessionLive = {
 export function useSessionLive(pid: number | null): SessionLive | null {
   const [state, setState] = useState<SessionLive | null>(null);
 
-  useEffect(() => {
-    // Reset on every pid change, not just on the first mount: whatever the
-    // PREVIOUS pid last reported must not keep reading as this session's
-    // state while the new watch's first payload is still in flight.
+  // Reset on every pid change, not just on the first mount: whatever the
+  // PREVIOUS pid last reported must not keep reading as this session's
+  // state while the new watch's first payload is still in flight. Done
+  // here, in the render body -- React's own "adjust state when a prop
+  // changes" idiom -- rather than in the effect below: an effect only runs
+  // AFTER this render has already committed and painted, so for one frame
+  // the previous pid's state would still be on screen. Comparing against a
+  // tracked `prevPid` and calling setState synchronously during render
+  // makes React discard that stale render before it ever paints (and the
+  // ternary below covers the one render where the two setState calls have
+  // been made but `state`/`prevPid` themselves have not yet updated).
+  const [prevPid, setPrevPid] = useState(pid);
+  if (pid !== prevPid) {
+    setPrevPid(pid);
     setState(null);
+  }
+  const current = pid !== prevPid ? null : state;
 
+  useEffect(() => {
     const api = window.fleet;
     if (!api?.watchSession || !api.onSessionLive) return;
 
@@ -101,5 +114,5 @@ export function useSessionLive(pid: number | null): SessionLive | null {
     };
   }, [pid]);
 
-  return state;
+  return current;
 }

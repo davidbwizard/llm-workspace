@@ -140,8 +140,7 @@ export interface SessionLiveDeps {
   ingestSpool?: () => void;
   /** Context for a session (usage design, Part A). Defaults to
    *  src/main/usage.ts's contextForSession with the real status line and
-   *  Codex folders and the Compacts at setting; tests inject it so they
-   *  never read the real home. */
+   *  Codex folders; tests inject it so they never read the real home. */
   context?: (sessionId: string, provider: Provider) => SessionContext | null;
 }
 

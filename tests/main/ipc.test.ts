@@ -672,7 +672,7 @@ describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
     });
     // A status line folder with nothing in it: the turn is the only source.
     refreshPushEnrichment(db, processes, Date.now(), {
-      statusLineDir: '/nonexistent-llmws-statusline', codexSessions: '/nonexistent-llmws-codex', compactsAt: 83,
+      statusLineDir: '/nonexistent-llmws-statusline', codexSessions: '/nonexistent-llmws-codex',
     });
 
     const send = vi.fn();
@@ -681,7 +681,7 @@ describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
     pushFleet(win);
     const card = send.mock.calls[0]![1].openSessions[0]!;
     expect(card.sessionId).toBe('s1');
-    expect(card.context).toEqual({ usedTokens: 402_003, windowTokens: 1_000_000, leftPct: 52 });
+    expect(card.context).toEqual({ usedTokens: 402_003, windowTokens: 1_000_000, leftPct: 60 });
   });
 
   it('sends context: null on the first, unenriched fleet:list', async () => {

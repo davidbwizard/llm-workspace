@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { OpenSession } from '../../fleet/state.ts';
 import type { PaneView, Selection } from '../state/useFleet.ts';
 import type { KillResult, RevealResult } from '../../main/ipc.ts';
@@ -67,8 +67,23 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
   // reading is preferable there to blanking the chip until Conversation is
   // reopened. Declared before the early return below -- hooks must run
   // unconditionally on every render, selection===null or not.
+  //
+  // Reset in the render body, not a useEffect keyed on the pid (React's own
+  // "adjust state when a prop changes" idiom, same as useSessionLive.ts):
+  // an effect only fires after this render has already committed and
+  // painted, so for one frame the previous session's reading would still
+  // be on screen under the new session's title. Comparing against a
+  // tracked `prevPid` and calling setState synchronously during render
+  // makes React discard that stale render before it ever paints; the
+  // ternary covers the one render where the setState calls have been made
+  // but `liveContext`/`prevPid` themselves have not yet updated.
   const [liveContext, setLiveContext] = useState<SessionContext | null>(null);
-  useEffect(() => { setLiveContext(null); }, [selection?.pid]);
+  const [prevPid, setPrevPid] = useState<number | null>(selection?.pid ?? null);
+  if ((selection?.pid ?? null) !== prevPid) {
+    setPrevPid(selection?.pid ?? null);
+    setLiveContext(null);
+  }
+  const currentLiveContext = (selection?.pid ?? null) !== prevPid ? null : liveContext;
 
   if (selection === null) {
     return (
@@ -89,7 +104,7 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
   // here so the chip is not blank for however long it takes the first
   // report to arrive (mount order: this render happens before that effect
   // fires).
-  const headerContext = liveContext ?? session?.context ?? null;
+  const headerContext = currentLiveContext ?? session?.context ?? null;
 
   return (
     <div className="mainpane split">

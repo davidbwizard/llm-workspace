@@ -3,7 +3,6 @@ import {
   APPEARANCES, COMPACT_CARDS, DEFAULT_SETTINGS, MESSAGE_STYLES, TEXT_SIZES, setSettings, useSettings,
   type Appearance, type CompactCards, type MessageStyle, type TextSize,
 } from '../state/settings.ts';
-import { COMPACTS_AT_DEFAULT, COMPACTS_AT_MIN, COMPACTS_AT_MAX } from '../../core/usage.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import './SettingsModal.css';
 
@@ -40,7 +39,6 @@ const USAGE_HELP =
   "Adds a status line to ~/.claude/settings.json so the app can show context and plan usage. "
   + "Claude Code hides most footer hints while any status line is set. "
   + "Needs a trusted folder; off when hooks are disabled.";
-const COMPACTS_AT_HELP = 'An estimate: Claude Code does not document its auto-compact point.';
 
 /** Fixed sample turns for the live preview -- never real session data, so the
  *  preview cannot leak transcript content into a settings panel, and never
@@ -193,7 +191,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const styleLabelId = useId();
   const quickAnswersLabelId = useId();
   const usageLabelId = useId();
-  const compactsAtId = useId();
 
   // Quick answers (design §4): `null` means "not yet read" -- distinct from
   // `false`, so the switch can render disabled rather than a possibly-wrong
@@ -272,55 +269,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       err => { setUsageError(err instanceof Error ? err.message : String(err)); setUsageBusy(false); },
     );
   };
-
-  // Compacts at (usage design, Part B): main is the one copy (usage-a
-  // report's own decision) -- this reads and writes it over IPC, keeping no
-  // copy in localStorage. `raw` is the editable text (so typing "9" on the
-  // way to "90" doesn't get clamped mid-keystroke); it only commits to
-  // compactsAtSet -- and only then overwrites `raw` with whatever main
-  // actually stored -- on blur or Enter, never on every keystroke.
-  // `compactsAt === null` (not yet read) is what disables the field, same
-  // "null means unknown, not a guessed default" rule as hooksInstalled.
-  const [compactsAt, setCompactsAt] = useState<number | null>(null);
-  const [compactsAtRaw, setCompactsAtRaw] = useState('');
-  const [compactsAtBusy, setCompactsAtBusy] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    const api = window.fleet;
-    if (!api?.compactsAtGet) return;
-    let alive = true;
-    void api.compactsAtGet().then(
-      r => { if (alive) { setCompactsAt(r.compactsAt); setCompactsAtRaw(String(r.compactsAt)); } },
-      err => console.error('usage:compacts-at:get failed:', err),
-    );
-    return () => { alive = false; };
-  }, [open]);
-
-  function commitCompactsAt(): void {
-    const api = window.fleet;
-    const fallback = String(compactsAt ?? COMPACTS_AT_DEFAULT);
-    if (!api?.compactsAtSet) { setCompactsAtRaw(fallback); return; }
-    const n = Number(compactsAtRaw);
-    // A non-finite value (empty, "abc", a bare "-") is refused HERE, before
-    // it ever reaches main -- main's own applyCompactsAt would refuse it
-    // too, but there is nothing to gain by making the round trip just to
-    // be told no.
-    if (compactsAtRaw.trim() === '' || !Number.isFinite(n)) { setCompactsAtRaw(fallback); return; }
-    setCompactsAtBusy(true);
-    void api.compactsAtSet(n).then(
-      r => {
-        setCompactsAtBusy(false);
-        if (r.status === 'set') { setCompactsAt(r.compactsAt); setCompactsAtRaw(String(r.compactsAt)); }
-        else setCompactsAtRaw(fallback);
-      },
-      err => {
-        console.error('usage:compacts-at:set failed:', err);
-        setCompactsAtBusy(false);
-        setCompactsAtRaw(fallback);
-      },
-    );
-  }
 
   useEffect(() => {
     const el = dialogRef.current;
@@ -478,25 +426,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             </div>
             <p className="settingshelp">{USAGE_HELP}</p>
             {usageError !== null && <p className="settingserror" role="alert">{usageError}</p>}
-          </div>
-          <div className="settingsfield">
-            <div className="settingsswitchrow">
-              <label className="settingslabel" htmlFor={compactsAtId}>Compacts at</label>
-              <input
-                id={compactsAtId}
-                type="number"
-                className="settingscompactsat"
-                min={COMPACTS_AT_MIN}
-                max={COMPACTS_AT_MAX}
-                step={1}
-                value={compactsAtRaw}
-                disabled={compactsAt === null || compactsAtBusy}
-                onChange={e => setCompactsAtRaw(e.target.value)}
-                onBlur={commitCompactsAt}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitCompactsAt(); } }}
-              />
-            </div>
-            <p className="settingshelp">{COMPACTS_AT_HELP}</p>
           </div>
         </section>
 

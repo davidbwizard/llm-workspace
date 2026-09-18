@@ -10,7 +10,6 @@ import type { AnswerResult } from '../main/answer.ts';
 import type { Answer } from '../core/prompt.ts';
 import type { HooksResult } from '../hooks/switch.ts';
 import type { UsageSwitchResult } from '../hooks/usageSwitch.ts';
-import type { CompactsAtResult } from '../main/usage.ts';
 import type { UsagePayload } from '../core/usage.ts';
 
 declare global {
@@ -85,14 +84,11 @@ declare global {
       hooksSet: (on: boolean) => Promise<HooksResult>;
       // Usage and context: the Settings switch (re-read from settings.json
       // on every call; `error` is the refusal to show, e.g. "You already
-      // have a status line in settings.json -- not replaced."), the Usage
-      // button's rate limits, and the Compacts at setting (main is its only
-      // copy; a refused value changes nothing).
+      // have a status line in settings.json -- not replaced."), and the
+      // Usage button's rate limits.
       usageSwitchGet: () => Promise<UsageSwitchResult>;
       usageSwitchSet: (on: boolean) => Promise<UsageSwitchResult>;
       usageGet: () => Promise<UsagePayload>;
-      compactsAtGet: () => Promise<{ compactsAt: number }>;
-      compactsAtSet: (value: number) => Promise<CompactsAtResult>;
     };
   }
 }
