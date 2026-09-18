@@ -997,27 +997,29 @@ describe('buildSessionLive -- ingests the spool before looking up a waiting prom
 describe('buildSessionLive -- context', () => {
   const ctx = { usedTokens: 462_000, windowTokens: 1_000_000, leftPct: 44 };
 
-  it("carries the Claude session's context, asked for by its own session id", () => {
+  it("carries the Claude session's context, asked for by its own session id and provider", () => {
     const db = openDb(':memory:');
     const processes = [proc({ pid: 4821, provider: 'claude', cwd: '/repo/claude' })];
     const cached = [{ pid: 4821, provider: 'claude', cwd: '/repo/claude', sessionId: 'claude-1' } as OpenSession];
     const asked: string[] = [];
     const p = buildSessionLive(db, 4821, processes, Date.now(), {
       cached, read: () => ({ ok: false, reason: 'missing' }) as LiveSessionRead,
-      context: id => { asked.push(id); return ctx; },
+      context: (id, provider) => { asked.push(`${provider}:${id}`); return ctx; },
     });
     expect(p?.context).toEqual(ctx);
-    expect(asked).toEqual(['claude-1']);
+    expect(asked).toEqual(['claude:claude-1']);
   });
 
-  it('is null for Codex, without asking', () => {
+  it("carries a Codex session's context the same way", () => {
     const db = openDb(':memory:');
     const processes = [proc({ pid: 4821, provider: 'codex', cwd: '/repo/codex' })];
     const cached = [{ pid: 4821, provider: 'codex', cwd: '/repo/codex', sessionId: 'codex-1' } as OpenSession];
-    let asked = false;
-    const p = buildSessionLive(db, 4821, processes, Date.now(), { cached, context: () => { asked = true; return ctx; } });
-    expect(p?.context).toBeNull();
-    expect(asked).toBe(false);
+    const asked: string[] = [];
+    const p = buildSessionLive(db, 4821, processes, Date.now(), {
+      cached, context: (id, provider) => { asked.push(`${provider}:${id}`); return ctx; },
+    });
+    expect(p?.context).toEqual(ctx);
+    expect(asked).toEqual(['codex:codex-1']);
   });
 
   it('is null for a live process with no session', () => {

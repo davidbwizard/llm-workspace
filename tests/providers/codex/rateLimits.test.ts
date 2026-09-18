@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, utimesSync, appendFileSync } from 'node:fs';
+import {
+  mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, utimesSync, appendFileSync, symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   parseTokenCountLine, lastRateLimitsInFile, newestRollouts, readCodexRateLimits,
+  parseTokenUsageLine, lastUsageInFile, readCodexContext,
 } from '../../../src/providers/codex/rateLimits.ts';
 
 // Real-shaped rollout lines (Codex 0.154 token_count events, content and
@@ -183,6 +186,95 @@ describe('finding the newest rollouts', () => {
       appendFileSync(path, JSON.stringify(rec) + '\n');
       utimesSync(path, 1_789_700_060, 1_789_700_060);
       expect(readCodexRateLimits(dir, NOW)?.primary?.usedPct).toBe(31);
+    });
+  });
+});
+
+// Codex context (usage design, Part A follow-up): the rollout's latest
+// token_count that carries usage. tests/fixtures/usage/codex-rollout-context.jsonl
+// is a real-shaped CLI rollout (Codex 0.154, content redacted): line 6 and
+// line 9 carry usage (window 258400), line 13 is the next turn's
+// rate-limits-only token_count (info: null), which must be skipped.
+//
+// used = last_token_usage.input_tokens ALONE. In the rollout,
+// cached_input_tokens is a SUBSET of input_tokens (OpenAI accounting):
+// measured over 821 real usages on this machine, cached <= input every time
+// and total_tokens == input_tokens + output_tokens in all 713 that carry
+// input counts. Adding cached would double-count it. That makes input_tokens
+// the same "whole prompt the model saw, output excluded" as Claude's
+// input + cache_creation + cache_read.
+describe('Codex context from the latest token_count', () => {
+  const CTX = readFileSync(resolve('tests/fixtures/usage/codex-rollout-context.jsonl'), 'utf8');
+  const CTX_LINES = CTX.trimEnd().split('\n');
+
+  it('reads used = last_token_usage.input_tokens (cached is already inside it) and the model window', () => {
+    expect(parseTokenUsageLine(CTX_LINES[8]!)).toEqual({ usedTokens: 184_212, windowTokens: 258_400 });
+    expect(parseTokenUsageLine(CTX_LINES[5]!)).toEqual({ usedTokens: 59_521, windowTokens: 258_400 });
+  });
+
+  it('is null (keep looking) for a token_count with no usage, and for any other record', () => {
+    expect(parseTokenUsageLine(CTX_LINES[12]!)).toBeNull();
+    expect(parseTokenUsageLine(CTX_LINES[0]!)).toBeNull();
+    expect(parseTokenUsageLine('{"half":')).toBeNull();
+  });
+
+  function withInfo(fn: (info: any) => void): string {
+    const rec = JSON.parse(CTX_LINES[8]!);
+    fn(rec.payload.info);
+    return JSON.stringify(rec);
+  }
+
+  it('reports a total-only record (input 0, no window -- seen from Codex Desktop) as unknown, not zero', () => {
+    const line = withInfo(info => {
+      info.last_token_usage = { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0,
+        output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 119_280 };
+      info.model_context_window = null;
+    });
+    expect(parseTokenUsageLine(line)).toEqual({ usedTokens: null, windowTokens: null });
+  });
+
+  it('type-checks each field on its own', () => {
+    expect(parseTokenUsageLine(withInfo(i => { i.last_token_usage.input_tokens = '184212'; }))?.usedTokens).toBeNull();
+    expect(parseTokenUsageLine(withInfo(i => { i.model_context_window = 0; }))?.windowTokens).toBeNull();
+    expect(parseTokenUsageLine(withInfo(i => { i.model_context_window = '258400'; }))?.windowTokens).toBeNull();
+    expect(parseTokenUsageLine(withInfo(i => { i.last_token_usage = null; }))).toBeNull();
+  });
+
+  function file(text: string): string {
+    const path = join(dir, 'rollout-2026-09-17T12-04-04-01a0b0c1.jsonl');
+    writeFileSync(path, text);
+    return path;
+  }
+
+  it.each([7, 100, 4096, 65536])('finds the latest usage from the end, past the next turn\'s info:null (chunk %d)', (chunkBytes) => {
+    expect(lastUsageInFile(file(CTX), { chunkBytes })).toEqual({ usedTokens: 184_212, windowTokens: 258_400 });
+  });
+
+  it('stops at the latest usage even when it is unusable, rather than show an older count', () => {
+    const unusable = withInfo(info => { info.model_context_window = null; });
+    expect(lastUsageInFile(file(CTX + unusable + '\n'))).toEqual({ usedTokens: 184_212, windowTokens: null });
+  });
+
+  it('gives up past its byte budget', () => {
+    const big = JSON.stringify({ type: 'response_item', payload: { output: 'y'.repeat(20_000) } });
+    expect(lastUsageInFile(file(CTX + big + '\n'), { maxBytes: 10_000 })).toBeNull();
+  });
+
+  describe('readCodexContext', () => {
+    it('reads a rollout, and re-reads it only when it changes', () => {
+      const path = file(CTX);
+      expect(readCodexContext(path)).toEqual({ usedTokens: 184_212, windowTokens: 258_400 });
+      const next = withInfo(info => { info.last_token_usage.input_tokens = 200_000; });
+      appendFileSync(path, next + '\n');
+      expect(readCodexContext(path)).toEqual({ usedTokens: 200_000, windowTokens: 258_400 });
+    });
+
+    it('is null for a missing file or a symlink', () => {
+      expect(readCodexContext(join(dir, 'missing.jsonl'))).toBeNull();
+      const real = file(CTX);
+      const link = join(dir, 'rollout-link.jsonl');
+      symlinkSync(real, link);
+      expect(readCodexContext(link)).toBeNull();
     });
   });
 });

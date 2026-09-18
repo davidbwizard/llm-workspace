@@ -11,12 +11,13 @@ import type { OpenSession } from '../../src/fleet/state.ts';
 import { resolvePaths } from '../../src/config.ts';
 import {
   readStoredCompactsAt, writeStoredCompactsAt, applyCompactsAt, currentCompactsAt,
-  latestTurns, contextFor, withContext, buildUsagePayload,
+  latestTurns, claudeContextFor, codexRollouts, codexContextFor, withContext, buildUsagePayload,
 } from '../../src/main/usage.ts';
 
 const SNAPSHOT = readFileSync(resolve('tests/fixtures/usage/claude-statusline.json'), 'utf8');
 const SNAP_ID = '3f2a9c1e-7b4d-4e8a-9c2f-1a2b3c4d5e6f';
 const ROLLOUT = readFileSync(resolve('tests/fixtures/usage/codex-rollout.jsonl'), 'utf8');
+const CONTEXT_ROLLOUT = readFileSync(resolve('tests/fixtures/usage/codex-rollout-context.jsonl'), 'utf8');
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'llmws-usage-main-')); });
@@ -140,16 +141,25 @@ describe('latestTurns -- the fallback when there is no status line snapshot', ()
   });
 });
 
-describe('contextFor / withContext', () => {
+describe('claudeContextFor / codexContextFor / withContext', () => {
   let db: Db;
   let statusLineDir: string;
+  let codexSessions: string;
+  let rolloutPath: string;
+  const opts = (compactsAt = 83) => ({ statusLineDir, codexSessions, compactsAt });
   beforeEach(() => {
     db = openDb(':memory:');
     statusLineDir = join(dir, 'statusline');
     mkdirSync(statusLineDir);
+    codexSessions = join(dir, 'codex-sessions');
+    mkdirSync(join(codexSessions, '2026/09/17'), { recursive: true });
+    rolloutPath = join(codexSessions, '2026/09/17', 'rollout-2026-09-17T12-04-04-01a0b0c1.jsonl');
+    writeFileSync(rolloutPath, CONTEXT_ROLLOUT);
     insertEvents(db, [
       ev({ sessionId: SNAP_ID, ts: '2026-09-18T12:00:00Z', payload: tokens(1, 100, 0), contentHash: 'a' }),
       ev({ sessionId: 'turn-only', ts: '2026-09-18T12:00:00Z', payload: tokens(3, 120_000, 0, 'claude-haiku-4-5'), contentHash: 'b' }),
+      ev({ provider: 'codex', sessionId: 'codex-1', kind: 'prose', ts: '2026-09-17T19:05:41Z',
+        payload: { text: 'Two findings' }, sourceFile: rolloutPath, contentHash: 'c' }),
     ]);
     const snap = join(statusLineDir, `${SNAP_ID}.json`);
     writeFileSync(snap, SNAPSHOT);
@@ -158,14 +168,14 @@ describe('contextFor / withContext', () => {
   });
 
   it('uses the snapshot, else the latest turn, else null', () => {
-    const got = contextFor(db, [SNAP_ID, 'turn-only', 'nothing'], { statusLineDir, compactsAt: 83 });
+    const got = claudeContextFor(db, [SNAP_ID, 'turn-only', 'nothing'], opts());
     expect(got.get(SNAP_ID)).toEqual({ usedTokens: 462_000, windowTokens: 1_000_000, leftPct: 44 });
     expect(got.get('turn-only')).toEqual({ usedTokens: 120_003, windowTokens: 200_000, leftPct: 28 });
     expect(got.get('nothing')).toBeNull();
   });
 
   it('applies the Compacts at setting', () => {
-    expect(contextFor(db, [SNAP_ID], { statusLineDir, compactsAt: 100 }).get(SNAP_ID)?.leftPct).toBe(54);
+    expect(claudeContextFor(db, [SNAP_ID], opts(100)).get(SNAP_ID)?.leftPct).toBe(54);
   });
 
   function open(o: Partial<OpenSession> & { pid: number }): OpenSession {
@@ -176,23 +186,59 @@ describe('contextFor / withContext', () => {
     };
   }
 
-  it('fills context on Claude cards with a session, and leaves Codex and unmatched cards null', () => {
+  it("gives a Codex session its rollout's latest usage against the model window", () => {
+    // 184,212 of 258,400, compacting at 83% (214,472): 1 - 0.8589 -> 14.
+    expect(codexContextFor(db, ['codex-1', 'no-rollout'], opts()))
+      .toEqual(new Map([['codex-1', { usedTokens: 184_212, windowTokens: 258_400, leftPct: 14 }], ['no-rollout', null]]));
+    expect(codexContextFor(db, ['codex-1'], opts(100)).get('codex-1')?.leftPct).toBe(29);
+  });
+
+  it('fills context on Claude and Codex cards with a session, and leaves unmatched cards null', () => {
     const cards = [
       open({ pid: 1, sessionId: SNAP_ID }),
       open({ pid: 2, sessionId: 'turn-only' }),
       open({ pid: 3, sessionId: null, match: 'ambiguous' }),
       open({ pid: 4, provider: 'codex', sessionId: 'codex-1' }),
+      open({ pid: 5, provider: 'codex', sessionId: null, match: 'ambiguous' }),
     ];
-    const got = withContext(db, cards, { statusLineDir, compactsAt: 83 });
-    expect(got.map(c => c.context?.leftPct ?? null)).toEqual([44, 28, null, null]);
+    const got = withContext(db, cards, opts());
+    expect(got.map(c => c.context?.leftPct ?? null)).toEqual([44, 28, null, 14, null]);
     // Order and every other field untouched.
     expect(got.map(({ context: _c, ...rest }) => rest)).toEqual(cards.map(({ context: _c, ...rest }) => rest));
   });
 
   it('runs no query when no card needs one', () => {
     const prepare = vi.spyOn(db, 'prepare');
-    withContext(db, [open({ pid: 4, provider: 'codex', sessionId: 'codex-1' })], { statusLineDir, compactsAt: 83 });
+    withContext(db, [open({ pid: 5, provider: 'codex', sessionId: null, match: 'ambiguous' })], opts());
     expect(prepare).not.toHaveBeenCalled();
+  });
+});
+
+describe('codexRollouts -- which file holds a Codex session', () => {
+  const root = '/Users/me/.codex/sessions';
+  const day = `${root}/2026/09/17`;
+  let db: Db;
+  beforeEach(() => {
+    db = openDb(':memory:');
+    const codex = (o: Partial<NormalizedEvent>) => ev({ provider: 'codex', kind: 'prose', payload: { text: 'x' }, ...o });
+    insertEvents(db, [
+      codex({ sessionId: 'c1', ts: '2026-09-17T10:00:00Z', sourceFile: `${day}/rollout-2026-09-17T10-00-00-old.jsonl`, contentHash: 'a' }),
+      codex({ sessionId: 'c1', ts: '2026-09-17T11:00:00Z', sourceFile: `${day}/rollout-2026-09-17T11-00-00-new.jsonl`, contentHash: 'b' }),
+      // A subagent thread shares the root's session id but writes its own
+      // rollout; its usage is not the conversation's context.
+      codex({ sessionId: 'c1', agentId: 'thread-sub', ts: '2026-09-17T12:00:00Z',
+        sourceFile: `${day}/rollout-2026-09-17T12-00-00-sub.jsonl`, contentHash: 'c' }),
+      codex({ sessionId: 'outside', sourceFile: '/tmp/evil/rollout-x.jsonl', contentHash: 'd' }),
+      codex({ sessionId: 'dotdot', sourceFile: `${root}/../../evil/rollout-x.jsonl`, contentHash: 'e' }),
+      codex({ sessionId: 'not-a-rollout', sourceFile: `${day}/notes.jsonl`, contentHash: 'f' }),
+    ]);
+  });
+
+  it("returns the root thread's latest rollout, in one query, and nothing outside the sessions folder", () => {
+    const prepare = vi.spyOn(db, 'prepare');
+    const got = codexRollouts(db, ['c1', 'outside', 'dotdot', 'not-a-rollout', 'nobody'], root);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(got).toEqual(new Map([['c1', `${day}/rollout-2026-09-17T11-00-00-new.jsonl`]]));
   });
 });
 

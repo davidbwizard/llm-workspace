@@ -266,8 +266,9 @@ export function refreshPushEnrichment(
 ): void {
   // Context (usage design, Part A) is filled here, on the same 5s cadence
   // and for the same bounded set of sessions: one extra query over the
-  // live sessions' ids, plus a stat per snapshot file (parsed only when it
-  // changed). contextOpts is injectable so tests never read the real home.
+  // live sessions' ids per provider, plus a stat per Claude snapshot or
+  // Codex rollout (parsed, or tail-read, only when it changed). contextOpts
+  // is injectable so tests never read the real home.
   cachedPushOpenSessions = withContext(
     db,
     openSessionsLive(db, processes, now, { isTmux: pidIsTmux, launchedAtForPid }),

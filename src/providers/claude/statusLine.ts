@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { currentWindow, type ClaudeUsage, type RateWindow } from '../../core/usage.ts';
 
@@ -172,4 +172,38 @@ export function readClaudeRateLimits(dir: string, now: number): ClaudeUsage | nu
     };
   }
   return null;
+}
+
+/** Startup pruning (src/main/index.ts, beside rotateSpool): the helper
+ *  writes one file per session and nothing else ever removes them, so a
+ *  snapshot not rewritten in `maxAgeDays` is deleted. Only regular files
+ *  named by the <session_id>.json rule are candidates -- lstat, so a
+ *  symlink is never followed and never removed, and the helper's own
+ *  `.statusline.*` temp names never match. Per-file failures are logged and
+ *  skipped; a missing folder is a quiet no-op. Returns how many were
+ *  deleted. */
+export function pruneSnapshots(dir: string, opts: { maxAgeDays: number; now?: number }): number {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error('status line snapshots: could not list', dir, e);
+    return 0;
+  }
+  const cutoff = (opts.now ?? Date.now()) - opts.maxAgeDays * 86_400_000;
+  let removed = 0;
+  for (const name of names) {
+    if (!SNAPSHOT_FILE.test(name)) continue;
+    const path = join(dir, name);
+    try {
+      const st = lstatSync(path);
+      if (!st.isFile() || st.mtimeMs >= cutoff) continue;
+      unlinkSync(path);
+      cache.delete(path);
+      removed++;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error('status line snapshots: could not prune', path, e);
+    }
+  }
+  return removed;
 }

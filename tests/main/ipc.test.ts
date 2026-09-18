@@ -671,7 +671,9 @@ describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
       return '';
     });
     // A status line folder with nothing in it: the turn is the only source.
-    refreshPushEnrichment(db, processes, Date.now(), { statusLineDir: '/nonexistent-llmws-statusline', compactsAt: 83 });
+    refreshPushEnrichment(db, processes, Date.now(), {
+      statusLineDir: '/nonexistent-llmws-statusline', codexSessions: '/nonexistent-llmws-codex', compactsAt: 83,
+    });
 
     const send = vi.fn();
     const win = { isDestroyed: () => false, webContents: { send } } as unknown as

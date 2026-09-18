@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, utimesSync, symlinkSync, renameSync, statSync,
+  existsSync, readdirSync, lstatSync, lutimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
-  parseClaudeSnapshot, readClaudeSnapshot, readClaudeRateLimits, SNAPSHOT_MAX_BYTES,
+  parseClaudeSnapshot, readClaudeSnapshot, readClaudeRateLimits, pruneSnapshots, SNAPSHOT_MAX_BYTES,
 } from '../../../src/providers/claude/statusLine.ts';
 
 // Real-shaped status line snapshots (the documented stdin schema, with
@@ -200,5 +201,84 @@ describe('reading snapshot files', () => {
       put(FULL_ID, edit(FULL, o => { o.pad = 'x'.repeat(SNAPSHOT_MAX_BYTES); }));
       expect(readClaudeRateLimits(dir, NOW)).toBeNull();
     });
+  });
+});
+
+// Startup pruning (src/main/index.ts, next to rotateSpool): snapshot files
+// untouched for 7 days are deleted -- only regular files named by the
+// <session_id>.json rule, never through a symlink. Everything in a temp dir.
+describe('pruneSnapshots', () => {
+  let dir: string;
+  let outside: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'llmws-statusline-prune-'));
+    outside = mkdtempSync(join(tmpdir(), 'llmws-statusline-outside-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  const NOW = Date.parse('2026-09-18T12:00:00Z');
+  const DAY = 86_400_000;
+
+  function aged(path: string, ageMs: number): void {
+    const t = (NOW - ageMs) / 1000;
+    utimesSync(path, t, t);
+  }
+  function file(name: string, ageMs: number): string {
+    const path = join(dir, name);
+    writeFileSync(path, FULL);
+    aged(path, ageMs);
+    return path;
+  }
+
+  it('deletes snapshots older than 7 days and keeps newer ones', () => {
+    file('old-session.json', 8 * DAY);
+    file('ancient_1.json', 400 * DAY);
+    file('recent-session.json', 6 * DAY);
+    file('fresh.json', 0);
+
+    expect(pruneSnapshots(dir, { maxAgeDays: 7, now: NOW })).toBe(2);
+    expect(readdirSync(dir).sort()).toEqual(['fresh.json', 'recent-session.json']);
+  });
+
+  it('keeps a file exactly at the cutoff', () => {
+    file('edge.json', 7 * DAY);
+    expect(pruneSnapshots(dir, { maxAgeDays: 7, now: NOW })).toBe(0);
+    expect(readdirSync(dir)).toEqual(['edge.json']);
+  });
+
+  it('never follows or removes a symlink, and never touches its old target', () => {
+    const target = join(outside, 'precious.json');
+    writeFileSync(target, 'keep me');
+    aged(target, 30 * DAY);
+    const link = join(dir, 'looks-like-a-session.json');
+    symlinkSync(target, link);
+    // The link itself is old too, so neither following it nor skipping the
+    // regular-file check could let it survive by accident.
+    const t = (NOW - 30 * DAY) / 1000;
+    lutimesSync(link, t, t);
+    expect(pruneSnapshots(dir, { maxAgeDays: 7, now: NOW })).toBe(0);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, 'utf8')).toBe('keep me');
+  });
+
+  it('leaves anything not named <session_id>.json alone, however old', () => {
+    file('.statusline.AbC123', 30 * DAY);
+    file('notes.txt', 30 * DAY);
+    file('a.b.json', 30 * DAY);
+    file(`${'a'.repeat(129)}.json`, 30 * DAY);
+    const sub = join(dir, 'folder.json');
+    mkdirSync(sub);
+    aged(sub, 30 * DAY);
+
+    expect(pruneSnapshots(dir, { maxAgeDays: 7, now: NOW })).toBe(0);
+    expect(readdirSync(dir).length).toBe(5);
+    expect(existsSync(sub)).toBe(true);
+  });
+
+  it('is a quiet no-op for a missing folder', () => {
+    expect(pruneSnapshots(join(dir, 'missing'), { maxAgeDays: 7, now: NOW })).toBe(0);
   });
 });

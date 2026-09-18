@@ -12,7 +12,7 @@ import type { Provider } from '../core/types.ts';
 import type { PromptView } from '../core/prompt.ts';
 import { buildPromptView, type AnswerDeps } from './answer.ts';
 import { tmuxNameForPid } from './sessions.ts';
-import { contextFor, defaultContextOpts } from './usage.ts';
+import { contextForSession, defaultContextOpts } from './usage.ts';
 import type { SessionContext } from '../core/usage.ts';
 
 /** The pane's own three-way activity -- collapsed from fleet/state.ts's
@@ -42,7 +42,7 @@ export type SessionLivePayload = {
   prompt: PromptView | null;
   /** Context window use for the conversation header (usage design, Part
    *  A) -- the same { usedTokens, windowTokens, leftPct } the session's
-   *  card carries, or null (Codex, no session, or no count yet). */
+   *  card carries, or null (no session, or no count yet). */
   context: SessionContext | null;
 };
 
@@ -138,11 +138,11 @@ export interface SessionLiveDeps {
    *  puts the event in the db for this very push, instead of the next 1 s
    *  spool tick. session:watch (src/main/ipc.ts) wires the real spool. */
   ingestSpool?: () => void;
-  /** Context for a Claude session id (usage design, Part A). Defaults to
-   *  src/main/usage.ts's contextFor with the real status line folder and
-   *  Compacts at setting; tests inject it so they never read the real home.
-   *  Never called for Codex. */
-  context?: (sessionId: string) => SessionContext | null;
+  /** Context for a session (usage design, Part A). Defaults to
+   *  src/main/usage.ts's contextForSession with the real status line and
+   *  Codex folders and the Compacts at setting; tests inject it so they
+   *  never read the real home. */
+  context?: (sessionId: string, provider: Provider) => SessionContext | null;
 }
 
 /** Wraps `read` so a single buildSessionLive call never opens the same
@@ -300,12 +300,12 @@ export function buildSessionLive(
     })
     : null;
 
-  // One small indexed query plus a stat of one snapshot file per push --
-  // the same source and rule as the cards (src/main/usage.ts).
-  const context = target.provider !== 'claude' ? null
-    : deps.context
-      ? deps.context(target.sessionId)
-      : contextFor(db, [target.sessionId], defaultContextOpts()).get(target.sessionId) ?? null;
+  // One small indexed query plus a stat of one file per push (a Claude
+  // snapshot, or a Codex rollout tail-read only when it changed) -- the
+  // same source and rule as the cards (src/main/usage.ts).
+  const context = deps.context
+    ? deps.context(target.sessionId, target.provider)
+    : contextForSession(db, target.sessionId, target.provider, defaultContextOpts());
 
   return { version: 1, pid, sessionId: target.sessionId, activity, since, events: row.events ?? 0, prompt, context };
 }

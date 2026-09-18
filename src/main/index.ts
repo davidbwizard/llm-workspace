@@ -7,6 +7,7 @@ import { ingestAll, startWatcher, type Watcher, type WatchRoot } from '../watch/
 import { ingestSpool, rotateSpool } from '../hooks/spool.ts';
 import { refreshHelperIfInstalled } from '../hooks/switch.ts';
 import { refreshStatusLineIfInstalled } from '../hooks/usageSwitch.ts';
+import { pruneSnapshots } from '../providers/claude/statusLine.ts';
 import { resolvePaths } from '../config.ts';
 import { registerIpc, pushFleet, refreshPushEnrichment } from './ipc.ts';
 import { refreshLiveProcesses } from '../discovery/live.ts';
@@ -156,6 +157,9 @@ function startBackgroundWork(): void {
     }
   }, 1000);
   rotateSpool(paths.spool, { maxAgeDays: 30, maxFiles: 20000 });
+  // Usage and context: one snapshot per session, never removed by the
+  // helper -- a week without a rewrite means the session is long gone.
+  pruneSnapshots(paths.statusLineDir, { maxAgeDays: 7 });
 }
 
 app.whenReady().then(() => {

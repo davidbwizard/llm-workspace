@@ -1,13 +1,14 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname } from 'node:path';
+import { basename, dirname, isAbsolute, normalize, sep } from 'node:path';
 import type { Db } from '../store/db.ts';
 import { resolvePaths, type Paths } from '../config.ts';
 import type { OpenSession } from '../fleet/state.ts';
 import { readClaudeRateLimits, readClaudeSnapshot } from '../providers/claude/statusLine.ts';
-import { readCodexRateLimits } from '../providers/codex/rateLimits.ts';
+import { readCodexContext, readCodexRateLimits } from '../providers/codex/rateLimits.ts';
+import type { Provider } from '../core/types.ts';
 import {
-  clampCompactsAt, sessionContext, COMPACTS_AT_DEFAULT,
+  buildContext, clampCompactsAt, sessionContext, COMPACTS_AT_DEFAULT,
   type SessionContext, type UsagePayload,
 } from '../core/usage.ts';
 
@@ -74,12 +75,15 @@ export function applyCompactsAt(
 
 // --- Per-session context -----------------------------------------------
 
-export interface ContextOpts { statusLineDir: string; compactsAt: number }
+export interface ContextOpts { statusLineDir: string; codexSessions: string; compactsAt: number }
 
 /** The real paths and the setting in force -- what production passes. */
 export function defaultContextOpts(): ContextOpts {
   const paths = resolvePaths(homedir());
-  return { statusLineDir: paths.statusLineDir, compactsAt: currentCompactsAt(paths.usageSettings) };
+  return {
+    statusLineDir: paths.statusLineDir, codexSessions: paths.codexSessions,
+    compactsAt: currentCompactsAt(paths.usageSettings),
+  };
 }
 
 export interface LatestTurn { usedTokens: number; modelId: string | null; tsMs: number }
@@ -122,7 +126,7 @@ export function latestTurns(db: Db, sessionIds: string[]): Map<string, LatestTur
 
 /** Context for Claude sessions: the status line snapshot, else the latest
  *  turn, whichever is newer (core/usage.ts's sessionContext). */
-export function contextFor(db: Db, sessionIds: string[], opts: ContextOpts): Map<string, SessionContext | null> {
+export function claudeContextFor(db: Db, sessionIds: string[], opts: ContextOpts): Map<string, SessionContext | null> {
   const turns = latestTurns(db, sessionIds);
   const out = new Map<string, SessionContext | null>();
   for (const id of sessionIds) {
@@ -136,17 +140,71 @@ export function contextFor(db: Db, sessionIds: string[], opts: ContextOpts): Map
   return out;
 }
 
-/** Fills `context` on the open cards: Claude cards with a known session
- *  only. Codex has no context source here yet, and a card with no session
- *  (ambiguous or unmatched) must never borrow one. Same order, every other
- *  field untouched. */
+const ROLLOUT_NAME = /^rollout-.*\.jsonl$/;
+
+/** Which rollout file holds each Codex session: the source file of the
+ *  session's latest ROOT-thread event (a subagent thread shares the root's
+ *  session id but writes its own rollout, with its own usage). Comes from
+ *  the app's own index, and is still only accepted when it is an absolute,
+ *  normalised path inside the Codex sessions folder with a rollout name --
+ *  this path is about to be opened. One query for every id, each resolved
+ *  through the events_session_ts index. */
+export function codexRollouts(db: Db, sessionIds: string[], codexRoot: string): Map<string, string> {
+  const out = new Map<string, string>();
+  if (sessionIds.length === 0) return out;
+  const rows = db.prepare(`
+    SELECT j.value AS sessionId, (
+      SELECT x.source_file FROM events x
+      WHERE x.session_id = j.value AND x.provider = 'codex' AND x.agent_id IS NULL
+      ORDER BY x.ts DESC, x.id DESC LIMIT 1) AS sourceFile
+    FROM json_each(?) j
+  `).all(JSON.stringify(sessionIds)) as { sessionId: string; sourceFile: string | null }[];
+  const root = normalize(codexRoot).replace(/\/+$/, '') + sep;
+  for (const r of rows) {
+    const f = r.sourceFile;
+    if (typeof f !== 'string' || !isAbsolute(f) || normalize(f) !== f) continue;
+    if (!f.startsWith(root) || !ROLLOUT_NAME.test(basename(f))) continue;
+    out.set(r.sessionId, f);
+  }
+  return out;
+}
+
+/** Context for Codex sessions: the rollout's latest token_count usage
+ *  (src/providers/codex/rateLimits.ts's readCodexContext -- a tail read,
+ *  cached by size and mtime) against its model_context_window, with the
+ *  same Compacts at setting as Claude. */
+export function codexContextFor(db: Db, sessionIds: string[], opts: ContextOpts): Map<string, SessionContext | null> {
+  const files = codexRollouts(db, sessionIds, opts.codexSessions);
+  const out = new Map<string, SessionContext | null>();
+  for (const id of sessionIds) {
+    const file = files.get(id);
+    const read = file ? readCodexContext(file) : null;
+    out.set(id, read && read.usedTokens !== null ? buildContext(read.usedTokens, read.windowTokens, opts.compactsAt) : null);
+  }
+  return out;
+}
+
+/** One session's context, for the conversation pane's push. */
+export function contextForSession(
+  db: Db, sessionId: string, provider: Provider, opts: ContextOpts,
+): SessionContext | null {
+  const byId = provider === 'claude' ? claudeContextFor(db, [sessionId], opts) : codexContextFor(db, [sessionId], opts);
+  return byId.get(sessionId) ?? null;
+}
+
+/** Fills `context` on the open cards that have a known session. A card
+ *  with no session (ambiguous or unmatched) must never borrow one. Same
+ *  order, every other field untouched. */
 export function withContext(db: Db, open: OpenSession[], opts: ContextOpts): OpenSession[] {
-  const ids = [...new Set(open.flatMap(o => (o.provider === 'claude' && o.sessionId ? [o.sessionId] : [])))];
-  if (ids.length === 0) return open.map(o => ({ ...o, context: null }));
-  const byId = contextFor(db, ids, opts);
+  const idsFor = (provider: Provider) =>
+    [...new Set(open.flatMap(o => (o.provider === provider && o.sessionId ? [o.sessionId] : [])))];
+  const claudeIds = idsFor('claude');
+  const codexIds = idsFor('codex');
+  const claude = claudeIds.length > 0 ? claudeContextFor(db, claudeIds, opts) : new Map<string, SessionContext | null>();
+  const codex = codexIds.length > 0 ? codexContextFor(db, codexIds, opts) : new Map<string, SessionContext | null>();
   return open.map(o => ({
     ...o,
-    context: o.provider === 'claude' && o.sessionId ? byId.get(o.sessionId) ?? null : null,
+    context: o.sessionId ? (o.provider === 'claude' ? claude : codex).get(o.sessionId) ?? null : null,
   }));
 }
 

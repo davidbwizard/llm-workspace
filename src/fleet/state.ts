@@ -645,8 +645,8 @@ export interface OpenSession {
    *  tokens used, the window, and percent left before the Compacts at point.
    *  Always null from openSessions/openSessionsLive themselves -- filled in
    *  by src/main/usage.ts's withContext on the push path, which reads the
-   *  status line snapshots and the Compacts at setting this pure module has
-   *  no access to. Null for Codex, for an unmatched card, and when no
+   *  status line snapshots, Codex rollouts and the Compacts at setting this
+   *  pure module has no access to. Null for an unmatched card, and when no
    *  source has a count yet. */
   context: SessionContext | null;
 }

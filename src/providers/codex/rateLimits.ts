@@ -1,10 +1,11 @@
-import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { currentWindow, type CodexRateWindow, type CodexUsage } from '../../core/usage.ts';
 
-/** Codex rate limits (usage design, Part A), read from the rollout JSONL
- *  Codex already writes (~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl):
- *  every `token_count` event carries the account's `rate_limits`. Rollouts
+/** Codex rate limits and context (usage design, Part A), read from the
+ *  rollout JSONL Codex already writes (~/.codex/sessions/YYYY/MM/DD/
+ *  rollout-*.jsonl): every `token_count` event carries the account's
+ *  `rate_limits`, and most carry the thread's token usage. Rollouts
  *  run to tens of MB (21 MB measured on 2026-09-18), so a file is only ever
  *  read backwards from its end, within a byte budget, and the result is
  *  cached by the file's size and mtime. */
@@ -68,21 +69,27 @@ export function parseTokenCountLine(line: string): CodexLimitsRead | null {
   };
 }
 
+export interface TailOpts { maxBytes?: number; chunkBytes?: number }
+
+/** The LAST token_count with rate limits in the file (see lastTokenCount). */
+export function lastRateLimitsInFile(path: string, opts: TailOpts = {}): CodexLimitsRead | null {
+  return lastTokenCount(path, parseTokenCountLine, opts);
+}
+
 /** Walks `path` backwards from its end in `chunkBytes` steps, never further
- *  back than `maxBytes`, and returns the LAST token_count with rate limits.
- *  Lines are split on raw newline bytes (never inside a UTF-8 sequence), and
- *  only lines mentioning token_count are parsed at all. A line cut off by
- *  the budget is dropped, never parsed as a fragment. */
-export function lastRateLimitsInFile(
-  path: string, opts: { maxBytes?: number; chunkBytes?: number } = {},
-): CodexLimitsRead | null {
+ *  back than `maxBytes`, and returns the first non-null `parse` result --
+ *  i.e. from the LAST matching token_count line. Lines are split on raw
+ *  newline bytes (never inside a UTF-8 sequence), and only lines mentioning
+ *  token_count are parsed at all. A line cut off by the budget is dropped,
+ *  never parsed as a fragment. */
+function lastTokenCount<T>(path: string, parse: (line: string) => T | null, opts: TailOpts): T | null {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const chunkBytes = opts.chunkBytes ?? DEFAULT_CHUNK;
   let fd: number;
   try {
     fd = openSync(path, 'r');
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error('codex rate limits: could not open', path, e);
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error('codex rollout: could not open', path, e);
     return null;
   }
   try {
@@ -109,14 +116,14 @@ export function lastRateLimitsInFile(
         const line = whole.subarray(nl + 1, end);
         end = nl === -1 ? 0 : nl;
         if (line.length === 0 || line.indexOf('"token_count"') === -1) continue;
-        const hit = parseTokenCountLine(line.toString('utf8'));
-        if (hit) return hit;
+        const hit = parse(line.toString('utf8'));
+        if (hit !== null) return hit;
       }
       carry = firstNl === -1 ? Buffer.alloc(0) : data.subarray(0, firstNl);
     }
     return null;
   } catch (e) {
-    console.error('codex rate limits: could not read', path, e);
+    console.error('codex rollout: could not read', path, e);
     return null;
   } finally {
     closeSync(fd);
@@ -200,4 +207,75 @@ export function readCodexRateLimits(root: string, now: number): CodexUsage | nul
     ...(best.read.planType ? { planType: best.read.planType } : {}),
     updatedAt: best.at,
   };
+}
+
+// --- Context ------------------------------------------------------------
+
+/** One thread's context use from its latest token_count usage. Either field
+ *  is null when the record does not carry a usable value. */
+export interface CodexContextRead { usedTokens: number | null; windowTokens: number | null }
+
+function positiveInt(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : null;
+}
+
+/** A token_count carrying usage -> { usedTokens, windowTokens }; null for any
+ *  other line, including the rate-limits-only token_count (info: null) Codex
+ *  writes at the start of a turn, so the scan keeps looking past it.
+ *
+ *  used = info.last_token_usage.input_tokens ALONE: the prompt of the
+ *  thread's latest model call, which is what occupies the window. In the
+ *  rollout, cached_input_tokens is a subset of input_tokens (OpenAI
+ *  accounting -- measured 2026-09-18 over 821 real usages: cached <= input
+ *  every time, and total_tokens == input_tokens + output_tokens in all 713
+ *  that carry input counts), so adding it would double-count. That is the
+ *  same "whole prompt, output excluded" quantity as Claude's
+ *  input + cache_creation + cache_read. cache_write_input_tokens was 0 in
+ *  every sample, so it is not added. An input of 0 (the total-only records
+ *  seen from Codex Desktop, which also carry no window) is unknown, not
+ *  zero. window = info.model_context_window. */
+export function parseTokenUsageLine(line: string): CodexContextRead | null {
+  let rec: unknown;
+  try { rec = JSON.parse(line); } catch { return null; }
+  if (!isObject(rec) || rec.type !== 'event_msg' || !isObject(rec.payload)) return null;
+  if (rec.payload.type !== 'token_count' || !isObject(rec.payload.info)) return null;
+  const info = rec.payload.info;
+  if (!isObject(info.last_token_usage)) return null;
+  return {
+    usedTokens: positiveInt(info.last_token_usage.input_tokens),
+    windowTokens: positiveInt(info.model_context_window),
+  };
+}
+
+/** The latest usage in the file, even when it is unusable -- an older count
+ *  would be a confident wrong answer about the current context. */
+export function lastUsageInFile(path: string, opts: TailOpts = {}): CodexContextRead | null {
+  return lastTokenCount(path, parseTokenUsageLine, opts);
+}
+
+/** Per-rollout results, reused while the file's size and mtime are
+ *  unchanged, so an idle session costs one lstat per refresh and an active
+ *  one a short tail read. Cleared past a bound (only live sessions are ever
+ *  asked for). */
+const contextCache = new Map<string, { key: string; read: CodexContextRead | null }>();
+const CONTEXT_CACHE_MAX = 64;
+
+/** One rollout's latest context use. lstat, not stat: a symlink is refused,
+ *  never followed. null for a missing or non-regular file. */
+export function readCodexContext(path: string): CodexContextRead | null {
+  let st;
+  try {
+    st = lstatSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error('codex rollout: could not stat', path, e);
+    return null;
+  }
+  if (!st.isFile()) return null;
+  const key = `${st.ino}:${st.size}:${st.mtimeMs}`;
+  const hit = contextCache.get(path);
+  if (hit && hit.key === key) return hit.read;
+  const read = lastUsageInFile(path);
+  if (contextCache.size >= CONTEXT_CACHE_MAX) contextCache.clear();
+  contextCache.set(path, { key, read });
+  return read;
 }
