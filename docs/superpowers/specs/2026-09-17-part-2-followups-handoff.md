@@ -119,3 +119,14 @@ message in the same form as an unsent one). What worked, all day:
   recurs, capture `#{pane_in_mode}` and the rollout before changing anything.
 - **Mockup divergences** from the Part 2 handoff are still untriaged, except day
   dividers (done).
+
+## Ideas from David, not yet scheduled (2026-09-17)
+
+- **Cmd+number opens a session.** Cmd+1..9 opens the session card with that
+  number. Open: number by card position (browser-tab style, shifts as sessions
+  open and close) or a stable number per session; show the number on the card.
+  The app has no keyboard shortcuts today.
+- **Favourite projects for quick launch.** Save folders as favourites and launch
+  one in a click from the launch bar. Open: provider per favourite or the
+  launch bar's current one; favourites only or also recent folders. The app has
+  no recent-folders list today.
