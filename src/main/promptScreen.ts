@@ -23,6 +23,23 @@ const TITLE_BORDER = /^│\s*/;
 function stripBorder(line: string): string {
   return line.replace(TITLE_BORDER, '');
 }
+/** A multi-line Bash command draws every one of its lines -- wrapped parts
+ *  and blank lines too -- with the same "│ " border (measured 2.1.276,
+ *  fixtures 62, 63); a one-line command has none (fixture 50). */
+function isBordered(line: string): boolean {
+  return line.trimStart().startsWith('│');
+}
+/** Whitespace-insensitive on purpose: tmux reflows long lines at the pane
+ *  width (even mid-word) and multi-line commands carry "│" borders. */
+function bare(s: string): string {
+  return s.replace(/\s+/g, '');
+}
+/** How much of a cut-off command must be on screen before its tail can
+ *  stand for the whole (non-whitespace characters). */
+const MIN_VISIBLE_TAIL = 40;
+/** The Bash dialog's description line when the hook has none (measured:
+ *  events 47761/59737 carry no description; fixtures 50/52 show this). */
+const BASH_DEFAULT_DESCRIPTION = 'Run shell command';
 const PERMISSION_NO_TEXT_DEFAULT = 'No, and tell Claude what to do differently';
 const PLAN_TEXT_DEFAULT = 'Tell Claude what to change';
 
@@ -55,6 +72,17 @@ function findDialogBlock(lines: string[]): string[] | null {
     if (block.some((l) => OPTION_LINE.test(l))) return block;
   }
   return null;
+}
+
+/** A permission dialog taller than the pane (fixture 63): the capture holds
+ *  only its visible part, so its rule, header and first command lines are
+ *  gone and the pane starts part-way down the bordered command. Taken only
+ *  when the very first row is a bordered line and no rule is on screen at
+ *  all -- the idle composer always draws two -- and options follow. */
+function findCutOffBlock(lines: string[]): string[] | null {
+  if (!isBordered(lines[0] ?? '')) return null;
+  if (lines.some((l) => RULE_LINE.test(l.trim()))) return null;
+  return lines.some((l) => OPTION_LINE.test(l)) ? lines : null;
 }
 
 /** The row that takes typed text, found by its label (final review M12),
@@ -127,8 +155,70 @@ function hasSequentialKeys(choices: PromptChoice[]): boolean {
   return choices.every((c, i) => c.key === String(i + 1));
 }
 
+/** Screen text compared whitespace-insensitively -- a long command wraps at
+ *  the pane width (even mid-word) and a multi-line command spans lines --
+ *  with each line's one "│" border dropped first, or it would split a
+ *  bordered command where its lines join. */
+function unbordered(lines: string[]): string {
+  return bare(lines.map((l) => stripBorder(l.trim())).join(''));
+}
+
+/** A non-Bash tool with its dialog's top on screen: the anchor (a file
+ *  basename or the tool name) must appear in the block. */
+function blockHasAnchor(block: string[], anchor: string): boolean {
+  return unbordered(block).includes(anchor);
+}
+
+/** A Bash dialog with its top on screen (fixtures 50, 62, 71): the header
+ *  ("Bash command"), a blank line, the command's lines, the description on
+ *  the line(s) straight under them, then a blank line. The command region
+ *  is what lies between the header and the description, and it must EQUAL
+ *  the hook's command -- merely containing it would let a short anchor hit
+ *  a longer command, the description or an option label. The description
+ *  must fill whole lines of its own, so a command cannot borrow its first
+ *  words. It is the hook's, or BASH_DEFAULT_DESCRIPTION when the hook has
+ *  none; any other layout fails safe as a mismatch. */
+function bashCommandEquals(above: string[], anchor: string, description: string | undefined): boolean {
+  let i = above.findIndex((l) => l.trim() !== ''); // the header
+  if (i === -1) return false;
+  i++;
+  while (i < above.length && (above[i] ?? '').trim() === '') i++;
+  const run: string[] = [];
+  while (i < above.length && (above[i] ?? '').trim() !== '') run.push(above[i++]!);
+  const shownDescription = bare(description?.trim() ? description : BASH_DEFAULT_DESCRIPTION);
+  for (let split = run.length - 1; split > 0; split--) {
+    if (bare(run.slice(split).join('')) === shownDescription && unbordered(run.slice(0, split)) === anchor) return true;
+  }
+  return false;
+}
+
+/** The dialog's top is cut off (findCutOffBlock), so only the command's
+ *  last lines show: the bordered run the pane starts with. It must be the
+ *  END of the hook command -- the dialog shows the command down to its last
+ *  line -- and long enough not to match by accident (MIN_VISIBLE_TAIL, or
+ *  the whole anchor when that is shorter). Nothing above it can be checked;
+ *  that part is taken on trust from the tail.
+ *
+ *  Residual risk, accepted: two commands that end in the same 40+ characters
+ *  but differ above the fold read as the same. That only matters when the
+ *  pane can show a different prompt from the card's -- two PermissionRequests
+ *  in one wait -- and the ambiguity guard (hasMultiplePromptEvents, store/
+ *  signals.ts) makes those cards read-only, which is what makes this
+ *  acceptable. */
+function tailMatchesAnchor(above: string[], anchor: string): boolean {
+  const run: string[] = [];
+  for (const line of above) {
+    if (!isBordered(line)) break;
+    run.push(stripBorder(line.trim()));
+  }
+  const visible = bare(run.join(''));
+  return visible.length >= Math.min(MIN_VISIBLE_TAIL, anchor.length) && anchor.endsWith(visible);
+}
+
 function readDialog(lines: string[], expect: DialogExpect): ScreenRead {
-  const block = findDialogBlock(lines);
+  const ruled = findDialogBlock(lines);
+  // Only a permission dialog is read with its top cut off (measured, 63).
+  const block = ruled ?? (expect.kind === 'permission' ? findCutOffBlock(lines) : null);
   if (!block) return { match: false, why: 'no_dialog_on_screen' };
 
   const parsed = parseDialogChoices(block, expect.kind);
@@ -148,13 +238,14 @@ function readDialog(lines: string[], expect: DialogExpect): ScreenRead {
   const above = firstOptionIdx === -1 ? block : block.slice(0, firstOptionIdx);
   const hasQuestionLine = above.some((l) => l.trim().endsWith('?'));
   if (!hasQuestionLine) return { match: false, why: 'no_question_line_above_options' };
-  // Whitespace-insensitive: a long command wraps at the pane width (even
-  // mid-word) and a multi-line command spans lines, so all whitespace is
-  // removed from both sides before the plain `includes`. An anchor that is
-  // only whitespace would then match anything, so it never matches.
-  const anchor = expect.anchor.replace(/\s+/g, '');
+  // All whitespace is removed from the anchor as from the screen. An anchor
+  // that is only whitespace would then match anything, so it never matches.
+  const anchor = bare(expect.anchor);
   if (anchor === '') return { match: false, why: 'empty_anchor' };
-  if (!block.join('').replace(/\s+/g, '').includes(anchor)) return { match: false, why: 'anchor_not_found' };
+  const found = !ruled ? tailMatchesAnchor(above, anchor)
+    : expect.toolName === 'Bash' ? bashCommandEquals(above, anchor, expect.description)
+      : blockHasAnchor(block, anchor);
+  if (!found) return { match: false, why: 'anchor_not_found' };
 
   return { match: true, kind: 'permission', choices, cursor, textRow: computeTextRow('permission', parsed) };
 }

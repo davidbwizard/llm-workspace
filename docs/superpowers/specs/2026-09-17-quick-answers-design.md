@@ -300,9 +300,24 @@ from `capturePane`.
 
 - **Permission:** finds the dialog block below the last full-width rule: a
   question line ending in `?`, then numbered option lines (continuation lines
-  joined), then the `Esc to cancel` footer. It requires the hook's anchor on
-  screen: the Bash `command`, or the basename of `file_path` for file tools.
-  For other tools, the tool name.
+  joined), then the `Esc to cancel` footer. Option numbers must run 1..n with
+  no repeats. Anchor rules (updated 2026-09-18, measured):
+  - **Bash, whole dialog visible:** the command region (between the "Bash
+    command" header and the description line, which must equal
+    `tool_input.description`, or "Run shell command" when absent) must EQUAL
+    the hook command after stripping the `│ ` border Claude draws on
+    multi-line commands and all whitespace (whitespace-insensitive on purpose:
+    tmux wraps lines).
+  - **Bash, dialog taller than the pane** (no rule on screen, pane starts on a
+    `│` line): the visible command lines must be the last 40+ non-whitespace
+    characters of the hook command. The scrolled-off prefix is trusted; that
+    is acceptable only because of the ambiguity guard below.
+  - **File tools:** the basename of `file_path` anywhere in the dialog; other
+    tools: the tool name (looser; tightening is a follow-up).
+  - **Ambiguity guard:** two or more PermissionRequests in the same wait make
+    the prompt read-only (`multiple_prompts`); the pane is never read.
+- **Questions with previews** are read-only (`unsupported_layout`); long question
+  titles are drawn with a `│ ` border, which is stripped before matching.
 - **Plan:** `Would you like to proceed?` with numbered options.
 - **Question:** the tab row with the same headers in order, the current
   question's text, and its option labels. State = which question is current and

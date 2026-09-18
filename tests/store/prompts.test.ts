@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../../src/store/db.ts';
 import { ingestSpool } from '../../src/hooks/spool.ts';
-import { openPromptEvent, currentBlockers } from '../../src/store/signals.ts';
+import { openPromptEvent, currentBlockers, hasMultiplePromptEvents } from '../../src/store/signals.ts';
 
 const FIXTURES = 'tests/fixtures/quick-answers/events';
 
@@ -154,6 +154,58 @@ describe('openPromptEvent', () => {
     ingestFixture(db2, ASK_PERMISSION_REQUEST);
     ingestFixture(db2, ASK_PRE_TOOL_USE);
     expect(openPromptEvent(db2, SESSION, ASK_OCCURRED_AT_MS + 800)?.kind).toBe('PermissionRequest');
+  });
+});
+
+// Coordinator ruling (security review, 2026-09-18): parallel tool calls can
+// write two PermissionRequests in one wait while the screen shows only one
+// dialog -- the card could then show one prompt and answer another.
+describe('hasMultiplePromptEvents', () => {
+  it('is true for two PermissionRequests in the same wait', () => {
+    const db = openDb(':memory:');
+    ingestFixture(db, ASK_PERMISSION_REQUEST);
+    ingestOther(db, SESSION, ASK_OCCURRED_AT_MS + 300, 'PermissionRequest');
+    expect(hasMultiplePromptEvents(db, SESSION, ASK_OCCURRED_AT_MS + 800)).toBe(true);
+  });
+
+  it('is false for one PermissionRequest in the wait', () => {
+    const db = openDb(':memory:');
+    ingestFixture(db, ASK_PERMISSION_REQUEST);
+    expect(hasMultiplePromptEvents(db, SESSION, ASK_OCCURRED_AT_MS + 800)).toBe(false);
+  });
+
+  it('does not count an older PermissionRequest from before the floor', () => {
+    const db = openDb(':memory:');
+    ingestOther(db, SESSION, ASK_OCCURRED_AT_MS - 1000, 'PermissionRequest');
+    ingestFixture(db, ASK_PERMISSION_REQUEST);
+    expect(hasMultiplePromptEvents(db, SESSION, ASK_OCCURRED_AT_MS + 800)).toBe(false);
+  });
+
+  it('counts past other events in between, and never another session\'s', () => {
+    const db = openDb(':memory:');
+    ingestFixture(db, ASK_PERMISSION_REQUEST);
+    for (let i = 0; i < 25; i++) ingestOther(db, SESSION, ASK_OCCURRED_AT_MS + 100 + i, 'Notification');
+    ingestOther(db, 'some-other-session', ASK_OCCURRED_AT_MS + 200, 'PermissionRequest');
+    expect(hasMultiplePromptEvents(db, SESSION, ASK_OCCURRED_AT_MS + 800)).toBe(false);
+    ingestOther(db, SESSION, ASK_OCCURRED_AT_MS + 500, 'PermissionRequest');
+    expect(hasMultiplePromptEvents(db, SESSION, ASK_OCCURRED_AT_MS + 800)).toBe(true);
+  });
+
+  it('counts a PermissionRequest whose stamp does not parse as in the wait (fails toward read-only)', () => {
+    const db = openDb(':memory:');
+    ingestFixture(db, ASK_PERMISSION_REQUEST);
+    db.prepare(`INSERT INTO signal_events (event_id, occurred_at, ingested_at, provider, session_id, kind, payload)
+      VALUES (?,?,?,?,?,?,?)`).run('bad-stamp', 'not-a-date', 'not-a-date', 'claude', SESSION, 'PermissionRequest', '{}');
+    expect(hasMultiplePromptEvents(db, SESSION, ASK_OCCURRED_AT_MS + 800)).toBe(true);
+  });
+
+  it('prepares its query once per database, not on every call', () => {
+    const db = openDb(':memory:');
+    ingestFixture(db, ASK_PERMISSION_REQUEST);
+    const prepare = vi.spyOn(db, 'prepare');
+    hasMultiplePromptEvents(db, SESSION, ASK_OCCURRED_AT_MS + 800);
+    hasMultiplePromptEvents(db, SESSION, ASK_OCCURRED_AT_MS + 800);
+    expect(prepare.mock.calls.length).toBeLessThanOrEqual(1);
   });
 });
 

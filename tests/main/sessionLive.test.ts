@@ -3,7 +3,7 @@ import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerSession, clearRegistry } from '../../src/main/sessions.ts';
-import { clearPromptCache } from '../../src/main/answer.ts';
+import { clearPromptCache, answerPrompt } from '../../src/main/answer.ts';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
 import { ingestSpool } from '../../src/hooks/spool.ts';
@@ -292,9 +292,9 @@ describe('buildSessionLive -- the open prompt', () => {
 
   afterEach(() => { clearRegistry(); clearPromptCache(); });
 
-  function insertPrompt(db: ReturnType<typeof openDb>, file: string, eventId = 'pr-1'): void {
+  function insertPrompt(db: ReturnType<typeof openDb>, file: string, eventId = 'pr-1', atMs = WAITING_SINCE): void {
     const payload = readFileSync(join(EVENTS, file), 'utf8');
-    const at = new Date(WAITING_SINCE).toISOString();
+    const at = new Date(atMs).toISOString();
     db.prepare(`INSERT INTO signal_events
       (event_id, occurred_at, ingested_at, provider, session_id, prompt_id, kind, payload)
       VALUES (?,?,?,?,?,?,?,?)`).run(eventId, at, at, 'claude', 'claude-1', 'p1', 'PermissionRequest', payload);
@@ -386,6 +386,68 @@ describe('buildSessionLive -- the open prompt', () => {
     const db = openDb(':memory:');
     const p = buildSessionLive(db, PID, processes, NOW, { read: readAs('waiting') });
     expect(p).toMatchObject({ activity: 'waiting', prompt: null });
+  });
+
+  // Coordinator ruling (security review, 2026-09-18): parallel tool calls
+  // can write two PermissionRequests in one wait while the pane shows one
+  // dialog, so the card could show one prompt and answer the other.
+  const BASH_YES = '1789706414.213-PermissionRequest-47761.json';
+  const BASH_NO = '1789706452.876-PermissionRequest-59737.json';
+
+  it('is read-only with multiple_prompts when two PermissionRequests land in the same wait, without reading the pane', () => {
+    const db = openDb(':memory:');
+    insertPrompt(db, BASH_NO, 'pr-1');
+    insertPrompt(db, BASH_YES, 'pr-2');
+    registerSession(PID, 'llmws-claude-live');
+    const capture = vi.fn(captureOf('50-perm-bash-dialog'));
+
+    const p = buildSessionLive(db, PID, processes, NOW, { read: readAs('waiting'), answer: { capture } });
+    expect(p?.prompt).toMatchObject({
+      id: 'pr-2', kind: 'permission', answerable: false, reason: 'multiple_prompts', command: 'touch perm-probe.txt',
+    });
+    expect(p?.prompt?.choices).toBeUndefined();
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('applies to a question too, which otherwise needs no screen read', () => {
+    const db = openDb(':memory:');
+    insertPrompt(db, BASH_YES, 'pr-1');
+    insertPrompt(db, '1789706218.842-PermissionRequest-89928.json', 'pr-2');
+    registerSession(PID, 'llmws-claude-live');
+
+    const p = buildSessionLive(db, PID, processes, NOW, { read: readAs('waiting') });
+    expect(p?.prompt).toMatchObject({ id: 'pr-2', kind: 'question', answerable: false, reason: 'multiple_prompts' });
+  });
+
+  it('does not count an older PermissionRequest from before this wait', () => {
+    const db = openDb(':memory:');
+    insertPrompt(db, BASH_NO, 'pr-old', WAITING_SINCE - 5_000);
+    insertPrompt(db, BASH_YES, 'pr-2');
+    registerSession(PID, 'llmws-claude-live');
+
+    const p = buildSessionLive(db, PID, processes, NOW, {
+      read: readAs('waiting'), answer: { capture: captureOf('50-perm-bash-dialog') },
+    });
+    expect(p?.prompt).toMatchObject({ id: 'pr-2', answerable: true, reason: null });
+  });
+
+  it('answerPrompt refuses a multiple_prompts prompt before pressing any key', async () => {
+    const db = openDb(':memory:');
+    insertPrompt(db, BASH_NO, 'pr-1');
+    insertPrompt(db, BASH_YES, 'pr-2');
+    registerSession(PID, 'llmws-claude-live');
+    const send = vi.fn(() => ({ ok: true as const, stdout: '' }));
+    const capture = vi.fn((args: string[]) => (args[0] === 'display-message'
+      ? { ok: true as const, stdout: '0\n' } : captureOf('50-perm-bash-dialog')()));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await answerPrompt(PID, 'pr-2', { kind: 'choice', key: '1' }, {
+      send, capture, has: () => true, sleep: async () => {},
+      currentPrompt: pid => buildSessionLive(db, pid, processes, NOW, { read: readAs('waiting'), answer: { capture } })?.prompt ?? null,
+    });
+    expect(result).toEqual({ status: 'refused', reason: 'unconfirmed' });
+    expect(send).not.toHaveBeenCalled();
+    errors.mockRestore();
   });
 });
 

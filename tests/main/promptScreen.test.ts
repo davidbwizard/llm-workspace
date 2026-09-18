@@ -13,8 +13,8 @@ const ASK_HEADERS = ['Color', 'Pets'];
 const ASK_QUESTIONS = ['Which color?', 'Which pets?'];
 const askExpect = (headers: string[] = ASK_HEADERS, questions: string[] = ASK_QUESTIONS): ScreenExpect =>
   ({ kind: 'question', headers, questions });
-const permExpect = (anchor: string, toolName = 'Bash'): ScreenExpect =>
-  ({ kind: 'permission', toolName, anchor });
+const permExpect = (anchor: string, toolName = 'Bash', description?: string): ScreenExpect =>
+  ({ kind: 'permission', toolName, anchor, description });
 const planExpect = (): ScreenExpect => ({ kind: 'plan' });
 
 describe('readPromptScreen -- permission dialogs', () => {
@@ -77,10 +77,10 @@ describe('readPromptScreen -- permission dialogs', () => {
   });
 
   it.each([
-    ['71-s2-bash-dialog', 'touch perm-probe-always.txt'],
-    ['73-s2-bash-always-noprompt', 'touch perm-probe-always2.txt'],
-  ])('matches the second session\'s Bash dialog %s on its own command', (file, anchor) => {
-    const result = readPromptScreen(screen(file), permExpect(anchor));
+    ['71-s2-bash-dialog', 'touch perm-probe-always.txt', 'Create empty file perm-probe-always.txt'],
+    ['73-s2-bash-always-noprompt', 'touch perm-probe-always2.txt', 'Create empty file perm-probe-always2.txt'],
+  ])('matches the second session\'s Bash dialog %s on its own command and description', (file, anchor, description) => {
+    const result = readPromptScreen(screen(file), permExpect(anchor, 'Bash', description));
     expect(result.match).toBe(true);
     if (!result.match) throw new Error('expected match');
     expect(result.kind).toBe('permission');
@@ -128,6 +128,178 @@ describe('readPromptScreen -- permission anchor ignores whitespace', () => {
 
   it('never matches on an anchor that is only whitespace', () => {
     expect(readPromptScreen(wrapped, permExpect('  \n\t ')).match).toBe(false);
+  });
+});
+
+// Measured 2026-09-18 (Claude Code 2.1.276): a multi-line Bash command is
+// drawn with a "│ " border on every line (62); a one-line command has none
+// (50). A command taller than the pane pushes the dialog's rule, header and
+// first command lines off the top of the capture (63: lines 13-40 visible).
+describe('readPromptScreen -- bordered and overflowing multi-line commands', () => {
+  const CMD62 = 'python3 - <<EOF\nfor i in range(30):\n'
+    + '    print("line", i, "of a deliberately long multi-line command body used to test the permission dialog")\nEOF';
+  const CMD63 = Array.from({ length: 40 }, (_, i) => `touch long-probe-file-${i + 1}.txt`).join('\n');
+  const DIR = '/private/tmp/claude-502/-Users-user000000000-Documents-David-llm-workspace/05ca161a-0ae7-4978-8680-b333894fe577/scratchpad/p4probe';
+  const OPT2 = "Yes, and don't ask again for touch long-probe-file-1.txt, touch long-probe-file-2.txt, touch long-probe-file-3.txt, "
+    + `touch long-probe-file-4.txt, and touch long-probe-file-5.txt commands in ${DIR}`;
+  const DESC62 = 'Run a Python script that prints 30 lines of test output';
+  const bare = (s: string) => s.replace(/\s+/g, '');
+  const read = (capture: string, anchor: string, description?: string) => {
+    const result = readPromptScreen(capture, permExpect(anchor, 'Bash', description));
+    if (!result.match || result.kind !== 'permission') throw new Error(`expected permission match, got ${JSON.stringify(result)}`);
+    return result;
+  };
+  /** Fixture 63 with its first `n` rows scrolled off as well. */
+  const cut63 = (n: number) => screen('63-perm-bash-tall-overflow').split('\n').slice(n).join('\n');
+
+  it('62: matches the bordered heredoc on its own command -- Yes, and No (the row that takes text)', () => {
+    const result = read(screen('62-perm-bash-multiline-bordered'), CMD62, DESC62);
+    expect(result.choices).toEqual([
+      { key: '1', label: 'Yes', takesText: false },
+      { key: '2', label: 'No', takesText: true },
+    ]);
+    expect(result.cursor).toBe('1');
+    expect(result.textRow).toBeNull();
+  });
+
+  it('63: matches the overflowing 40-line command on its visible tail, option 2 joined across its wrapped lines', () => {
+    const result = read(screen('63-perm-bash-tall-overflow'), CMD63);
+    expect(result.choices.map(c => [c.key, c.takesText])).toEqual([['1', false], ['2', false], ['3', true]]);
+    expect(result.choices[0]!.label).toBe('Yes');
+    expect(result.choices[2]!.label).toBe('No');
+    expect(result.choices[1]!.label.startsWith("Yes, and don't ask again for touch long-probe-file-1.txt, touch")).toBe(true);
+    expect(result.choices[1]!.label.endsWith('/scratchpad/p4probe')).toBe(true);
+    expect(bare(result.choices[1]!.label)).toBe(bare(OPT2));
+    expect(result.cursor).toBe('1');
+    expect(result.textRow).toBeNull();
+  });
+
+  it('62: rejects a different command in the same bordered dialog', () => {
+    expect(readPromptScreen(screen('62-perm-bash-multiline-bordered'), permExpect(CMD62.replace('range(30)', 'range(31)'), 'Bash', DESC62)))
+      .toEqual({ match: false, why: 'anchor_not_found' });
+  });
+
+  it('62: a fully visible command that is only the END of the hook command is refused -- the top is on screen, so all of it must be', () => {
+    expect(readPromptScreen(screen('62-perm-bash-multiline-bordered'), permExpect(`rm -rf ~/important && ${CMD62}`, 'Bash', DESC62)).match)
+      .toBe(false);
+  });
+
+  it('63: rejects a different 40-line command', () => {
+    const other = Array.from({ length: 40 }, (_, i) => `touch other-probe-file-${i + 1}.txt`).join('\n');
+    expect(readPromptScreen(screen('63-perm-bash-tall-overflow'), permExpect(other)))
+      .toEqual({ match: false, why: 'anchor_not_found' });
+  });
+
+  it('63: rejects a hook command that carries more after the visible tail (the tail must be its end)', () => {
+    expect(readPromptScreen(screen('63-perm-bash-tall-overflow'), permExpect(`${CMD63}\nrm -rf ~/important`)).match).toBe(false);
+  });
+
+  it('63: rejects a hook command that is only a piece of what is visible', () => {
+    const lastTwo = 'touch long-probe-file-39.txt\ntouch long-probe-file-40.txt';
+    expect(readPromptScreen(screen('63-perm-bash-tall-overflow'), permExpect(lastTwo)).match).toBe(false);
+  });
+
+  it('63: rejects a visible tail shorter than the minimum, even though it is in the command', () => {
+    const onlyLast = cut63(27);
+    expect(onlyLast.split('\n')[0]).toBe('   │ touch long-probe-file-40.txt');
+    expect(readPromptScreen(onlyLast, permExpect(CMD63))).toEqual({ match: false, why: 'anchor_not_found' });
+  });
+
+  it('63: still matches with fewer rows visible, while the tail is at least the minimum', () => {
+    const lastTwo = cut63(26);
+    expect(bare(lastTwo.split('\n').slice(0, 2).join('')).replace(/│/g, '').length).toBeGreaterThanOrEqual(40);
+    expect(read(lastTwo, CMD63).choices).toHaveLength(3);
+  });
+
+  it('63: the overflow read needs the pane to START on a bordered command line', () => {
+    const capture = `some other output\n${screen('63-perm-bash-tall-overflow')}`;
+    expect(readPromptScreen(capture, permExpect(CMD63))).toEqual({ match: false, why: 'no_dialog_on_screen' });
+  });
+
+  it('63: the overflow read needs no rule anywhere on screen (the idle composer always draws two)', () => {
+    const capture = `${screen('63-perm-bash-tall-overflow')}\n${'─'.repeat(40)}\n❯ \n${'─'.repeat(40)}\n  ? for shortcuts`;
+    expect(readPromptScreen(capture, permExpect(CMD63))).toEqual({ match: false, why: 'no_dialog_on_screen' });
+  });
+
+  it('63: the overflow read is for permission dialogs only', () => {
+    expect(readPromptScreen(screen('63-perm-bash-tall-overflow'), planExpect()).match).toBe(false);
+  });
+
+  it('63: still needs the question line and options numbered 1..n', () => {
+    const noQuestion = screen('63-perm-bash-tall-overflow').replace(' Do you want to proceed?', ' Do you want to proceed');
+    expect(readPromptScreen(noQuestion, permExpect(CMD63))).toEqual({ match: false, why: 'no_question_line_above_options' });
+    const gap = screen('63-perm-bash-tall-overflow').replace(/^ {3}3\. No$/m, '   4. No');
+    expect(readPromptScreen(gap, permExpect(CMD63))).toEqual({ match: false, why: 'option_numbers_not_sequential' });
+  });
+});
+
+// Coordinator ruling (2026-09-18): with the whole dialog on screen, the
+// hook's command must EQUAL the dialog's command -- not merely appear
+// somewhere in the block, where a short anchor could hit a longer command,
+// the description, or an option label. The command region runs from under
+// the header to the description line: the hook's description, or "Run shell
+// command" when the hook has none (measured: events 47761/59737 carry none
+// and fixtures 50/52 show that line; 92658/99734 carry one and 71/73 show
+// it). These screens are fixture 50 with its command and description lines
+// replaced.
+describe('readPromptScreen -- the Bash anchor must equal the dialog\'s command', () => {
+  const COMMAND_AND_DESC = /^ {3}touch perm-probe\.txt\n {3}Run shell command$/m;
+  const dialog50 = (command: string[], description = 'Run shell command') => {
+    expect(screen('50-perm-bash-dialog')).toMatch(COMMAND_AND_DESC);
+    return screen('50-perm-bash-dialog').replace(COMMAND_AND_DESC, [...command, description].map(l => `   ${l}`).join('\n'));
+  };
+
+  it('a card for "touch a" does not match a dialog whose command is "rm -rf ~; touch a"', () => {
+    expect(readPromptScreen(dialog50(['touch a']), permExpect('touch a')).match).toBe(true);
+    expect(readPromptScreen(dialog50(['rm -rf ~; touch a']), permExpect('touch a')))
+      .toEqual({ match: false, why: 'anchor_not_found' });
+  });
+
+  it('a card for "ls" does not match a dialog that merely has "tools" in its description', () => {
+    const capture = dialog50(['touch perm-probe.txt'], 'Check the tools folder');
+    expect(readPromptScreen(capture, permExpect('touch perm-probe.txt', 'Bash', 'Check the tools folder')).match).toBe(true);
+    expect(readPromptScreen(capture, permExpect('ls', 'Bash', 'Check the tools folder')))
+      .toEqual({ match: false, why: 'anchor_not_found' });
+  });
+
+  it('an anchor found only in an option label does not match', () => {
+    expect(readPromptScreen(screen('50-perm-bash-dialog'), permExpect('always allow access to')))
+      .toEqual({ match: false, why: 'anchor_not_found' });
+  });
+
+  it('the description starts on its own line -- a command cannot borrow the start of it', () => {
+    // Both read "echo;rm-rf~Print" once whitespace is gone.
+    expect(readPromptScreen(dialog50(['echo; rm -rf ~'], 'Print'), permExpect('echo', 'Bash', '; rm -rf ~ Print')).match)
+      .toBe(false);
+  });
+
+  it('the dialog\'s description must be the hook\'s (71 read without it expects "Run shell command")', () => {
+    expect(readPromptScreen(screen('71-s2-bash-dialog'), permExpect('touch perm-probe-always.txt')))
+      .toEqual({ match: false, why: 'anchor_not_found' });
+    expect(readPromptScreen(screen('71-s2-bash-dialog'),
+      permExpect('touch perm-probe-always.txt', 'Bash', 'Create empty file perm-probe-always.txt')).match).toBe(true);
+  });
+
+  it('a description wrapped onto a second line still matches', () => {
+    const capture = screen('71-s2-bash-dialog').replace('   Create empty file perm-probe-always.txt', '   Create empty file\n   perm-probe-always.txt');
+    expect(capture).not.toBe(screen('71-s2-bash-dialog'));
+    expect(readPromptScreen(capture,
+      permExpect('touch perm-probe-always.txt', 'Bash', 'Create empty file perm-probe-always.txt')).match).toBe(true);
+  });
+
+  it.each([
+    ['50-perm-bash-dialog', 'touch perm-probe.txt'],
+    ['52-perm-bash2-cursor-no', 'touch perm-probe-no.txt'],
+    ['53-perm-bash2-tab-on-no', 'touch perm-probe-no.txt'],
+    ['54-perm-bash2-typed-feedback', 'touch perm-probe-no.txt'],
+    ['57-perm-bash4-edited-dialog', 'touch perm-probe.txt'],
+    ['58-perm-bash4-edited-tab-on-no', 'touch perm-probe.txt'],
+  ])('%s still matches its own command', (file, anchor) => {
+    expect(readPromptScreen(screen(file), permExpect(anchor)).match).toBe(true);
+  });
+
+  it('the Write dialog (60) still matches on the file basename', () => {
+    expect(readPromptScreen(screen('60-perm-write-dialog'), permExpect('write-probe.txt', 'Write')).match).toBe(true);
   });
 });
 
@@ -209,6 +381,7 @@ describe('readPromptScreen -- takesText follows the label', () => {
     ' Bash command',
     '',
     '   touch perm-probe.txt',
+    '   Run shell command',
     '',
     ` ${question}`,
     ...options.map((o, i) => `${i === 0 ? ' ❯' : '  '} ${i + 1}. ${o}`),

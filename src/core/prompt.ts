@@ -14,7 +14,7 @@ export type PromptChoice = { key: string; label: string; takesText: boolean };
 
 export type PromptView = {
   id: string; kind: PromptKind; answerable: boolean;
-  reason: null | 'not_tmux' | 'screen_unread' | 'unsupported_layout';
+  reason: null | 'not_tmux' | 'screen_unread' | 'unsupported_layout' | 'multiple_prompts';
   questions?: PromptQuestion[];
   toolName?: string; command?: string; filePath?: string; description?: string;
   plan?: string;
@@ -28,7 +28,9 @@ export type Answer =
   | { kind: 'chat' };
 
 export type ScreenExpect =
-  | { kind: 'permission'; toolName: string; anchor: string }  // command, file basename, or tool name
+  // anchor: command, file basename, or tool name. description: the hook's
+  // Bash description, which the dialog shows under the command.
+  | { kind: 'permission'; toolName: string; anchor: string; description?: string }
   | { kind: 'plan' }
   | { kind: 'question'; headers: string[]; questions: string[] };  // questions: the hook's question texts, same order as headers
 

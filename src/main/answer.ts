@@ -131,7 +131,7 @@ function screenExpect(view: PromptView): ScreenExpect | null {
   }
   if (view.kind === 'plan') return { kind: 'plan' };
   const anchor = view.command || (view.filePath ? basename(view.filePath) : '') || view.toolName || '';
-  return anchor ? { kind: 'permission', toolName: view.toolName ?? '', anchor } : null;
+  return anchor ? { kind: 'permission', toolName: view.toolName ?? '', anchor, description: view.description } : null;
 }
 
 /** One capture, no retry: this runs inside a push. */
@@ -149,7 +149,9 @@ function readChoices(name: string, view: PromptView, capture: AnswerDeps['captur
  *  comes from the hook payload; permission and plan choices come from the
  *  screen, because the hook does not carry them. `tmuxName` is null for a
  *  session the app did not launch, which is shown read-only. */
-export function buildPromptView(event: SignalEvent, tmuxName: string | null, deps: AnswerDeps = {}): PromptView {
+export function buildPromptView(
+  event: SignalEvent, tmuxName: string | null, deps: AnswerDeps = {}, opts: { multiplePrompts?: boolean } = {},
+): PromptView {
   // Typed as an object, but it is a parsed hook file: never trusted to be one.
   const p = record(event.payload) ?? {};
   const toolName = str(p.tool_name) ?? '';
@@ -171,6 +173,10 @@ export function buildPromptView(event: SignalEvent, tmuxName: string | null, dep
     if (filePath !== undefined) view.filePath = filePath;
   }
 
+  // More than one prompt in this wait (hasMultiplePromptEvents): the pane
+  // may show the other one, so this card never answers -- checked first,
+  // before the choice cache or any screen read, for every prompt kind.
+  if (opts.multiplePrompts) return { ...view, reason: 'multiple_prompts' };
   if (tmuxName === null) return { ...view, reason: 'not_tmux' };
   // Question choices are the hook's own options; no screen read needed.
   if (view.kind === 'question') {

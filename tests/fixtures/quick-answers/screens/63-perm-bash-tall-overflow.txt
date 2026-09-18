@@ -1,0 +1,40 @@
+   │ touch long-probe-file-13.txt
+   │ touch long-probe-file-14.txt
+   │ touch long-probe-file-15.txt
+   │ touch long-probe-file-16.txt
+   │ touch long-probe-file-17.txt
+   │ touch long-probe-file-18.txt
+   │ touch long-probe-file-19.txt
+   │ touch long-probe-file-20.txt
+   │ touch long-probe-file-21.txt
+   │ touch long-probe-file-22.txt
+   │ touch long-probe-file-23.txt
+   │ touch long-probe-file-24.txt
+   │ touch long-probe-file-25.txt
+   │ touch long-probe-file-26.txt
+   │ touch long-probe-file-27.txt
+   │ touch long-probe-file-28.txt
+   │ touch long-probe-file-29.txt
+   │ touch long-probe-file-30.txt
+   │ touch long-probe-file-31.txt
+   │ touch long-probe-file-32.txt
+   │ touch long-probe-file-33.txt
+   │ touch long-probe-file-34.txt
+   │ touch long-probe-file-35.txt
+   │ touch long-probe-file-36.txt
+   │ touch long-probe-file-37.txt
+   │ touch long-probe-file-38.txt
+   │ touch long-probe-file-39.txt
+   │ touch long-probe-file-40.txt
+   Create 40 empty files with touch
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for touch long-probe-file-1.txt, touch long-probe-file-2.txt, touch
+      long-probe-file-3.txt, touch long-probe-file-4.txt, and touch long-probe-file-5.txt commands
+      in /private/tmp/claude-502/-Users-user000000000-Documents-David-llm-workspace/05ca161a-0ae7-4
+      978-8680-b333894fe577/scratchpad/p4probe
+   3. No
+
+ Esc to cancel · Tab to amend
+

@@ -166,6 +166,35 @@ export function openPromptEvent(db: Db, sessionId: string, waitingSinceMs: numbe
   return null;
 }
 
+/** Same per-Db cache as promptStatement: buildSessionLive runs this on
+ *  every push while a session waits. */
+const permissionPairStatementCache = new WeakMap<Db, Database.Statement>();
+
+function permissionPairStatement(db: Db): Database.Statement {
+  let stmt = permissionPairStatementCache.get(db);
+  if (!stmt) {
+    stmt = db.prepare(
+      `SELECT occurred_at FROM signal_events WHERE session_id = ? AND kind = 'PermissionRequest'
+       ORDER BY occurred_at DESC, id DESC LIMIT 2`);
+    permissionPairStatementCache.set(db, stmt);
+  }
+  return stmt;
+}
+
+/** True when more than one PermissionRequest is stamped at or after the
+ *  same waitingSince floor as openPromptEvent's: one wait, two prompts.
+ *  Parallel tool calls can write both while the pane shows only one
+ *  dialog, so the card could show one prompt and answer the other
+ *  (coordinator ruling, security review 2026-09-18). Only the newest two
+ *  are read, by kind, so no number of other events in between hides one.
+ *  A stamp that does not parse counts as in the wait: this guard fails
+ *  toward read-only, never toward answerable. */
+export function hasMultiplePromptEvents(db: Db, sessionId: string, waitingSinceMs: number): boolean {
+  const rows = permissionPairStatement(db).all(sessionId) as { occurred_at: string }[];
+  const floor = Math.floor(waitingSinceMs / 1000) * 1000;
+  return rows.length === 2 && rows.every((r) => !(Date.parse(r.occurred_at) < floor));
+}
+
 /** Cached per Db, same WeakMap pattern as src/hooks/spool.ts's own
  *  statementCache -- currentBlockers (below) runs this on every poll
  *  (Task 11's 250ms debounce), and a fresh db.prepare() on every call piles
