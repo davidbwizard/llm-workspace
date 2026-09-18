@@ -294,6 +294,15 @@ function refuse(pid: unknown, promptId: unknown, reason: AnswerRefusal): AnswerR
   return { status: 'refused', reason };
 }
 
+/** A sent answer is logged the same way as a refusal -- pid and prompt id
+ *  only, never the answer text or the prompt's content (section 11). */
+function logSent(pid: unknown, promptId: unknown): void {
+  console.log('session:answer sent', {
+    pid: typeof pid === 'number' && Number.isFinite(pid) ? pid : null,
+    promptId: typeof promptId === 'string' && promptId.length <= 64 ? promptId : '[invalid]',
+  });
+}
+
 /** Section 7. Never throws: every outcome is a result, and a refusal
  *  presses nothing unless it is `unconfirmed_partial`. */
 export async function answerPrompt(
@@ -325,7 +334,11 @@ export async function answerPrompt(
     // Taken inside the try, so the finally below always releases it.
     inFlight.add(pid);
     const reason = await run.deliver(clean);
-    return reason === null ? { status: 'sent' } : refuse(pid, promptId, reason);
+    if (reason === null) {
+      logSent(pid, promptId);
+      return { status: 'sent' };
+    }
+    return refuse(pid, promptId, reason);
   } catch (err) {
     // Only this module's own guards throw (a name or key outside the
     // allowlist), with fixed messages -- never tmux output, which can echo
