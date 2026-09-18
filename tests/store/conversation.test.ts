@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { conversationFor, unwrapSlashCommand, turnSource, type ConversationTurn } from '../../src/store/conversation.ts';
+import { conversationFor, unwrapSlashCommand, unwrapPastedContent, turnSource, type ConversationTurn } from '../../src/store/conversation.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 
 let nextOffset = 0;
@@ -80,6 +80,29 @@ function turnCompletedEvent(sessionId: string, ts: string, agentId: string | nul
 function view(turns: ConversationTurn[]): string[] {
   return turns.map(t => (t.role === 'user' ? `you: ${t.text}` : `agent: ${t.text}`));
 }
+
+describe('unwrapPastedContent', () => {
+  // Recorded 2026-09-18 (Claude Code 2.1.276, ShellShockers session): a message
+  // sent from the app arrived wrapped in Claude Code's paste tags.
+  it('shows only the pasted text, without the tags or the leading blank lines', () => {
+    const raw = '\n\n<pasted_content id="f3fc">\nHow would the player get the QR code or/and pass on the code?\n</pasted_content id="f3fc">\n';
+    expect(unwrapPastedContent(raw)).toBe('How would the player get the QR code or/and pass on the code?');
+  });
+
+  it('keeps text around a pasted block and unwraps every block', () => {
+    const raw = 'Look at this:\n<pasted_content id="a1">\nfirst\n</pasted_content id="a1">\nand\n<pasted_content id="b2">\nsecond\n</pasted_content id="b2">';
+    expect(unwrapPastedContent(raw)).toBe('Look at this:\nfirst\nand\nsecond');
+  });
+
+  it('leaves text without the tags untouched, including its whitespace', () => {
+    expect(unwrapPastedContent('  plain text\n')).toBe('  plain text\n');
+  });
+
+  it('does not unwrap a block whose closing id does not match', () => {
+    const raw = '<pasted_content id="a1">\nx\n</pasted_content id="zz">';
+    expect(unwrapPastedContent(raw)).toBe(raw);
+  });
+});
 
 describe('unwrapSlashCommand', () => {
   it('reduces a slash-command wrapper to the command the user actually typed', () => {

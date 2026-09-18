@@ -31,6 +31,19 @@ export function unwrapSlashCommand(text: string): string {
   return args === '' ? name : `${name} ${args}`;
 }
 
+/** Claude Code (2.1.276, recorded 2026-09-18) can store a user message with a
+ *  pasted block wrapped as `<pasted_content id="X">\n...\n</pasted_content id="X">`,
+ *  sometimes behind blank lines. Show the pasted text itself. A block only
+ *  unwraps when its closing id matches its opening id; text with no wrapper
+ *  is returned byte-for-byte. */
+const PASTED = /<pasted_content id="([^"]{1,64})">\n?([\s\S]*?)\n?<\/pasted_content id="\1">/g;
+
+export function unwrapPastedContent(text: string): string {
+  if (!text.includes('<pasted_content id="')) return text;
+  const out = text.replace(PASTED, (_m, _id, inner: string) => inner);
+  return out === text ? text : out.trim();
+}
+
 /** Identifies one event by its sort key (ts, id) -- the pair actually used
  *  for ordering and paging, not ts alone: real sessions have events sharing
  *  a millisecond (verified against the real index -- e.g. two rows at
@@ -188,7 +201,7 @@ export function conversationFor(
   for (const { prompt, prose } of stretches) {
     // A wrapper that names no command unwraps to '' and shows nothing, but
     // it still bounds its stretch -- that keeps paging and grouping agreed.
-    const text = prompt?.text ? unwrapSlashCommand(prompt.text) : '';
+    const text = prompt?.text ? unwrapPastedContent(unwrapSlashCommand(prompt.text)) : '';
     if (prompt && text !== '') {
       turns.push({ id: prompt.id, ts: prompt.ts, role: 'user', text });
     }
