@@ -25,7 +25,10 @@ export function readPromptScreen(capture: string, expect: ScreenExpect): ScreenR
 // ---- permission / plan --------------------------------------------------
 
 type DialogExpect = Exclude<ScreenExpect, { kind: 'question' }>;
-type ParsedDialog = { choices: PromptChoice[]; cursor: string | null };
+/** `hinted`: the key of the row with the "shift+tab to approve with this
+ *  feedback" line under it -- plan's text row, still known once typed
+ *  feedback has replaced its label. */
+type ParsedDialog = { choices: PromptChoice[]; cursor: string | null; hinted: string | null };
 
 /** Finds the last full-width `─` rule that is followed by at least one
  *  numbered option line, and parses that trailing block. Returns null when
@@ -55,6 +58,7 @@ function takesTextLabel(kind: DialogExpect['kind'], label: string): boolean {
 function parseDialogChoices(block: string[], kind: DialogExpect['kind']): ParsedDialog {
   const choices: PromptChoice[] = [];
   let cursor: string | null = null;
+  let hinted: string | null = null;
   let i = 0;
   while (i < block.length) {
     const line = block[i] ?? '';
@@ -70,25 +74,31 @@ function parseDialogChoices(block: string[], kind: DialogExpect['kind']): Parsed
       const trimmed = next.trim();
       if (trimmed === '') break;
       if (OPTION_LINE.test(next)) break;
-      if (trimmed === HINT_LINE) { j++; break; }
+      if (trimmed === HINT_LINE) { hinted = key; j++; break; }
       label += ` ${trimmed}`;
       j++;
     }
     choices.push({ key, label, takesText: takesTextLabel(kind, label) });
     i = j;
   }
-  return { choices, cursor };
+  return { choices, cursor, hinted };
 }
 
-function computeTextRow(kind: 'permission' | 'plan', choices: PromptChoice[], cursor: string | null): string | null {
-  if (cursor !== '3') return null;
-  const choice3 = choices.find((c) => c.key === '3');
-  if (!choice3) return null;
-  const label = choice3.label;
+/** The text in the focused row that takes text, at whatever key it sits
+ *  (Task 6: a four-option permission dialog has No at 4), or null when the
+ *  cursor is on any other row. Permission: the No row only once Tab has
+ *  amended it to "No, ...". Plan: the "Tell Claude" row, or the row that
+ *  carries the feedback hint (typed feedback replaces its label). */
+function computeTextRow(kind: 'permission' | 'plan', { choices, cursor, hinted }: ParsedDialog): string | null {
+  if (cursor === null) return null;
+  const focused = choices.find((c) => c.key === cursor);
+  if (!focused) return null;
+  const label = focused.label;
   if (kind === 'permission') {
-    if (!label.startsWith('No, ')) return null; // cursor on "No", Tab not pressed yet
+    if (!focused.takesText || !label.startsWith('No, ')) return null; // not No, or Tab not pressed yet
     return label === PERMISSION_NO_TEXT_DEFAULT ? '' : label;
   }
+  if (!focused.takesText && cursor !== hinted) return null;
   return label === PLAN_TEXT_DEFAULT ? '' : label;
 }
 
@@ -96,14 +106,15 @@ function readDialog(lines: string[], expect: DialogExpect): ScreenRead {
   const block = findDialogBlock(lines);
   if (!block) return { match: false, why: 'no_dialog_on_screen' };
 
-  const { choices, cursor } = parseDialogChoices(block, expect.kind);
+  const parsed = parseDialogChoices(block, expect.kind);
+  const { choices, cursor } = parsed;
   if (choices.length === 0) return { match: false, why: 'no_options_found' };
 
   if (expect.kind === 'plan') {
     if (!block.some((l) => l.includes('Would you like to proceed?'))) {
       return { match: false, why: 'not_a_plan_dialog' };
     }
-    return { match: true, kind: 'plan', choices, cursor, textRow: computeTextRow('plan', choices, cursor) };
+    return { match: true, kind: 'plan', choices, cursor, textRow: computeTextRow('plan', parsed) };
   }
 
   // permission
@@ -119,7 +130,7 @@ function readDialog(lines: string[], expect: DialogExpect): ScreenRead {
   if (anchor === '') return { match: false, why: 'empty_anchor' };
   if (!block.join('').replace(/\s+/g, '').includes(anchor)) return { match: false, why: 'anchor_not_found' };
 
-  return { match: true, kind: 'permission', choices, cursor, textRow: computeTextRow('permission', choices, cursor) };
+  return { match: true, kind: 'permission', choices, cursor, textRow: computeTextRow('permission', parsed) };
 }
 
 // ---- questions ------------------------------------------------------------

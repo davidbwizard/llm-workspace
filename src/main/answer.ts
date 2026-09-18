@@ -207,11 +207,11 @@ export function validateAnswer(view: PromptView, raw: unknown): Answer | null {
       // row is only ever feedback, so it needs typed text instead.
       return choice.takesText && view.kind !== 'permission' ? null : { kind: 'choice', key: choice.key };
     }
-    // Free text is only ever sent to option 3: computeTextRow
-    // (promptScreen.ts) reads no other key, so a takesText row at any
-    // other position (e.g. a two-option dialog's No, key '2') cannot
-    // actually receive typed text on screen and is refused here.
-    if (!choice.takesText || choice.key !== '3') return null;
+    // Free text only on the row that takes it, at whatever key the screen
+    // gave it (Task 6: a four-option dialog has No at 4). computeTextRow
+    // (promptScreen.ts) reads that row wherever it is focused, and the
+    // delivery below presses Enter only once it shows the typed text.
+    if (!choice.takesText) return null;
     const text = cleanText(a.text);
     return text === null ? null : { kind: 'choice_text', key: choice.key, text };
   }
@@ -452,7 +452,8 @@ class Run {
       this.isDialog(s) && s.read.cursor === key && s.read.textRow !== null && norm(s.read.textRow) === norm(row);
 
     if (this.view.kind === 'plan') {
-      // Plan option 3: the digit focuses the text row.
+      // Plan feedback (option 3 as measured, or wherever it sits): the
+      // digit focuses the text row.
       if (!this.press(key)) return this.fail();
       if (!await this.settle(s => onRow(s, ''))) return this.fail();
     } else {

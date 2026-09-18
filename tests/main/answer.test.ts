@@ -333,21 +333,13 @@ describe('answerPrompt guards -- each refusal presses nothing', () => {
       await refusedWith(view, PID, view.id, { kind: 'choice', key: '1' }, 'invalid', [screen('10-ask-q1')]);
     });
 
-    // Residual fix: computeTextRow (promptScreen.ts) only ever reads key
-    // '3', so a takesText row at any OTHER key (e.g. a two-option dialog's
-    // No, key '2') can never actually receive typed text on screen --
-    // refused here before any key is pressed, not discovered mid-delivery.
-    it('choice_text on a two-option permission dialog\'s No (key 2)', async () => {
+    // Task 6: text is allowed on the takesText row at any key, but never
+    // on another row -- here the four-option dialog's auto-mode row, key 3.
+    it('choice_text on a four-option dialog\'s auto-mode row (key 3)', async () => {
       registered();
-      const view: PromptView = {
-        id: 'e-two-option', kind: 'permission', answerable: true, reason: null,
-        toolName: 'Bash', command: 'touch perm-probe.txt',
-        choices: [
-          { key: '1', label: 'Yes', takesText: false },
-          { key: '2', label: 'No', takesText: true },
-        ],
-      };
-      await refusedWith(view, PID, view.id, { kind: 'choice_text', key: '2', text: 'use npm instead' }, 'invalid');
+      const view = viewFor(BASH_YES, screen('57-perm-bash4-edited-dialog'));
+      await refusedWith(view, PID, view.id, { kind: 'choice_text', key: '3', text: 'use npm instead' }, 'invalid',
+        [screen('57-perm-bash4-edited-dialog')]);
     });
   });
 
@@ -481,6 +473,78 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
     // Typed text goes only through send-keys -l, after "--" so a leading
     // "-" can never be read as a tmux option.
     expect(pane.sent[3]).toEqual(['send-keys', '-t', `=${NAME}:`, '-l', '--', 'Skip it and reply NOPROBE']);
+  });
+
+  // Task 6 (by eye): David's dialog has four options with No at 4. 57/58
+  // are fixture 50 hand-edited (auto-mode row at 3, No at 4).
+  describe('text on the takesText row at any key', () => {
+    const bash4 = () => screen('57-perm-bash4-edited-dialog');
+    const tab4 = () => screen('58-perm-bash4-edited-tab-on-no');
+    const typed4 = (text: string) => tab4().replace('4. No, and tell Claude what to do differently', `4. No, ${text}`);
+    const frames = () => [bash4(), moveCursor(bash4(), '1', '2'), moveCursor(bash4(), '1', '3'), moveCursor(bash4(), '1', '4')];
+
+    it('No at key 4 with text: Down until the cursor is on 4, Tab, the text, then Enter once the row shows it', async () => {
+      registered();
+      const view = viewFor(BASH_YES, bash4());
+      expect(view.choices?.map(c => [c.key, c.takesText])).toEqual([['1', false], ['2', false], ['3', false], ['4', true]]);
+      const text = 'Skip it and reply NOPROBE';
+      const pane = fakePane([...frames(), tab4(), typed4(text), screen('55-perm-bash2-after-no')]);
+      expect(await answerPrompt(PID, view.id, { kind: 'choice_text', key: '4', text }, deps(pane, view)))
+        .toEqual({ status: 'sent' });
+      expect(pane.keys()).toEqual(['Down', 'Down', 'Down', 'Tab', text, 'Enter']);
+    });
+
+    it('no Enter when the key-4 row shows different text', async () => {
+      registered();
+      const view = viewFor(BASH_YES, bash4());
+      const pane = fakePane([...frames(), tab4(), typed4('Something else')]);
+      expect(await answerPrompt(PID, view.id, { kind: 'choice_text', key: '4', text: 'Skip it' }, deps(pane, view)))
+        .toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+      expect(pane.keys()).toEqual(['Down', 'Down', 'Down', 'Tab', 'Skip it']);
+    });
+
+    it('no text when Tab does not open the text row on key 4', async () => {
+      registered();
+      const view = viewFor(BASH_YES, bash4());
+      const onNo = moveCursor(bash4(), '1', '4');
+      const pane = fakePane([...frames(), onNo]);
+      expect(await answerPrompt(PID, view.id, { kind: 'choice_text', key: '4', text: 'Skip it' }, deps(pane, view)))
+        .toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+      expect(pane.keys()).toEqual(['Down', 'Down', 'Down', 'Tab']);
+    });
+
+    it('no Tab when a Down does not land where the screen says', async () => {
+      registered();
+      const view = viewFor(BASH_YES, bash4());
+      // The cursor never moves off 1.
+      const pane = fakePane([bash4()]);
+      expect(await answerPrompt(PID, view.id, { kind: 'choice_text', key: '4', text: 'Skip it' }, deps(pane, view)))
+        .toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+      expect(pane.keys()).toEqual(['Down']);
+    });
+
+    it('plain No at key 4 is its digit', async () => {
+      registered();
+      const view = viewFor(BASH_YES, bash4());
+      const pane = fakePane([bash4(), screen('56-perm-bash3-key3')]);
+      expect(await answerPrompt(PID, view.id, { kind: 'choice', key: '4' }, deps(pane, view))).toEqual({ status: 'sent' });
+      expect(pane.keys()).toEqual(['4']);
+    });
+
+    it('plan feedback at key 4: 4, the text, then Enter once the row shows it', async () => {
+      registered();
+      // Inserts one extra Yes row at 3 and renumbers "Tell Claude" to 4.
+      const at4 = (capture: string) => capture.replace(
+        /^( {3}2\. Yes, manually approve edits\n)( ❯| {2}) 3\. /m, '$1   3. Yes, and bypass permissions\n$2 4. ');
+      const dialog = at4(screen('80-plan-dialog'));
+      const view = viewFor(PLAN, dialog);
+      expect(view.choices?.map(c => [c.key, c.takesText])).toEqual([['1', false], ['2', false], ['3', false], ['4', true]]);
+      const text = 'Change the word to PLANFEEDBACK instead of hi';
+      const pane = fakePane([dialog, at4(screen('81-plan-key3')), at4(screen('82-plan-typed-feedback')), screen('83-plan-v2-dialog')]);
+      expect(await answerPrompt(PID, view.id, { kind: 'choice_text', key: '4', text }, deps(pane, view)))
+        .toEqual({ status: 'sent' });
+      expect(pane.keys()).toEqual(['4', text, 'Enter']);
+    });
   });
 
   it('Plan feedback: 3, the text, then Enter once the row shows it', async () => {

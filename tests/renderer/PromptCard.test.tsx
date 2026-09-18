@@ -193,21 +193,28 @@ describe('PromptCard -- permission', () => {
     await waitFor(() => expect(fleet.answerPrompt).toHaveBeenCalledWith(4821, 'evt-2', { kind: 'choice', key: '1' }));
   });
 
-  // Residual fix: computeTextRow (promptScreen.ts) only ever reads key
-  // '3', so a takesText row at any other key (e.g. a two-option dialog's
-  // No, here key '2') must not offer a text action main would refuse.
-  it('shows no text action on a two-option dialog\'s takesText "No" at key 2', () => {
-    setFleet();
-    const twoOption: PromptView = {
-      id: 'evt-2b', kind: 'permission', answerable: true, reason: null,
+  // Task 6 (by eye): David's dialog has four options with No at 4. The
+  // text action follows the takesText row wherever it is, and only it.
+  it('offers the text action under No at key 4 of a four-option dialog, and sends choice_text on key 4', async () => {
+    const fleet = setFleet();
+    const fourOption: PromptView = {
+      id: 'evt-2d', kind: 'permission', answerable: true, reason: null,
       toolName: 'Bash', command: 'touch permission-test.txt',
       choices: [
         { key: '1', label: 'Yes', takesText: false },
-        { key: '2', label: 'No', takesText: true },
+        { key: '2', label: 'Yes, and always allow access to probe-folder from this project', takesText: false },
+        { key: '3', label: 'Yes, and switch to auto mode · auto mode handles these prompts for you', takesText: false },
+        { key: '4', label: 'No', takesText: true },
       ],
     };
-    render(<PromptCard pid={4821} prompt={twoOption} onOpenTerminal={() => {}} />);
-    expect(screen.queryByRole('button', { name: 'and tell Claude what to do instead' })).toBeNull();
+    render(<PromptCard pid={4821} prompt={fourOption} onOpenTerminal={() => {}} />);
+    expect(screen.getAllByRole('button', { name: 'and tell Claude what to do instead' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'and tell Claude what to do instead' }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'use npm instead' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Claude' }));
+    await waitFor(() => expect(fleet.answerPrompt).toHaveBeenCalledWith(
+      4821, 'evt-2d', { kind: 'choice_text', key: '4', text: 'use npm instead' },
+    ));
   });
 });
 
@@ -229,6 +236,26 @@ describe('PromptCard -- plan', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send to Claude' }));
     await waitFor(() => expect(fleet.answerPrompt).toHaveBeenCalledWith(
       4821, 'evt-3', { kind: 'choice_text', key: '3', text: 'skip step 2' },
+    ));
+  });
+
+  it('opens the feedback box for the takesText choice at key 4, and sends choice_text on key 4', async () => {
+    const fleet = setFleet();
+    const plan4: PromptView = {
+      ...planPrompt, id: 'evt-3d',
+      choices: [
+        { key: '1', label: 'Yes, auto-accept edits', takesText: false },
+        { key: '2', label: 'Yes, manually approve edits', takesText: false },
+        { key: '3', label: 'Yes, and bypass permissions', takesText: false },
+        { key: '4', label: 'Tell Claude what to change', takesText: true },
+      ],
+    };
+    render(<PromptCard pid={4821} prompt={plan4} onOpenTerminal={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: '4 Tell Claude what to change' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'What should change?' }), { target: { value: 'skip step 2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Claude' }));
+    await waitFor(() => expect(fleet.answerPrompt).toHaveBeenCalledWith(
+      4821, 'evt-3d', { kind: 'choice_text', key: '4', text: 'skip step 2' },
     ));
   });
 

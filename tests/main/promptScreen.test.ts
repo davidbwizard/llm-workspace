@@ -170,6 +170,57 @@ describe('readPromptScreen -- takesText follows the label', () => {
   });
 });
 
+// Task 6 (by eye): David's permission dialog has four options, with "No"
+// at 4, so the text row is read wherever the takesText row is focused, not
+// only at key 3. 57/58 are fixture 50 hand-edited: the auto-mode line
+// inserted as option 3, No moved to 4 (58: cursor on 4, after Tab).
+describe('readPromptScreen -- the text row at any key', () => {
+  const bash4 = () => screen('57-perm-bash4-edited-dialog');
+  const tab4 = () => screen('58-perm-bash4-edited-tab-on-no');
+  const read = (capture: string) => {
+    const result = readPromptScreen(capture, permExpect('touch perm-probe.txt'));
+    if (!result.match || result.kind !== 'permission') throw new Error('expected permission match');
+    return result;
+  };
+  const moveCursorTo = (capture: string, to: string) =>
+    capture.replace(/^ ❯ 1\. /m, '   1. ').replace(new RegExp(`^   ${to}\\. `, 'm'), ` ❯ ${to}. `);
+
+  it('reads four choices, only No (key 4) taking text, with no text row on key 1', () => {
+    const result = read(bash4());
+    expect(result.choices.map(c => [c.key, c.takesText])).toEqual([['1', false], ['2', false], ['3', false], ['4', true]]);
+    expect(result.choices[2]!.label).toBe('Yes, and switch to auto mode · auto mode handles these prompts for you');
+    expect(result.cursor).toBe('1');
+    expect(result.textRow).toBeNull();
+  });
+
+  it('no text row with the cursor on the auto-mode row (key 3), nor on a plain No before Tab', () => {
+    expect(read(moveCursorTo(bash4(), '3'))).toMatchObject({ cursor: '3', textRow: null });
+    expect(read(moveCursorTo(bash4(), '4'))).toMatchObject({ cursor: '4', textRow: null });
+  });
+
+  it('reads an empty text row after Tab on No at key 4, and the typed text after that', () => {
+    expect(read(tab4())).toMatchObject({ cursor: '4', textRow: '' });
+    const typed = tab4().replace('4. No, and tell Claude what to do differently', '4. No, Skip it and reply NOPROBE');
+    expect(read(typed)).toMatchObject({ cursor: '4', textRow: 'No, Skip it and reply NOPROBE' });
+  });
+
+  // Plan's typed feedback replaces the row's label, so its row is also known
+  // by the "shift+tab to approve with this feedback" line under it.
+  it('reads a plan text row at key 4, empty and typed', () => {
+    const at4 = (capture: string) => capture.replace(
+      /^( {3}2\. Yes, manually approve edits\n)( ❯| {2}) 3\. /m, '$1   3. Yes, and bypass permissions\n$2 4. ');
+    const empty = at4(screen('81-plan-key3'));
+    const typed = at4(screen('82-plan-typed-feedback'));
+    expect(empty).not.toBe(screen('81-plan-key3'));
+    expect(typed).not.toBe(screen('82-plan-typed-feedback'));
+    expect(readPromptScreen(empty, planExpect())).toMatchObject({ match: true, cursor: '4', textRow: '' });
+    expect(readPromptScreen(typed, planExpect()))
+      .toMatchObject({ match: true, cursor: '4', textRow: 'Change the word to PLANFEEDBACK instead of hi' });
+    const onYes = empty.replace(' ❯ 4. ', '   4. ').replace('   3. Yes, and bypass', ' ❯ 3. Yes, and bypass');
+    expect(readPromptScreen(onYes, planExpect())).toMatchObject({ match: true, cursor: '3', textRow: null });
+  });
+});
+
 describe('readPromptScreen -- plan dialogs', () => {
   it.each(['80-plan-dialog', '90-plan2-dialog'])('matches %s: three choices, option 3 takes text', (file) => {
     const result = readPromptScreen(screen(file), planExpect());

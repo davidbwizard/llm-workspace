@@ -264,13 +264,11 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
                     "3" rejects with no text). The text box is a separate,
                     quiet, opt-in action below it. */}
                 {choiceButton(choice, () => void send({ kind: 'choice', key: choice.key }))}
-                {/* Residual fix: computeTextRow (promptScreen.ts) only ever
-                    reads key '3', so a takesText row at any other key (a
-                    two-option dialog's No is key '2') cannot actually
-                    receive typed text on screen -- main's validateAnswer
-                    now refuses it as invalid, so the text action is hidden
-                    here too rather than offering something that would fail. */}
-                {choice.takesText && choice.key === '3' && (
+                {/* Task 6: the text action follows the takesText row at
+                    whatever key the screen gave it (a four-option dialog
+                    has No at 4); main moves the cursor there and checks the
+                    text row before Enter. */}
+                {choice.takesText && (
                   <>
                     <button type="button" className="btn quiet" disabled={sending}
                       onClick={() => setNoTextOpen(o => !o)}>
@@ -303,10 +301,9 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
   // ---- plan --------------------------------------------------------
 
   function planBody() {
-    // Only key '3': computeTextRow (promptScreen.ts) reads no other row,
-    // so a takesText choice at any other key could never actually deliver
-    // typed text on screen (same constraint as permissionBody above).
-    const textChoice = prompt.choices?.find(c => c.takesText && c.key === '3');
+    // The takesText choice at any key (Task 6): computeTextRow
+    // (promptScreen.ts) reads the focused text row wherever it is.
+    const textChoice = prompt.choices?.find(c => c.takesText);
     return (
       <>
         <div className="plan" tabIndex={0} aria-label="Plan">
@@ -317,15 +314,11 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
         {prompt.answerable && prompt.choices && (
           <div className="choices">
             {prompt.choices.map(choice => (
-              // The takesText choice at key '3' always opens the feedback
-              // box -- main's own validateAnswer refuses a plain `choice`
-              // on a takesText key unless the prompt is a permission (see
-              // the doc comment above), so plan can never send one for it
-              // regardless. A takesText choice at any OTHER key (never
-              // observed in practice) falls through to the plain button,
-              // which main also refuses -- there is no key this card could
-              // press for it that main would actually accept.
-              choice.takesText && choice.key === '3'
+              // The takesText choice always opens the feedback box --
+              // main's own validateAnswer refuses a plain `choice` on a
+              // takesText key unless the prompt is a permission, so plan
+              // can never send one for it regardless.
+              choice.takesText
                 ? choiceButton(choice, () => setPlanFeedbackOpen(true))
                 : choiceButton(choice, () => void send({ kind: 'choice', key: choice.key }))
             ))}
