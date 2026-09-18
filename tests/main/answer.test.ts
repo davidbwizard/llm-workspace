@@ -451,6 +451,17 @@ describe('answerPrompt guards -- each refusal presses nothing', () => {
     expect(errors).toHaveBeenCalledWith('session:answer refused', { pid: PID, promptId: view.id, reason: 'invalid' });
     expect(JSON.stringify(errors.mock.calls)).not.toContain('secret');
   });
+
+  it('a sent answer logs only the pid and prompt id, never the answer text or tool_input', async () => {
+    registered();
+    const view = viewFor(BASH_YES, screen('50-perm-bash-dialog'));
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const pane = fakePane([screen('50-perm-bash-dialog'), screen('51-perm-bash-after-1')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'choice', key: '1' }, deps(pane, view))).toEqual({ status: 'sent' });
+    expect(logs).toHaveBeenCalledWith('session:answer sent', { pid: PID, promptId: view.id });
+    expect(logs.mock.calls).toHaveLength(1);
+    expect(JSON.stringify(logs.mock.calls)).not.toContain('touch perm-probe.txt');
+  });
 });
 
 describe('answerPrompt key sequences, against a fake pane replaying fixture screens', () => {
@@ -477,6 +488,25 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
     expect(view).toMatchObject({ answerable: true, command });
     expect(view.choices?.map(c => c.key)).toEqual(['1', '2', '3']);
     const pane = fakePane([tall, screen('51-perm-bash-after-1')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'choice', key: '1' }, deps(pane, view))).toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['1']);
+  });
+
+  // Measured 2026-09-18: a dialog-level Tip line and a bordered warning note
+  // sit around the command (fixture 64); pressing Yes still sends just the
+  // digit.
+  it('Bash choice 1 sends exactly the digit on a dialog with a Tip line and a warning note (fixture 64)', async () => {
+    registered();
+    const ev = event(BASH_YES);
+    const command = 'cd /private/tmp/claude-502/-Users-user000000000-Documents-David-llm-workspace/05ca161a-0ae7'
+      + '-4978-8680-b333894fe577/scratchpad\ntouch qa-m6.txt\ntouch qa-m7.txt';
+    const description = 'Create two more empty test files';
+    ev.payload = { tool_name: 'Bash', tool_input: { command, description } };
+    const screen64 = screen('64-perm-bash-tip-line');
+    const view = buildPromptView(ev, NAME, { capture: () => ({ ok: true, stdout: screen64 }) });
+    expect(view).toMatchObject({ answerable: true, command, description });
+    expect(view.choices?.map(c => c.key)).toEqual(['1', '2', '3', '4']);
+    const pane = fakePane([screen64]);
     expect(await answerPrompt(PID, view.id, { kind: 'choice', key: '1' }, deps(pane, view))).toEqual({ status: 'sent' });
     expect(pane.keys()).toEqual(['1']);
   });

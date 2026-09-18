@@ -169,22 +169,62 @@ function blockHasAnchor(block: string[], anchor: string): boolean {
   return unbordered(block).includes(anchor);
 }
 
+/** Spaces before a line's first non-space character. A "│" border stops the
+ *  count, so a bordered command line's OWN indentation (drawn deeper than
+ *  the dialog's chrome) is unaffected by whatever indentation the raw
+ *  command text carries after the border -- e.g. fixture 62's Python
+ *  "print" line, indented four more spaces by the script itself. */
+function indentOf(line: string): number {
+  let n = 0;
+  while (line[n] === ' ') n++;
+  return n;
+}
+
 /** A Bash dialog with its top on screen (fixtures 50, 62, 71): the header
- *  ("Bash command"), a blank line, the command's lines, the description on
- *  the line(s) straight under them, then a blank line. The command region
- *  is what lies between the header and the description, and it must EQUAL
- *  the hook's command -- merely containing it would let a short anchor hit
- *  a longer command, the description or an option label. The description
- *  must fill whole lines of its own, so a command cannot borrow its first
- *  words. It is the hook's, or BASH_DEFAULT_DESCRIPTION when the hook has
- *  none; any other layout fails safe as a mismatch. */
+ *  ("Bash command"), the command's lines, the description on the line(s)
+ *  straight under them, then a blank line. The command region is what lies
+ *  between the header and the description, and it must EQUAL the hook's
+ *  command -- merely containing it would let a short anchor hit a longer
+ *  command, the description or an option label. The description must fill
+ *  whole lines of its own, so a command cannot borrow its first words. It
+ *  is the hook's, or BASH_DEFAULT_DESCRIPTION when the hook has none; any
+ *  other layout fails safe as a mismatch.
+ *
+ *  Measured 2026-09-18 (fixture 64): a dialog-level Tip line can sit
+ *  between the header and the command ("Tip: auto mode handles these
+ *  prompts for you..."), and a bordered warning note can sit between the
+ *  description and "Do you want to proceed?". Both are drawn at the
+ *  HEADER's own indentation (1 space in every fixture); the command and its
+ *  description sit one level deeper (3 spaces, bordered or not -- fixtures
+ *  50, 52-56, 60, 62, 63, 64). Rather than hard-code either number, the
+ *  header's indentation is measured on THIS screen and the command region
+ *  is taken as whatever sits deeper than it -- so it keeps working even if
+ *  the exact column ever shifts.
+ *
+ *  The command region is the single run of non-blank, deeper-than-header
+ *  lines that starts right after the header (skipping only blank lines and
+ *  lines at the header's own indentation) and ends for good at the first
+ *  blank line, or the first line back at the header's indentation. Ending
+ *  it there -- rather than skipping the offending line and resuming --
+ *  means a Tip/warning-style line dropped into the middle of the command
+ *  can only ever cut the run short, never split it into a smaller fragment
+ *  that a forged, shorter anchor could then match: once the run is cut
+ *  short of the real description, the split search below has nothing to
+ *  match against and the whole dialog is refused, not just that one line. */
 function bashCommandEquals(above: string[], anchor: string, description: string | undefined): boolean {
-  let i = above.findIndex((l) => l.trim() !== ''); // the header
-  if (i === -1) return false;
-  i++;
-  while (i < above.length && (above[i] ?? '').trim() === '') i++;
+  const headerIdx = above.findIndex((l) => l.trim() !== '');
+  if (headerIdx === -1) return false;
+  const headerIndent = indentOf(above[headerIdx] ?? '');
+
   const run: string[] = [];
-  while (i < above.length && (above[i] ?? '').trim() !== '') run.push(above[i++]!);
+  for (let i = headerIdx + 1; i < above.length; i++) {
+    const raw = above[i] ?? '';
+    const deep = raw.trim() !== '' && indentOf(raw) > headerIndent;
+    if (run.length === 0) { if (deep) run.push(raw); continue; } // still before the run starts
+    if (!deep) break; // blank, or back at the header's own indentation: run over for good
+    run.push(raw);
+  }
+
   const shownDescription = bare(description?.trim() ? description : BASH_DEFAULT_DESCRIPTION);
   for (let split = run.length - 1; split > 0; split--) {
     if (bare(run.slice(split).join('')) === shownDescription && unbordered(run.slice(0, split)) === anchor) return true;

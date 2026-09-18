@@ -337,6 +337,61 @@ describe('readPromptScreen -- refuses option numbers that are not exactly 1..n i
   });
 });
 
+// Measured 2026-09-18 (fixture 64, Claude Code 2.1.276): a dialog-level Tip
+// line ("Tip: auto mode handles these prompts for you...") sits between the
+// header and the command, and a bordered warning note sits between the
+// description and "Do you want to proceed?". Neither is part of the
+// command: both are drawn at the header's own indentation (1 space), one
+// level shallower than the command and its description (3 spaces, bordered
+// or not).
+describe('readPromptScreen -- a dialog-level Tip line and a warning note are not part of the command', () => {
+  const CMD64 = 'cd /private/tmp/claude-502/-Users-user000000000-Documents-David-llm-workspace/05ca161a-0ae7'
+    + '-4978-8680-b333894fe577/scratchpad\ntouch qa-m6.txt\ntouch qa-m7.txt';
+  const DESC64 = 'Create two more empty test files';
+
+  it('matches fixture 64 on its own command, with 4 choices', () => {
+    const result = readPromptScreen(screen('64-perm-bash-tip-line'), permExpect(CMD64, 'Bash', DESC64));
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'permission') throw new Error('expected permission match');
+    expect(result.cursor).toBe('1');
+    expect(result.choices).toEqual([
+      { key: '1', label: 'Yes', takesText: false },
+      {
+        key: '2',
+        label: "Yes, and don't ask again for touch qa-m6.txt and touch qa-m7.txt commands in "
+          + '/Users/user000000000/Documents/David/llm-workspace',
+        takesText: false,
+      },
+      { key: '3', label: 'Yes, and switch to auto mode · auto mode handles these prompts for you', takesText: false },
+      { key: '4', label: 'No', takesText: true },
+    ]);
+    expect(result.textRow).toBeNull();
+  });
+
+  it('rejects fixture 64 for a different command', () => {
+    expect(readPromptScreen(screen('64-perm-bash-tip-line'), permExpect('touch other.txt', 'Bash', DESC64)))
+      .toEqual({ match: false, why: 'anchor_not_found' });
+  });
+
+  // No-smuggling guard: a crafted line at the header's own indentation,
+  // dropped INSIDE the command block with no blank line separating it, must
+  // not let a shorter, forged anchor match a fragment of the real command.
+  // The line can only ever cut the run short of the real description --
+  // never split it into a smaller piece a forged anchor could then match.
+  it('a crafted 1-space line inside the command block cannot make a shorter, forged anchor match', () => {
+    const crafted = screen('64-perm-bash-tip-line').replace(
+      /^ {3}│ touch qa-m6\.txt$/m,
+      '   │ touch qa-m6.txt\n Tip: touch qa-m7.txt',
+    );
+    expect(crafted).not.toBe(screen('64-perm-bash-tip-line'));
+    // Neither the real full command...
+    expect(readPromptScreen(crafted, permExpect(CMD64, 'Bash', DESC64)).match).toBe(false);
+    // ...nor a shorter, forged anchor built from the text the intruding
+    // line carries, matches the corrupted screen.
+    expect(readPromptScreen(crafted, permExpect('touch qa-m7.txt', 'Bash', DESC64)).match).toBe(false);
+  });
+});
+
 // Task 6 (by eye): a long path in an option wraps at the pane width, often
 // right after a "-" or "/"; joining with a space showed "Documents- David-".
 // These screens are fixture 50 with its option-2 path wrapped differently.
