@@ -94,6 +94,43 @@ describe('readPromptScreen -- permission dialogs', () => {
   });
 });
 
+// Controller ruling (Task 3 fix round): long commands wrap at the pane
+// width, and multi-line commands span lines, so the anchor is matched with
+// all whitespace removed from both sides. These screens are fixture 50 with
+// only its command line replaced.
+describe('readPromptScreen -- permission anchor ignores whitespace', () => {
+  const withCommand = (lines: string[]): string =>
+    screen('50-perm-bash-dialog').replace(/^ {3}touch perm-probe\.txt$/m, lines.map(l => `   ${l}`).join('\n'));
+
+  const LONG = 'npm run build -- --filter=@acme/some-really-long-package-name && npm test -- --coverage --reporter=verbose';
+  const wrapped = withCommand([
+    'npm run build -- --filter=@acme/some-really-long-package-name && npm test -- --cov',
+    'erage --reporter=verbose',
+  ]);
+
+  it('matches a long command wrapped across two lines, even mid-word', () => {
+    const result = readPromptScreen(wrapped, permExpect(LONG));
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'permission') throw new Error('expected permission match');
+    expect(result.choices.map(c => c.key)).toEqual(['1', '2', '3']);
+  });
+
+  it('matches a multi-line command (a newline in tool_input.command)', () => {
+    const capture = withCommand(['cd /tmp/work &&', '  make all']);
+    expect(readPromptScreen(capture, permExpect('cd /tmp/work &&\n  make all')).match).toBe(true);
+  });
+
+  it('still rejects a different command', () => {
+    expect(readPromptScreen(wrapped, permExpect('npm run build -- --filter=@acme/other && npm test')).match).toBe(false);
+    expect(readPromptScreen(withCommand(['cd /tmp/work &&', '  make all']), permExpect('cd /tmp/work && make clean')).match)
+      .toBe(false);
+  });
+
+  it('never matches on an anchor that is only whitespace', () => {
+    expect(readPromptScreen(wrapped, permExpect('  \n\t ')).match).toBe(false);
+  });
+});
+
 describe('readPromptScreen -- plan dialogs', () => {
   it.each(['80-plan-dialog', '90-plan2-dialog'])('matches %s: three choices, option 3 takes text', (file) => {
     const result = readPromptScreen(screen(file), planExpect());

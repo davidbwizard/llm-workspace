@@ -139,7 +139,8 @@ function readChoices(name: string, view: PromptView, capture: AnswerDeps['captur
  *  screen, because the hook does not carry them. `tmuxName` is null for a
  *  session the app did not launch, which is shown read-only. */
 export function buildPromptView(event: SignalEvent, tmuxName: string | null, deps: AnswerDeps = {}): PromptView {
-  const p = event.payload;
+  // Typed as an object, but it is a parsed hook file: never trusted to be one.
+  const p = record(event.payload) ?? {};
   const toolName = str(p.tool_name) ?? '';
   const input = record(p.tool_input) ?? {};
   const view: PromptView = { id: event.eventId, kind: kindFor(toolName), answerable: false, reason: null };
@@ -199,7 +200,12 @@ export function validateAnswer(view: PromptView, raw: unknown): Answer | null {
     if (view.kind === 'question' || typeof a.key !== 'string') return null;
     const choice = view.choices?.find(c => c.key === a.key);
     if (!choice || !DIGITS.includes(choice.key)) return null;
-    if (a.kind === 'choice') return choice.takesText ? null : { kind: 'choice', key: choice.key };
+    if (a.kind === 'choice') {
+      // A plain No (permission option 3, a takesText row) is its digit,
+      // which rejects directly (measured, fixture 56). Plan option 3 is
+      // only ever feedback, so it needs text.
+      return choice.takesText && view.kind !== 'permission' ? null : { kind: 'choice', key: choice.key };
+    }
     if (!choice.takesText) return null;
     const text = cleanText(a.text);
     return text === null ? null : { kind: 'choice_text', key: choice.key, text };
@@ -289,9 +295,10 @@ export async function answerPrompt(
   if (!clean) return refuse(pid, promptId, 'invalid');
 
   if (inFlight.has(pid)) return refuse(pid, promptId, 'busy');
-  inFlight.add(pid);
   const run = new Run(name, view, deps);
   try {
+    // Taken inside the try, so the finally below always releases it.
+    inFlight.add(pid);
     const reason = await run.deliver(clean);
     return reason === null ? { status: 'sent' } : refuse(pid, promptId, reason);
   } catch (err) {
@@ -505,7 +512,14 @@ class Run {
           if (!typed) return this.fail();
           if (!this.press('Enter')) return this.fail();
         }
-        next = await this.settle(s => this.advanced(s, i, last, true));
+        // A one-question prompt may close without a review screen. Only
+        // there, and only when two reads in a row find the dialog gone, is
+        // that taken as answered: one odd capture is not an answer.
+        let goneReads = 0;
+        next = await this.settle((s) => {
+          goneReads = isGone(s) ? goneReads + 1 : 0;
+          return this.advanced(s, i, last) || (qs.length === 1 && goneReads >= 2);
+        });
       } else {
         // Each digit toggles and the cursor stays; Right advances.
         for (const option of pick.options) {
@@ -516,14 +530,14 @@ class Run {
           cur = toggled;
         }
         if (!this.press('Right')) return this.fail();
-        next = await this.settle(s => this.advanced(s, i, last, false));
+        next = await this.settle(s => this.advanced(s, i, last));
       }
       if (!next) return this.fail();
       cur = next;
     }
 
-    // A last single-select pick that closed the dialog outright (for
-    // example a one-question prompt with no review) has been answered.
+    // Reachable only through the one-question rule above: the dialog
+    // closed on the pick itself.
     if (isGone(cur)) return null;
     // Only a review that matches the card, line for line, is submitted.
     if (!isReview(cur) || !this.reviewMatches(cur.read, picks)) return this.fail();
@@ -531,11 +545,10 @@ class Run {
   }
 
   /** Question i is done: the next one is current and the tab row shows i
-   *  answered -- or, after the last, the review (or, for a last
-   *  single-select pick, the dialog closing). */
-  private advanced(s: Shot, i: number, last: boolean, allowGone: boolean): boolean {
+   *  answered -- or, after the last, the review. */
+  private advanced(s: Shot, i: number, last: boolean): boolean {
     if (!last) return isQuestion(s) && s.read.current === i + 1 && s.read.answered[i] === true;
-    return isReview(s) || (allowGone && isGone(s));
+    return isReview(s);
   }
 
   /** Every question paired with the answer the card sent: the label, the

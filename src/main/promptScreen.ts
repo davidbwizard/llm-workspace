@@ -102,7 +102,13 @@ function readDialog(lines: string[], expect: DialogExpect): ScreenRead {
   const above = firstOptionIdx === -1 ? block : block.slice(0, firstOptionIdx);
   const hasQuestionLine = above.some((l) => l.trim().endsWith('?'));
   if (!hasQuestionLine) return { match: false, why: 'no_question_line_above_options' };
-  if (!block.some((l) => l.includes(expect.anchor))) return { match: false, why: 'anchor_not_found' };
+  // Whitespace-insensitive: a long command wraps at the pane width (even
+  // mid-word) and a multi-line command spans lines, so all whitespace is
+  // removed from both sides before the plain `includes`. An anchor that is
+  // only whitespace would then match anything, so it never matches.
+  const anchor = expect.anchor.replace(/\s+/g, '');
+  if (anchor === '') return { match: false, why: 'empty_anchor' };
+  if (!block.join('').replace(/\s+/g, '').includes(anchor)) return { match: false, why: 'anchor_not_found' };
 
   return { match: true, kind: 'permission', choices, cursor, textRow: computeTextRow('permission', choices, cursor) };
 }

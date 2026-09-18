@@ -27,6 +27,25 @@ describe('tmux argv construction', () => {
     expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-l', '--', '-t=llmws-claude-other: hi']);
   });
 
+  // Measured on a real tmux 3.7c server (2026-09-17): an argument ending in
+  // ";" is a command separator and the ";" is dropped ("hello;" arrived as
+  // "hello"); one ending in "\;" arrives with a literal ";" ("c\;" -> "c;",
+  // "q\\;" -> "q\;"); nothing before the end is touched ("a;b", "end\").
+  // So only a final ";" is rewritten.
+  it.each([
+    ['hello;', 'hello\\;'],
+    [';', '\\;'],
+    ['q\\;', 'q\\\\;'],
+    ['semi;;', 'semi;\\;'],
+    ['a;b', 'a;b'],
+    ['end\\', 'end\\'],
+    ['a \\; b', 'a \\; b'],
+  ])('sends %j so that it arrives exactly (argv %j)', (text, arg) => {
+    const s = spy();
+    sendLiteral('llmws-claude-abc', text, s.exec);
+    expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-l', '--', arg]);
+  });
+
   it('never concatenates text with a following Enter', () => {
     const s = spy();
     sendLiteral('llmws-claude-abc', 'hello', s.exec);

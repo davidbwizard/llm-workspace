@@ -113,8 +113,15 @@ export function newSession(
  *  "--" is mandatory too. Without it tmux still parses text that starts
  *  with "-" as send-keys OPTIONS, -l or not: verified 2026-09-17 against a
  *  real tmux 3.7c server, where the text "-tNAME: hello" was read as a new
- *  -t target. "--" ends option parsing, and the same text then arrived in
- *  the pane literally.
+ *  -t target. "--" ends option parsing, so a leading "-" is text.
+ *
+ *  A TRAILING ";" is still not literal, "--" or not: tmux reads an argument
+ *  ending in ";" as a command separator and drops the ";" ("hello;" arrived
+ *  as "hello"). An argument ending in "\;" arrives with a literal ";" in
+ *  place of those two characters, and nothing before the end is touched
+ *  (measured on the same server: "c\;" -> "c;", "q\\;" -> "q\;",
+ *  "a;b" -> "a;b"). So only a final ";" is rewritten, to "\;", which
+ *  delivers the text exactly.
  *
  *  sendKeysFor (ipc.ts) no longer types messages this way -- it delivers
  *  every message as a bracketed paste, because Codex's paste-burst
@@ -123,7 +130,8 @@ export function newSession(
  *  line into Claude's own prompt text row. */
 export function sendLiteral(name: string, text: string, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
-  return exec(['send-keys', '-t', target(name), '-l', '--', text]);
+  const arg = text.endsWith(';') ? `${text.slice(0, -1)}\\;` : text;
+  return exec(['send-keys', '-t', target(name), '-l', '--', arg]);
 }
 
 /** 'Enter' submits; 'Tab' queues a message into a busy Codex instead of

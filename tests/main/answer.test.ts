@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi, type MockInstance } from 'vitest';
 import {
   answerPrompt, buildPromptView, validateAnswer, clearPromptCache, type AnswerDeps,
 } from '../../src/main/answer.ts';
@@ -77,6 +77,22 @@ function moveCursor(text: string, from: string, to: string): string {
   return text
     .replace(new RegExp(`^ ❯ ${from}\\. `, 'm'), `   ${from}. `)
     .replace(new RegExp(`^   ${to}\\. `, 'm'), ` ❯ ${to}. `);
+}
+
+/** A hand-built question screen in fixture 10's layout -- used where the
+ *  measurement saved no capture (one-question and all-single-select
+ *  dialogs). */
+function askScreen(tabs: string, question: string, options: string[]): string {
+  return [
+    tabs, '', question, '',
+    ...options.flatMap((o, i) => [`${i === 0 ? '❯' : ' '} ${i + 1}. ${o}`, `     Option ${o}`]),
+    `  ${options.length + 1}. Type something.`, '', `  ${options.length + 2}. Chat about this`, '',
+  ].join('\n');
+}
+
+/** The one-question "Pick one?" prompt (event 1789706748.472). */
+function oneQuestionScreen(): string {
+  return askScreen('←  ☐ Pick  ✔ Submit  →', 'Pick one?', ['A', 'B', 'C']);
 }
 
 afterEach(() => {
@@ -179,6 +195,23 @@ describe('buildPromptView', () => {
     expect(again).toHaveBeenCalledTimes(1);
   });
 
+  it('does not throw on a payload that is not an object', () => {
+    const ev = event(BASH_YES);
+    (ev as { payload: unknown }).payload = null;
+    const view = buildPromptView(ev, NAME, { capture: () => ({ ok: true, stdout: screen('50-perm-bash-dialog') }) });
+    expect(view).toMatchObject({ kind: 'permission', answerable: false, reason: 'screen_unread', toolName: '' });
+  });
+
+  it('reads a long Bash command that wraps across lines on screen', () => {
+    const ev = event(BASH_YES);
+    const long = 'npm run build -- --filter=@acme/some-really-long-package-name && npm test -- --coverage --reporter=verbose';
+    ev.payload = { tool_name: 'Bash', tool_input: { command: long } };
+    const capture = screen('50-perm-bash-dialog').replace(/^ {3}touch perm-probe\.txt$/m,
+      '   npm run build -- --filter=@acme/some-really-long-package-name && npm test -- --cov\n   erage --reporter=verbose');
+    const view = buildPromptView(ev, NAME, { capture: () => ({ ok: true, stdout: capture }) });
+    expect(view).toMatchObject({ answerable: true, command: long });
+  });
+
   it('never treats an empty anchor as a match', () => {
     const ev = event(BASH_YES);
     ev.payload = { tool_name: '', tool_input: {} };
@@ -189,6 +222,10 @@ describe('buildPromptView', () => {
 
 describe('answerPrompt guards -- each refusal presses nothing', () => {
   const bashView = () => viewFor(BASH_YES, screen('50-perm-bash-dialog'));
+  // Every refusal logs by design; muted so the run's output stays clean.
+  // Restored by the file-level vi.restoreAllMocks().
+  let errors: MockInstance;
+  beforeEach(() => { errors = vi.spyOn(console, 'error').mockImplementation(() => {}); });
 
   async function refusedWith(
     view: PromptView | null, pid: unknown, promptId: unknown, answer: unknown, reason: string,
@@ -240,7 +277,6 @@ describe('answerPrompt guards -- each refusal presses nothing', () => {
     it.each([
       ['a key not among the choices', { kind: 'choice', key: '4' }],
       ['a key name instead of a digit', { kind: 'choice', key: 'Enter' }],
-      ['choice on a takesText key', { kind: 'choice', key: '3' }],
       ['choice_text on a key that takes no text', { kind: 'choice_text', key: '1', text: 'hi' }],
       ['text with a newline', { kind: 'choice_text', key: '3', text: 'first\nsecond' }],
       ['text with a carriage return', { kind: 'choice_text', key: '3', text: 'first\rsecond' }],
@@ -281,6 +317,14 @@ describe('answerPrompt guards -- each refusal presses nothing', () => {
       registered();
       const view = askView();
       await refusedWith(view, PID, view.id, { kind: 'questions', picks }, 'invalid', [screen('10-ask-q1')]);
+    });
+
+    // Controller ruling: a plain No is allowed on a permission prompt (see
+    // the sequence below), but plan option 3 is only ever feedback text.
+    it('choice on the plan\'s takesText key', async () => {
+      registered();
+      const view = viewFor(PLAN, screen('80-plan-dialog'));
+      await refusedWith(view, PID, view.id, { kind: 'choice', key: '3' }, 'invalid', [screen('80-plan-dialog')]);
     });
 
     it('choice on a question prompt', async () => {
@@ -353,15 +397,16 @@ describe('answerPrompt guards -- each refusal presses nothing', () => {
 
   it('logs the reason and prompt id, never the answer text', async () => {
     registered();
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     const view = bashView();
     await refusedWith(view, PID, view.id, { kind: 'choice_text', key: '3', text: 'secret\nplan' }, 'invalid');
-    expect(log).toHaveBeenCalledWith('session:answer refused', { pid: PID, promptId: view.id, reason: 'invalid' });
-    expect(JSON.stringify(log.mock.calls)).not.toContain('secret');
+    expect(errors).toHaveBeenCalledWith('session:answer refused', { pid: PID, promptId: view.id, reason: 'invalid' });
+    expect(JSON.stringify(errors.mock.calls)).not.toContain('secret');
   });
 });
 
 describe('answerPrompt key sequences, against a fake pane replaying fixture screens', () => {
+  beforeEach(() => { vi.spyOn(console, 'error').mockImplementation(() => {}); });
+
   it('Bash choice 1 sends exactly the digit', async () => {
     registered();
     const view = viewFor(BASH_YES, screen('50-perm-bash-dialog'));
@@ -369,6 +414,16 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
     expect(await answerPrompt(PID, view.id, { kind: 'choice', key: '1' }, deps(pane, view))).toEqual({ status: 'sent' });
     expect(pane.keys()).toEqual(['1']);
     expect(pane.sent[0]).toEqual(['send-keys', '-t', `=${NAME}:`, '1']);
+  });
+
+  // Controller ruling: a plain No is digit 3, which rejects directly
+  // (measured: fixture 56-perm-bash3-key3, "Interrupted").
+  it('Bash plain No sends exactly the digit 3', async () => {
+    registered();
+    const view = viewFor(BASH_YES, screen('50-perm-bash-dialog'));
+    const pane = fakePane([screen('50-perm-bash-dialog'), screen('56-perm-bash3-key3')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'choice', key: '3' }, deps(pane, view))).toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['3']);
   });
 
   it('leaves copy-mode before checking the screen and pressing', async () => {
@@ -487,18 +542,55 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
 
   it('Questions: a last single-select digit that closes the dialog counts as sent', async () => {
     registered();
-    // No capture of a one-question dialog was saved; this is the same
-    // layout as fixture 10 with a single "Pick" tab.
-    const pick = [
-      '←  ☐ Pick  ✔ Submit  →', '', 'Pick one?', '',
-      '❯ 1. A', '     Option A', '  2. B', '     Option B', '  3. C', '     Option C', '  4. Type something.',
-      '', '  5. Chat about this', '',
-    ].join('\n');
+    const pick = oneQuestionScreen();
     const view = viewFor('1789706748.472-PermissionRequest-48367.json', pick);
     const pane = fakePane([pick, screen('20-ask-after-submit')]);
     expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [1] }] }, deps(pane, view)))
       .toEqual({ status: 'sent' });
     expect(pane.keys()).toEqual(['2']);
+  });
+
+  it('Questions: a one-question dialog that closes for only one read is not counted as sent', async () => {
+    registered();
+    const pick = oneQuestionScreen();
+    const view = viewFor('1789706748.472-PermissionRequest-48367.json', pick);
+    // After the key: one read with the dialog gone, then the question again.
+    const sent: string[][] = [];
+    const afterKey = [screen('20-ask-after-submit'), pick];
+    const capture = (args: string[]): TmuxResult => {
+      if (args[0] === 'display-message') return { ok: true, stdout: '0\n' };
+      if (sent.length === 0) return { ok: true, stdout: pick };
+      return { ok: true, stdout: (afterKey.length > 1 ? afterKey.shift() : afterKey[0])! };
+    };
+    const send = (args: string[]): TmuxResult => { sent.push(args); return { ok: true, stdout: '' }; };
+    const result = await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [1] }] },
+      { send, capture, sleep: async () => {}, has: () => true, currentPrompt: () => view });
+    expect(result).toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+    expect(sent.map(a => a[a.length - 1])).toEqual(['2']);
+  });
+
+  it('Questions: with two questions, a last pick that closes the dialog is unconfirmed_partial, not sent', async () => {
+    registered();
+    const ev = event(ASK, 'two-single');
+    ev.payload = {
+      tool_name: 'AskUserQuestion',
+      tool_input: {
+        questions: [
+          { question: 'First one?', header: 'One', multiSelect: false,
+            options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] },
+          { question: 'Second one?', header: 'Two', multiSelect: false,
+            options: [{ label: 'C', description: 'c' }, { label: 'D', description: 'd' }] },
+        ],
+      },
+    };
+    const q1 = askScreen('←  ☐ One  ☐ Two  ✔ Submit  →', 'First one?', ['A', 'B']);
+    const q2 = askScreen('←  ☒ One  ☐ Two  ✔ Submit  →', 'Second one?', ['C', 'D']);
+    const view = buildPromptView(ev, NAME, {});
+    const pane = fakePane([q1, q2, screen('20-ask-after-submit')]);
+    const result = await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [0] }, { options: [1] }] },
+      deps(pane, view));
+    expect(result).toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+    expect(pane.keys()).toEqual(['1', '2']);
   });
 
   it('Chat about this is digit n+2 of the current question', async () => {
