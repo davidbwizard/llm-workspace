@@ -6,9 +6,12 @@ import type { LiveProcess } from '../discovery/parse.ts';
 import { deriveActivity, type OpenSession } from '../fleet/state.ts';
 import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveSession.ts';
 import { readLiveSession } from '../discovery/live.ts';
-import { currentBlockers } from '../store/signals.ts';
+import { currentBlockers, openPromptEvent } from '../store/signals.ts';
 import { resolvePaths } from '../config.ts';
 import type { Provider } from '../core/types.ts';
+import type { PromptView } from '../core/prompt.ts';
+import { buildPromptView, type AnswerDeps } from './answer.ts';
+import { tmuxNameForPid } from './sessions.ts';
 
 /** The pane's own three-way activity -- collapsed from fleet/state.ts's
  *  five-way Activity because the pane has neither a fleet card's blocker
@@ -30,6 +33,11 @@ export type SessionLivePayload = {
    *  computation below for why. */
   since: number | null;
   events: number;
+  /** The prompt Claude is waiting on (quick-answers design §5-6), or null:
+   *  not waiting, hooks off, or no PermissionRequest matching this wait.
+   *  Content comes from the hook payload; permission and plan choices
+   *  from the pane. */
+  prompt: PromptView | null;
 };
 
 /** The pid's live session file, re-read now, trusted only if its startedAt
@@ -113,6 +121,10 @@ export interface SessionLiveDeps {
     pid: number,
     deps: { cached: OpenSession[]; processes: LiveProcess[]; read: (pid: number) => LiveSessionRead },
   ) => { sessionId: string; provider: Provider; cwd: string } | null;
+  /** The pane read behind the prompt's choices (buildPromptView,
+   *  src/main/answer.ts). Only `capture` is used here; tests inject it so
+   *  they never run a real tmux. */
+  answer?: AnswerDeps;
 }
 
 /** Wraps `read` so a single buildSessionLive call never opens the same
@@ -160,7 +172,7 @@ export function buildSessionLive(
   // override exists at all.
   const resolveTarget = deps.resolveReattachTarget ?? resolveReattachTarget;
   const target = resolveTarget(pid, { cached: deps.cached ?? [], processes, read });
-  if (!target) return { version: 1, pid, sessionId: null, activity: null, since: null, events: 0 };
+  if (!target) return { version: 1, pid, sessionId: null, activity: null, since: null, events: 0, prompt: null };
 
   // `last_kind`/`events` deliberately read every row for this session_id,
   // INCLUDING a Codex subagent thread's own rows (they share the root
@@ -233,7 +245,18 @@ export function buildSessionLive(
       ? (fresh?.status === 'busy' ? fresh.statusUpdatedAtMs ?? null : null)
       : (row.last_prompt_ts ? Date.parse(row.last_prompt_ts) : null);
 
-  return { version: 1, pid, sessionId: target.sessionId, activity, since, events: row.events ?? 0 };
+  // Quick answers §5.1: the open prompt exists only while the status file
+  // says waiting, and is the newest PermissionRequest from this wait.
+  // waitingSince is statusUpdatedAtMs: Claude writes it only when `status`
+  // flips, so it holds still for the whole wait. The pane is read at most
+  // once per push (buildPromptView); a tmux name from the registry is
+  // enough to try -- session:answer re-verifies the session is alive.
+  const promptEvent = fresh?.status === 'waiting'
+    ? openPromptEvent(db, target.sessionId, fresh.statusUpdatedAtMs ?? 0)
+    : null;
+  const prompt = promptEvent ? buildPromptView(promptEvent, tmuxNameForPid(pid), deps.answer ?? {}) : null;
+
+  return { version: 1, pid, sessionId: target.sessionId, activity, since, events: row.events ?? 0, prompt };
 }
 
 // ---------------------------------------------------------------------

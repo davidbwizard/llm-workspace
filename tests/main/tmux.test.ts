@@ -14,7 +14,17 @@ describe('tmux argv construction', () => {
   it('sends message text with -l, as its own argv element', () => {
     const s = spy();
     sendLiteral('llmws-claude-abc', 'C-c', s.exec);
-    expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-l', 'C-c']);
+    expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-l', '--', 'C-c']);
+  });
+
+  // Verified against a real tmux 3.7c server (2026-09-17): without "--",
+  // text starting with "-" is parsed as send-keys options -- "-tNAME ..."
+  // retargeted the send to another session. "--" ends option parsing, and
+  // the same text then arrived in the pane literally.
+  it('ends option parsing before the text, so a leading "-" is never a tmux option', () => {
+    const s = spy();
+    sendLiteral('llmws-claude-abc', '-t=llmws-claude-other: hi', s.exec);
+    expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-l', '--', '-t=llmws-claude-other: hi']);
   });
 
   it('never concatenates text with a following Enter', () => {
@@ -48,6 +58,20 @@ describe('tmux argv construction', () => {
     // way a value arriving through an `unknown`-typed IPC boundary would.
     expect(() => sendKeyName('llmws-claude-abc', 'Escape' as unknown as KeyName, s.exec)).toThrow();
     expect(s.calls).toHaveLength(0);
+  });
+
+  // Quick answers (session:answer) needs digits, Down and Right for
+  // Claude's prompts -- and nothing else: Escape, Up, 0 and 7 stay refused.
+  it('allows the quick-answer keys and still refuses the rest', () => {
+    const s = spy();
+    for (const key of ['Down', 'Right', '1', '2', '3', '4', '5', '6'] as KeyName[]) {
+      sendKeyName('llmws-claude-abc', key, s.exec);
+    }
+    expect(s.calls.map(c => c[3])).toEqual(['Down', 'Right', '1', '2', '3', '4', '5', '6']);
+    for (const key of ['Escape', 'Up', 'Left', '0', '7', 'C-c', 'BSpace']) {
+      expect(() => sendKeyName('llmws-claude-abc', key as unknown as KeyName, s.exec)).toThrow();
+    }
+    expect(s.calls).toHaveLength(8);
   });
 
   // Exact expected form, not just a startsWith('=') prefix check -- the

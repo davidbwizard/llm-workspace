@@ -1,0 +1,524 @@
+import { readFileSync } from 'node:fs';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import {
+  answerPrompt, buildPromptView, validateAnswer, clearPromptCache, type AnswerDeps,
+} from '../../src/main/answer.ts';
+import { registerSession, clearRegistry } from '../../src/main/sessions.ts';
+import type { TmuxResult } from '../../src/main/tmux.ts';
+import type { PromptView } from '../../src/core/prompt.ts';
+import type { SignalEvent } from '../../src/store/signals.ts';
+
+// Quick answers design §6-7, §11. Fixtures are the real 2026-09-17
+// measurement: hook payloads under events/, pane captures under screens/.
+
+const SCREENS = new URL('../fixtures/quick-answers/screens/', import.meta.url);
+const EVENTS = new URL('../fixtures/quick-answers/events/', import.meta.url);
+
+function screen(name: string): string {
+  return readFileSync(new URL(`${name}.txt`, SCREENS), 'utf8');
+}
+
+function event(file: string, eventId = `ev-${file}`): SignalEvent {
+  const payload = JSON.parse(readFileSync(new URL(file, EVENTS), 'utf8')) as Record<string, unknown>;
+  return {
+    eventId, occurredAt: '2026-09-17T21:39:00.000Z', sessionId: String(payload.session_id),
+    promptId: String(payload.prompt_id), toolUseId: null, kind: 'PermissionRequest', payload,
+  };
+}
+
+const ASK = '1789706218.842-PermissionRequest-89928.json'; // Color (single) + Pets (multi)
+const BASH_YES = '1789706414.213-PermissionRequest-47761.json'; // touch perm-probe.txt
+const BASH_NO = '1789706452.876-PermissionRequest-59737.json'; // touch perm-probe-no.txt
+const WRITE = '1789706505.037-PermissionRequest-74696.json'; // write-probe.txt
+const PLAN = '1789706627.132-PermissionRequest-11033.json'; // plan with "hi"
+
+const PID = 4242;
+const NAME = 'llmws-claude-t3';
+
+type Call = string[];
+
+/** A fake pane. `capture` answers capture-pane with screens[n], where n is
+ *  the number of keys sent so far (capped at the last screen), and answers
+ *  the copy-mode query (display-message) with `inMode`. Every outbound call
+ *  is recorded, so a refusal test can prove zero keys went out. */
+function fakePane(screens: string[], opts: { inMode?: boolean } = {}) {
+  const sent: Call[] = [];
+  const captures: Call[] = [];
+  const send = (args: string[]): TmuxResult => { sent.push(args); return { ok: true, stdout: '' }; };
+  const capture = (args: string[]): TmuxResult => {
+    captures.push(args);
+    if (args[0] === 'display-message') return { ok: true, stdout: opts.inMode ? '1\n' : '0\n' };
+    const keys = sent.filter(a => !a.includes('-X')).length;
+    return { ok: true, stdout: screens[Math.min(keys, screens.length - 1)] ?? '' };
+  };
+  /** What reached Claude: the key name, or the literal text for -l. */
+  const keys = () => sent.filter(a => !a.includes('-X')).map(a => a[a.length - 1]);
+  return { sent, captures, send, capture, keys };
+}
+
+function deps(pane: ReturnType<typeof fakePane>, view: PromptView | null, extra: Partial<AnswerDeps> = {}): AnswerDeps {
+  return {
+    send: pane.send, capture: pane.capture, sleep: async () => {}, has: () => true,
+    currentPrompt: () => view, ...extra,
+  };
+}
+
+/** The view main would build for `file` with the pane showing `first`. */
+function viewFor(file: string, first: string): PromptView {
+  const view = buildPromptView(event(file), NAME, { capture: () => ({ ok: true, stdout: first }) });
+  if (!view.answerable) throw new Error(`fixture view not answerable: ${view.reason}`);
+  return view;
+}
+
+/** Moves the ❯ cursor between two numbered rows of a dialog screen -- used
+ *  only to make the "cursor on 1" and "cursor on 2" frames that precede
+ *  fixture 52 (cursor already on 3), which the measurement did not save. */
+function moveCursor(text: string, from: string, to: string): string {
+  return text
+    .replace(new RegExp(`^ ❯ ${from}\\. `, 'm'), `   ${from}. `)
+    .replace(new RegExp(`^   ${to}\\. `, 'm'), ` ❯ ${to}. `);
+}
+
+afterEach(() => {
+  clearRegistry();
+  clearPromptCache();
+  vi.restoreAllMocks();
+});
+
+function registered(): void {
+  registerSession(PID, NAME);
+}
+
+describe('buildPromptView', () => {
+  it('builds a question view from the hook payload alone, without reading the screen', () => {
+    const capture = vi.fn();
+    const view = buildPromptView(event(ASK, 'e1'), NAME, { capture });
+    expect(capture).not.toHaveBeenCalled();
+    expect(view).toMatchObject({ id: 'e1', kind: 'question', answerable: true, reason: null });
+    expect(view.questions).toEqual([
+      {
+        question: 'Which color?', header: 'Color', multiSelect: false,
+        options: [
+          { label: 'Red', description: 'A warm, bold primary color' },
+          { label: 'Green', description: 'A cool, natural secondary color' },
+          { label: 'Blue', description: 'A calming, cool primary color' },
+        ],
+      },
+      expect.objectContaining({ question: 'Which pets?', header: 'Pets', multiSelect: true }),
+    ]);
+    expect(view.choices).toBeUndefined();
+  });
+
+  it('builds a Bash permission view: content from the hook, choices from the screen', () => {
+    const view = buildPromptView(event(BASH_YES, 'e2'), NAME, { capture: () => ({ ok: true, stdout: screen('50-perm-bash-dialog') }) });
+    expect(view).toMatchObject({
+      id: 'e2', kind: 'permission', answerable: true, reason: null, toolName: 'Bash', command: 'touch perm-probe.txt',
+    });
+    expect(view.choices?.map(c => c.key)).toEqual(['1', '2', '3']);
+    expect(view.choices?.[2]).toEqual({ key: '3', label: 'No', takesText: true });
+  });
+
+  it('builds a Write permission view anchored on the file basename', () => {
+    const view = buildPromptView(event(WRITE), NAME, { capture: () => ({ ok: true, stdout: screen('60-perm-write-dialog') }) });
+    expect(view).toMatchObject({ kind: 'permission', answerable: true, toolName: 'Write' });
+    expect(view.filePath).toMatch(/\/write-probe\.txt$/);
+    expect(view.choices?.[1]?.label).toMatch(/^Yes, and switch to accept edits/);
+  });
+
+  it('builds a plan view with the plan markdown and the screen choices', () => {
+    const view = buildPromptView(event(PLAN), NAME, { capture: () => ({ ok: true, stdout: screen('80-plan-dialog') }) });
+    expect(view).toMatchObject({ kind: 'plan', answerable: true });
+    expect(view.plan).toMatch(/^# Context/);
+    expect(view.choices?.map(c => c.takesText)).toEqual([false, false, true]);
+  });
+
+  it('copies strings only from tool_input and drops anything else', () => {
+    const ev = event(BASH_YES);
+    ev.payload = { tool_name: 'Bash', tool_input: { command: 42, description: { html: '<b>' }, file_path: ['x'] } };
+    const view = buildPromptView(ev, null, {});
+    expect(view.command).toBeUndefined();
+    expect(view.description).toBeUndefined();
+    expect(view.filePath).toBeUndefined();
+    expect(view.toolName).toBe('Bash');
+  });
+
+  it('is read-only with not_tmux for a session the app did not launch, and reads no screen', () => {
+    const capture = vi.fn();
+    const view = buildPromptView(event(BASH_YES), null, { capture });
+    expect(view).toMatchObject({ answerable: false, reason: 'not_tmux', command: 'touch perm-probe.txt' });
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('is read-only with screen_unread when the capture does not show the dialog, and tries again next time', () => {
+    const ev = event(BASH_YES, 'e-retry');
+    const bad = vi.fn(() => ({ ok: true as const, stdout: screen('51-perm-bash-after-1') }));
+    expect(buildPromptView(ev, NAME, { capture: bad })).toMatchObject({ answerable: false, reason: 'screen_unread' });
+    expect(bad).toHaveBeenCalledTimes(1); // one capture per build, no retry loop inside a push
+
+    const good = vi.fn(() => ({ ok: true as const, stdout: screen('50-perm-bash-dialog') }));
+    expect(buildPromptView(ev, NAME, { capture: good })).toMatchObject({ answerable: true });
+    expect(good).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches a successful read by event id, so later builds read no screen', () => {
+    const ev = event(BASH_YES, 'e-cache');
+    buildPromptView(ev, NAME, { capture: () => ({ ok: true, stdout: screen('50-perm-bash-dialog') }) });
+    const later = vi.fn(() => ({ ok: true as const, stdout: screen('51-perm-bash-after-1') }));
+    const view = buildPromptView(ev, NAME, { capture: later });
+    expect(later).not.toHaveBeenCalled();
+    expect(view.choices?.map(c => c.key)).toEqual(['1', '2', '3']);
+  });
+
+  it('caps the cache at 50 prompts, dropping the oldest', () => {
+    const dialog = () => ({ ok: true as const, stdout: screen('50-perm-bash-dialog') });
+    for (let i = 0; i < 51; i++) buildPromptView(event(BASH_YES, `cap-${i}`), NAME, { capture: dialog });
+    const again = vi.fn(dialog);
+    buildPromptView(event(BASH_YES, 'cap-50'), NAME, { capture: again });
+    expect(again).not.toHaveBeenCalled();
+    buildPromptView(event(BASH_YES, 'cap-0'), NAME, { capture: again });
+    expect(again).toHaveBeenCalledTimes(1);
+  });
+
+  it('never treats an empty anchor as a match', () => {
+    const ev = event(BASH_YES);
+    ev.payload = { tool_name: '', tool_input: {} };
+    const view = buildPromptView(ev, NAME, { capture: () => ({ ok: true, stdout: screen('50-perm-bash-dialog') }) });
+    expect(view).toMatchObject({ answerable: false, reason: 'screen_unread' });
+  });
+});
+
+describe('answerPrompt guards -- each refusal presses nothing', () => {
+  const bashView = () => viewFor(BASH_YES, screen('50-perm-bash-dialog'));
+
+  async function refusedWith(
+    view: PromptView | null, pid: unknown, promptId: unknown, answer: unknown, reason: string,
+    screens = [screen('50-perm-bash-dialog')], extra: Partial<AnswerDeps> = {},
+  ) {
+    const pane = fakePane(screens);
+    const result = await answerPrompt(pid, promptId, answer, deps(pane, view, extra));
+    expect(result).toEqual({ status: 'refused', reason });
+    expect(pane.sent).toEqual([]);
+    return pane;
+  }
+
+  it.each([0, -1, 1.5, '4242', null, undefined, Number.NaN])('invalid_pid for %s', async (pid) => {
+    const view = bashView();
+    await refusedWith(view, pid, view.id, { kind: 'choice', key: '1' }, 'invalid_pid');
+  });
+
+  it('not_tmux for a pid the app never registered', async () => {
+    const view = bashView();
+    await refusedWith(view, PID, view.id, { kind: 'choice', key: '1' }, 'not_tmux');
+  });
+
+  it('session_gone when the registered tmux session no longer exists', async () => {
+    registered();
+    const view = bashView();
+    await refusedWith(view, PID, view.id, { kind: 'choice', key: '1' }, 'session_gone', undefined, { has: () => false });
+  });
+
+  it('stale when the prompt id is not the one main re-derives', async () => {
+    registered();
+    const view = bashView();
+    await refusedWith(view, PID, 'some-older-prompt', { kind: 'choice', key: '1' }, 'stale');
+    await refusedWith(view, PID, 42, { kind: 'choice', key: '1' }, 'stale');
+  });
+
+  it('stale when no prompt is open any more', async () => {
+    registered();
+    await refusedWith(null, PID, 'ev-x', { kind: 'choice', key: '1' }, 'stale');
+  });
+
+  it('unconfirmed when the open prompt could not be read from the screen', async () => {
+    registered();
+    const view: PromptView = { id: 'e-unread', kind: 'permission', answerable: false, reason: 'screen_unread', command: 'x' };
+    await refusedWith(view, PID, 'e-unread', { kind: 'choice', key: '1' }, 'unconfirmed');
+  });
+
+  describe('invalid', () => {
+    const tooLong = 'a'.repeat(2001);
+    it.each([
+      ['a key not among the choices', { kind: 'choice', key: '4' }],
+      ['a key name instead of a digit', { kind: 'choice', key: 'Enter' }],
+      ['choice on a takesText key', { kind: 'choice', key: '3' }],
+      ['choice_text on a key that takes no text', { kind: 'choice_text', key: '1', text: 'hi' }],
+      ['text with a newline', { kind: 'choice_text', key: '3', text: 'first\nsecond' }],
+      ['text with a carriage return', { kind: 'choice_text', key: '3', text: 'first\rsecond' }],
+      ['text with an escape', { kind: 'choice_text', key: '3', text: 'bad\x1b[201~' }],
+      ['empty text', { kind: 'choice_text', key: '3', text: '' }],
+      ['whitespace-only text', { kind: 'choice_text', key: '3', text: '   ' }],
+      ['2001 characters of text', { kind: 'choice_text', key: '3', text: tooLong }],
+      ['text that is not a string', { kind: 'choice_text', key: '3', text: 7 }],
+      ['question picks on a permission prompt', { kind: 'questions', picks: [{ options: [0] }] }],
+      ['chat on a permission prompt', { kind: 'chat' }],
+      ['an unknown kind', { kind: 'allow_all' }],
+      ['not an object', 'yes'],
+      ['null', null],
+    ])('%s', async (_label, answer) => {
+      registered();
+      const view = bashView();
+      await refusedWith(view, PID, view.id, answer, 'invalid');
+    });
+
+    const askView = () => viewFor(ASK, screen('10-ask-q1'));
+    it.each([
+      ['a single-select question with two picks', [{ options: [0, 1] }, { options: [0] }]],
+      ['a single-select question with an option and other', [{ options: [0], other: 'x' }, { options: [0] }]],
+      ['a single-select question with nothing picked', [{ options: [] }, { options: [0] }]],
+      ['an index out of range', [{ options: [3] }, { options: [0] }]],
+      ['a negative index', [{ options: [-1] }, { options: [0] }]],
+      ['a fractional index', [{ options: [0.5] }, { options: [0] }]],
+      ['a multi-select question with nothing picked', [{ options: [0] }, { options: [] }]],
+      ['a multi-select question with the same option twice', [{ options: [0] }, { options: [1, 1] }]],
+      // Ruling B: the multi-select free-text key sequence was never
+      // measured, so it is refused before any key rather than guessed.
+      ['a multi-select question carrying other', [{ options: [0] }, { options: [1], other: 'Parrot' }]],
+      ['fewer picks than questions', [{ options: [0] }]],
+      ['more picks than questions', [{ options: [0] }, { options: [0] }, { options: [0] }]],
+      ['other with a newline', [{ options: [], other: 'a\nb' }, { options: [0] }]],
+      ['a pick that is not an object', ['0', { options: [0] }]],
+    ])('%s', async (_label, picks) => {
+      registered();
+      const view = askView();
+      await refusedWith(view, PID, view.id, { kind: 'questions', picks }, 'invalid', [screen('10-ask-q1')]);
+    });
+
+    it('choice on a question prompt', async () => {
+      registered();
+      const view = askView();
+      await refusedWith(view, PID, view.id, { kind: 'choice', key: '1' }, 'invalid', [screen('10-ask-q1')]);
+    });
+  });
+
+  it('busy while an answer for the same pid is still in flight', async () => {
+    registered();
+    const view = viewFor(ASK, screen('10-ask-q1'));
+    // The pane never moves past the first question, so the first call sits
+    // in its settle wait -- on a sleep that has not resolved yet.
+    const pane = fakePane([screen('10-ask-q1')]);
+    let release: () => void = () => {};
+    const sleep = vi.fn(() => new Promise<void>(r => { release = r; }));
+    const answer = { kind: 'questions', picks: [{ options: [2] }, { options: [0] }] };
+    const first = answerPrompt(PID, view.id, answer, deps(pane, view, { sleep }));
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalled());
+    const sentBefore = pane.sent.length;
+
+    const second = await answerPrompt(PID, view.id, answer, deps(pane, view));
+    expect(second).toEqual({ status: 'refused', reason: 'busy' });
+    expect(pane.sent.length).toBe(sentBefore);
+
+    // Let the first call run out; it gives up without pressing more.
+    sleep.mockImplementation(async () => {});
+    release();
+    expect(await first).toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+
+    // Once it has finished, the pid is free again (cleared in finally).
+    const pane2 = fakePane([screen('50-perm-bash-dialog'), screen('51-perm-bash-after-1')]);
+    const bash = viewFor(BASH_YES, screen('50-perm-bash-dialog'));
+    expect(await answerPrompt(PID, bash.id, { kind: 'choice', key: '1' }, deps(pane2, bash))).toEqual({ status: 'sent' });
+  });
+
+  it('unconfirmed when the capture does not show the prompt', async () => {
+    registered();
+    const view = bashView();
+    await refusedWith(view, PID, view.id, { kind: 'choice', key: '1' }, 'unconfirmed', [screen('51-perm-bash-after-1')]);
+  });
+
+  it('unconfirmed when the screen shows a different command', async () => {
+    registered();
+    const view = bashView();
+    await refusedWith(view, PID, view.id, { kind: 'choice', key: '1' }, 'unconfirmed', [screen('52-perm-bash2-cursor-no')]);
+  });
+
+  it('unconfirmed when the screen choices differ from the cached ones', async () => {
+    registered();
+    const view = bashView();
+    const changed = { ...view, choices: view.choices!.map(c => (c.key === '2' ? { ...c, label: 'Yes, always' } : c)) };
+    await refusedWith(changed, PID, view.id, { kind: 'choice', key: '1' }, 'unconfirmed');
+  });
+
+  it('unconfirmed for a question answer when the dialog is not on its first, unanswered question', async () => {
+    registered();
+    const view = viewFor(ASK, screen('10-ask-q1'));
+    await refusedWith(view, PID, view.id, { kind: 'questions', picks: [{ options: [2] }, { options: [0] }] },
+      'unconfirmed', [screen('11-ask-after-key2')]);
+  });
+
+  it('unconfirmed for a question answer when the screen shows the review instead', async () => {
+    registered();
+    const view = viewFor(ASK, screen('10-ask-q1'));
+    await refusedWith(view, PID, view.id, { kind: 'questions', picks: [{ options: [2] }, { options: [0] }] },
+      'unconfirmed', [screen('19-ask-review')]);
+  });
+
+  it('logs the reason and prompt id, never the answer text', async () => {
+    registered();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const view = bashView();
+    await refusedWith(view, PID, view.id, { kind: 'choice_text', key: '3', text: 'secret\nplan' }, 'invalid');
+    expect(log).toHaveBeenCalledWith('session:answer refused', { pid: PID, promptId: view.id, reason: 'invalid' });
+    expect(JSON.stringify(log.mock.calls)).not.toContain('secret');
+  });
+});
+
+describe('answerPrompt key sequences, against a fake pane replaying fixture screens', () => {
+  it('Bash choice 1 sends exactly the digit', async () => {
+    registered();
+    const view = viewFor(BASH_YES, screen('50-perm-bash-dialog'));
+    const pane = fakePane([screen('50-perm-bash-dialog'), screen('51-perm-bash-after-1')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'choice', key: '1' }, deps(pane, view))).toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['1']);
+    expect(pane.sent[0]).toEqual(['send-keys', '-t', `=${NAME}:`, '1']);
+  });
+
+  it('leaves copy-mode before checking the screen and pressing', async () => {
+    registered();
+    const view = viewFor(BASH_YES, screen('50-perm-bash-dialog'));
+    const pane = fakePane([screen('50-perm-bash-dialog'), screen('51-perm-bash-after-1')], { inMode: true });
+    expect(await answerPrompt(PID, view.id, { kind: 'choice', key: '1' }, deps(pane, view))).toEqual({ status: 'sent' });
+    expect(pane.sent).toEqual([
+      ['send-keys', '-t', `=${NAME}:`, '-X', 'cancel'],
+      ['send-keys', '-t', `=${NAME}:`, '1'],
+    ]);
+  });
+
+  it('Bash No with text: Down until the cursor is on 3, Tab, the text, then Enter once the row shows it', async () => {
+    registered();
+    const onNo = screen('52-perm-bash2-cursor-no');
+    const on1 = moveCursor(onNo, '3', '1');
+    const on2 = moveCursor(onNo, '3', '2');
+    const view = viewFor(BASH_NO, on1);
+    const pane = fakePane([on1, on2, onNo, screen('53-perm-bash2-tab-on-no'),
+      screen('54-perm-bash2-typed-feedback'), screen('55-perm-bash2-after-no')]);
+    const result = await answerPrompt(PID, view.id,
+      { kind: 'choice_text', key: '3', text: 'Skip it and reply NOPROBE' }, deps(pane, view));
+    expect(result).toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['Down', 'Down', 'Tab', 'Skip it and reply NOPROBE', 'Enter']);
+    // Typed text goes only through send-keys -l, after "--" so a leading
+    // "-" can never be read as a tmux option.
+    expect(pane.sent[3]).toEqual(['send-keys', '-t', `=${NAME}:`, '-l', '--', 'Skip it and reply NOPROBE']);
+  });
+
+  it('Plan feedback: 3, the text, then Enter once the row shows it', async () => {
+    registered();
+    const view = viewFor(PLAN, screen('80-plan-dialog'));
+    const text = 'Change the word to PLANFEEDBACK instead of hi';
+    const pane = fakePane([screen('80-plan-dialog'), screen('81-plan-key3'),
+      screen('82-plan-typed-feedback'), screen('83-plan-v2-dialog')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'choice_text', key: '3', text }, deps(pane, view)))
+      .toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['3', text, 'Enter']);
+  });
+
+  it('Plan feedback: no Enter when the row is still empty, and the result is unconfirmed_partial', async () => {
+    registered();
+    const view = viewFor(PLAN, screen('80-plan-dialog'));
+    const pane = fakePane([screen('80-plan-dialog'), screen('81-plan-key3'), screen('81-plan-key3')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'choice_text', key: '3', text: 'Change the word' }, deps(pane, view)))
+      .toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+    expect(pane.keys()).toEqual(['3', 'Change the word']);
+  });
+
+  it('Bash No with text: no Enter when the row shows different text', async () => {
+    registered();
+    const onNo = screen('52-perm-bash2-cursor-no');
+    const view = viewFor(BASH_NO, onNo);
+    const pane = fakePane([onNo, screen('53-perm-bash2-tab-on-no'), screen('54-perm-bash2-typed-feedback')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'choice_text', key: '3', text: 'Something else' }, deps(pane, view)))
+      .toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+    expect(pane.keys()).toEqual(['Tab', 'Something else']);
+  });
+
+  it('Questions: 3, 3, 1, Right, then 1 only after the review matches', async () => {
+    registered();
+    const view = viewFor(ASK, screen('10-ask-q1'));
+    const pane = fakePane([
+      screen('10-ask-q1'), // Color current
+      screen('11-ask-after-key2'), // Color answered, Pets current, nothing ticked
+      screen('18-ask-multi-enter-on-cat'), // Fish ticked
+      screen('13-ask-multi-after-3'), // Cat and Fish ticked
+      screen('19-ask-review'), // Blue / Fish, Cat
+      screen('20-ask-after-submit'),
+    ]);
+    const answer = { kind: 'questions', picks: [{ options: [2] }, { options: [2, 0] }] };
+    expect(await answerPrompt(PID, view.id, answer, deps(pane, view))).toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['3', '3', '1', 'Right', '1']);
+  });
+
+  it('Questions: a review that differs from the card stops before the final 1', async () => {
+    registered();
+    const view = viewFor(ASK, screen('10-ask-q1'));
+    const pane = fakePane([
+      screen('10-ask-q1'), screen('11-ask-after-key2'), screen('18-ask-multi-enter-on-cat'),
+      screen('13-ask-multi-after-3'),
+      screen('39-ask2-review'), // Teal probe / Dog, Parrot probe -- not what the card sent
+    ]);
+    const answer = { kind: 'questions', picks: [{ options: [2] }, { options: [2, 0] }] };
+    expect(await answerPrompt(PID, view.id, answer, deps(pane, view)))
+      .toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+    expect(pane.keys()).toEqual(['3', '3', '1', 'Right']);
+  });
+
+  it('Questions: single-select other is n+1, the text, then Enter once the row shows it', async () => {
+    registered();
+    const view = viewFor(ASK, screen('30-ask2-q1'));
+    // After Dog alone is ticked: fixture 34 with "Type something" unticked
+    // (the measurement ticked both). The review likewise shows Dog alone.
+    const dogOnly = screen('34-ask2-multi-key4').replace('4. [✔] Type something', '4. [ ] Type something');
+    const review = screen('39-ask2-review').replace('→ Dog, Parrot probe', '→ Dog');
+    const pane = fakePane([
+      screen('30-ask2-q1'), screen('31-ask2-key4'), screen('32-ask2-typed'), screen('33-ask2-q2'),
+      dogOnly, review, screen('40-ask2-after-submit'),
+    ]);
+    const answer = { kind: 'questions', picks: [{ options: [], other: 'Teal probe' }, { options: [1] }] };
+    expect(await answerPrompt(PID, view.id, answer, deps(pane, view))).toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['4', 'Teal probe', 'Enter', '2', 'Right', '1']);
+  });
+
+  it('Questions: no Enter after other when the row does not show the text', async () => {
+    registered();
+    const view = viewFor(ASK, screen('30-ask2-q1'));
+    const pane = fakePane([screen('30-ask2-q1'), screen('31-ask2-key4'), screen('31-ask2-key4')]);
+    const answer = { kind: 'questions', picks: [{ options: [], other: 'Teal probe' }, { options: [1] }] };
+    expect(await answerPrompt(PID, view.id, answer, deps(pane, view)))
+      .toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+    expect(pane.keys()).toEqual(['4', 'Teal probe']);
+  });
+
+  it('Questions: a last single-select digit that closes the dialog counts as sent', async () => {
+    registered();
+    // No capture of a one-question dialog was saved; this is the same
+    // layout as fixture 10 with a single "Pick" tab.
+    const pick = [
+      '←  ☐ Pick  ✔ Submit  →', '', 'Pick one?', '',
+      '❯ 1. A', '     Option A', '  2. B', '     Option B', '  3. C', '     Option C', '  4. Type something.',
+      '', '  5. Chat about this', '',
+    ].join('\n');
+    const view = viewFor('1789706748.472-PermissionRequest-48367.json', pick);
+    const pane = fakePane([pick, screen('20-ask-after-submit')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [1] }] }, deps(pane, view)))
+      .toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['2']);
+  });
+
+  it('Chat about this is digit n+2 of the current question', async () => {
+    registered();
+    const view = viewFor(ASK, screen('10-ask-q1'));
+    const pane = fakePane([screen('10-ask-q1'), screen('41-ask3-key5-chat')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'chat' }, deps(pane, view))).toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['5']);
+  });
+});
+
+describe('validateAnswer', () => {
+  it('returns a clean copy with the text trimmed, and drops unknown fields', () => {
+    const view = viewFor(PLAN, screen('80-plan-dialog'));
+    expect(validateAnswer(view, { kind: 'choice_text', key: '3', text: '  keep it short  ', extra: 1 }))
+      .toEqual({ kind: 'choice_text', key: '3', text: 'keep it short' });
+  });
+
+  it('accepts exactly 2000 characters of text', () => {
+    const view = viewFor(PLAN, screen('80-plan-dialog'));
+    expect(validateAnswer(view, { kind: 'choice_text', key: '3', text: 'a'.repeat(2000) })).not.toBeNull();
+  });
+});

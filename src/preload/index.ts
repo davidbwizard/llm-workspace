@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ConversationCursor } from '../store/conversation.ts';
+import type { Answer } from '../core/prompt.ts';
 
 /** The complete surface the renderer can reach. Every channel is named here
  *  and validated in main; there is deliberately no generic invoke, because one
@@ -26,6 +27,11 @@ const api = {
   // Main sanitises and revalidates; the typing below narrows nothing.
   sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }) =>
     ipcRenderer.invoke('session:keys', pid, text, attach),
+  // Answers the prompt Claude is waiting on (quick answers). Main
+  // re-derives the prompt, checks the answer against it and the pane, and
+  // presses nothing it cannot confirm; this typing narrows nothing.
+  answerPrompt: (pid: number, promptId: string, answer: Answer) =>
+    ipcRenderer.invoke('session:answer', pid, promptId, answer),
   // An image's bytes, for main to check and hold until sent; returns an id.
   stageImage: (bytes: ArrayBuffer) => ipcRenderer.invoke('session:stage-image', bytes),
   // Any other file's bytes and name, held the same way.

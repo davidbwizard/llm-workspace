@@ -40,6 +40,7 @@ import { isCodexBusy } from './codexBusy.ts';
 import {
   buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, type WatchDeps,
 } from './sessionLive.ts';
+import { answerPrompt, type AnswerResult } from './answer.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -1415,6 +1416,18 @@ export function registerIpc(
     if ([...images, ...files].some(p => p === null)) return gone;
     return sendKeysFor(pid, text, { busy: busyForPid, provider: providerForPid }, images as string[], files as string[]);
   });
+  // Quick answers (src/main/answer.ts): answers the prompt Claude is
+  // waiting on, by tmux keystrokes checked against the pane. Every argument
+  // is untrusted. Main re-derives the open prompt itself -- the same
+  // payload the pane is pushed (buildSessionLive), so the prompt id the
+  // renderer holds is compared against main's own, never trusted.
+  // Returns a promise: the key sequence waits on the pane between steps.
+  ipcMain.handle('session:answer', (_event, pid: unknown, promptId: unknown, answer: unknown): Promise<AnswerResult> =>
+    answerPrompt(pid, promptId, answer, {
+      currentPrompt: p => buildSessionLive(
+        db, p, getCachedLiveProcesses(), Date.now(), { cached: cachedPushOpenSessions },
+      )?.prompt ?? null,
+    }));
   ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
 
   // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing
