@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.276
+▝▜██████▀  Haiku 4.5 · Claude Sub
+  ▝▝ ▝▝    /…/05ca161a-0ae7-4978-8680-b333894fe577/scratchpad/p4probe
+
+
+❯ Run exactly this single Bash command, unchanged, as one tool call: python3 - <<EOF
+  for i in range(30):
+      print("line", i, "of a deliberately long multi-line command body used to test the permission
+  dialog")
+  EOF
+
+⏺ Bash(python3 - <<EOF
+      for i in range(30):…)
+  ⎿  Waiting…
+
+───────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   │ python3 - <<EOF
+   │ for i in range(30):
+   │     print("line", i, "of a deliberately long multi-line command body used to test the
+   │ permission dialog")
+   │ EOF
+   │
+   Run a Python script that prints 30 lines of test output
+
+ Heredoc with unquoted delimiter undergoes shell expansion
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend
+
+
+
+
+
+
+

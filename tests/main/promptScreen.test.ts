@@ -131,6 +131,107 @@ describe('readPromptScreen -- permission anchor ignores whitespace', () => {
   });
 });
 
+// Measured 2026-09-18 (Claude Code 2.1.276): a multi-line Bash command is
+// drawn with a "│ " border on every line (62); a one-line command has none
+// (50). A command taller than the pane pushes the dialog's rule, header and
+// first command lines off the top of the capture (63: lines 13-40 visible).
+describe('readPromptScreen -- bordered and overflowing multi-line commands', () => {
+  const CMD62 = 'python3 - <<EOF\nfor i in range(30):\n'
+    + '    print("line", i, "of a deliberately long multi-line command body used to test the permission dialog")\nEOF';
+  const CMD63 = Array.from({ length: 40 }, (_, i) => `touch long-probe-file-${i + 1}.txt`).join('\n');
+  const DIR = '/private/tmp/claude-502/-Users-user000000000-Documents-David-llm-workspace/05ca161a-0ae7-4978-8680-b333894fe577/scratchpad/p4probe';
+  const OPT2 = "Yes, and don't ask again for touch long-probe-file-1.txt, touch long-probe-file-2.txt, touch long-probe-file-3.txt, "
+    + `touch long-probe-file-4.txt, and touch long-probe-file-5.txt commands in ${DIR}`;
+  const bare = (s: string) => s.replace(/\s+/g, '');
+  const read = (capture: string, anchor: string) => {
+    const result = readPromptScreen(capture, permExpect(anchor));
+    if (!result.match || result.kind !== 'permission') throw new Error(`expected permission match, got ${JSON.stringify(result)}`);
+    return result;
+  };
+  /** Fixture 63 with its first `n` rows scrolled off as well. */
+  const cut63 = (n: number) => screen('63-perm-bash-tall-overflow').split('\n').slice(n).join('\n');
+
+  it('62: matches the bordered heredoc on its own command -- Yes, and No (the row that takes text)', () => {
+    const result = read(screen('62-perm-bash-multiline-bordered'), CMD62);
+    expect(result.choices).toEqual([
+      { key: '1', label: 'Yes', takesText: false },
+      { key: '2', label: 'No', takesText: true },
+    ]);
+    expect(result.cursor).toBe('1');
+    expect(result.textRow).toBeNull();
+  });
+
+  it('63: matches the overflowing 40-line command on its visible tail, option 2 joined across its wrapped lines', () => {
+    const result = read(screen('63-perm-bash-tall-overflow'), CMD63);
+    expect(result.choices.map(c => [c.key, c.takesText])).toEqual([['1', false], ['2', false], ['3', true]]);
+    expect(result.choices[0]!.label).toBe('Yes');
+    expect(result.choices[2]!.label).toBe('No');
+    expect(result.choices[1]!.label.startsWith("Yes, and don't ask again for touch long-probe-file-1.txt, touch")).toBe(true);
+    expect(result.choices[1]!.label.endsWith('/scratchpad/p4probe')).toBe(true);
+    expect(bare(result.choices[1]!.label)).toBe(bare(OPT2));
+    expect(result.cursor).toBe('1');
+    expect(result.textRow).toBeNull();
+  });
+
+  it('62: rejects a different command in the same bordered dialog', () => {
+    expect(readPromptScreen(screen('62-perm-bash-multiline-bordered'), permExpect(CMD62.replace('range(30)', 'range(31)'))))
+      .toEqual({ match: false, why: 'anchor_not_found' });
+  });
+
+  it('62: a fully visible command that is only the END of the hook command is refused -- the top is on screen, so all of it must be', () => {
+    expect(readPromptScreen(screen('62-perm-bash-multiline-bordered'), permExpect(`rm -rf ~/important && ${CMD62}`)).match)
+      .toBe(false);
+  });
+
+  it('63: rejects a different 40-line command', () => {
+    const other = Array.from({ length: 40 }, (_, i) => `touch other-probe-file-${i + 1}.txt`).join('\n');
+    expect(readPromptScreen(screen('63-perm-bash-tall-overflow'), permExpect(other)))
+      .toEqual({ match: false, why: 'anchor_not_found' });
+  });
+
+  it('63: rejects a hook command that carries more after the visible tail (the tail must be its end)', () => {
+    expect(readPromptScreen(screen('63-perm-bash-tall-overflow'), permExpect(`${CMD63}\nrm -rf ~/important`)).match).toBe(false);
+  });
+
+  it('63: rejects a hook command that is only a piece of what is visible', () => {
+    const lastTwo = 'touch long-probe-file-39.txt\ntouch long-probe-file-40.txt';
+    expect(readPromptScreen(screen('63-perm-bash-tall-overflow'), permExpect(lastTwo)).match).toBe(false);
+  });
+
+  it('63: rejects a visible tail shorter than the minimum, even though it is in the command', () => {
+    const onlyLast = cut63(27);
+    expect(onlyLast.split('\n')[0]).toBe('   │ touch long-probe-file-40.txt');
+    expect(readPromptScreen(onlyLast, permExpect(CMD63))).toEqual({ match: false, why: 'anchor_not_found' });
+  });
+
+  it('63: still matches with fewer rows visible, while the tail is at least the minimum', () => {
+    const lastTwo = cut63(26);
+    expect(bare(lastTwo.split('\n').slice(0, 2).join('')).replace(/│/g, '').length).toBeGreaterThanOrEqual(40);
+    expect(read(lastTwo, CMD63).choices).toHaveLength(3);
+  });
+
+  it('63: the overflow read needs the pane to START on a bordered command line', () => {
+    const capture = `some other output\n${screen('63-perm-bash-tall-overflow')}`;
+    expect(readPromptScreen(capture, permExpect(CMD63))).toEqual({ match: false, why: 'no_dialog_on_screen' });
+  });
+
+  it('63: the overflow read needs no rule anywhere on screen (the idle composer always draws two)', () => {
+    const capture = `${screen('63-perm-bash-tall-overflow')}\n${'─'.repeat(40)}\n❯ \n${'─'.repeat(40)}\n  ? for shortcuts`;
+    expect(readPromptScreen(capture, permExpect(CMD63))).toEqual({ match: false, why: 'no_dialog_on_screen' });
+  });
+
+  it('63: the overflow read is for permission dialogs only', () => {
+    expect(readPromptScreen(screen('63-perm-bash-tall-overflow'), planExpect()).match).toBe(false);
+  });
+
+  it('63: still needs the question line and options numbered 1..n', () => {
+    const noQuestion = screen('63-perm-bash-tall-overflow').replace(' Do you want to proceed?', ' Do you want to proceed');
+    expect(readPromptScreen(noQuestion, permExpect(CMD63))).toEqual({ match: false, why: 'no_question_line_above_options' });
+    const gap = screen('63-perm-bash-tall-overflow').replace(/^ {3}3\. No$/m, '   4. No');
+    expect(readPromptScreen(gap, permExpect(CMD63))).toEqual({ match: false, why: 'option_numbers_not_sequential' });
+  });
+});
+
 // Final review: a reviewer-supplied capture showed that a crafted Bash
 // command's own previewed text can contain lines shaped like dialog options
 // -- "# Proceed?" and "4. No, and tell Claude what to do differently" --

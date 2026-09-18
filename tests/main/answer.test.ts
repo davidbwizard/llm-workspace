@@ -452,6 +452,22 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
     expect(pane.sent[0]).toEqual(['send-keys', '-t', `=${NAME}:`, '1']);
   });
 
+  // Measured 2026-09-18: a 40-line command overflows the pane, so only its
+  // tail is on screen, with no rule above it (fixture 63).
+  it('Bash choice 1 on an overflowing 40-line command sends exactly the digit', async () => {
+    registered();
+    const ev = event(BASH_YES);
+    const command = Array.from({ length: 40 }, (_, i) => `touch long-probe-file-${i + 1}.txt`).join('\n');
+    ev.payload = { tool_name: 'Bash', tool_input: { command } };
+    const tall = screen('63-perm-bash-tall-overflow');
+    const view = buildPromptView(ev, NAME, { capture: () => ({ ok: true, stdout: tall }) });
+    expect(view).toMatchObject({ answerable: true, command });
+    expect(view.choices?.map(c => c.key)).toEqual(['1', '2', '3']);
+    const pane = fakePane([tall, screen('51-perm-bash-after-1')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'choice', key: '1' }, deps(pane, view))).toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['1']);
+  });
+
   // Controller ruling: a plain No is digit 3, which rejects directly
   // (measured: fixture 56-perm-bash3-key3, "Interrupted").
   it('Bash plain No sends exactly the digit 3', async () => {
