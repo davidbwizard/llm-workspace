@@ -34,6 +34,7 @@ export type ScreenExpect =
 
 export type ScreenRead =
   | { match: true; kind: 'permission' | 'plan'; choices: PromptChoice[]; cursor: string | null; textRow: string | null }
-  | { match: true; kind: 'question'; current: number; answered: boolean[]; options: string[] }
+  // headerOnly: read from the one-question layout (a header line, no tab row)
+  | { match: true; kind: 'question'; current: number; answered: boolean[]; options: string[]; headerOnly?: true }
   | { match: true; kind: 'review'; answers: { question: string; answer: string }[] }
   | { match: false; why: string };

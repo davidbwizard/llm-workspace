@@ -383,6 +383,64 @@ describe('readPromptScreen -- questions', () => {
   });
 });
 
+// Task 6 (by eye): a single single-select question shows no tab row at
+// all -- only its header chip under the rule (" ☐ Next step"), then the
+// question, the options, "Type something.", a rule and "Chat about this".
+// A digit answers it at once, with no review screen (97).
+describe('readPromptScreen -- one-question layout (header line, no tab row)', () => {
+  const ONE_Q = 'Should I create qa-7.txt with the current timestamp now?';
+  const oneExpect = (header = 'Next step', question = ONE_Q): ScreenExpect =>
+    ({ kind: 'question', headers: [header], questions: [question] });
+
+  it('matches 96 on its header line, with the options and nothing answered', () => {
+    const result = readPromptScreen(screen('96-ask-one-question'), oneExpect());
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.current).toBe(0);
+    expect(result.answered).toEqual([false]);
+    expect(result.options).toEqual(['Yes, create it', 'No, stop here', 'Plan it first']);
+    expect(result.headerOnly).toBe(true);
+  });
+
+  it('marks a tab-row read as not header-only', () => {
+    const result = readPromptScreen(screen('10-ask-q1'), askExpect());
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.headerOnly).toBeUndefined();
+  });
+
+  it('rejects 96 when the header differs from the hook header', () => {
+    expect(readPromptScreen(screen('96-ask-one-question'), oneExpect('Next steps'))).toEqual(
+      { match: false, why: 'headers_mismatch' });
+  });
+
+  it('rejects 96 when the question text differs', () => {
+    expect(readPromptScreen(screen('96-ask-one-question'), oneExpect('Next step', 'Should I create qa-8.txt now?')).match)
+      .toBe(false);
+  });
+
+  it('rejects 96 for a two-question expectation: the header line alone is only ever one question', () => {
+    const result = readPromptScreen(screen('96-ask-one-question'),
+      askExpect(['Next step', 'Other'], [ONE_Q, 'Which other?']));
+    expect(result).toEqual({ match: false, why: 'no_tab_row_on_screen' });
+  });
+
+  it('does not take a header-like line that is not directly under a rule', () => {
+    const capture = screen('96-ask-one-question').replace(/^─+\n( ☐ Next step)$/m, '\n$1');
+    expect(capture).not.toBe(screen('96-ask-one-question'));
+    expect(readPromptScreen(capture, oneExpect())).toEqual({ match: false, why: 'no_tab_row_on_screen' });
+  });
+
+  it('reads 97 (after key 2) as the dialog gone -- the same "why" the answer path counts as gone', () => {
+    expect(readPromptScreen(screen('97-ask-one-after-key2'), oneExpect()))
+      .toEqual({ match: false, why: 'no_tab_row_on_screen' });
+  });
+
+  it('a multi-question screen never matches a one-question expectation', () => {
+    expect(readPromptScreen(screen('10-ask-q1'), oneExpect('Color', 'Which color?'))).toEqual(
+      { match: false, why: 'headers_mismatch' });
+  });
+});
+
 describe('readPromptScreen -- negatives that prove the reader tells outcomes apart', () => {
   // Every one of these screens shows something other than the expected live
   // prompt: a trust dialog, an idle composer, a busy spinner, an answered
@@ -403,4 +461,14 @@ describe('readPromptScreen -- negatives that prove the reader tells outcomes apa
     expect(readPromptScreen(capture, permExpect('touch perm-probe.txt')).match).toBe(false);
     expect(readPromptScreen(capture, planExpect()).match).toBe(false);
   });
+
+  // The one-question form is looser than the tab row (a single header
+  // line), so it is proven against the same screens, plus 97.
+  it.each([...rejectEverywhere, '97-ask-one-after-key2', '10-ask-q1'])(
+    '%s matches no one-question expectation', (file) => {
+      const capture = screen(file);
+      expect(readPromptScreen(capture, askExpect(['Color'], ['Which color?'])).match).toBe(false);
+      expect(readPromptScreen(capture, askExpect(['Next step'], ['Should I create qa-7.txt with the current timestamp now?'])).match)
+        .toBe(false);
+    });
 });

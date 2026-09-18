@@ -495,6 +495,10 @@ class Run {
     const qs = this.view.questions ?? [];
     // Start only from a fresh dialog: first question current, none answered.
     if (!isQuestion(first) || first.read.current !== 0 || first.read.answered.some(Boolean)) return 'unconfirmed';
+    // The header-line layout (one question, no tab row) was measured only
+    // for single-select; multi-select toggles and Right were only ever seen
+    // under a tab row, so they are not guessed here.
+    if (first.read.headerOnly && qs.some(q => q.multiSelect)) return 'unconfirmed';
 
     let cur: Shot = first;
     for (const [i, q] of qs.entries()) {

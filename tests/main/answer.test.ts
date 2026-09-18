@@ -622,6 +622,92 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
     expect(pane.keys()).toEqual(['1', '2']);
   });
 
+  // Task 6 (by eye): the measured one-question layout -- a header line, no
+  // tab row -- where a digit answers at once and the dialog closes (97).
+  describe('one question, measured layout (96 then 97)', () => {
+    const oneQ = () => screen('96-ask-one-question');
+    const gone = () => screen('97-ask-one-after-key2');
+    function oneView(multiSelect = false): PromptView {
+      const ev = event(ASK, 'one-q');
+      const input = JSON.parse(readFileSync(new URL('one-question-tool_input.json', EVENTS), 'utf8')) as {
+        questions: Record<string, unknown>[];
+      };
+      if (multiSelect) input.questions[0]!.multiSelect = true;
+      ev.payload = { tool_name: 'AskUserQuestion', tool_input: input };
+      return buildPromptView(ev, NAME, {});
+    }
+    /** 96 with the cursor on "Type something." and, once typed, the text in that row. */
+    const onOther = (typed?: string) => oneQ()
+      .replace('❯ 1. Yes, create it', '  1. Yes, create it')
+      .replace('  4. Type something.', `❯ 4. ${typed ?? 'Type something.'}`);
+
+    it('a digit answers it, and two reads with the dialog gone count as sent', async () => {
+      registered();
+      const view = oneView();
+      const pane = fakePane([oneQ(), gone()]);
+      expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [1] }] }, deps(pane, view)))
+        .toEqual({ status: 'sent' });
+      expect(pane.keys()).toEqual(['2']);
+    });
+
+    it('one read with the dialog gone, then the question again, is not sent', async () => {
+      registered();
+      const view = oneView();
+      const sent: string[][] = [];
+      const afterKey = [gone(), oneQ()];
+      const capture = (args: string[]): TmuxResult => {
+        if (args[0] === 'display-message') return { ok: true, stdout: '0\n' };
+        if (sent.length === 0) return { ok: true, stdout: oneQ() };
+        return { ok: true, stdout: (afterKey.length > 1 ? afterKey.shift() : afterKey[0])! };
+      };
+      const send = (args: string[]): TmuxResult => { sent.push(args); return { ok: true, stdout: '' }; };
+      const result = await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [1] }] },
+        { send, capture, sleep: async () => {}, has: () => true, currentPrompt: () => view });
+      expect(result).toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+      expect(sent.map(a => a[a.length - 1])).toEqual(['2']);
+    });
+
+    it('other: n+1, the text, Enter once the row shows it, then gone counts as sent', async () => {
+      registered();
+      const view = oneView();
+      const pane = fakePane([oneQ(), onOther(), onOther('Only on Fridays'), gone()]);
+      const answer = { kind: 'questions', picks: [{ options: [], other: 'Only on Fridays' }] };
+      expect(await answerPrompt(PID, view.id, answer, deps(pane, view))).toEqual({ status: 'sent' });
+      expect(pane.keys()).toEqual(['4', 'Only on Fridays', 'Enter']);
+    });
+
+    it('other: no Enter when the row does not show the text', async () => {
+      registered();
+      const view = oneView();
+      const pane = fakePane([oneQ(), onOther(), onOther('Only on Mondays')]);
+      const answer = { kind: 'questions', picks: [{ options: [], other: 'Only on Fridays' }] };
+      expect(await answerPrompt(PID, view.id, answer, deps(pane, view)))
+        .toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+      expect(pane.keys()).toEqual(['4', 'Only on Fridays']);
+    });
+
+    it('Chat about this is digit 5 on the header-line layout too', async () => {
+      registered();
+      const view = oneView();
+      const pane = fakePane([oneQ(), gone()]);
+      expect(await answerPrompt(PID, view.id, { kind: 'chat' }, deps(pane, view))).toEqual({ status: 'sent' });
+      expect(pane.keys()).toEqual(['5']);
+    });
+
+    // A one-question multi-select has not been measured; its toggles and
+    // Right were only ever seen under a tab row. On the header-line layout
+    // it is refused before any key rather than guessed.
+    it('a multi-select question on the header-line layout is refused before any key', async () => {
+      registered();
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const view = oneView(true);
+      const pane = fakePane([oneQ(), gone()]);
+      expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [0] }] }, deps(pane, view)))
+        .toEqual({ status: 'refused', reason: 'unconfirmed' });
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
   it('Chat about this is digit n+2 of the current question', async () => {
     registered();
     const view = viewFor(ASK, screen('10-ask-q1'));
