@@ -120,6 +120,12 @@ the screen was read only to sanity-check it, never to replace it.
 
 ## A slow trust-prompt accept can permanently hide a session's waiting card
 
+**FIXED 2026-09-18**: `startTimeAgrees` (`src/providers/claude/
+liveSession.ts`) now also accepts when the file's `procStart` string --
+parsed into `procStartMs`, which Claude does not rewrite on a folder-trust
+accept -- agrees with the process's real start within 2 s, so a rewritten
+`startedAt` no longer blinds the session for its whole life.
+
 Found live on 2026-09-17, driving two throwaway Claude sessions in `tmux`.
 
 Claude rewrites `~/.claude/sessions/<pid>.json`'s `startedAt` when the

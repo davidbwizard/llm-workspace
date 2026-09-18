@@ -43,6 +43,17 @@ export type LiveSessionFile = {
    *  a string -- same tolerance as every other field here: an unrecognised
    *  shape never rejects the whole file. */
   waitingFor?: string | null;
+  /** Epoch ms parsed from Claude's own `procStart` string -- the process's
+   *  actual start time, in the classic C ctime/asctime shape ("Www Mmm dd
+   *  hh:mm:ss yyyy"), UTC (measured 2026-09-18 against `ps -o lstart=` for
+   *  several live pids; see KNOWN_ISSUES.md). Unlike `startedAt` above,
+   *  Claude does NOT rewrite this when the folder-trust prompt is
+   *  accepted, which is what makes it startTimeAgrees' fallback signal
+   *  below for a slow accept. null when absent or not that exact shape --
+   *  same tolerance as every other optional field here: an unrecognised
+   *  procStart never rejects the file, it only leaves startTimeAgrees
+   *  without its fallback. */
+  procStartMs?: number | null;
 };
 
 export type LiveSessionReadFailure =
@@ -60,7 +71,48 @@ export const LIVE_SESSION_MAX_BYTES = 64 * 1024;
  *  for the same reason. */
 export const LIVE_SESSION_START_TOLERANCE_MS = 5_000;
 
+/** KNOWN_ISSUES.md, "A slow trust-prompt accept can permanently hide a
+ *  session's waiting card": `procStart` is a whole-second string, same
+ *  reasoning as LIVE_SESSION_START_TOLERANCE_MS above, but it is only ever
+ *  a fallback for a rewritten `startedAt` -- kept tighter than that 5 s
+ *  tolerance since it is not also absorbing `ps -o etime=`'s whole-second
+ *  rounding on both sides (startTimeAgrees below already does, via
+ *  `processStart`). */
+export const LIVE_SESSION_PROC_START_TOLERANCE_MS = 2_000;
+
 const STATUSES: ReadonlySet<string> = new Set(['idle', 'busy', 'waiting']);
+
+// procStart's exact shape, measured 2026-09-18 across several real
+// ~/.claude/sessions/<pid>.json files and cross-checked against
+// `ps -o lstart=` for their live pids: "Fri Sep 18 12:58:37 2026", the
+// classic C ctime/asctime layout, in UTC. The day-of-month group accepts
+// ctime's space-padded single digit ("Sep  8") as well as two digits.
+const PROC_START_RE = /^([A-Za-z]{3}) ([A-Za-z]{3}) ([ 0-9]\d) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/;
+const PROC_START_WEEKDAYS: ReadonlySet<string> = new Set(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+const PROC_START_MONTHS: Readonly<Record<string, number>> = {
+  Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+};
+
+/** Strict parse of `procStart` into epoch ms, as UTC. Anything outside the
+ *  exact shape above -- wrong field count, an unrecognised weekday or
+ *  month, a field out of range, not a string at all -- returns null rather
+ *  than guessing: this is untrusted input (same note as
+ *  parseLiveSessionFile below) and only ever a fallback signal, never
+ *  something worth rejecting the whole file over. */
+function parseProcStart(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const m = PROC_START_RE.exec(value);
+  if (!m) return null;
+  const [, weekday, monthName, day, hour, minute, second, year] = m as unknown as
+    [string, string, string, string, string, string, string, string];
+  if (!PROC_START_WEEKDAYS.has(weekday)) return null;
+  const month = PROC_START_MONTHS[monthName];
+  if (month === undefined) return null;
+  const d = Number(day), hh = Number(hour), mm = Number(minute), ss = Number(second), yyyy = Number(year);
+  if (d < 1 || d > 31 || hh > 23 || mm > 59 || ss > 59) return null;
+  const ms = Date.UTC(yyyy, month, d, hh, mm, ss);
+  return Number.isFinite(ms) ? ms : null;
+}
 
 /** Untrusted input: any process running as this user can write the file.
  *  Only `sessionId` ever reaches a command line (via Reattach), so it is
@@ -79,7 +131,10 @@ export function parseLiveSessionFile(text: string, pid: number): LiveSessionFile
   const statusUpdatedAtMs =
     typeof r.statusUpdatedAt === 'number' && Number.isFinite(r.statusUpdatedAt) ? r.statusUpdatedAt : null;
   const waitingFor = typeof r.waitingFor === 'string' ? r.waitingFor : null;
-  return { sessionId: r.sessionId, cwd: r.cwd, startedAtMs: r.startedAt, status, statusUpdatedAtMs, waitingFor };
+  const procStartMs = parseProcStart(r.procStart);
+  return {
+    sessionId: r.sessionId, cwd: r.cwd, startedAtMs: r.startedAt, status, statusUpdatedAtMs, waitingFor, procStartMs,
+  };
 }
 
 /** Opens with O_NOFOLLOW so a symlink is refused at open time rather than
@@ -114,10 +169,23 @@ export function readLiveSessionFile(pid: number, dir: string): LiveSessionRead {
 /** The pid-reuse guard. A leftover file whose pid was later reused by an
  *  unrelated process would carry a start time that does not match that
  *  process, so it is ignored. Unknown process age rejects rather than
- *  trusting the file unchecked. */
+ *  trusting the file unchecked.
+ *
+ *  KNOWN_ISSUES.md, "A slow trust-prompt accept can permanently hide a
+ *  session's waiting card" (fixed 2026-09-18): Claude rewrites `startedAt`
+ *  to the moment the folder-trust prompt is accepted, which can be tens of
+ *  seconds after the process actually started, permanently failing the
+ *  check above for that process's whole life. `procStart` is not rewritten
+ *  the same way, so a file that fails the `startedAt` comparison still
+ *  agrees when `procStartMs` independently matches the process within its
+ *  own (tighter) tolerance. A pid-reuse file fails both -- the unrelated
+ *  process's real start time agrees with neither the rewritten `startedAt`
+ *  nor the stale `procStart` a leftover file would carry. */
 export function startTimeAgrees(
   file: LiveSessionFile, ageSeconds: number | null | undefined, nowMs: number,
 ): boolean {
   if (ageSeconds == null) return false;
-  return Math.abs(file.startedAtMs - (nowMs - ageSeconds * 1000)) <= LIVE_SESSION_START_TOLERANCE_MS;
+  const processStart = nowMs - ageSeconds * 1000;
+  if (Math.abs(file.startedAtMs - processStart) <= LIVE_SESSION_START_TOLERANCE_MS) return true;
+  return file.procStartMs != null && Math.abs(file.procStartMs - processStart) <= LIVE_SESSION_PROC_START_TOLERANCE_MS;
 }
