@@ -20,7 +20,22 @@ Suite: 1187 tests, typecheck clean. `KNOWN_ISSUES.md` is current.
 
 ## David's priorities for next session, in order
 
-1. **Live feedback in the conversation -- two parts.**
+1. **DONE 2026-09-17. Live feedback in the conversation -- two parts.**
+   Branch `live-conversation-feedback`, commits `75435f1..4d03880`, 1294 tests,
+   typecheck clean. David confirmed it by eye in the running app on 2026-09-17
+   (see "GUI needs eyes, not tests" -- a green suite on a rendered surface is not
+   the finish line).
+
+   What shipped: the person's message appears on send, labelled Queued when the
+   agent is mid-turn and warning when it never reaches the log while the agent is
+   idle; a working strip above the message box; a waiting card that pauses
+   typing; the open session updating in about a quarter second instead of five;
+   a message to a busy Codex queued with Tab; an interrupted Codex no longer
+   reading as working.
+
+   The composer also gained a visible Send button (the mockup and spec both have
+   one; David has seen and approved it).
+
    - **Your message was sent.** Today the box clears on `sent`, but the message
      only appears once the transcript is ingested, so there is a gap where nothing
      shows it went. Add a pending entry at the bottom (text, attachment chips,
@@ -77,6 +92,16 @@ message in the same form as an unsent one). What worked, all day:
 - Never send "reset" keys between runs without knowing what they do (Escape puts
   Codex in backtrack mode). A busy Codex does not submit on Enter at all.
 - Claude's trust prompt defaults to "No, exit": send Down before Enter.
+- **Codex's rollout file does not exist until the first submitted turn.** It is
+  created lazily, not at session start -- do not expect it before then.
+- **The day directory under `~/.codex/sessions/` is machine-wide**, so "sort
+  filenames, take the newest" can pick up someone else's session. Resolve the
+  exact file through `~/.codex/state_5.sqlite`'s `threads` table instead
+  (`cwd` -> `rollout_path`, kept in sync live).
+- **This Codex build (0.154.0) writes a submitted user message as
+  `item_completed` / `response_item` with `message`/`role=user`**, not the flat
+  `event_msg` / `user_message` form. `task_started` and `task_complete` are
+  unaffected -- still flat `event_msg` records.
 
 ## Things worth knowing
 

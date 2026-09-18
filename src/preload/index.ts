@@ -51,6 +51,17 @@ const api = {
   attach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:attach', pid, cols, rows),
   detach: (pid: number) => ipcRenderer.invoke('session:detach', pid),
   resize: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:resize', pid, cols, rows),
+  // Which session's conversation is on screen. Main validates the pid and
+  // refuses anything it does not already know as a live process; the
+  // `number | null` typing below narrows nothing at that trust boundary,
+  // same as every other channel here -- pid: null means "nothing is open,
+  // stop watching". Resolves to whether a session is now being watched.
+  watchSession: (pid: number | null) => ipcRenderer.invoke('session:watch', pid),
+  onSessionLive: (cb: (payload: unknown) => void) => {
+    const handler = (_e: unknown, payload: unknown) => cb(payload);
+    ipcRenderer.on('session:live', handler);
+    return () => ipcRenderer.off('session:live', handler);
+  },
   // Opens the native folder picker (LaunchBar's "Choose…" button). Returns
   // the chosen absolute path, or null on cancel -- main still revalidates
   // whatever comes back through isAbsolutePath in session:launch, same as

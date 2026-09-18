@@ -10,6 +10,14 @@ import { registerIpc, pushFleet, refreshPushEnrichment } from './ipc.ts';
 import { refreshLiveProcesses } from '../discovery/live.ts';
 import { adoptRunningSessions } from './sessions.ts';
 import { readStoredTheme } from './appearance.ts';
+import { notifySessionChanged, pushSessionLive, watchSessionFor, type WatchDeps } from './sessionLive.ts';
+
+// The release-only shape of watchSessionFor's deps -- window close and
+// before-quit only ever call it with pid: null (stop watching), which
+// never reaches processes()/buildPayload()/send() at all (see
+// watchSessionFor's own doc comment on why teardown-on-null never touches
+// deps), so there is nothing real for these three to do.
+const NOOP_WATCH_DEPS: WatchDeps = { processes: () => [], buildPayload: () => null, send: () => {} };
 
 let db: Db | null = null;
 let watcher: Watcher | null = null;
@@ -65,7 +73,12 @@ function createWindow(): void {
   });
 
   mainWindow = win;
-  win.on('closed', () => { mainWindow = null; });
+  // No watcher must outlive the window it was pushing to -- a leaked
+  // fs.watch handle is exactly the class of bug this app has been bitten by
+  // before (leaked processes). watchSessionFor(null, ...) is idempotent
+  // (a no-op with nothing watched), so this is safe even when the window
+  // closing was itself the trigger that already tore the watch down.
+  win.on('closed', () => { mainWindow = null; watchSessionFor(null, NOOP_WATCH_DEPS); });
 
   win.once('ready-to-show', () => win.show());
 
@@ -115,8 +128,14 @@ function startBackgroundWork(): void {
   pushFleet(mainWindow);
 
   // Watcher events arrive per file and can burst; coalesce so a busy
-  // session does not push a payload per line written.
-  watcher = startWatcher(db, roots(), () => {
+  // session does not push a payload per line written. notifySessionChanged
+  // is called unconditionally on every outcome, not only when pushTimer
+  // schedules a fleet push -- it does its own, separate 250ms coalescing
+  // (src/main/sessionLive.ts) keyed to whichever session the conversation
+  // pane is currently watching, which is not the same session a fleet push
+  // fires for.
+  watcher = startWatcher(db, roots(), (_path, _provider, out) => {
+    notifySessionChanged(new Set(out.events.map(e => e.sessionId)));
     if (pushTimer) return;
     pushTimer = setTimeout(() => { pushTimer = null; pushFleet(mainWindow); }, 250);
   });
@@ -186,6 +205,12 @@ app.whenReady().then(() => {
       if (!db) return;
       refreshPushEnrichment(db, processes);
       pushFleet(mainWindow);
+      // Runs even when nothing is watched (a no-op then -- see
+      // pushSessionLive's own doc comment): this is also the trigger that
+      // notices a watched pid has exited (buildPayload's null, since
+      // getCachedLiveProcesses() was just refreshed above) and releases the
+      // watch, rather than leaving an fs.watch pointed at a dead process.
+      pushSessionLive();
     });
   };
   pushAfterDiscoverySweep();
@@ -213,6 +238,11 @@ app.on('before-quit', () => {
   // this, a watcher event in the last 250ms before quit still fires its
   // pushFleet call after db below is closed.
   if (pushTimer) clearTimeout(pushTimer);
+  // Same reasoning as the pushTimer clear above, for the session-live
+  // watch's own fs.watch and coalesce timer -- belt-and-suspenders with the
+  // 'closed' handler's own call to this (win.on('closed') above), since
+  // before-quit runs regardless of whether that handler already fired.
+  watchSessionFor(null, NOOP_WATCH_DEPS);
   void watcher?.close();
   db?.close();
   // watcher.close() above is fire-and-forget (not awaited), so a watcher

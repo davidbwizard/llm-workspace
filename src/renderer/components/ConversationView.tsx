@@ -8,7 +8,11 @@ import type { KeysResult } from '../../main/ipc.ts';
 import type { StageRefusal } from '../../main/staging.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
+import { WorkingStrip } from './WorkingStrip.tsx';
+import { WaitingCard } from './WaitingCard.tsx';
 import { useSettings } from '../state/settings.ts';
+import { useSessionLive } from '../state/useSessionLive.ts';
+import { addPending, pendingFor, dropPending, matchPending, markQueued, tickIdle, NOT_SEEN_AFTER_MS } from '../state/pending.ts';
 import './ConversationView.css';
 
 /** Transcript text is untrusted, so markdown rendering is locked down:
@@ -390,16 +394,44 @@ function readFile(file: File, as: 'dataUrl' | 'bytes'): Promise<string | ArrayBu
 
 type Attachment = { id: string; name: string; kind: AttachKind; thumb: string | null };
 
-function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
+function MessageBox({ pid, sessionId, tmux, provider, waiting, onOpenTerminal, attachRef, onPendingChange, onPendingSent }: {
   pid: number | null;
   /** Which recorded session this pid is, used ONLY to prove a stored draft
    *  belongs to the session now on screen. Null when the app cannot tell,
    *  which means no draft is kept -- see draftFor above. */
   sessionId: string | null;
   tmux: boolean;
+  /** Whose prompt to name in the placeholder while `waiting` is true --
+   *  Task 11's card names the provider rather than assuming Claude, and
+   *  this box's own placeholder must say the same thing. */
+  provider: Provider;
+  /** True while the open session's agent is showing a choice (WaitingCard
+   *  is on screen). Folded into the same disabling this box already had
+   *  for "no live process" / "not tmux-backed", rather than a second,
+   *  competing disabled state -- the reasoning for why is the same either
+   *  way: nothing typed here can reach the agent right now. The typed text
+   *  itself is never touched -- only `disabled` and the placeholder change,
+   *  so answering in the Terminal and coming back finds it exactly as it
+   *  was left. */
+  waiting: boolean;
   onOpenTerminal: () => void;
   /** Set while this box can take an image, for the pane's drop handler. */
   attachRef?: MutableRefObject<((files: File[]) => void) | null>;
+  /** Notified after every mutation of the pid's pending-message store
+   *  (src/renderer/state/pending.ts) this box makes -- a send going up
+   *  optimistically, its queued flag settling, or its entry coming back
+   *  down on a refusal. That store is a plain module-level Map, not React
+   *  state, so ConversationView (the turn list's owner, not this box) has
+   *  no other way to learn a mutation happened and re-render the pending
+   *  entries it renders below page.turns. */
+  onPendingChange: () => void;
+  /** Notified ONLY by the optimistic add, never by the other mutations
+   *  onPendingChange above also covers -- ConversationView uses this to
+   *  scroll to the newest message on the person's own send, and firing it
+   *  from markQueued settling, a match dropping the entry, or the idle-tick
+   *  interval would scroll the reader away from wherever they had
+   *  deliberately scrolled, for no reason connected to anything they did. */
+  onPendingSent: () => void;
 }) {
   // Seeded from the draft store, so a remount (Open Terminal and back, or a
   // session switch) restores what was typed rather than starting blank.
@@ -464,12 +496,24 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
     ? 'This session is not running.'
     : !tmux ? REFUSAL_TEXT.not_tmux : null;
 
+  // Folds `waiting` into the one thing every disabled state here already
+  // meant: nothing typed can reach the agent right now. disabledReason
+  // alone still governs the message shown BELOW the box (the "not running" /
+  // "not tmux-backed" line) and the ordinary placeholder fallback -- ranked
+  // ahead of `waiting` deliberately, since a session that is not even
+  // running is a more fundamental reason than a prompt it cannot possibly
+  // be showing.
+  const inputDisabled = disabledReason !== null || waiting || sending;
+  const placeholder = disabledReason ?? (waiting
+    ? `Answer ${PROVIDER_NAME[provider]}'s prompt above to keep typing`
+    : 'Message this session');
+
   // Attachments for the next send. Main holds the bytes (staged by id,
   // src/main/staging.ts); this keeps only the id, a name, the kind and, for
   // an image, a thumbnail.
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const canAttach = disabledReason === null && !sending;
+  const canAttach = !inputDisabled;
 
   async function addFiles(files: File[]): Promise<void> {
     for (const file of files) {
@@ -509,6 +553,29 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
     setSending(true);
     setMessage(null);
     setChoiceOpen(false);
+    // Shown in the conversation the instant Enter is pressed, rather than
+    // waiting on the agent's own log to pick it up -- which can lag behind
+    // by the fleet sweep's full 5s, longer still if the agent is mid-turn.
+    // The draft is dropped here too: it is no longer a draft, it is either
+    // in flight to the session or about to be restored below if that fails.
+    const key = addPending(pid, { text, attachments, sentAt: Date.now(), queued: false, sessionId });
+    setText('');
+    setAttachments([]);
+    drafts.delete(pid);
+    onPendingChange();
+    onPendingSent();
+    // Puts the box back exactly as it was before the optimistic clear
+    // above on a failed send -- the DRAFT store too, not just the visible
+    // text, since that clear deleted it as well. Without restoring it
+    // here, a prompt_open refusal's own remedy would break it: Open
+    // Terminal unmounts this component (MainPane's ternary, see the
+    // `drafts` doc comment above), and only the draft store, never
+    // component state, survives that.
+    const restoreDraft = () => {
+      setText(text);
+      setAttachments(attachments);
+      if (sessionId !== null) drafts.set(pid, { sessionId, text });
+    };
     try {
       const attach = {
         images: attachments.filter(a => a.kind === 'image').map(a => a.id),
@@ -517,20 +584,34 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
       const r: KeysResult | undefined = attachments.length
         ? await window.fleet?.sendKeys(pid, text, attach)
         : await window.fleet?.sendKeys(pid, text);
-      // Sent is the one outcome that discards the draft -- it is no longer
-      // a draft, it is in the session. The attachments went with it.
-      if (r?.status === 'sent') { setText(''); setAttachments([]); drafts.delete(pid); return; }
-      // The text is deliberately KEPT on a refusal: the person can fix
-      // whatever was wrong (answer the choice, reattach) and press Enter
-      // again, rather than retyping what they already wrote.
+      if (r?.status === 'sent') {
+        // The entry itself already went up above, optimistically -- all
+        // that is left to settle is its queued label, if any, until the
+        // turn-list effect in ConversationView matches it against the log.
+        markQueued(pid, key, r.queued);
+        onPendingChange();
+        return;
+      }
+      // Nothing reached the session, so the conversation must not keep a
+      // message claiming otherwise: the entry comes back down, and the
+      // text and its attachments come back exactly as they were typed, for
+      // the person to fix (answer the choice, reattach) and press Enter
+      // again -- the same restore a refusal has always done here, just
+      // undoing the optimistic clear above as well now.
+      dropPending(pid, key);
+      onPendingChange();
+      restoreDraft();
       setMessage(r ? REFUSAL_TEXT[r.reason] : 'Could not reach the app.');
       setChoiceOpen(r?.status === 'refused' && r.reason === 'prompt_open');
     } catch (err) {
       // A rejected sendKeys means the message did NOT go out, and the one
-      // thing that must never happen is the box looking like it did. Narrow
-      // (it wraps a single await, so it cannot swallow a render error) and
-      // never silent: the cause is logged, the person is told, and the text
-      // is kept for a retry exactly as on a returned refusal above.
+      // thing that must never happen is the conversation looking like it
+      // did. Same restore as a returned refusal above, plus the log: never
+      // silent, and never a pending entry left claiming a message arrived
+      // that in fact never left this box.
+      dropPending(pid, key);
+      onPendingChange();
+      restoreDraft();
       console.error('Conversation message send failed:', err);
       setMessage('Could not reach the app.');
     } finally {
@@ -579,8 +660,8 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
         aria-label="Message this session"
         rows={2}
         value={text}
-        disabled={disabledReason !== null || sending}
-        placeholder={disabledReason ?? 'Message this session'}
+        disabled={inputDisabled}
+        placeholder={placeholder}
         onChange={e => {
           setText(e.target.value);
           // Stamped with the session id, so this draft can only ever be
@@ -605,6 +686,15 @@ function MessageBox({ pid, sessionId, tmux, onOpenTerminal, attachRef }: {
           void addFiles(files);
         }}
       />
+      {/* The composer's own send affordance (Conversation Pane Mockup's
+          `.composer .send`), alongside the existing Enter-to-send (spec
+          §7.2, unchanged). Disabled by the exact same `inputDisabled` as
+          the textarea above -- while the agent is waiting, or this session
+          cannot be typed into at all, there is nothing for either path to
+          do. */}
+      <button type="button" className="convsubmit" disabled={inputDisabled} onClick={() => void send()}>
+        Send
+      </button>
       </div>
       {counter && (
         <p className={`convcount${counter.warn ? ' convcount-warn' : ''}`}>{counter.label}</p>
@@ -674,6 +764,31 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   onOpenTerminal: () => void;
 }) {
   const settings = useSettings();
+  // Task 7 (2026-09-17-live-conversation-feedback): main can now push this
+  // pid's live state within ~250ms (src/main/sessionLive.ts's
+  // watchSessionFor/notifySessionChanged) instead of leaving the pane to
+  // the 5s fleet sweep alone. Folded into the refresh effect below as a
+  // second source for `events`, not a replacement for the prop -- the push
+  // is what gets a reply on screen at watcher speed, and the fleet-sweep
+  // prop is still what recovers if the push channel never started (no
+  // bridge, or main's fs.watch failed) or a payload was dropped for
+  // arriving mid session-switch (see useSessionLive's own doc comment).
+  const live = useSessionLive(pid);
+  // Forces a re-render so the pending entries rendered below page.turns --
+  // a plain module-level store (src/renderer/state/pending.ts), not React
+  // state, so a pending send survives a session switch the same way a
+  // draft does -- pick up a mutation (a new send, a match against the log,
+  // an idle tick) the moment it happens. The value itself is read once,
+  // below, by the scroll-on-send effect; every OTHER reader of this state
+  // (same pattern as WorkingStrip's own retick) only needs the setter.
+  const [pendingVersion, retickPending] = useState(0);
+  // Set by MessageBox's onPendingSent, immediately before the retick that
+  // follows it, and consumed by the scroll-on-send layout effect below --
+  // same one-shot, read-then-clear shape as pendingRestoreRef further down.
+  // A ref, not state: it must be read in the same commit that a `pendingVersion`
+  // bump renders, with nothing to trigger a render of its own (retickPending
+  // already does that).
+  const pendingSentRef = useRef(false);
   const [page, setPage] = useState<ConversationPage | null>(null);
   // The message box registers here while it can take an image; the pane's
   // drop handler forwards dropped files to it.
@@ -737,6 +852,13 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
    *  session so the very first value is recorded, not acted on: the mount
    *  fetch has already covered it. */
   const seenEventsRef = useRef<number | null>(null);
+  /** Turn ids matchPending has already matched to a pending entry, across
+   *  every call for this session -- see matchPending's own doc comment
+   *  (src/renderer/state/pending.ts) for why this must survive between
+   *  separate runs of the effect below rather than being a local inside it.
+   *  Reset alongside the other per-session refs on a genuine session switch;
+   *  never on a mere page change, or it would defeat its own purpose. */
+  const matchedTurnsRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -752,6 +874,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     landedRef.current = false;
     lastTurnKeyRef.current = null;
     seenEventsRef.current = null;
+    matchedTurnsRef.current = new Set();
     void window.fleet?.conversation(sessionId).then(p => {
       if (alive) setPage(p);
     }).catch(err => {
@@ -766,19 +889,28 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     return () => { alive = false; };
   }, [sessionId]);
 
-  /** Live updates (spec §3.3). No conversation data is pushed today --
-   *  fleet:update carries open-session cards only -- but `events` on those
-   *  cards is a per-session monotonic count that changes on exactly the
-   *  transitions that matter. When it moves, fetch the NEWEST page (no
-   *  cursor) and merge; pages the reader loaded above stay put, and so does
-   *  the cursor they are paging from, which must not be replaced by the
-   *  newest page's own or the next "load older" would walk history the
-   *  reader already has. */
+  /** Live updates (spec §3.3). No conversation TEXT is pushed -- only a
+   *  per-session monotonic event count, from two sources now: the `events`
+   *  prop (fleet:update's open-session cards, on the 5s sweep) and `live`
+   *  (Task 7, above, on main's push). When either moves further than what
+   *  this pane has already fetched for, fetch the NEWEST page (no cursor)
+   *  and merge; pages the reader loaded above stay put, and so does the
+   *  cursor they are paging from, which must not be replaced by the newest
+   *  page's own or the next "load older" would walk history the reader
+   *  already has. */
   useEffect(() => {
-    if (sessionId === null || events === null) return;
-    if (seenEventsRef.current === null) { seenEventsRef.current = events; return; }
-    if (seenEventsRef.current === events) return;
-    seenEventsRef.current = events;
+    // Whichever of the two sources has moved further -- see the doc
+    // comment on `live` above for why this is a fold, not a substitution.
+    // null only when BOTH are null: the fleet sweep never gave this pid a
+    // unique match and no live push has arrived either, which is exactly
+    // when there is nothing to refresh against.
+    const combined = events === null ? live?.events ?? null
+      : live === null ? events
+        : Math.max(events, live.events);
+    if (sessionId === null || combined === null) return;
+    if (seenEventsRef.current === null) { seenEventsRef.current = combined; return; }
+    if (seenEventsRef.current === combined) return;
+    seenEventsRef.current = combined;
     let alive = true;
     void window.fleet?.conversation(sessionId).then(next => {
       if (!alive) return;
@@ -800,7 +932,45 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
       console.error('Conversation refresh fetch failed:', err);
     });
     return () => { alive = false; };
-  }, [sessionId, events]);
+  }, [sessionId, events, live]);
+
+  // Drops a pending entry the instant the agent's OWN log actually has the
+  // message, so the person is never shown their own message twice -- once
+  // optimistically, once for real. Runs whenever the turns list changes
+  // (mount, a load-more prepend, or either refresh effect above), which is
+  // exactly when a newly-landed turn could match one still pending.
+  useEffect(() => {
+    if (pid === null || page === null) return;
+    const matched = matchPending(pendingFor(pid, sessionId), page.turns, matchedTurnsRef.current);
+    if (matched.length === 0) return;
+    for (const key of matched) dropPending(pid, key);
+    retickPending(t => t + 1);
+  }, [pid, page]);
+
+  // Counts how long each of this pid's pending entries has gone unmatched,
+  // but ONLY while the session is genuinely idle: counting while the agent
+  // is working, or while no live push has arrived at all (activity null),
+  // would warn about a message that is simply waiting its turn, never one
+  // that actually failed to arrive. tickIdle advances EVERY pending entry
+  // at this pid, which is deliberate (its own doc comment in pending.ts): a
+  // second message stuck behind a first one must warn too.
+  //
+  // The pendingFor check below is not an optimisation on top of the idle
+  // check -- it is load-bearing: retickPending bumps state on every firing,
+  // which re-renders the whole pane (nothing here is memoized, and
+  // react-markdown re-parses every assistant turn on each render), and an
+  // idle session with nothing pending is this component's RESTING state, so
+  // without this the pane would pay that cost once a second forever for no
+  // reason connected to anything on screen.
+  useEffect(() => {
+    if (pid === null) return;
+    const id = setInterval(() => {
+      if (live?.activity !== 'idle' || pendingFor(pid, sessionId).length === 0) return;
+      tickIdle(pid, 1000);
+      retickPending(t => t + 1);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [pid, sessionId, live?.activity]);
 
   /** Scroll bookkeeping for CONTENT changes -- new turns landing, or an
    *  older page prepended -- keyed on `page` alone, in a LAYOUT effect so it
@@ -861,6 +1031,33 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     if (stickyRef.current) el.scrollTop = el.scrollHeight;
     else setMissedLatest(true);
   }, [page]);
+
+  // A message the person just sent scrolls the pane to its own newest
+  // content, the same jump jumpToLatest performs -- but UNCONDITIONALLY,
+  // never gated by stickyRef the way an arriving AGENT turn is above (the
+  // KNOWN LIMITATION note on that effect is explicit about why that guard
+  // exists: yanking a reader who deliberately scrolled up is worse than the
+  // bug it would fix). Sending is always a deliberate action by the same
+  // person reading the pane, so there is no such reader-scrolled-up case to
+  // guard against here -- only the opposite risk, spec 4.1 step 1: showing
+  // them their own message with no sign at all that it landed, if they
+  // happened to be scrolled up at the moment they pressed Enter.
+  //
+  // Gated on pendingSentRef, which ONLY the optimistic ADD sets (see
+  // MessageBox's onPendingSent below) -- markQueued settling, a match
+  // dropping the entry, and the idle-tick interval all also bump
+  // pendingVersion (onPendingChange/retickPending, above), and re-scrolling
+  // on any of those would yank the reader away from wherever they had
+  // deliberately scrolled, for no reason connected to anything they did.
+  useLayoutEffect(() => {
+    if (!pendingSentRef.current) return;
+    pendingSentRef.current = false;
+    const el = scrollerRef.current;
+    if (el === null) return;
+    el.scrollTop = el.scrollHeight;
+    stickyRef.current = true;
+    setMissedLatest(false);
+  }, [pendingVersion]);
 
   const turns = page?.turns ?? [];
   const nextCursor = page?.nextCursor ?? null;
@@ -936,7 +1133,12 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     body = note(`This session's conversation could not be loaded. Reopening the session will try again.`);
   } else if (page === null) {
     body = note('Loading…');
-  } else if (page.turns.length === 0) {
+  } else if (page.turns.length === 0 && (pid === null || pendingFor(pid, sessionId).length === 0)) {
+    // The one exception to "empty means say so": a message just sent, still
+    // waiting on the agent's log to catch up, is not nothing -- "no
+    // conversation recorded" would be sitting right above the very message
+    // that contradicts it. A pending entry, when there is one, earns the
+    // convstack branch below instead of this note.
     body = note('No conversation recorded for this session.');
   }
 
@@ -1035,6 +1237,59 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                 </Fragment>
               );
             })}
+            {/* Pending sends (Task 9), after every loaded turn -- they are
+                always the newest thing in the pane. Reuses the same
+                article/meta/turn-text markup as a landed user turn, so a
+                pending message looks identical to one that has already
+                arrived, per the mockup David chose over a "Sending..."
+                label. Gone the instant the matchPending effect above finds
+                it in the log; until then it carries at most one label:
+                Queued while Codex is busy, or -- once genuinely idle for
+                NOT_SEEN_AFTER_MS -- a warning with the one real remedy this
+                box has, the Terminal. Claude's queued flag is simply false
+                whenever its status file cannot be read, so no Queued label
+                is an intentional, honest silence, not a missing state. */}
+            {pid !== null && pendingFor(pid, sessionId).map(p => {
+              const warn = p.idleMs >= NOT_SEEN_AFTER_MS;
+              return (
+                <article className="turn user pending" key={p.key}>
+                  <div className="meta">
+                    <span className="who">you</span>
+                    <span className="when">{formatTime(new Date(p.sentAt).toISOString())}</span>
+                  </div>
+                  {p.text && <p className="turn-text">{p.text}</p>}
+                  {p.attachments.length > 0 && (
+                    // A separate class from the composer's own .convchip
+                    // (ConversationView.css) on purpose: this chip is not
+                    // editable (no remove button), and reusing .convchip
+                    // would make a pending entry's chip count toward the
+                    // composer's own chip count in anything that queries
+                    // for it, which is exactly the mix-up this avoids.
+                    <div className="turn-chips">
+                      {p.attachments.map(a => (
+                        <div className="turn-chip" key={a.id}>
+                          {a.thumb
+                            ? <img src={a.thumb} alt="" />
+                            : (
+                              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+                                strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z" /><path d="M14 3.5v5h5" />
+                              </svg>
+                            )}
+                          <span>{a.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {warn ? (
+                    <div className="turn-state warn">
+                      <span>Not seen by {PROVIDER_NAME[provider]}</span>
+                      <button type="button" className="convsend" onClick={onOpenTerminal}>Open Terminal</button>
+                    </div>
+                  ) : p.queued && <div className="turn-state">Queued</div>}
+                </article>
+              );
+            })}
             </SessionIdContext.Provider>
           </div>
         )}
@@ -1042,12 +1297,30 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
       {missedLatest && (
         <button type="button" className="convjump" onClick={jumpToLatest}>Jump to latest</button>
       )}
+      {/* Between the scroller and the composer, never both at once: `live`
+          reports one `activity` at a time. The strip moved here from Task
+          10, which built the component and its own tests standalone --
+          this is its one render site, and ConversationView.tsx is the only
+          file Task 11 has open, which is why the two tasks stayed
+          sequential. `pid !== null` is checked on top of the activity
+          check, not folded into `live` itself: `live` already goes null
+          whenever `pid` does (useSessionLive's own doc comment), but this
+          keeps the strip from ever depending on that happening to be true. */}
+      {live?.activity === 'working' && pid !== null && (
+        <WorkingStrip provider={provider} since={live.since} />
+      )}
+      {live?.activity === 'waiting' && (
+        <WaitingCard provider={provider} onOpenTerminal={onOpenTerminal} />
+      )}
       {/* Keyed by pid so switching session remounts the box: its draft,
           any standing refusal and the choice prompt all belong to the
           session that produced them, and none should carry over to the
           next one. */}
-      <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux}
-        onOpenTerminal={onOpenTerminal} attachRef={attachRef} />
+      <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux} provider={provider}
+        waiting={live?.activity === 'waiting'}
+        onOpenTerminal={onOpenTerminal} attachRef={attachRef}
+        onPendingChange={() => retickPending(t => t + 1)}
+        onPendingSent={() => { pendingSentRef.current = true; }} />
     </div>
   );
 }

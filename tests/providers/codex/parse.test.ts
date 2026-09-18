@@ -167,6 +167,22 @@ describe('parseCodexLines', () => {
       expect(e.agentId).toBeNull();
     }
   });
+
+  it('treats an interrupted turn as the end of the turn', () => {
+    const lines = [
+      JSON.stringify({ type: 'event_msg', timestamp: '2026-09-17T04:31:40.000Z',
+        payload: { type: 'task_started', turn_id: 't1' } }),
+      JSON.stringify({ type: 'event_msg', timestamp: '2026-09-17T04:31:41.185Z',
+        payload: { type: 'turn_aborted', turn_id: 't1', reason: 'interrupted' } }),
+    ];
+    const events = parseCodexLines(lines.map((text, i) => ({ text, offset: i })), '/tmp/r.jsonl', {
+      sessionId: 's1', sessionStartEmitted: true,
+    });
+    const last = events[events.length - 1]!;
+    expect(last.kind).toBe('turn.completed');
+    expect(last.payload).toMatchObject({ aborted: true, reason: 'interrupted', turnId: 't1', durationMs: null });
+    expect(events.some(e => e.kind === 'unparsed')).toBe(false);
+  });
 });
 
 // B2: session_meta -- the only source of sessionId, and (for a subagent

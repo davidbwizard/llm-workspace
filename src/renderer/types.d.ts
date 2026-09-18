@@ -5,6 +5,7 @@ import type { LaunchResult } from '../main/launch.ts';
 import type { ImageResult } from '../main/images.ts';
 import type { AttachmentResult } from '../main/attachments.ts';
 import type { StageResult } from '../main/staging.ts';
+import type { SessionLivePayload } from '../main/sessionLive.ts';
 
 declare global {
   interface Window {
@@ -42,6 +43,12 @@ declare global {
       detach: (pid: number) => Promise<unknown>;
       resize: (pid: number, cols: number, rows: number) => Promise<unknown>;
       sendRaw: (pid: number, data: string) => Promise<unknown>;
+      // Which session's conversation is on screen; pid: null stops
+      // watching. Main revalidates pid itself (src/main/sessionLive.ts's
+      // watchSessionFor) -- this typing narrows nothing at the trust
+      // boundary. Resolves to whether a session is now being watched.
+      watchSession: (pid: number | null) => Promise<boolean>;
+      onSessionLive: (cb: (payload: SessionLivePayload) => void) => () => void;
       // Opens the native folder picker; resolves to the chosen absolute
       // path, or null if the user cancelled. main still revalidates
       // whatever comes back (isAbsolutePath in session:launch) -- this

@@ -1,0 +1,36 @@
+/* The strip that sits between the scroller and the message box while the
+   open session's agent is working -- design option C from
+   live-feedback-options.html (the Live Feedback Options artifact), the one
+   David picked after seeing it beside the terminal's line (A) and a
+   written-reply placeholder (B). Values below are copied verbatim from
+   that artifact's .strip rules and the pulse keyframes it shares with
+   option B's dots -- except the svg rule, which targets ProviderMark
+   directly rather than the artifact's own .who wrapper span: this
+   component renders ProviderMark as a plain child, with no such wrapper. */
+.strip {
+  display:flex; align-items:center; gap:8px; padding:6px 16px;
+  border-top:1px solid var(--line-soft); background:var(--accent-soft);
+  font-family:var(--f-mono); font-size:12px; color:var(--ink-2);
+}
+.strip .dot {
+  width:7px; height:7px; border-radius:50%; background:var(--accent);
+  animation:pulse 1.2s ease-in-out infinite;
+}
+.strip svg { display:block; color:var(--accent); }
+.strip .secs { color:var(--faint); font-variant-numeric:tabular-nums; }
+
+@keyframes pulse {
+  0%, 60%, 100% { opacity:.3; }
+  30% { opacity:1; }
+}
+
+/* theme.css already has a blanket `* { animation:none !important; }` under
+   this same media query, so this rule never actually fires anything the
+   global one wouldn't -- kept anyway because it's what the artifact itself
+   declares for .strip .dot specifically (its own opacity:.8, not just
+   theme.css's default stopped-frame opacity), so this component's CSS
+   matches the design source on its own, without relying on a global rule
+   defined elsewhere to make it correct. */
+@media (prefers-reduced-motion: reduce) {
+  .strip .dot { animation:none; opacity:.8; }
+}

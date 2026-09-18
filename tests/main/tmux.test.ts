@@ -30,6 +30,14 @@ describe('tmux argv construction', () => {
     expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
   });
 
+  // Tab is the second real caller: sendKeysFor (ipc.ts) sends it in place of
+  // Enter to queue a message rather than submit it into a busy Codex turn.
+  it('sends Tab without -l, in its own call', () => {
+    const s = spy();
+    sendKeyName('llmws-codex-abc', 'Tab', s.exec);
+    expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-codex-abc:', 'Tab']);
+  });
+
   // The `KeyName` union stops this at compile time; this test proves the
   // allowlist ALSO holds at runtime, for a caller reached through a
   // boundary (e.g. IPC) that has already widened the type back to string.

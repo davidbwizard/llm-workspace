@@ -167,6 +167,14 @@
 .convsend { margin-left:8px; font-family:var(--f-mono); font-size:11px; color:var(--accent);
   background:none; border:1px solid var(--line); border-radius:20px; padding:3px 10px; cursor:pointer; }
 .convsend:hover { border-color:color-mix(in srgb,var(--accent) 40%,transparent); }
+/* The composer's own Send button (Conversation Pane Mockup's `.composer
+   .send`) -- a distinct class from .convsend above on purpose: that one is
+   the small pill-shaped text link used for "Open Terminal" inside a
+   refusal message, not this row's actual submit control, and the two must
+   not end up sharing a rule meant for only one of them. */
+.convsubmit { font:inherit; font-size:14px; font-weight:600; color:var(--ink); background:var(--raised);
+  border:1px solid var(--line); border-radius:var(--r-sm); padding:8px 14px; cursor:pointer; }
+.convsubmit:disabled { opacity:.45; cursor:default; }
 
 /* One-click copy: an always-visible icon under each agent reply and in the
    bottom-right corner of each code block; its native tooltip reads Copy.
@@ -217,3 +225,31 @@
   background:color-mix(in srgb, var(--surface) 88%, transparent); }
 .convdrop p { margin:0; font-size:16px; font-weight:600; color:var(--ink); text-align:center; }
 .convdrop small { display:block; font-weight:400; font-size:13px; color:var(--muted); }
+
+/* Task 9 (2026-09-17-live-conversation-feedback): the label under a pending
+   message -- Queued while Codex is busy, or a warning once NOT_SEEN_AFTER_MS
+   has passed with no sign of it in the agent's log. Values (mono, 12px,
+   --faint, and --signal for the warning) copied from the Live Feedback
+   Options artifact's own .state / .state.warn rules -- renamed to
+   .turn-state here, since stylesheets are global in this app and plain
+   .state already belongs to SessionCard.css's session-status badge (an
+   unrelated dot/working/waiting_permission/error rule); reusing it would
+   have put that badge's own margin-left:auto/gap:6px underneath this
+   label. --signal, not --critical, for the same "deliberately less urgent"
+   reason as .convcount-warn above -- this is a delay, not something
+   waiting on the person to answer. */
+.turn-state { margin-top:6px; font-family:var(--f-mono); font-size:12px; color:var(--faint);
+  display:flex; flex-wrap:wrap; gap:4px 8px; align-items:center; }
+.turn-state.warn { color:var(--signal); }
+/* A pending entry's own attachment chips -- the same small chip look as the
+   composer's .convchip above, minus the remove button (nothing here is
+   still editable), and under a DIFFERENT class on purpose: reusing
+   .convchip would make a pending entry's chip count toward the composer's
+   own (ConversationView.test.tsx's chips() helper queries .convchip alone,
+   scoped to the box being composed, not to anything already sent). */
+.turn-chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; }
+.turn-chip { display:flex; align-items:center; gap:8px; max-width:260px; padding:4px 6px 4px 4px;
+  background:var(--raised); border:1px solid var(--line); border-radius:var(--r-sm); }
+.turn-chip img { display:block; width:40px; height:30px; object-fit:cover; border-radius:5px; }
+.turn-chip svg { display:block; flex:none; width:22px; height:22px; margin:4px 9px; color:var(--muted); }
+.turn-chip span { font-size:12px; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

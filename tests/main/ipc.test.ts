@@ -942,7 +942,7 @@ describe('session:keys', () => {
       capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
       send: (args: string[], input?: string) => { calls.push({ args, input }); return { ok: true, stdout: '' }; },
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     // The buffer name is per-send (pid + counter), so it is captured from
     // the load call rather than hardcoded -- and the paste MUST name that
     // same buffer, which is the property that actually matters.
@@ -977,7 +977,7 @@ describe('session:keys', () => {
       capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
       send: (args: string[], input?: string) => { calls.push({ args, input }); return { ok: true, stdout: '' }; },
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     const buffer = calls[0]!.args[2]!;
     expect(calls.map(c => c.args)).toEqual([
       ['load-buffer', '-b', buffer, '-'],
@@ -1003,7 +1003,7 @@ describe('session:keys', () => {
         ? { ok: false, error: 'no pane' }
         : { ok: true, stdout: '' }),
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     expect(errs).toHaveBeenCalledWith('tmux send-keys (Enter) failed:', 'no pane');
     errs.mockRestore();
   });
@@ -1070,7 +1070,7 @@ describe('session:keys', () => {
         ? { ok: false, error: 'no pane' }
         : { ok: true, stdout: '' }),
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     expect(errs).toHaveBeenCalledWith('tmux send-keys (Enter) failed:', 'no pane');
     errs.mockRestore();
   });
@@ -1133,7 +1133,7 @@ describe('session:keys', () => {
       // real time passes in this test.
       sleep: () => { sleepCalls += 1; },
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     expect(sendCalls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
     expect(sendCalls.at(-1)).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
     // 1 pre-paste capture + 3 settle-loop checks (two "no change" and the
@@ -1165,7 +1165,7 @@ describe('session:keys', () => {
       send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
       sleep: () => { sleepCalls += 1; },
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     expect(sendCalls.at(-1)).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
     // 1 pre-paste capture + PASTE_SETTLE_ATTEMPTS settle-loop checks, none
     // of which ever see a change, with a sleep between each of the latter.
@@ -1204,7 +1204,7 @@ describe('session:keys', () => {
       send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
       sleep: () => { sleepCalls += 1; },
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     expect(sendCalls.at(-1)).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
     // 1 pre-paste capture + exactly ONE settle-loop attempt, which fails and
     // breaks the loop immediately -- never the full PASTE_SETTLE_ATTEMPTS,
@@ -1262,7 +1262,7 @@ describe('session:keys', () => {
         return { ok: true, stdout: '' };
       },
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     // The mode is read and left BEFORE the liveness/settle baseline is
     // captured: leaving copy-mode itself redraws the pane, so a baseline
     // taken first would make the settle loop trip on the redraw rather
@@ -1289,7 +1289,7 @@ describe('session:keys', () => {
       },
       send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     // Exactly the three calls this path has always made -- an ordinary
     // send is not given an extra outbound command it does not need.
     expect(sendCalls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
@@ -1306,7 +1306,7 @@ describe('session:keys', () => {
         : { ok: true, stdout: `c${captureCalls++}` }),
       send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     expect(sendCalls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', '-X', 'cancel']);
     expect(sendCalls.map(c => c[0])).toEqual(['send-keys', 'load-buffer', 'paste-buffer', 'send-keys']);
   });
@@ -1354,7 +1354,7 @@ describe('session:keys', () => {
       },
       send: (args: string[]) => { sendCalls.push(args); return { ok: true, stdout: '' }; },
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     expect(sendCalls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
   });
 
@@ -1381,7 +1381,7 @@ describe('session:keys', () => {
 
     it('pastes each image path, quoted and alone, then the text, then Enter', () => {
       const { r, calls } = sendWith('what are these?', [IMG1, IMG2]);
-      expect(r).toEqual({ status: 'sent' });
+      expect(r).toEqual({ status: 'sent', queued: false });
       expect(calls.map(c => c.args[0])).toEqual([
         'load-buffer', 'paste-buffer', 'load-buffer', 'paste-buffer', 'load-buffer', 'paste-buffer', 'send-keys',
       ]);
@@ -1392,7 +1392,7 @@ describe('session:keys', () => {
 
     it('sends images with no text at all', () => {
       const { r, calls } = sendWith('', [IMG1]);
-      expect(r).toEqual({ status: 'sent' });
+      expect(r).toEqual({ status: 'sent', queued: false });
       expect(calls.map(c => c.args[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
       expect(calls[0]!.input).toBe(`'${IMG1}'`);
     });
@@ -1415,7 +1415,7 @@ describe('session:keys', () => {
     // in the same paste.
     it('lists attached files ahead of the text, in one paste', () => {
       const { r, calls } = sendWith('summarise these', [], ['/private/f/a/report.pdf', '/private/f/b/notes.md']);
-      expect(r).toEqual({ status: 'sent' });
+      expect(r).toEqual({ status: 'sent', queued: false });
       expect(calls.map(c => c.args[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
       expect(calls[0]!.input).toBe("Attached file: '/private/f/a/report.pdf'\nAttached file: '/private/f/b/notes.md'\nsummarise these");
     });
@@ -1450,7 +1450,7 @@ describe('session:keys', () => {
       capture: () => ({ ok: true, stdout: `c${captureCalls++}` }),
       send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     expect(calls).toHaveLength(3);
     // A message that is literally "Enter" travels as buffer contents on
     // stdin, never as an argv entry tmux could read as a key name.
@@ -1502,9 +1502,102 @@ describe('session:keys', () => {
       send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
       promptOpen: () => false,
     });
-    expect(r).toEqual({ status: 'sent' });
+    expect(r).toEqual({ status: 'sent', queued: false });
     expect(calls.map(c => c[0])).toEqual(['load-buffer', 'paste-buffer', 'send-keys']);
     expect(calls[2]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'Enter']);
+  });
+
+  // The brief's own Step 1 draft for these three tests omitted
+  // registerSession, which left tmuxNameForPid(4821) resolving to null and
+  // every one of them failing on not_tmux rather than on the queued/busy
+  // behaviour they exist to pin -- added here to match every other test in
+  // this describe block.
+  it('queues with Tab instead of Enter when codex is mid-turn', () => {
+    registerSession(4821, 'llmws-codex-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'hello', {
+      has: () => true,
+      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+      capture: () => ({ ok: true, stdout: '' }),
+      sleep: () => {},
+      busy: () => true,
+      provider: () => 'codex',
+    });
+    expect(r).toEqual({ status: 'sent', queued: true });
+    expect(calls.at(-1)).toContain('Tab');
+    expect(calls.flat()).not.toContain('Enter');
+  });
+
+  // Fix round 1 (review finding): the pre-fix key choice was `queued ?
+  // 'Tab' : 'Enter'' with no provider check, and busyForPid (registerIpc)
+  // answers "is this pid mid-turn" for Claude too, to drive `queued` (the
+  // label) for both providers -- so a busy CLAUDE was sent Tab. Tab is a
+  // Codex affordance, discovered from Codex's own "tab to queue message"
+  // hint (KNOWN_ISSUES.md 2026-09-17) and never verified to mean anything
+  // in Claude Code's TUI -- plausibly autocomplete or a mode key there.
+  // Claude already queues a message sent on Enter while busy by itself
+  // (KeysDeps.busy's own doc comment), so sending Tab instead would risk
+  // leaving it unsubmitted in the input line -- exactly the failure this
+  // task removes for Codex. These two pin that Tab now fires only when
+  // busy AND the provider is affirmatively codex.
+  it('does not send Tab to a busy Claude -- Claude queues on Enter by itself', () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'hello', {
+      has: () => true,
+      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+      capture: () => ({ ok: true, stdout: '' }),
+      sleep: () => {},
+      busy: () => true,
+      provider: () => 'claude',
+    });
+    expect(r).toEqual({ status: 'sent', queued: true });
+    expect(calls.at(-1)).toContain('Enter');
+    expect(calls.flat()).not.toContain('Tab');
+  });
+
+  it('sends Enter, not Tab, when busy is true but the provider cannot be told', () => {
+    registerSession(4821, 'llmws-codex-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'hello', {
+      has: () => true,
+      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+      capture: () => ({ ok: true, stdout: '' }),
+      sleep: () => {},
+      busy: () => true,
+      provider: () => null,
+    });
+    expect(r).toEqual({ status: 'sent', queued: true });
+    expect(calls.at(-1)).toContain('Enter');
+    expect(calls.flat()).not.toContain('Tab');
+  });
+
+  it('submits with Enter when the agent is idle', () => {
+    registerSession(4821, 'llmws-codex-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'hello', {
+      has: () => true,
+      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+      capture: () => ({ ok: true, stdout: '' }),
+      sleep: () => {},
+      busy: () => false,
+    });
+    expect(r).toEqual({ status: 'sent', queued: false });
+    expect(calls.at(-1)).toContain('Enter');
+  });
+
+  it('sends the way it always did when the busy check cannot tell', () => {
+    registerSession(4821, 'llmws-codex-abc');
+    const calls: string[][] = [];
+    const r = sendKeysFor(4821, 'hello', {
+      has: () => true,
+      send: (args: string[]) => { calls.push(args); return { ok: true, stdout: '' }; },
+      capture: () => ({ ok: true, stdout: '' }),
+      sleep: () => {},
+      busy: () => null,
+    });
+    expect(r).toEqual({ status: 'sent', queued: false });
+    expect(calls.at(-1)).toContain('Enter');
   });
 });
 

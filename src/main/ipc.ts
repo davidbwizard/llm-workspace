@@ -20,7 +20,7 @@ import {
   getCachedLiveProcesses, refreshLiveProcesses, execFileSoft, readLiveSession, type ExecFn,
 } from '../discovery/live.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
-import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveSession.ts';
+import type { LiveSessionRead } from '../providers/claude/liveSession.ts';
 import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { readSessionImage } from './images.ts';
@@ -36,6 +36,10 @@ import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './strea
 import { conversationFor, turnSource, type ConversationCursor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
 import { launchSession, reattachSession, resumeSession, type LaunchResult } from './launch.ts';
+import { isCodexBusy } from './codexBusy.ts';
+import {
+  buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, type WatchDeps,
+} from './sessionLive.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -249,50 +253,13 @@ export function refreshPushEnrichment(db: Db, processes: LiveProcess[], now: num
   cachedPushOpenSessions = openSessionsLive(db, processes, now, { isTmux: pidIsTmux, launchedAtForPid });
 }
 
-/** The pid's live session file, re-read now, trusted only if its startedAt
- *  is the one discovery verified (stable across `/clear`, different for any
- *  other process). null for Codex, for a process discovery never verified,
- *  and for a failed or mismatched read. Shared by Reattach and Reply so the
- *  two cannot drift on what counts as a fresh, exact read. */
-export function freshLiveSession(
-  pid: number, processes: LiveProcess[], read: (pid: number) => LiveSessionRead,
-): LiveSessionFile | null {
-  const proc = processes.find(p => p.pid === pid);
-  if (proc?.provider !== 'claude' || !proc.liveSession) return null;
-  const fresh = read(pid);
-  return fresh.ok && fresh.file.startedAtMs === proc.liveSession.startedAtMs ? fresh.file : null;
-}
-
-/** session:reattach's session lookup: which session (id, provider, cwd) a
- *  live pid belongs to. Reads the exact same enriched cache pushFleet
- *  already maintains (cachedPushOpenSessions, refreshed by
- *  refreshPushEnrichment above) rather than running a query of its own --
- *  reattachSession (src/main/launch.ts) has no database or discovery access
- *  itself, by design, so this is the one place that resolves the pid before
- *  handing it in as an injected dependency. sessionId is only ever non-null
- *  on a `unique` match (OpenSession's own doc comment, src/fleet/state.ts)
- *  -- unique now covers an exact live-session match as well as a unique cwd
- *  match (spec §3.3) -- an ambiguous or unmatched pid still resolves to
- *  null here, which reattachSession treats as "cannot identify", never a
- *  guess.
- *
- *  Exact identity first (spec 2026-09-15-exact-session-identity-design.md
- *  §3.5): the enriched cache can be up to one sweep old, and a `/clear` in
- *  that window changes the session id. Uses freshLiveSession (above) for
- *  that fresh, verified read -- the same helper Reply's promptOpenFor
- *  (below) uses, so the two cannot drift on what counts as fresh. Anything
- *  else falls back to the cache exactly as before. */
-export function resolveReattachTarget(
-  pid: number,
-  deps: { cached: OpenSession[]; processes: LiveProcess[]; read: (pid: number) => LiveSessionRead },
-): { sessionId: string; provider: Provider; cwd: string } | null {
-  const fresh = freshLiveSession(pid, deps.processes, deps.read);
-  if (fresh) return { sessionId: fresh.sessionId, provider: 'claude', cwd: fresh.cwd };
-
-  const open = deps.cached.find(o => o.pid === pid);
-  if (!open || open.sessionId === null || open.cwd === null) return null;
-  return { sessionId: open.sessionId, provider: open.provider, cwd: open.cwd };
-}
+// freshLiveSession/resolveReattachTarget now live in src/main/sessionLive.ts
+// (Task 6, session:watch below) -- that module needs to be imported BY this
+// one (buildSessionLive, watchSessionFor), and it used to import these two
+// FROM here, which would have made that a cycle. Re-exported (not just
+// imported) so every existing caller of `./ipc.ts`'s freshLiveSession/
+// resolveReattachTarget (tests/main/ipc.test.ts) keeps working unchanged.
+export { freshLiveSession, resolveReattachTarget };
 
 /** Whether Claude is showing a choice (a question picker or a permission
  *  prompt) for this pid right now. A typed reply cannot answer one: the
@@ -713,7 +680,9 @@ export async function revealSession(rawPid: unknown, opts: {
 }
 
 export type KeysRefusalReason = 'not_tmux' | 'session_gone' | 'invalid_pid' | 'prompt_open' | 'attachment_gone' | OutboundRefusal;
-export type KeysResult = { status: 'sent' } | { status: 'refused'; reason: KeysRefusalReason };
+export type KeysResult =
+  | { status: 'sent'; queued: boolean }
+  | { status: 'refused'; reason: KeysRefusalReason };
 
 type KeysDeps = {
   has?: (n: string) => boolean;
@@ -730,6 +699,15 @@ type KeysDeps = {
    *  waitForPasteToSettle (below) uses -- see defaultSleep's doc comment.
    *  The one production caller never passes this. */
   sleep?: (ms: number) => void;
+  /** Whether the receiving agent is mid-turn: true, false, or null when it
+   *  cannot be told. Injected so tests never touch a real rollout file or
+   *  status file. Production passes the closure built in registerIpc. */
+  busy?: (pid: number) => boolean | null;
+  /** Which provider is at this pid, or null when it cannot be told. Used
+   *  only to gate Tab-to-queue (see the key choice in sendKeysFor below) --
+   *  it is not consulted for anything else here. Production passes the
+   *  closure built in registerIpc; tests inject a fixed answer. */
+  provider?: (pid: number) => Provider | null;
 };
 
 /** Counter behind nextPasteBuffer, below. */
@@ -986,13 +964,41 @@ export function sendKeysFor(
       if (now.ok) before = now.stdout;
     }
   }
-  // The paste has already landed in the session by this point, so a
-  // failed Enter is logged, not refused: refusing here would tell the
-  // user the send failed and invite a retry, which would submit a
-  // duplicate of text that is already sitting in the pane's input line.
-  const entered = sendKeyName(name, 'Enter', deps.send);
-  if (!entered.ok) console.error('tmux send-keys (Enter) failed:', entered.error);
-  return { status: 'sent' };
+  // A busy Codex does not submit on Enter at all -- it shows "tab to queue
+  // message" and leaves the text in its input line, which used to be
+  // reported here as a successful send (KNOWN_ISSUES.md, measured
+  // 2026-09-16). Tab queues it instead, and the caller is told, so the
+  // conversation can label the message Queued rather than claim it landed.
+  // deps.busy is asked, never assumed: `undefined` (no dep given, e.g.
+  // every existing test above) and `null` (the real check could not tell,
+  // src/main/codexBusy.ts) both fall through to today's Enter behaviour --
+  // a wrong "busy" reading now files a message into the wrong turn rather
+  // than losing it (measured 2026-09-17: an Enter sent while Codex is busy
+  // interleaves into the running turn about nine seconds later instead of
+  // being silently stranded), so this only queues on a definite `true`.
+  //
+  // `queued` (the label) and the KEY are two different questions, and
+  // conflating them was a real bug caught in review: busyForPid
+  // (registerIpc) answers "is this pid mid-turn" for Claude too, since that
+  // is also what the label needs, but Tab is a Codex-only affordance --
+  // discovered from Codex's own "tab to queue message" hint, never verified
+  // to mean anything in Claude Code's TUI (plausibly autocomplete or a mode
+  // key there). Claude already queues a message sent on Enter while busy
+  // by itself, so sending it Tab instead would risk leaving it unsubmitted
+  // in the input line -- exactly the failure this task removes for Codex.
+  // Tab therefore fires only when BOTH are true: busy, and deps.provider
+  // affirmatively says codex -- unset, unresolvable (null), or any other
+  // provider all fall back to Enter, same as an unset or null busy does.
+  //
+  // The paste has already landed in the session by this point, so a failed
+  // key send is logged, not refused: refusing here would tell the user the
+  // send failed and invite a retry, which would submit a duplicate of text
+  // that is already sitting in the pane's input line.
+  const queued = deps.busy?.(pid) === true;
+  const key = queued && deps.provider?.(pid) === 'codex' ? 'Tab' : 'Enter';
+  const entered = sendKeyName(name, key, deps.send);
+  if (!entered.ok) console.error(`tmux send-keys (${key}) failed:`, entered.error);
+  return { status: 'sent', queued };
 }
 
 // ---------------------------------------------------------------------
@@ -1317,6 +1323,29 @@ export function registerIpc(
     typeof sessionId === 'string'
       ? conversationFor(db, sessionId, undefined, parseConversationCursor(cursor))
       : { turns: [], nextCursor: null });
+  // Which pid's conversation is on screen -- watchSessionFor
+  // (src/main/sessionLive.ts) revalidates pid itself (a positive integer
+  // already present in a real discovery sweep) regardless of what this
+  // `typeof` check narrows; that is the actual trust boundary, not this
+  // line. BrowserWindow.fromWebContents(event.sender), same pattern as
+  // session:attach below, so a push always reaches the window that asked
+  // to watch rather than a module-level "mainWindow" this file does not
+  // otherwise hold a reference to. `buildPayload`/`processes` are read
+  // fresh on every call -- see WatchDeps' own doc comment -- so a session
+  // that ends, or whose activity changes, between pushes is reflected on
+  // the very next one rather than frozen at whatever it was when the watch
+  // started.
+  ipcMain.handle('session:watch', (event, pid: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const validPid = typeof pid === 'number' ? pid : null;
+    const deps: WatchDeps = {
+      processes: getCachedLiveProcesses,
+      buildPayload: () => validPid === null ? null
+        : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), { cached: cachedPushOpenSessions }),
+      send: payload => { if (win && !win.isDestroyed()) win.webContents.send('session:live', payload); },
+    };
+    return watchSessionFor(validPid, deps);
+  });
   // An image a reply links to, as a data: URL. The session's folder comes
   // from main's own event log; see src/main/images.ts for every check.
   ipcMain.handle('session:image', async (_event, sessionId: unknown, src: unknown) => {
@@ -1337,6 +1366,39 @@ export function registerIpc(
   // Bytes only, never a path: see src/main/staging.ts.
   ipcMain.handle('session:stage-image', (_event, bytes: unknown) => stager.stage(bytes));
   ipcMain.handle('session:stage-file', (_event, bytes: unknown, name: unknown) => fileStager.stage(bytes, name));
+  // sendKeysFor's busy dep -- the real check, as opposed to the injected
+  // fakes every test above drives. Claude decides on its own live-session
+  // status file, read fresh the same way Reattach/Reply already trust
+  // (freshLiveSession); Codex has no such file, so it goes through its
+  // rollout tail instead (isCodexBusy, src/main/codexBusy.ts), for whichever
+  // session resolveReattachTarget resolves this pid to -- the same lookup
+  // Reattach uses, so this cannot land on a different session than the one
+  // the rest of the app already treats this pid as belonging to. Both
+  // branches return null on anything they cannot resolve, and sendKeysFor
+  // treats null exactly like "no busy dep at all": Enter, queued: false.
+  const busyForPid = (pid: number): boolean | null => {
+    const proc = getCachedLiveProcesses().find(p => p.pid === pid);
+    if (!proc) return null;
+    if (proc.provider === 'claude') {
+      // Claude queues on Enter by itself; this only decides the label.
+      const live = freshLiveSession(pid, getCachedLiveProcesses(), readLiveSession);
+      return live === null ? null : live.status === 'busy';
+    }
+    const target = resolveReattachTarget(pid, {
+      cached: cachedPushOpenSessions, processes: getCachedLiveProcesses(), read: readLiveSession,
+    });
+    return target === null ? null : isCodexBusy(db, target.sessionId);
+  };
+  // sendKeysFor's provider dep -- gates Tab-to-queue to Codex alone (fix
+  // round 1, review finding: busyForPid above answers "mid-turn" for both
+  // providers, because `queued` needs that for both, but the KEY must not
+  // -- see the comment at sendKeysFor's key choice). The same discovery
+  // lookup busyForPid already opens, read again here rather than folded
+  // into one dep: KeysDeps keeps busy/provider as two independently
+  // injectable questions, so a test can answer one without faking the
+  // other.
+  const providerForPid = (pid: number): Provider | null =>
+    getCachedLiveProcesses().find(p => p.pid === pid)?.provider ?? null;
   ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown, attach: unknown): KeysResult => {
     // Ids the stagers issued, resolved to the files they wrote. An id they
     // do not know (a stale chip after an app restart, or anything forged)
@@ -1351,7 +1413,7 @@ export function registerIpc(
     const images = imageIds.map(id => stager.pathFor(id));
     const files = fileIds.map(id => fileStager.pathFor(id));
     if ([...images, ...files].some(p => p === null)) return gone;
-    return sendKeysFor(pid, text, {}, images as string[], files as string[]);
+    return sendKeysFor(pid, text, { busy: busyForPid, provider: providerForPid }, images as string[], files as string[]);
   });
   ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
 

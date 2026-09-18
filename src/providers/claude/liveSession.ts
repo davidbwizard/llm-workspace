@@ -24,6 +24,15 @@ export type LiveSessionFile = {
    *  this code does not recognise -- an unknown status never rejects the
    *  file, it only falls back to the transcript-based activity rule. */
   status: LiveSessionStatus | null;
+  /** Epoch ms Claude Code last flipped `status`. Optional, not
+   *  `| undefined`-free, for the same reason LiveProcess.ageSeconds/
+   *  rssBytes are (src/discovery/parse.ts): every LiveSessionFile literal
+   *  already in the codebase predates this field and stays typechecking
+   *  unchanged. null when absent or not a finite number -- same tolerance
+   *  as startedAtMs above, and for the same reason: an unrecognised shape
+   *  here must never reject the whole file, only leave buildSessionLive
+   *  (src/main/sessionLive.ts) with no "since" to show for a busy session. */
+  statusUpdatedAtMs?: number | null;
 };
 
 export type LiveSessionReadFailure =
@@ -57,7 +66,9 @@ export function parseLiveSessionFile(text: string, pid: number): LiveSessionFile
   if (typeof r.cwd !== 'string' || !r.cwd.startsWith('/')) return null;
   if (typeof r.startedAt !== 'number' || !Number.isFinite(r.startedAt)) return null;
   const status = typeof r.status === 'string' && STATUSES.has(r.status) ? r.status as LiveSessionStatus : null;
-  return { sessionId: r.sessionId, cwd: r.cwd, startedAtMs: r.startedAt, status };
+  const statusUpdatedAtMs =
+    typeof r.statusUpdatedAt === 'number' && Number.isFinite(r.statusUpdatedAt) ? r.statusUpdatedAt : null;
+  return { sessionId: r.sessionId, cwd: r.cwd, startedAtMs: r.startedAt, status, statusUpdatedAtMs };
 }
 
 /** Opens with O_NOFOLLOW so a symlink is refused at open time rather than

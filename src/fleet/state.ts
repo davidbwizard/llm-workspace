@@ -139,8 +139,10 @@ export function activityFromLiveStatus(status: LiveSessionStatus | null | undefi
  *  per-row map uses below, factored out so the targeted open-session
  *  enrichment path (openSessionsLive, further down) computes activity
  *  identically rather than a second implementation that could quietly
- *  drift from this one. */
-function deriveActivity(opts: {
+ *  drift from this one. Also used by buildSessionLive (src/main/
+ *  sessionLive.ts) for the open conversation, so the pane and the cards
+ *  can never disagree. */
+export function deriveActivity(opts: {
   lastTs: string | null; lastKind: string | null; blocker: Blocker | null;
   hasMatchedProcess: boolean; hasLiveSignal: boolean; now: number;
   /** From the matched process's live session file, when there is one. It

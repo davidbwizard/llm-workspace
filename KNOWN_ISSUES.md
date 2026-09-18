@@ -49,6 +49,116 @@ message; Escape presses between runs put Codex in backtrack mode; and a busy
 Codex does not submit on Enter at all ("tab to queue message"). Codex's own
 session log settled what the screen could not.
 
+## FIXED 2026-09-17: an interrupted Codex turn read as working forever
+
+Codex emits `turn_aborted` instead of `task_complete` when a turn is
+interrupted (Esc), and never sends `task_complete` afterwards. The parser
+did not recognize `turn_aborted` as a turn end, so the session's last kind
+was never a turn end, and the card read "working" for as long as the Codex
+process stayed alive.
+
+**The fix.** The `event_msg` switch now treats `turn_aborted` as a turn end
+too, emitting `turn.completed` with `aborted: true` and the reason from the
+payload (`src/providers/codex/parse.ts`).
+
+**The parser version was deliberately not bumped.** A version bump would
+force a full re-read of every historical Codex file on next launch -- 33.5
+seconds of blocked main process, measured against 617 files (260 MB) on
+2026-09-17. Skipping it means a `turn_aborted` record written before this
+fix stays stored under the old, unparsed reading. That cannot matter in
+practice: a session only reads as "working" while its last event is within
+`ACTIVE_MS` (30 minutes, `src/fleet/state.ts`) of now, so a session old
+enough to carry a pre-fix `turn_aborted` has already aged out of "working"
+by the time the fix lands.
+
+Commit: `3effd6d`.
+
+## Sending to a busy Codex (measured 2026-09-17)
+
+The entry above's method note found that a busy Codex does not submit on
+Enter at all, and that Codex's own UI says "tab to queue message". Measured
+today whether Tab actually queues, and what it does on an idle session --
+by the same rule as before, from Codex's own rollout file, never the
+screen.
+
+Locating the right rollout file needed a correction too. `~/.codex/sessions/
+<date>/` is shared machine-wide; a real, unrelated session was actively
+writing new files there while this ran, so "sort filenames, take the
+newest" would have picked up someone else's session, not this measurement's
+own. `~/.codex/state_5.sqlite` has a `threads` table with `cwd` and
+`rollout_path` columns kept in sync live -- looking up the row for this
+session's own tmux cwd gives the exact file instead.
+
+**Detector validated first**, against a real busy/idle pair on one session:
+a tagged message sent on a 900-line counting turn (confirmed genuinely
+still running throughout -- the screen's own "Working (...)" indicator, and
+an unchanged task_complete count in the rollout), and again once idle.
+
+| condition | Enter | Tab |
+|---|---|---|
+| busy (confirmed still running) | submitted **~9s later**, while the original turn was still in progress -- not dropped | **queued** -- shown immediately in Codex's own "Queued follow-up inputs" panel, submitted within ~1s of the turn ending |
+| idle | submitted ~2s later | submitted ~1s later -- same as Enter, no indentation or completion popup |
+
+**Tab queues reliably.** On a confirmed-busy session it never showed as
+submitted while the turn was still running, and the queued message went
+out within about a second of the turn ending -- matching Codex's own
+hint. On an idle session Tab behaves like Enter: it submits.
+
+**busy+Enter no longer strands the message.** That is a change from the
+entry above, measured the same reported version (`0.154.0`) as
+2026-09-16. Not chased further here -- Task 3's question was about Tab, not
+re-litigating Enter -- but it means a busy Codex reached by the wrong path
+today risks the message landing in the live turn rather than being either
+queued or safely dropped, worth keeping in mind if that path is ever relied
+on again.
+
+**Method note.** Codex's own UI does render "queued" recognizably
+differently from "submitted" here (the "Queued follow-up inputs" panel),
+unlike the submitted/unsubmitted case the entry above warns about. The
+verdict was still the rollout file throughout, per the standing rule --
+the screen was read only to sanity-check it, never to replace it.
+
+## A slow trust-prompt accept can permanently hide a session's waiting card
+
+Found live on 2026-09-17, driving two throwaway Claude sessions in `tmux`.
+
+Claude rewrites `~/.claude/sessions/<pid>.json`'s `startedAt` when the
+folder-trust prompt is accepted, to the moment session identity was
+re-established, not the moment the OS process actually started.
+`readLiveSession`'s `startTimeAgrees` check (`src/providers/claude/
+liveSession.ts`) compares that `startedAt` against the process's real age
+from `ps`, with a 5-second tolerance. If the trust screen is left open
+longer than that, the check never agrees again, for the life of the
+process -- `freshLiveSession` returns `null` for that pid permanently, so
+`liveStatus` never reaches `deriveActivity`, and that session never shows a
+waiting card for a permission prompt, a plan approval, or a question. It is
+logged (`session file ignored (start time does not match the process)`)
+and nothing else surfaces it.
+
+**Measured**: accepting the trust prompt in ~1.5s left the session reading
+correctly for its whole life; accepting it in ~15s (reading the security
+notice, getting distracted -- plausible on a first run) broke it
+permanently.
+
+**Likely fix, not yet tried.** The same status file carries a separate
+`procStart` field holding the process's actual start time. Comparing
+against that instead of the rewritten `startedAt` would not be fooled by a
+slow accept. Needs its own measurement before changing anything.
+
+This is Part 1's exact-session-identity code, not this feature's, and
+predates this branch.
+
+## Claude hooks are not installed on this machine
+
+`probeCapabilities()` reports `hooksInstalled: false`. The hooks in
+`~/.claude/settings.json` are all the user's own (`block-env-read.sh`,
+`block-destructive-bash.sh`, `claude-notify.sh`); none match
+`isOwnedHookCommand`. That means `openBlockers` (`src/store/signals.ts`)
+never has a row to find, for any session, so on this machine `waiting` can
+only ever come from Claude's own live-session status file, never from the
+hook-based blocker path the code also supports. Part 4 (quick responses)
+needs a decision on this.
+
 ## FIXED 2026-09-16: a message sent to a pane in copy-mode was never submitted
 
 Found while investigating the Codex issue above. It reproduces that symptom

@@ -8,7 +8,7 @@ import { ReplyPopover } from '../../src/renderer/components/ReplyPopover.tsx';
 // renderer test file in this repo.
 let sendKeys: ReturnType<typeof vi.fn>;
 beforeEach(() => {
-  sendKeys = vi.fn(async () => ({ status: 'sent' }));
+  sendKeys = vi.fn(async () => ({ status: 'sent', queued: false }));
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = { sendKeys };
 });
 

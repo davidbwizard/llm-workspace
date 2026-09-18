@@ -1,0 +1,37 @@
+/* The card that sits between the scroller and the message box while the
+   open session's agent is waiting on a choice -- the Conversation Pane
+   Mockup's own `.prompt` / `.p-head` / `.eyebrow` / `.p-body` / `.p-foot`
+   rules, copied verbatim from that artifact's CSS, and its `.btn.primary`
+   rule for the one button this card offers. The eyebrow's svg rule is the
+   one deliberate deviation, for the same reason WorkingStrip.css documents
+   for its own strip: ProviderMark renders as a plain child here, not inside
+   the artifact's own <svg><use> wrapper, and it already sets its own
+   width/height from its `size` prop, so only `display:block` is needed. */
+.prompt { margin:0 16px 10px; max-height:62%; overflow-y:auto; overscroll-behavior:contain;
+  background:var(--ground); border:1px solid var(--line); border-top:3px solid var(--critical);
+  border-radius:var(--r-md); display:flex; flex-direction:column; }
+.prompt .p-head { padding:12px 16px 4px; display:flex; flex-direction:column; gap:2px; }
+.prompt .eyebrow { font-family:var(--f-mono); font-size:11px; letter-spacing:.07em;
+  text-transform:uppercase; color:var(--critical); display:flex; align-items:center; gap:6px; }
+.prompt .eyebrow svg { display:block; }
+/* --conv-size is set inline on .conv (ConversationView.tsx), a SIBLING of
+   this card rather than an ancestor -- .conv and this card both hang
+   directly off .convwrap -- so the custom property does not reach here,
+   and this heading falls back to its ordinary inherited size instead of
+   tracking the Settings text-size slider the rest of the pane follows.
+   Kept anyway: this is the artifact's own rule, copied verbatim per this
+   task's design-source rule, and closing the gap would mean moving
+   --conv-size up to a shared ancestor, a wider change than this task. */
+.prompt h3 { margin:0; font-size:var(--conv-size); font-weight:700; line-height:1.35; text-wrap:balance; }
+.prompt .p-body { padding:8px 16px 12px; display:flex; flex-direction:column; gap:16px; }
+.prompt .p-foot { position:sticky; bottom:0; background:var(--ground); border-top:1px solid var(--line-soft);
+  padding:10px 16px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.prompt .hint { font-size:12.5px; color:var(--muted); margin:0; }
+
+/* theme.css already reserves `.btn` for the app's shared 130ms transition
+   and its focus-visible ring; this is the first place that actually gives
+   one a visible shape, so the box/colour rules live here rather than in a
+   second, competing definition. */
+.btn { font:inherit; font-size:14px; font-weight:600; border-radius:var(--r-sm); padding:7px 14px;
+  cursor:pointer; border:1px solid var(--line); background:var(--raised); color:var(--ink); text-align:left; }
+.btn.primary { background:var(--accent); border-color:var(--accent); color:var(--ground); }
