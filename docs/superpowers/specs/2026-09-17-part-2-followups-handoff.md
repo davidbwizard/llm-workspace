@@ -183,6 +183,13 @@ message in the same form as an unsent one). What worked, all day:
   Claude plan limits need the switch on (status line JSON, token-free); Codex
   weekly comes from rollouts. Not yet checked by eye: the Usage panel and the
   switch (turning it on hides most Claude Code footer hints).
+- **FIXED 2026-09-18 (6238372): Codex sessions matched by the rollout the
+  process holds open** (one `lsof -Fpn` per sweep, ~33 ms), cwd match only as
+  fallback -- a folder moved while Codex ran used to lose the conversation.
+  Not yet: History list (fleetState) still matches by cwd.
+- **Part 3 note (David, 2026-09-18):** without iTerm2, "open in iTerm" must fall
+  back (built-in Terminal view, or Terminal.app with plain `tmux attach`);
+  everything else already supports Terminal.app (host detection, tab jump).
 - **FIXED 2026-09-18: questions not ending in "?"** were refused (reader now
   relies on the exact text match only).
 - **Questions with previews** (side-by-side layout) are read-only on the card;
