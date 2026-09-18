@@ -1,4 +1,9 @@
 import { useEffect, useState } from 'react';
+// Type-only, from src/core/**, not src/main/** -- the same rule this file's
+// own doc comment below states does not apply to a type-only import from
+// core (types.d.ts's own `Answer`/`AnswerResult` imports follow the same
+// pattern).
+import type { PromptView } from '../../core/prompt.ts';
 
 /** One session's live state for the conversation pane -- mirrors
  *  src/main/sessionLive.ts's SessionLivePayload, minus the pid/sessionId/
@@ -12,6 +17,10 @@ export type SessionLive = {
   activity: 'working' | 'idle' | 'waiting' | null;
   since: number | null;
   events: number;
+  /** The prompt Claude is waiting on (Task 5, quick-answers design §6),
+   *  straight off the payload -- PromptCard.tsx renders it, WaitingCard.tsx
+   *  is the fallback when this is null. */
+  prompt: PromptView | null;
 };
 
 /** Subscribes the open conversation pane to one pid's live push (Task 6:
@@ -67,7 +76,7 @@ export function useSessionLive(pid: number | null): SessionLive | null {
       // dropped rather than shown as if it belonged to the session now on
       // screen.
       if (payload.pid !== pid) return;
-      setState({ activity: payload.activity, since: payload.since, events: payload.events });
+      setState({ activity: payload.activity, since: payload.since, events: payload.events, prompt: payload.prompt ?? null });
     });
 
     return () => {

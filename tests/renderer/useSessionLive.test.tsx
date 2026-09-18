@@ -4,8 +4,10 @@ import { useSessionLive } from '../../src/renderer/state/useSessionLive.ts';
 
 // A single fake session:live payload. `pid` is the only field these tests
 // vary -- version/sessionId are carried along because a real payload always
-// has them, not because any test here reads them.
-function payload(overrides: Partial<{ pid: number; activity: 'working' | 'idle' | 'waiting' | null; since: number | null; events: number }> = {}) {
+// has them, not because any test here reads them. `prompt` defaults to
+// null, same as a real payload whenever nothing is open (Task 5:
+// SessionLivePayload.prompt).
+function payload(overrides: Partial<{ pid: number; activity: 'working' | 'idle' | 'waiting' | null; since: number | null; events: number; prompt: unknown }> = {}) {
   return {
     version: 1,
     pid: 4821,
@@ -13,6 +15,7 @@ function payload(overrides: Partial<{ pid: number; activity: 'working' | 'idle' 
     activity: 'working' as const,
     since: 1_700_000_000_000,
     events: 3,
+    prompt: null,
     ...overrides,
   };
 }
@@ -43,7 +46,22 @@ describe('useSessionLive', () => {
     (globalThis as any).window.fleet = { watchSession, onSessionLive };
     const { result } = renderHook(() => useSessionLive(4821));
     act(() => { push(payload({ pid: 4821, activity: 'working', since: 111, events: 3 })); });
-    expect(result.current).toEqual({ activity: 'working', since: 111, events: 3 });
+    expect(result.current).toEqual({ activity: 'working', since: 111, events: 3, prompt: null });
+    delete (globalThis as any).window.fleet;
+  });
+
+  // Task 5: the prompt card reads live.prompt straight off this hook, so a
+  // non-null PromptView on the payload must come through unchanged, not be
+  // dropped the way an unlisted field would be.
+  it('passes a non-null prompt through unchanged', () => {
+    let push: (p: unknown) => void = () => {};
+    const watchSession = vi.fn().mockResolvedValue(true);
+    const onSessionLive = vi.fn((cb: (p: unknown) => void) => { push = cb; return () => {}; });
+    (globalThis as any).window.fleet = { watchSession, onSessionLive };
+    const { result } = renderHook(() => useSessionLive(4821));
+    const prompt = { id: 'evt-1', kind: 'permission', answerable: true, reason: null };
+    act(() => { push(payload({ pid: 4821, prompt })); });
+    expect(result.current?.prompt).toEqual(prompt);
     delete (globalThis as any).window.fleet;
   });
 
@@ -89,7 +107,7 @@ describe('useSessionLive', () => {
     (globalThis as any).window.fleet = { watchSession, onSessionLive };
     const { result, rerender } = renderHook(({ pid }) => useSessionLive(pid), { initialProps: { pid: 4821 } });
     act(() => { push(payload({ pid: 4821, events: 3 })); });
-    expect(result.current).toEqual({ activity: 'working', since: 1_700_000_000_000, events: 3 });
+    expect(result.current).toEqual({ activity: 'working', since: 1_700_000_000_000, events: 3, prompt: null });
 
     rerender({ pid: 5555 });
     expect(result.current).toBeNull();

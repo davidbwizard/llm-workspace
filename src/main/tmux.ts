@@ -110,28 +110,46 @@ export function newSession(
 /** -l is mandatory. Without it tmux reads the text as a KEY NAME: sending
  *  the three characters "C-c" delivers a real Ctrl-C instead.
  *
- *  No production caller since 2026-09-17: sendKeysFor (ipc.ts) now delivers
+ *  "--" is mandatory too. Without it tmux still parses text that starts
+ *  with "-" as send-keys OPTIONS, -l or not: verified 2026-09-17 against a
+ *  real tmux 3.7c server, where the text "-tNAME: hello" was read as a new
+ *  -t target. "--" ends option parsing, so a leading "-" is text.
+ *
+ *  A TRAILING ";" is still not literal, "--" or not: tmux reads an argument
+ *  ending in ";" as a command separator and drops the ";" ("hello;" arrived
+ *  as "hello"). An argument ending in "\;" arrives with a literal ";" in
+ *  place of those two characters, and nothing before the end is touched
+ *  (measured on the same server: "c\;" -> "c;", "q\\;" -> "q\;",
+ *  "a;b" -> "a;b"). So only a final ";" is rewritten, to "\;", which
+ *  delivers the text exactly.
+ *
+ *  sendKeysFor (ipc.ts) no longer types messages this way -- it delivers
  *  every message as a bracketed paste, because Codex's paste-burst
- *  heuristic swallowed the Enter that followed text typed this way. Kept,
- *  with its own coverage in tests/main/tmux.test.ts, as the one safe way to
- *  type text into a pane -- and a warning about the unsafe one. */
+ *  heuristic swallowed the Enter that followed text typed this way. The
+ *  caller now is answerPrompt (src/main/answer.ts), which types a single
+ *  line into Claude's own prompt text row. */
 export function sendLiteral(name: string, text: string, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
-  return exec(['send-keys', '-t', target(name), '-l', text]);
+  const arg = text.endsWith(';') ? `${text.slice(0, -1)}\\;` : text;
+  return exec(['send-keys', '-t', target(name), '-l', '--', arg]);
 }
 
 /** 'Enter' submits; 'Tab' queues a message into a busy Codex instead of
  *  submitting it (sendKeysFor, ipc.ts) -- the two keys sendKeysFor's final
- *  key send chooses between. Do not pre-populate Escape/Up/Down/C-c ahead
- *  of a real need. */
-export type KeyName = 'Enter' | 'Tab';
+ *  key send chooses between. 'Down', 'Right' and the digits '1'-'6' answer
+ *  Claude's question, permission and plan prompts (answerPrompt,
+ *  src/main/answer.ts; keys measured in the quick-answers design §3). Do not
+ *  pre-populate Escape/Up/C-c ahead of a real need. */
+export type KeyName = 'Enter' | 'Tab' | 'Down' | 'Right' | '1' | '2' | '3' | '4' | '5' | '6';
 
 /** Runtime mirror of the KeyName union. The type alone is not a boundary:
  *  an IPC handler receives `unknown` and widens it back to `string` before
  *  this function ever sees it, so a caller reached through that path could
  *  pass arbitrary text as `key` -- exactly the -l bypass sendLiteral exists
  *  to prevent -- unless this list is also checked at runtime. */
-const ALLOWED_KEY_NAMES: readonly string[] = ['Enter', 'Tab'] as const satisfies readonly KeyName[];
+const ALLOWED_KEY_NAMES: readonly string[] = [
+  'Enter', 'Tab', 'Down', 'Right', '1', '2', '3', '4', '5', '6',
+] as const satisfies readonly KeyName[];
 
 /** Deliberate control keys only, chosen by our code, never derived from
  *  user text. Kept in a separate call so text and Enter can never merge. */

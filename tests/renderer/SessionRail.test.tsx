@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { tmpdir } from 'node:os';
-import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SessionRail } from '../../src/renderer/components/SessionRail.tsx';
 import { setSettings, reloadSettings } from '../../src/renderer/state/settings.ts';
 
@@ -81,10 +81,12 @@ const noopKill = async () => ({ status: 'already_gone' as const });
 const noopReattach = async () => ({ status: 'failed' as const, reason: 'not exercised' });
 const noopResume = async () => ({ status: 'failed' as const, reason: 'not exercised' });
 
-// ReplyPopover (Task 11) reaches window.fleet.sendKeys directly -- present
-// so the reply tests below don't throw on a missing bridge, and so its
-// call can be asserted the same way tests/renderer/ReplyPopover.test.tsx
-// already does.
+// A stub for window.fleet.sendKeys, kept so any code path this file
+// exercises that happens to reach it (OpenSessionCard's own descendants)
+// finds a bridge rather than throwing on a missing one. Task 5 removed
+// SessionRail's own use of ReplyPopover (Answer now routes straight to the
+// Conversation view -- see the "answers a waiting card via onAnswer" test
+// below), which was this stub's original reason for existing.
 let sendKeys: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   sendKeys = vi.fn(async () => ({ status: 'sent', queued: false }));
@@ -147,68 +149,28 @@ describe('SessionRail', () => {
     expect(onKill).not.toHaveBeenCalledWith(1);
   });
 
-  // Spec: "click shows the prompt" -- a card waiting on you opens the reply
-  // popover, keyed to that card's own pid and prompt (its lastProse), from a
-  // control that is NOT the card's own onOpen (that one still just selects
-  // it, per the "reports the pid when a card is chosen" test above --
-  // opening the popover must never be confused with switching the main
-  // pane to that session). Reply guard: a waiting session is a choice as
-  // far as the rail can tell, so the popover opens with no text box --
-  // Answer routes to the terminal instead (covered by the choice-specific
-  // tests below and by tests/renderer/ReplyPopover.test.tsx).
-  it('opens a popover for the waiting card, keyed to its pid and prompt, with no text box', () => {
-    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
-    expect(screen.queryByRole('dialog')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /answer game-viewer, pid 2/i }));
-    const dialog = screen.getByRole('dialog', { name: /reply to session 2/i });
-    // Scoped to the dialog: OpenSessionCard's own .said already renders this
-    // same lastProse text once, so a page-wide text search would match both.
-    expect(within(dialog).getByText('Overwrite?')).toBeTruthy();
-    expect(within(dialog).queryByRole('textbox')).toBeNull();
-  });
-
-  // sessions[1] (pid 2) has tmux: undefined (falsy) in this file's plain
-  // fixtures, so the popover falls to the onReveal branch -- proving the
-  // rail wires choice/tmux/onOpenTerminal through even when tmux is false.
-  it('offers Open Terminal for a waiting, tmux-backed card, wired to select-then-switch-to-terminal', () => {
-    const tmuxSessions = [
-      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, tmux: true },
-    ] as never[];
+  // Task 5 (quick-answers design §9): Answer no longer opens a popover at
+  // all -- it selects the session and switches the main pane straight to
+  // the Conversation view, where the prompt card (or the waiting-card
+  // fallback) lives. `onAnswer` is optional, same as the old
+  // `onOpenTerminal` it replaces, so every other test in this file that
+  // never clicks Answer needs no change.
+  it('answers a waiting card via onAnswer -- selecting it and switching to Conversation, with no popover', () => {
     const onSelect = vi.fn();
     const onSetView = vi.fn();
-    render(<SessionRail sessions={tmuxSessions} selectedPid={null} onSelect={onSelect} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onOpenTerminal={pid => { onSelect(pid); onSetView('terminal'); }} side="left" />);
+    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onAnswer={pid => { onSelect(pid); onSetView('conversation'); }} side="left" />);
+    expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /answer game-viewer, pid 2/i }));
-    fireEvent.click(screen.getByRole('button', { name: /open terminal/i }));
     expect(onSelect).toHaveBeenCalledWith(2);
-    expect(onSetView).toHaveBeenCalledWith('terminal');
+    expect(onSetView).toHaveBeenCalledWith('conversation');
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  // Fix round 1 (in-app testing, 2026-09-15): the popover was passed
-  // choice={waiting}, re-evaluated on every render from the session's
-  // CURRENT activity -- so a momentary activity change while it was open
-  // (a fleet:update landing mid-answer) silently morphed it back into a
-  // text box. The main-side guard then refused the send and the picker was
-  // never reached; on a second try it correctly showed Open Terminal. The
-  // popover is only ever opened from the waiting-only Answer button, so
-  // once open it must stay in choice mode regardless of what the session's
-  // activity does afterwards.
-  it('keeps an open Answer popover in choice mode even if the session stops looking like it is waiting', () => {
-    const waitingTmux = [
-      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, tmux: true },
-    ] as never[];
-    const { rerender } = render(<SessionRail sessions={waitingTmux} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
-    fireEvent.click(screen.getByRole('button', { name: /answer game-viewer, pid 2/i }));
-    expect(screen.getByRole('button', { name: /open terminal/i })).toBeTruthy();
-
-    const idleTmux = [
-      { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, tmux: true },
-    ] as never[];
-    rerender(<SessionRail sessions={idleTmux} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
-
-    const dialog = screen.getByRole('dialog', { name: /reply to session 2/i });
-    expect(within(dialog).queryByRole('textbox')).toBeNull();
-    expect(screen.getByRole('button', { name: /open terminal/i })).toBeTruthy();
+  // onAnswer is optional (same as onOpenTerminal was) -- a caller that
+  // never wires it must not crash when Answer is clicked.
+  it('does nothing if Answer is clicked with no onAnswer wired', () => {
+    render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={async () => ({ status: 'already_gone' })} onReattach={async () => ({ status: 'failed' as const, reason: 'not exercised' })} onResume={async () => ({ status: 'failed' as const, reason: 'not exercised' })} side="left" />);
+    expect(() => fireEvent.click(screen.getByRole('button', { name: /answer game-viewer, pid 2/i }))).not.toThrow();
   });
 
   it('offers no reply trigger for a card that is not waiting on you', () => {

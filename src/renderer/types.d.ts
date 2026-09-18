@@ -6,6 +6,9 @@ import type { ImageResult } from '../main/images.ts';
 import type { AttachmentResult } from '../main/attachments.ts';
 import type { StageResult } from '../main/staging.ts';
 import type { SessionLivePayload } from '../main/sessionLive.ts';
+import type { AnswerResult } from '../main/answer.ts';
+import type { Answer } from '../core/prompt.ts';
+import type { HooksResult } from '../hooks/switch.ts';
 
 declare global {
   interface Window {
@@ -24,6 +27,10 @@ declare global {
       // Main sanitises and revalidates pid and text on every call; this
       // typing narrows nothing at the trust boundary itself.
       sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }) => Promise<KeysResult>;
+      // Answers the prompt Claude is waiting on. Main re-derives the prompt
+      // and checks the answer and the pane itself; this typing narrows
+      // nothing at the trust boundary.
+      answerPrompt: (pid: number, promptId: string, answer: Answer) => Promise<AnswerResult>;
       // An image's bytes, checked and held by main until sent.
       stageImage: (bytes: ArrayBuffer) => Promise<StageResult>;
       // Any other file's bytes and name, held by main until sent.
@@ -67,6 +74,12 @@ declare global {
       // (applyThemeChoice); this typing narrows nothing at the trust
       // boundary itself.
       setTheme: (theme: string) => Promise<unknown>;
+      // Quick answers (Settings): the switch's real state, re-read fresh
+      // from settings.json on every call, and the toggle itself. Main
+      // never trusts the renderer's own copy of `installed` -- this typing
+      // narrows nothing at the trust boundary itself.
+      hooksGet: () => Promise<HooksResult>;
+      hooksSet: (on: boolean) => Promise<HooksResult>;
     };
   }
 }

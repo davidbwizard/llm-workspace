@@ -38,8 +38,11 @@ import type { Provider } from '../core/types.ts';
 import { launchSession, reattachSession, resumeSession, type LaunchResult } from './launch.ts';
 import { isCodexBusy } from './codexBusy.ts';
 import {
-  buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, type WatchDeps,
+  buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, notifySessionChanged, type WatchDeps,
 } from './sessionLive.ts';
+import { answerPrompt, type AnswerResult } from './answer.ts';
+import { hooksState, setHooks, type HooksResult } from '../hooks/switch.ts';
+import { ingestSpool } from '../hooks/spool.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -1266,6 +1269,17 @@ export function applyThemeChoice(raw: unknown, deps: ThemeDeps = {}): ThemeResul
   return { status: 'set', theme };
 }
 
+/** Quick answers (src/hooks/switch.ts): which copy of src/hooks/helper.sh
+ *  to install from. src/hooks/helper.sh is not part of the bundled build
+ *  output today (electron-builder.yml ships only out/**), so
+ *  app.getAppPath() -- the project root in dev, the asar/app root when
+ *  packaged -- is the one resolution that works in both without a
+ *  packaging change of its own. Matches src/main/index.ts's own startup
+ *  refresh, which resolves the same path the same way. */
+function helperSourcePath(): string {
+  return join(app.getAppPath(), 'src/hooks/helper.sh');
+}
+
 /** The complete set of channels main answers. Adding one means adding it to
  *  the preload's enumerated list as well; tests/main/ipc.test.ts asserts
  *  they match.
@@ -1334,14 +1348,33 @@ export function registerIpc(
   // fresh on every call -- see WatchDeps' own doc comment -- so a session
   // that ends, or whose activity changes, between pushes is reflected on
   // the very next one rather than frozen at whatever it was when the watch
-  // started.
+  // started. `ingestSpool` runs only for a waiting session (buildSessionLive
+  // decides), so the PermissionRequest Claude spools just after flipping to
+  // waiting is in this push rather than the next 1 s tick; the fleet gets
+  // the same push the tick would have sent. notifySessionChanged on the ids
+  // it touched then schedules a follow-up push (sessionLive.ts's 250ms
+  // coalesce), the same way index.ts's own spool tick does -- a pane read
+  // taken before the terminal has actually drawn the dialog still gets a
+  // second look shortly after, instead of only this one push. This never
+  // loops: ingestSpool deletes each file as it reads it, so the follow-up
+  // push's own ingest finds 0 files and touches nothing further.
   ipcMain.handle('session:watch', (event, pid: unknown) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const validPid = typeof pid === 'number' ? pid : null;
+    const spoolDir = resolvePaths(homedir()).spool;
     const deps: WatchDeps = {
       processes: getCachedLiveProcesses,
       buildPayload: () => validPid === null ? null
-        : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), { cached: cachedPushOpenSessions }),
+        : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), {
+          cached: cachedPushOpenSessions,
+          ingestSpool: () => {
+            const touched = new Set<string>();
+            if (ingestSpool(db, spoolDir, 'claude', touched) > 0) {
+              pushFleet(win);
+              notifySessionChanged(touched);
+            }
+          },
+        }),
       send: payload => { if (win && !win.isDestroyed()) win.webContents.send('session:live', payload); },
     };
     return watchSessionFor(validPid, deps);
@@ -1415,7 +1448,30 @@ export function registerIpc(
     if ([...images, ...files].some(p => p === null)) return gone;
     return sendKeysFor(pid, text, { busy: busyForPid, provider: providerForPid }, images as string[], files as string[]);
   });
+  // Quick answers (src/main/answer.ts): answers the prompt Claude is
+  // waiting on, by tmux keystrokes checked against the pane. Every argument
+  // is untrusted. Main re-derives the open prompt itself -- the same
+  // payload the pane is pushed (buildSessionLive), so the prompt id the
+  // renderer holds is compared against main's own, never trusted.
+  // Returns a promise: the key sequence waits on the pane between steps.
+  ipcMain.handle('session:answer', (_event, pid: unknown, promptId: unknown, answer: unknown): Promise<AnswerResult> =>
+    answerPrompt(pid, promptId, answer, {
+      currentPrompt: p => buildSessionLive(
+        db, p, getCachedLiveProcesses(), Date.now(), { cached: cachedPushOpenSessions },
+      )?.prompt ?? null,
+    }));
   ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
+
+  // Quick answers (src/hooks/switch.ts): the Settings switch's own reads
+  // and writes. `on` is the renderer's whole say in what happens --
+  // anything other than a literal `true` is treated as `false` (turn it
+  // off), never trusted as-is, same boundary discipline as every other
+  // channel here. helperSourcePath() below is the one thing main supplies
+  // that the renderer cannot: which copy of src/hooks/helper.sh to install
+  // from.
+  ipcMain.handle('hooks:get', (): HooksResult => hooksState(resolvePaths(homedir())));
+  ipcMain.handle('hooks:set', (_event, on: unknown): HooksResult =>
+    setHooks(resolvePaths(homedir()), on === true, helperSourcePath()));
 
   // The streaming bridge (Task 6b): attach/detach/resize/raw, replacing
   // Task 6's TEMPORARY not_implemented stubs in place -- not a second

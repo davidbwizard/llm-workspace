@@ -6,9 +6,12 @@ import type { LiveProcess } from '../discovery/parse.ts';
 import { deriveActivity, type OpenSession } from '../fleet/state.ts';
 import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveSession.ts';
 import { readLiveSession } from '../discovery/live.ts';
-import { openBlockers } from '../store/signals.ts';
+import { currentBlockers, openPromptEvent } from '../store/signals.ts';
 import { resolvePaths } from '../config.ts';
 import type { Provider } from '../core/types.ts';
+import type { PromptView } from '../core/prompt.ts';
+import { buildPromptView, type AnswerDeps } from './answer.ts';
+import { tmuxNameForPid } from './sessions.ts';
 
 /** The pane's own three-way activity -- collapsed from fleet/state.ts's
  *  five-way Activity because the pane has neither a fleet card's blocker
@@ -30,6 +33,11 @@ export type SessionLivePayload = {
    *  computation below for why. */
   since: number | null;
   events: number;
+  /** The prompt Claude is waiting on (quick-answers design §5-6), or null:
+   *  not waiting, hooks off, or no PermissionRequest matching this wait.
+   *  Content comes from the hook payload; permission and plan choices
+   *  from the pane. */
+  prompt: PromptView | null;
 };
 
 /** The pid's live session file, re-read now, trusted only if its startedAt
@@ -113,6 +121,17 @@ export interface SessionLiveDeps {
     pid: number,
     deps: { cached: OpenSession[]; processes: LiveProcess[]; read: (pid: number) => LiveSessionRead },
   ) => { sessionId: string; provider: Provider; cwd: string } | null;
+  /** The pane read behind the prompt's choices (buildPromptView,
+   *  src/main/answer.ts). Only `capture` is used here; tests inject it so
+   *  they never run a real tmux. */
+  answer?: AnswerDeps;
+  /** Quick answers (Task 6 flash fix): called once, only when the live
+   *  status is `waiting`, before the open prompt is looked up. Claude
+   *  writes the PermissionRequest ~20 ms after it flips the status, and
+   *  the status-file push runs ~250 ms after the flip -- so ingesting here
+   *  puts the event in the db for this very push, instead of the next 1 s
+   *  spool tick. session:watch (src/main/ipc.ts) wires the real spool. */
+  ingestSpool?: () => void;
 }
 
 /** Wraps `read` so a single buildSessionLive call never opens the same
@@ -160,7 +179,7 @@ export function buildSessionLive(
   // override exists at all.
   const resolveTarget = deps.resolveReattachTarget ?? resolveReattachTarget;
   const target = resolveTarget(pid, { cached: deps.cached ?? [], processes, read });
-  if (!target) return { version: 1, pid, sessionId: null, activity: null, since: null, events: 0 };
+  if (!target) return { version: 1, pid, sessionId: null, activity: null, since: null, events: 0, prompt: null };
 
   // `last_kind`/`events` deliberately read every row for this session_id,
   // INCLUDING a Codex subagent thread's own rows (they share the root
@@ -192,8 +211,23 @@ export function buildSessionLive(
     events: number; last_ts: string | null; last_kind: string | null; last_prompt_ts: string | null;
   };
 
-  const blocker = openBlockers(db, undefined, now).find(b => b.sessionId === target.sessionId) ?? null;
   const fresh = (deps.freshLiveSession ?? freshLiveSession)(pid, processes, read);
+  // A failed ingest must not stop the push: the prompt then arrives with
+  // the next spool tick, as before. Logged with its message, never swallowed.
+  if (fresh?.status === 'waiting' && deps.ingestSpool) {
+    try {
+      deps.ingestSpool();
+    } catch (err) {
+      console.error('Quick answers: spool ingest before the waiting push failed:', err instanceof Error ? err.message : String(err));
+    }
+  }
+  // Quick answers §5.2: a live status file outranks a blocker, even one
+  // whose status string this code does not recognise -- so the blocker
+  // (a 24 h scan of signal_events) is only looked up with no status file at
+  // all (final review I2/I4), matching openSessionsLive for the cards.
+  const blocker = fresh === null
+    ? currentBlockers(db, now).find(b => b.sessionId === target.sessionId) ?? null
+    : null;
 
   const { activity: rawActivity } = deriveActivity({
     lastTs: row.last_ts, lastKind: row.last_kind, blocker,
@@ -206,6 +240,7 @@ export function buildSessionLive(
     hasLiveSignal: processes.length > 0,
     now,
     liveStatus: fresh?.status ?? null,
+    liveWaitingFor: fresh?.waitingFor ?? null,
   });
 
   // waiting_permission/waiting_input both read as "waiting" here -- the
@@ -232,7 +267,20 @@ export function buildSessionLive(
       ? (fresh?.status === 'busy' ? fresh.statusUpdatedAtMs ?? null : null)
       : (row.last_prompt_ts ? Date.parse(row.last_prompt_ts) : null);
 
-  return { version: 1, pid, sessionId: target.sessionId, activity, since, events: row.events ?? 0 };
+  // Quick answers §5.1: the open prompt exists only while the status file
+  // says waiting, and is the newest PermissionRequest from this wait.
+  // waitingSince is statusUpdatedAtMs: Claude writes it only when `status`
+  // flips, so it holds still for the whole wait. Without it there is no
+  // wait to match an event against, so no prompt (final review M7). The
+  // pane is read at most once per push (buildPromptView); a tmux name from
+  // the registry is enough to try -- session:answer re-verifies the
+  // session is alive.
+  const promptEvent = fresh?.status === 'waiting' && typeof fresh.statusUpdatedAtMs === 'number'
+    ? openPromptEvent(db, target.sessionId, fresh.statusUpdatedAtMs)
+    : null;
+  const prompt = promptEvent ? buildPromptView(promptEvent, tmuxNameForPid(pid), deps.answer ?? {}) : null;
+
+  return { version: 1, pid, sessionId: target.sessionId, activity, since, events: row.events ?? 0, prompt };
 }
 
 // ---------------------------------------------------------------------
@@ -416,7 +464,7 @@ export function watchSessionFor(pid: number | null, deps: WatchDeps): boolean {
 
   // watchState is assigned BEFORE buildPayload runs, not after, so the
   // watcher just opened above is reachable through it even if buildPayload
-  // throws (it reaches db.prepare(...).get() and openBlockers, so a closed
+  // throws (it reaches db.prepare(...).get() and currentBlockers, so a closed
   // or busy database can throw). Every teardown path -- teardownWatch
   // itself, win.on('closed'), before-quit -- reaches the watcher only
   // through watchState, so assigning it after a call that can throw would

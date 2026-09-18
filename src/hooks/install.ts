@@ -1,4 +1,6 @@
-import { readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import {
+  readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, statSync, fchmodSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** Spec §5.2. Sparse lifecycle only. MessageDisplay is deliberately absent:
@@ -17,7 +19,18 @@ export const PRE_TOOL_MATCHER = 'AskUserQuestion|ExitPlanMode';
 
 export interface Fragment { event: string; matcher: string | null; id: string; command: string }
 export interface Manifest { owned: string[]; command: string }
-export interface InstallPlan { next: any; manifest: Manifest; baseText?: string }
+/** `changed` is false when every fragment was already present (and nothing
+ *  was reconciled away), so applyInstall has nothing to write. */
+export interface InstallPlan { next: any; manifest: Manifest; changed: boolean; baseText?: string }
+
+/** applyInstall's changed-since-read refusal -- its own class so a caller
+ *  can tell it apart from a read or write failure (final review I5). */
+export class SettingsChangedError extends Error {
+  constructor() {
+    super('settings.json changed on disk since the diff was computed');
+    this.name = 'SettingsChangedError';
+  }
+}
 
 export function buildHookFragments(helperPath: string): Fragment[] {
   const command = `sh '${helperPath.replace(/'/g, `'\\''`)}'`;
@@ -59,25 +72,51 @@ export function isOwnedHookCommand(command: unknown): boolean {
 
 /** Removes every hook entry whose `hooks[].command` exactly equals `command`.
  *  Exact match, never a substring: a user hook that merely mentions our
- *  helper's path (e.g. as an argument to their own command) is left alone. */
-function removeByCommand(hooks: any, command: string): void {
+ *  helper's path (e.g. as an argument to their own command) is left alone.
+ *  Returns how many entries it removed. */
+function removeByCommand(hooks: any, command: string): number {
+  let removed = 0;
   for (const event of Object.keys(hooks ?? {})) {
+    const before = (hooks[event] as any[]).length;
     hooks[event] = (hooks[event] as any[]).filter((entry: any) =>
       !(Array.isArray(entry?.hooks) && entry.hooks.some((h: any) => h?.command === command)));
+    removed += before - hooks[event].length;
     if (hooks[event].length === 0) delete hooks[event];
   }
+  return removed;
 }
 
 /** Spec §5.3: write a temp file in the same directory, fsync it, then
  *  rename over the original. Never truncate in place — a crash mid-write
  *  would leave the user with an unparseable config and a broken Claude
  *  Code. Shared by applyInstall and uninstall so the two write paths
- *  cannot drift apart. */
+ *  cannot drift apart.
+ *
+ *  Keeps the original file's mode (spec §4), so a 0600 settings.json never
+ *  becomes 0644 as a side effect of a hooks install/uninstall. The temp
+ *  file is created with that mode from the start (final review M9) -- it
+ *  never sits at the default 0644 holding the user's settings -- and
+ *  fchmod'd to it exactly, since open's mode is narrowed by the umask and
+ *  ignored for a leftover temp file; both before any content is written.
+ *  One descriptor for create, write and fsync, so a read-only original
+ *  mode cannot fail a reopen. A missing original (first-ever write) keeps
+ *  the default mode; any other stat failure is thrown, not guessed past. */
 function writeJsonAtomic(settingsPath: string, data: any): void {
   const tmp = join(dirname(settingsPath), `.settings.json.llmws.${process.pid}.tmp`);
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
-  const fd = openSync(tmp, 'r+');
-  try { fsyncSync(fd); } finally { closeSync(fd); }
+  let mode: number | null = null;
+  try {
+    mode = statSync(settingsPath).mode & 0o777;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+  }
+  const fd = openSync(tmp, 'w', mode ?? 0o666);
+  try {
+    if (mode !== null) fchmodSync(fd, mode);
+    writeFileSync(fd, JSON.stringify(data, null, 2) + '\n', 'utf8');
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
   renameSync(tmp, settingsPath);
 }
 
@@ -94,7 +133,7 @@ function writeJsonAtomic(settingsPath: string, data: any): void {
 export function planInstall(existing: any, fragments: Fragment[], previousManifest?: Manifest): InstallPlan {
   const next = JSON.parse(JSON.stringify(existing ?? {}));
   next.hooks ??= {};
-  if (previousManifest) removeByCommand(next.hooks, previousManifest.command);
+  let changed = previousManifest ? removeByCommand(next.hooks, previousManifest.command) > 0 : false;
 
   const owned: string[] = [];
   for (const f of fragments) {
@@ -102,30 +141,50 @@ export function planInstall(existing: any, fragments: Fragment[], previousManife
     const list: any[] = next.hooks[f.event];
     const already = list.some(e =>
       Array.isArray(e?.hooks) && e.hooks.some((h: any) => h?.command === f.command));
-    if (!already) list.push(entryFor(f));
+    if (!already) { list.push(entryFor(f)); changed = true; }
     owned.push(f.id);
   }
 
-  return { next, manifest: { owned, command: fragments[0]!.command } };
+  return { next, manifest: { owned, command: fragments[0]!.command }, changed };
 }
 
 /** Spec §5.3: re-read before write, then replace atomically. If another tool
  *  changed the file since the diff was computed, refuse — the caller
- *  recomputes and re-shows the diff rather than clobbering a newer version. */
+ *  recomputes and re-shows the diff rather than clobbering a newer version.
+ *  Only a missing file reads as empty; any other read failure is thrown
+ *  (final review I3). A plan with nothing to add writes nothing (M10). */
 export function applyInstall(settingsPath: string, plan: InstallPlan & { baseText: string }): void {
   let current = '';
-  try { current = readFileSync(settingsPath, 'utf8'); } catch { current = ''; }
-  if (current !== plan.baseText) {
-    throw new Error('settings.json changed on disk since the diff was computed');
+  try {
+    current = readFileSync(settingsPath, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
   }
+  if (current !== plan.baseText) throw new SettingsChangedError();
+  if (!plan.changed) return;
   writeJsonAtomic(settingsPath, plan.next);
 }
 
 /** Removes only entries whose `hooks[].command` exactly equals the
  *  manifest's recorded command. Anything the user added or edited by hand
- *  is left alone. */
+ *  is left alone.
+ *
+ *  Task 4: tolerates a missing settings.json -- turning Quick answers off
+ *  when there is nothing to uninstall (never installed, or the file was
+ *  deleted by hand) is a no-op, not an error. An existing file that fails
+ *  to parse still throws, same as before: the caller (src/hooks/switch.ts)
+ *  decides how to surface that, and this must never guess at content it
+ *  cannot read. */
 export function uninstall(settingsPath: string, manifest: Manifest): void {
-  const cfg = JSON.parse(readFileSync(settingsPath, 'utf8'));
-  removeByCommand(cfg.hooks, manifest.command);
+  let raw: string;
+  try {
+    raw = readFileSync(settingsPath, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw e;
+  }
+  const cfg = JSON.parse(raw);
+  // Final review M10: nothing of ours to remove means nothing to write.
+  if (removeByCommand(cfg.hooks, manifest.command) === 0) return;
   writeJsonAtomic(settingsPath, cfg);
 }

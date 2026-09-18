@@ -5,7 +5,7 @@ import { compareOpenSessions, compareRank } from './order.ts';
 export { compareOpenSessions, compareRank } from './order.ts';
 import type { Db } from '../store/db.ts';
 import type { Provider } from '../core/types.ts';
-import { openBlockers, type Blocker } from '../store/signals.ts';
+import { currentBlockers, type Blocker } from '../store/signals.ts';
 import { classifyMatch, applyExactMatches, type MatchQuality, type MatchResult } from '../discovery/match.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
 import type { LiveSessionStatus } from '../providers/claude/liveSession.ts';
@@ -124,8 +124,8 @@ const TURN_END_KINDS = new Set(['turn.completed', 'session.ended']);
 /** Claude Code's own status for a live session, from its session file.
  *  `waiting` covers both a question and a permission prompt (measured
  *  2026-09-15) and does not say which, so it maps to the generic
- *  waiting_input; a hook blocker, when one exists, still supplies the
- *  specific kind (see deriveActivity). */
+ *  waiting_input; the status file's own `waitingFor`, when present, or else
+ *  a hook blocker, supplies the specific kind (see deriveActivity). */
 export function activityFromLiveStatus(status: LiveSessionStatus | null | undefined): Activity | null {
   switch (status) {
     case 'waiting': return 'waiting_input';
@@ -141,24 +141,41 @@ export function activityFromLiveStatus(status: LiveSessionStatus | null | undefi
  *  identically rather than a second implementation that could quietly
  *  drift from this one. Also used by buildSessionLive (src/main/
  *  sessionLive.ts) for the open conversation, so the pane and the cards
- *  can never disagree. */
+ *  can never disagree.
+ *
+ *  A live status file now outranks a hook blocker (quick-answers design
+ *  §5.2). With hooks installed, a `PermissionRequest` is keyed by
+ *  `prompt_id` (shared by the whole turn), and its resolver -- `PostToolUse`
+ *  -- is not among the app's installed hook events, so a blocker from one
+ *  permission prompt would otherwise never close before `SessionEnd` or the
+ *  24h window, reading as waiting for the rest of the day even after the
+ *  process itself moved on. The status file is Claude Code's own live
+ *  answer to "am I still waiting", so it wins whenever one is present; a
+ *  blocker is trusted only with no status file to check it against. */
 export function deriveActivity(opts: {
   lastTs: string | null; lastKind: string | null; blocker: Blocker | null;
   hasMatchedProcess: boolean; hasLiveSignal: boolean; now: number;
-  /** From the matched process's live session file, when there is one. It
-   *  outranks the transcript rule (the process knows its own state) but not
-   *  a hook blocker, which also says what kind of prompt is open. */
+  /** From the matched process's live session file, when there is one. Now
+   *  outranks a hook blocker as well as the transcript rule -- see this
+   *  function's own doc comment above. */
   liveStatus?: LiveSessionStatus | null;
+  /** The live session file's own `waitingFor`, alongside `liveStatus` --
+   *  `"permission prompt"` sharpens a `waiting_input` status into the more
+   *  specific `waiting_permission`; anything else (including absent)
+   *  leaves it the generic `waiting_input`. Only consulted when `liveStatus`
+   *  itself resolves to `waiting_input`. */
+  liveWaitingFor?: string | null;
 }): { lifecycle: Lifecycle; activity: Activity } {
   const lastMs = opts.lastTs ? Date.parse(opts.lastTs) : 0;
   const age = opts.now - lastMs;
   const lifecycle: Lifecycle = age <= ACTIVE_MS ? 'active' : 'disconnected';
   const fromStatus = activityFromLiveStatus(opts.liveStatus);
   let activity: Activity;
-  if (opts.blocker) {
+  if (fromStatus !== null) {
+    activity = fromStatus === 'waiting_input' && opts.liveWaitingFor === 'permission prompt'
+      ? 'waiting_permission' : fromStatus;
+  } else if (opts.blocker) {
     activity = opts.blocker.kind === 'PermissionRequest' ? 'waiting_permission' : 'waiting_input';
-  } else if (fromStatus !== null) {
-    activity = fromStatus;
   } else if (lifecycle === 'active' && !TURN_END_KINDS.has(opts.lastKind ?? '') &&
     (opts.hasMatchedProcess || !opts.hasLiveSignal)) {
     // A session killed mid-turn never emits a turn boundary and would
@@ -351,8 +368,11 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   // `now` is passed through explicitly (see src/store/signals.ts) so a
   // caller pinning a fake clock -- as this fold's own tests do -- gets the
   // blocker window measured against that same clock, not the real one.
+  // currentBlockers, not openBlockers: a blocker whose session has moved
+  // past it (deriveActivity's own doc comment above explains why that can
+  // otherwise linger for a day) must not be attributed to that session here.
   const blockers = new Map<string, Blocker>();
-  for (const b of openBlockers(db, undefined, now)) blockers.set(b.sessionId, b);
+  for (const b of currentBlockers(db, now)) blockers.set(b.sessionId, b);
 
   // Worktree sharing: group by cwd before building states (spec §9.5).
   // Restricted to REACHABLE sessions (lifecycle 'active', the same
@@ -434,8 +454,24 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     const alive = hasMatchedProcess && m?.quality === 'unique';
     const oldest = m?.quality === 'unique' ? oldestProcess(matchedProcs) : null;
 
+    // Quick answers §5.2 (final review I2): the matched process's own
+    // status file wins over a blocker, the same rule openSessionsLive and
+    // buildSessionLive apply -- only for a unique match whose file names
+    // this very session, never one borrowed from another session's process.
+    const liveFile = m?.quality === 'unique'
+      ? matchedProcs.find(p => p.liveSession?.sessionId === r.session_id)?.liveSession ?? null
+      : null;
+    // Same rule as the `blocker` fed to deriveActivity just below: once a
+    // live status file wins, the blocker it overrode must not resurface on
+    // any OTHER field either -- `blocker`, `confidence` and `source` below
+    // all read this instead of the raw hook `blocker`, so a History card
+    // (SessionCard.tsx) never prints a stale "Permission: ..." line for a
+    // row whose activity already reads idle/working from the status file.
+    const effectiveBlocker = liveFile ? null : blocker;
     const { lifecycle, activity } = deriveActivity({
-      lastTs: r.last_ts, lastKind: r.last_kind, blocker, hasMatchedProcess, hasLiveSignal, now,
+      lastTs: r.last_ts, lastKind: r.last_kind, blocker: effectiveBlocker,
+      hasMatchedProcess, hasLiveSignal, now,
+      liveStatus: liveFile?.status ?? null, liveWaitingFor: liveFile?.waitingFor ?? null,
     });
 
     // Symmetric with the byCwd filter above: a disconnected session is not
@@ -454,8 +490,8 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     // properties (confidence, source) widened to plain `string` before
     // `.sort()` runs, which then fails `npx tsc --noEmit` against the
     // declared `SessionState[]` return type.
-    const confidence: SessionState['confidence'] = blocker ? 'exact' : 'guess';
-    const source: SessionState['source'] = blocker ? 'hook' : 'transcript';
+    const confidence: SessionState['confidence'] = effectiveBlocker ? 'exact' : 'guess';
+    const source: SessionState['source'] = effectiveBlocker ? 'hook' : 'transcript';
 
     return {
       sessionId: r.session_id,
@@ -473,7 +509,7 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
       agents,
       liveAgents,
       events: r.events ?? 0,
-      blocker,
+      blocker: effectiveBlocker,
       match: m?.quality ?? 'unknown',
       candidates: m?.pids ?? [],
       host: m?.host ?? null,
@@ -770,9 +806,9 @@ export function openSessions(
  *     session_id IN (...)` on this small, known id list uses the
  *     `events_session_ts(session_id, ts)` index directly.
  *
- *  Blockers reuse openBlockers(db, undefined, now) exactly as fleetState
- *  does -- already a bounded read over signal_events, not the events
- *  table, so there is nothing to scope further. Activity/lifecycle reuse
+ *  Blockers reuse currentBlockers(db, now) as fleetState does, but only
+ *  when some matched session has no live status file (a status file always
+ *  wins, quick-answers design §5.2). Activity/lifecycle reuse
  *  deriveActivity, the same function fleetState's own per-row map now
  *  calls, so the two paths cannot compute it differently. */
 export function openSessionsLive(
@@ -934,9 +970,12 @@ export function openSessionsLive(
   const uniqueIds = [...new Set(
     resolvedMatches.filter((m): m is MatchResult & { sessionId: string } => m.quality === 'unique').map(m => m.sessionId))];
 
-  // One live status per exactly-matched session, from its process's file.
+  // One live status (and waitingFor) per exactly-matched session, from its
+  // process's file.
   const liveStatusBySession = new Map(processes.flatMap(p =>
     p.liveSession ? [[p.liveSession.sessionId, p.liveSession.status] as const] : []));
+  const liveWaitingForBySession = new Map(processes.flatMap(p =>
+    p.liveSession ? [[p.liveSession.sessionId, p.liveSession.waitingFor ?? null] as const] : []));
 
   const enrichmentById = new Map<string, {
     sessionId: string; lastProse: string | null; events: number | null; activity: Activity;
@@ -949,7 +988,13 @@ export function openSessionsLive(
   const hasLiveSignal = processes.length > 0;
   const blockers = new Map<string, Blocker>();
   if (uniqueIds.length > 0) {
-    for (const b of openBlockers(db, undefined, now)) blockers.set(b.sessionId, b);
+    // Quick answers §5.2 (final review I2/I4): a session with a status file
+    // never consults a blocker -- not even when its status string is
+    // unrecognised -- so the 24 h blocker scan only runs when some matched
+    // session has no status file at all.
+    if (uniqueIds.some(id => !liveStatusBySession.has(id))) {
+      for (const b of currentBlockers(db, now)) blockers.set(b.sessionId, b);
+    }
 
     const rows = db.prepare(`
       SELECT session_id, COUNT(*) events, MAX(ts) last_ts,
@@ -964,10 +1009,11 @@ export function openSessionsLive(
     `).all(...uniqueIds) as any[];
 
     for (const r of rows) {
-      const blocker = blockers.get(r.session_id) ?? null;
+      const blocker = liveStatusBySession.has(r.session_id) ? null : blockers.get(r.session_id) ?? null;
       const { activity } = deriveActivity({
         lastTs: r.last_ts, lastKind: r.last_kind, blocker, hasMatchedProcess: true, hasLiveSignal, now,
         liveStatus: liveStatusBySession.get(r.session_id) ?? null,
+        liveWaitingFor: liveWaitingForBySession.get(r.session_id) ?? null,
       });
       enrichmentById.set(r.session_id, {
         sessionId: r.session_id, lastProse: r.last_prose ?? null, events: r.events ?? 0, activity,
@@ -985,14 +1031,14 @@ export function openSessionsLive(
     let enrichment: { sessionId: string; lastProse: string | null; events: number | null; activity: Activity | null } | null =
       m.quality === 'unique' ? enrichmentById.get(m.sessionId!) ?? null : null;
     // An exact match whose transcript has no rows yet: the process's own
-    // status (or a hook blocker) is the only activity signal there is.
-    // With neither, activity stays unknown rather than defaulting to idle.
+    // status is the only activity signal there is. It has a status file, so
+    // a blocker never counts here (final review I2); an unrecognised status
+    // leaves activity unknown rather than defaulting to idle.
     if (!enrichment && m.quality === 'unique' && p.liveSession) {
-      const blocker = blockers.get(m.sessionId!) ?? null;
-      const activity = (blocker || activityFromLiveStatus(p.liveSession.status) !== null)
+      const activity = activityFromLiveStatus(p.liveSession.status) !== null
         ? deriveActivity({
-            lastTs: null, lastKind: null, blocker, hasMatchedProcess: true, hasLiveSignal, now,
-            liveStatus: p.liveSession.status,
+            lastTs: null, lastKind: null, blocker: null, hasMatchedProcess: true, hasLiveSignal, now,
+            liveStatus: p.liveSession.status, liveWaitingFor: p.liveSession.waitingFor ?? null,
           }).activity
         : null;
       enrichment = { sessionId: m.sessionId!, lastProse: null, events: null, activity };

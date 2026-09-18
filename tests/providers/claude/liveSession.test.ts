@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   parseLiveSessionFile, readLiveSessionFile, startTimeAgrees,
-  LIVE_SESSION_MAX_BYTES, LIVE_SESSION_START_TOLERANCE_MS,
+  LIVE_SESSION_MAX_BYTES, LIVE_SESSION_START_TOLERANCE_MS, LIVE_SESSION_PROC_START_TOLERANCE_MS,
 } from '../../../src/providers/claude/liveSession.ts';
 
 // Shape copied from a real ~/.claude/sessions/<pid>.json (Claude Code
@@ -24,7 +24,39 @@ describe('parseLiveSessionFile', () => {
     expect(parseLiveSessionFile(text(REAL_SHAPE), 14041)).toEqual({
       sessionId: '00000000-0000-4000-8000-000000000001', cwd: '/Users/me/trellome',
       startedAtMs: 1789408337635, status: 'idle', statusUpdatedAtMs: 1789410297851,
+      waitingFor: null, procStartMs: 1789408336000,
     });
+  });
+
+  // KNOWN_ISSUES.md, "A slow trust-prompt accept can permanently hide a
+  // session's waiting card" (fixed 2026-09-18): `procStart` is Claude's own
+  // ctime/asctime-shaped string ("Www Mmm dd hh:mm:ss yyyy"), in UTC
+  // (measured against `ps -o lstart=` for live pids). Malformed or absent
+  // never rejects the file -- same tolerance as every other optional field
+  // here -- it only leaves startTimeAgrees (below) without its fallback.
+  it('parses procStart into procStartMs, nulling it when malformed or missing', () => {
+    expect(parseLiveSessionFile(text(REAL_SHAPE), 14041)?.procStartMs).toBe(1789408336000);
+    const { procStart: _omit, ...noProcStart } = REAL_SHAPE;
+    expect(parseLiveSessionFile(text(noProcStart), 14041)?.procStartMs).toBeNull();
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, procStart: 42 }), 14041)?.procStartMs).toBeNull();
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, procStart: '2026-09-14T17:52:16Z' }), 14041)?.procStartMs)
+      .toBeNull();
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, procStart: 'Mon Sep 14 17:52:16' }), 14041)?.procStartMs)
+      .toBeNull();
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, procStart: '' }), 14041)?.procStartMs).toBeNull();
+  });
+
+  // Quick answers design §3/§5.1: `waitingFor` is `"permission prompt"` for
+  // Bash, Write and plan approval, `"input needed"` for a question -- the
+  // signal deriveActivity (src/fleet/state.ts) uses to tell the two kinds
+  // of waiting apart from the status file alone. Same tolerance as every
+  // other optional field here: absent or the wrong type nulls it rather
+  // than rejecting the file.
+  it('reads waitingFor when present, and nulls it when absent or not a string', () => {
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, status: 'waiting', waitingFor: 'permission prompt' }), 14041)
+      ?.waitingFor).toBe('permission prompt');
+    expect(parseLiveSessionFile(text(REAL_SHAPE), 14041)?.waitingFor).toBeNull();
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, waitingFor: 42 }), 14041)?.waitingFor).toBeNull();
   });
 
   // buildSessionLive (src/main/sessionLive.ts) times a busy Claude session
@@ -126,7 +158,8 @@ describe('readLiveSessionFile', () => {
 
 describe('startTimeAgrees', () => {
   const NOW = 1_789_500_000_000;
-  const file = (startedAtMs: number) => ({ sessionId: 's', cwd: '/a', startedAtMs, status: null });
+  const file = (startedAtMs: number, procStartMs: number | null = null) =>
+    ({ sessionId: 's', cwd: '/a', startedAtMs, status: null, procStartMs });
 
   it('accepts a start within the tolerance', () => {
     expect(startTimeAgrees(file(NOW - 323_000 + 900), 323, NOW)).toBe(true);
@@ -140,5 +173,27 @@ describe('startTimeAgrees', () => {
   it('rejects when the process age is unknown', () => {
     expect(startTimeAgrees(file(NOW), null, NOW)).toBe(false);
     expect(startTimeAgrees(file(NOW), undefined, NOW)).toBe(false);
+  });
+
+  // KNOWN_ISSUES.md, "A slow trust-prompt accept can permanently hide a
+  // session's waiting card" (fixed 2026-09-18): a slow folder-trust accept
+  // rewrites `startedAt` to the accept moment, well outside the 5 s
+  // tolerance, but leaves `procStart` alone. processStart here is
+  // `NOW - 323_000` (a 323 s old process).
+  it('accepts a rewritten startedAt (43 s off) when procStart still agrees with the process', () => {
+    const processStart = NOW - 323_000;
+    expect(startTimeAgrees(file(processStart + 43_000, processStart + 400), 323, NOW)).toBe(true);
+  });
+
+  it('rejects when procStart is off by more than its own tolerance and startedAt also disagrees', () => {
+    const processStart = NOW - 323_000;
+    expect(startTimeAgrees(
+      file(processStart + 43_000, processStart + LIVE_SESSION_PROC_START_TOLERANCE_MS + 1_000), 323, NOW,
+    )).toBe(false);
+  });
+
+  it('rejects a pid-reuse file where both startedAt and procStart disagree with the process', () => {
+    const processStart = NOW - 323_000;
+    expect(startTimeAgrees(file(processStart + 90_000, processStart + 90_000), 323, NOW)).toBe(false);
   });
 });

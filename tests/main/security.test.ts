@@ -43,6 +43,14 @@ describe('renderer security posture', () => {
       'app:theme',
       'dialog:directory',
       'fleet:history', 'fleet:list',
+      // Quick answers switch: main re-probes settings.json fresh on every
+      // call (src/hooks/switch.ts) and writes it only through the existing
+      // atomic, mode-preserving, exact-command-match install/uninstall
+      // path -- see tests/hooks/switch.test.ts.
+      'hooks:get', 'hooks:set',
+      // Quick answers: main re-derives the prompt and checks the answer and
+      // the pane before any key -- see tests/main/answer.test.ts's guards.
+      'session:answer',
       // session:image and session:attachments: read-only; their checks live
       // in src/main/images.ts and src/main/attachments.ts.
       'session:attach', 'session:attachments', 'session:conversation', 'session:detach', 'session:image', 'session:keys',

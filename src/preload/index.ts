@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ConversationCursor } from '../store/conversation.ts';
+import type { Answer } from '../core/prompt.ts';
 
 /** The complete surface the renderer can reach. Every channel is named here
  *  and validated in main; there is deliberately no generic invoke, because one
@@ -26,6 +27,11 @@ const api = {
   // Main sanitises and revalidates; the typing below narrows nothing.
   sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }) =>
     ipcRenderer.invoke('session:keys', pid, text, attach),
+  // Answers the prompt Claude is waiting on (quick answers). Main
+  // re-derives the prompt, checks the answer against it and the pane, and
+  // presses nothing it cannot confirm; this typing narrows nothing.
+  answerPrompt: (pid: number, promptId: string, answer: Answer) =>
+    ipcRenderer.invoke('session:answer', pid, promptId, answer),
   // An image's bytes, for main to check and hold until sent; returns an id.
   stageImage: (bytes: ArrayBuffer) => ipcRenderer.invoke('session:stage-image', bytes),
   // Any other file's bytes and name, held the same way.
@@ -106,6 +112,12 @@ const api = {
   // value against its own three literals (applyThemeChoice); this typing
   // narrows nothing at the trust boundary, same as every other channel here.
   setTheme: (theme: string) => ipcRenderer.invoke('app:theme', theme),
+  // Quick answers (Settings): the switch's own state and its toggle. Main
+  // re-probes settings.json fresh on every call (src/hooks/switch.ts) --
+  // this typing narrows nothing at the trust boundary, same as every other
+  // channel here.
+  hooksGet: () => ipcRenderer.invoke('hooks:get'),
+  hooksSet: (on: boolean) => ipcRenderer.invoke('hooks:set', on),
 };
 
 contextBridge.exposeInMainWorld('fleet', api);

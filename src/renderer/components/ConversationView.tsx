@@ -9,7 +9,8 @@ import type { StageRefusal } from '../../main/staging.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import { WorkingStrip } from './WorkingStrip.tsx';
-import { WaitingCard } from './WaitingCard.tsx';
+import { WaitingFallback } from './WaitingCard.tsx';
+import { PromptCard } from './PromptCard.tsx';
 import { useSettings } from '../state/settings.ts';
 import { useSessionLive } from '../state/useSessionLive.ts';
 import { addPending, pendingFor, dropPending, matchPending, markQueued, tickIdle, NOT_SEEN_AFTER_MS } from '../state/pending.ts';
@@ -165,7 +166,14 @@ const MARKDOWN_COMPONENTS: Components = {
 const urlTransform: UrlTransform = (url, key, node) =>
   key === 'src' && node.tagName === 'img' && /^file:/i.test(url) ? url : defaultUrlTransform(url);
 
-function MarkdownText({ text }: { text: string }) {
+// Exported for PromptCard.tsx (Task 5): a plan's markdown goes through this
+// exact renderer (spec §9 -- "the plan renders through the existing
+// markdown renderer"), never a second one. PromptCard.tsx importing this
+// while this file imports PromptCard.tsx (below, for the prompt card
+// itself) makes the two modules mutually referential -- harmless here,
+// since both only ever call each other's exports from inside a render, well
+// after module evaluation finishes, never at module-top-level.
+export function MarkdownText({ text }: { text: string }) {
   return (
     <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS} urlTransform={urlTransform}>
       {text}
@@ -774,6 +782,30 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // bridge, or main's fs.watch failed) or a payload was dropped for
   // arriving mid session-switch (see useSessionLive's own doc comment).
   const live = useSessionLive(pid);
+  // Task 5 (quick-answers): whether the app's own hooks are installed --
+  // read fresh from main (window.fleet.hooksGet), never inferred from
+  // `live.prompt` being null, so a hooked-up session that simply has
+  // nothing open right now is not told to go turn a switch on that is
+  // already on. Only WaitingCard's fallback line needs this (a real
+  // PromptCard means hooks are plainly on already), so the fetch is keyed
+  // on the exact transition into showing that fallback, not on every
+  // activity change -- there is no benefit to re-reading it, say, on every
+  // working<->idle flip. null until the first read answers (Task 6):
+  // WaitingFallback shows its neutral reading frame while it is unknown,
+  // rather than a fallback card that may be wrong. No bridge means off.
+  const showsWaitingFallback = live?.activity === 'waiting' && live.prompt === null;
+  const [hooksOn, setHooksOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!showsWaitingFallback) return;
+    const api = window.fleet;
+    if (!api?.hooksGet) { setHooksOn(false); return; }
+    let alive = true;
+    void api.hooksGet().then(
+      r => { if (alive) setHooksOn(r.installed); },
+      err => console.error('hooks:get failed:', err),
+    );
+    return () => { alive = false; };
+  }, [showsWaitingFallback]);
   // Forces a re-render so the pending entries rendered below page.turns --
   // a plain module-level store (src/renderer/state/pending.ts), not React
   // state, so a pending send survives a session switch the same way a
@@ -1309,8 +1341,22 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
       {live?.activity === 'working' && pid !== null && (
         <WorkingStrip provider={provider} since={live.since} />
       )}
-      {live?.activity === 'waiting' && (
-        <WaitingCard provider={provider} onOpenTerminal={onOpenTerminal} />
+      {/* Task 5: PromptCard whenever main found an open prompt to show,
+          keyed by the prompt's own id so a new prompt (a different id)
+          mounts a fresh card -- resetting every local answer/text-box
+          state rather than carrying stale picks over, and giving the
+          "didn't take the answer" 3s check (PromptCard.tsx) a component
+          instance whose lifetime IS exactly this one prompt's.
+          WaitingFallback (a 2 s reading frame, then WaitingCard) covers
+          everything else; it mounts per waiting-without-prompt stretch,
+          which starts its timer, and is keyed by pid so a session switch
+          restarts it. `pid !== null` mirrors
+          WorkingStrip's own guard just above -- `live` is only ever
+          non-null for a pid useSessionLive was actually asked to watch. */}
+      {live?.activity === 'waiting' && pid !== null && (
+        live.prompt
+          ? <PromptCard key={live.prompt.id} pid={pid} prompt={live.prompt} onOpenTerminal={onOpenTerminal} />
+          : <WaitingFallback key={`waiting-${pid}`} provider={provider} hooksOn={hooksOn} onOpenTerminal={onOpenTerminal} />
       )}
       {/* Keyed by pid so switching session remounts the box: its draft,
           any standing refusal and the choice prompt all belong to the

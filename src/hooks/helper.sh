@@ -13,6 +13,12 @@
 set -u
 
 SPOOL="${LLMWS_SPOOL:-${HOME:-/tmp}/.llm-workspace/spool}"
+# Spec §4 "Spool privacy": the spool now holds commands and plan text, so
+# any directory this creates (including parents mkdir -p makes along the
+# way) must come out 0700, not the default 0755. mkdir has no chmod step
+# of its own -- umask is the only lever -- so it is set right before the
+# one mkdir call that needs it.
+umask 077
 mkdir -p "$SPOOL" 2>/dev/null || exit 0
 
 if command -v uuidgen >/dev/null 2>&1; then

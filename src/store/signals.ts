@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 import type { Db } from './db.ts';
 
 export interface SignalEvent {
@@ -121,4 +122,73 @@ export function openBlockers(db: Db, windowMs = OPEN_BLOCKERS_WINDOW_MS, now: nu
     });
   }
   return [...open.values()];
+}
+
+/** Kinds that never answer an open prompt, so rule 3 ("nothing newer")
+ *  skips them. PreToolUse fires only for AskUserQuestion/ExitPlanMode (the
+ *  matcher), always just before the same prompt's PermissionRequest, and in
+ *  the SAME whole second -- ingest order (uuid filenames) cannot break that
+ *  tie, so it must be skipped rather than read as "newer". SubagentStart/
+ *  SubagentStop are background agents starting or finishing while the
+ *  prompt stays open (final review M5). */
+const NOT_AN_ANSWER = new Set(['Notification', 'PreToolUse', 'SubagentStart', 'SubagentStop']);
+
+/** Cached per Db, the same WeakMap pattern as newestNonNotificationStatement
+ *  below: buildSessionLive runs this on every push while a session waits. */
+const promptStatementCache = new WeakMap<Db, Database.Statement>();
+
+function promptStatement(db: Db): Database.Statement {
+  let stmt = promptStatementCache.get(db);
+  if (!stmt) {
+    stmt = db.prepare(
+      `SELECT * FROM signal_events WHERE session_id = ?
+       ORDER BY occurred_at DESC, id DESC LIMIT 20`);
+    promptStatementCache.set(db, stmt);
+  }
+  return stmt;
+}
+
+/** §5.1. The newest PermissionRequest stamped at or after waitingSince
+ *  floored to the whole second, and only if nothing newer that could answer
+ *  it happened in the session. Ledger ruling (final review M6), replacing the
+ *  spec's 2 s slack: the status flips to waiting 15-30 ms BEFORE the
+ *  PermissionRequest is written and the helper stamps whole seconds, so the
+ *  floor is exact; a stamp from the previous second is an earlier prompt. */
+export function openPromptEvent(db: Db, sessionId: string, waitingSinceMs: number): SignalEvent | null {
+  const rows = promptStatement(db).all(sessionId) as any[];
+  const floor = Math.floor(waitingSinceMs / 1000) * 1000;
+  for (const r of rows) {
+    if (NOT_AN_ANSWER.has(r.kind)) continue;
+    if (r.kind !== 'PermissionRequest') return null;
+    const at = Date.parse(r.occurred_at);
+    return at >= floor ? rowToSignal(r) : null;
+  }
+  return null;
+}
+
+/** Cached per Db, same WeakMap pattern as src/hooks/spool.ts's own
+ *  statementCache -- currentBlockers (below) runs this on every poll
+ *  (Task 11's 250ms debounce), and a fresh db.prepare() on every call piles
+ *  up native Statement handles faster than GC reaps them (see spool.ts's
+ *  own comment for the Node 24 + better-sqlite3 finalization hazard this
+ *  avoids). */
+const newestStatementCache = new WeakMap<Db, Database.Statement>();
+
+function newestNonNotificationStatement(db: Db): Database.Statement {
+  let stmt = newestStatementCache.get(db);
+  if (!stmt) {
+    stmt = db.prepare(
+      `SELECT occurred_at FROM signal_events WHERE session_id = ? AND kind != 'Notification'
+       ORDER BY occurred_at DESC, id DESC LIMIT 1`);
+    newestStatementCache.set(db, stmt);
+  }
+  return stmt;
+}
+
+/** openBlockers, minus any blocker its session has moved past: PermissionRequest
+ *  carries no tool_use_id and its resolvers are not installed (§5.2). */
+export function currentBlockers(db: Db, now: number = Date.now()): Blocker[] {
+  const newest = newestNonNotificationStatement(db);
+  return openBlockers(db, undefined, now).filter(b =>
+    (newest.get(b.sessionId) as { occurred_at: string } | undefined)?.occurred_at === b.occurredAt);
 }

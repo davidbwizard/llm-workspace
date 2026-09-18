@@ -32,8 +32,11 @@ function insertStatement(db: Db): Database.Statement {
  *  idempotent and a re-read of the spool cannot duplicate events.
  *  `occurred_at` (when the hook fired) is kept distinct from `ingested_at`
  *  (when we read it) — a spooled event may be ingested hours later, so
- *  ordering by ingestion time would be wrong. */
-export function ingestSpool(db: Db, spoolDir: string, provider = 'claude'): number {
+ *  ordering by ingestion time would be wrong.
+ *
+ *  `sessionIds`, when given, collects the session id of every row actually
+ *  written, so the caller can push just those sessions (final review I1). */
+export function ingestSpool(db: Db, spoolDir: string, provider = 'claude', sessionIds?: Set<string>): number {
   if (!existsSync(spoolDir)) return 0;
   const stmt = insertStatement(db);
   const ingestedAt = new Date().toISOString();
@@ -67,6 +70,7 @@ export function ingestSpool(db: Db, spoolDir: string, provider = 'claude'): numb
       payload: JSON.stringify({ ...p, _ppid: rec.ppid ?? null }),
     });
     written += info.changes;
+    if (info.changes > 0 && sessionIds && typeof p.session_id === 'string') sessionIds.add(p.session_id);
     rmSync(file, { force: true });
   }
   return written;

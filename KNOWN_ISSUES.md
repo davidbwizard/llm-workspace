@@ -120,6 +120,12 @@ the screen was read only to sanity-check it, never to replace it.
 
 ## A slow trust-prompt accept can permanently hide a session's waiting card
 
+**FIXED 2026-09-18**: `startTimeAgrees` (`src/providers/claude/
+liveSession.ts`) now also accepts when the file's `procStart` string --
+parsed into `procStartMs`, which Claude does not rewrite on a folder-trust
+accept -- agrees with the process's real start within 2 s, so a rewritten
+`startedAt` no longer blinds the session for its whole life.
+
 Found live on 2026-09-17, driving two throwaway Claude sessions in `tmux`.
 
 Claude rewrites `~/.claude/sessions/<pid>.json`'s `startedAt` when the
@@ -148,7 +154,14 @@ slow accept. Needs its own measurement before changing anything.
 This is Part 1's exact-session-identity code, not this feature's, and
 predates this branch.
 
-## Claude hooks are not installed on this machine
+## RESOLVED 2026-09-18: Claude hooks are not installed on this machine
+
+Settings now has a **Quick answers** switch (`src/hooks/switch.ts`) that installs
+and removes the app's hooks, pointing at a stable helper copy in
+`~/.llm-workspace/bin/helper.sh`. With hooks on, a live status file outranks any
+hook blocker (`deriveActivity`, `src/fleet/state.ts`), because a PermissionRequest
+carries no tool_use_id and a No or Esc fires no event. Original note below.
+
 
 `probeCapabilities()` reports `hooksInstalled: false`. The hooks in
 `~/.claude/settings.json` are all the user's own (`block-env-read.sh`,
