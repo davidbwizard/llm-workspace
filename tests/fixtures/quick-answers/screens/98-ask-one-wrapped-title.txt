@@ -1,0 +1,40 @@
+      src/providers/claude/parse.ts                | 40 +++++++++++++-
+     … +50 lines (ctrl+o to expand)
+
+❯ Couldn't confirm -- answer in Terminal Open Terminal
+
+⏺ I got the same "Couldn't confirm" result even without previews, so something else is causing
+  this—likely the question wrapping to two lines in this narrower pane. Rather than guess, I'll set
+  up a background job to capture this session's screen every 2 seconds while a question is open.
+
+⏺ Bash(python3 -c "import
+      json;print(json.load(open('/Users/user000000000/.claude/sessions/100.json')).get('tmux'))";
+      tmux capture-pane -p -J -S -3000 -t workspace-app…)
+  ⎿  llmws-claude-f9c58146:@194.%194
+       promptId: '98217A17-3CD1-4D39-87A1-931687A9A3B0',
+       reason: 'unconfirmed'
+     … +2 lines (ctrl+o to expand)
+  ⎿  Allowed by auto mode classifier
+
+⏺ Bash(P=/private/tmp/claude-502/-Users-user000000000-Documents-David-llm-workspace/05ca161a-0ae7-4
+      978-8680-b333894fe577/scratchpad/selfcap; mkdir -p $P; for i in $(se…)
+  ⎿  Running in the background (↓ to manage)
+  ⎿  Allowed by auto mode classifier
+───────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Next
+
+│ Test question: please try answering this one from the app's card first (any option), then answer
+│ here in the terminal if it says Couldn't confirm. Which should I do after this fix?
+
+❯ 1. Preview-question fix
+     Make questions with previews show read-only cards up front.
+  2. Context chip
+     Build the context chip with the 83% setting.
+  3. Both, in that order
+     Preview fix first, then the chip.
+  4. Type something.
+───────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+

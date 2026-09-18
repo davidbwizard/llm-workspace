@@ -26,9 +26,10 @@ import './PromptCard.css';
 
 const MAX_TEXT_LEN = 2000; // mirrors src/main/answer.ts's own MAX_TEXT
 
-const REASON_LINE: Record<'not_tmux' | 'screen_unread', string> = {
+const REASON_LINE: Record<'not_tmux' | 'screen_unread' | 'unsupported_layout', string> = {
   not_tmux: "This session isn't running in the app's terminal, so it can't be answered here.",
   screen_unread: "Couldn't read Claude's choices from the screen.",
+  unsupported_layout: "This question has previews the app can't answer yet -- answer in Terminal.",
 };
 
 /** One line, non-empty once trimmed, and within the cap -- the same shape

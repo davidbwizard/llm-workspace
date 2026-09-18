@@ -14,6 +14,15 @@ const TAB_ROW = /^←.*→$/;
 const HEADER_LINE = /^[☐☒]\s+\S/;
 const HINT_LINE = 'shift+tab to approve with this feedback';
 const WRAPPED_IN_WORD = /\S[-/]$/;
+/** A wrapped question title draws every one of its lines with a left border,
+ *  "│ " (U+2502 + space) -- measured today, fixture 98. A short title that
+ *  never wraps (fixture 96) carries no border at all, so this is a no-op for
+ *  it. Stripped before joining/normalising a title line so both forms
+ *  compare equal to the hook's own question text. */
+const TITLE_BORDER = /^│\s*/;
+function stripBorder(line: string): string {
+  return line.replace(TITLE_BORDER, '');
+}
 const PERMISSION_NO_TEXT_DEFAULT = 'No, and tell Claude what to do differently';
 const PLAN_TEXT_DEFAULT = 'Tell Claude what to change';
 
@@ -189,7 +198,7 @@ function parseReviewAnswers(section: string[]): { question: string; answer: stri
   for (let i = 0; i < section.length; i++) {
     const t = (section[i] ?? '').trim();
     if (!t.startsWith('●')) continue;
-    const question = t.slice(1).trim();
+    const question = stripBorder(t.slice(1).trim());
     let j = i + 1;
     while (j < section.length && (section[j] ?? '').trim() === '') j++;
     const next = (section[j] ?? '').trim();
@@ -243,7 +252,7 @@ function readQuestion(lines: string[], headers: string[], questions: string[]): 
     const raw = rest[afterTitleIdx] ?? '';
     const trimmed = raw.trim();
     if (trimmed === '' || OPTION_LINE.test(raw)) break;
-    titleParts.push(trimmed);
+    titleParts.push(stripBorder(trimmed));
     afterTitleIdx++;
   }
   const title = titleParts.join(' ').trim();
