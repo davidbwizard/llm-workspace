@@ -106,6 +106,18 @@ function computeTextRow(kind: 'permission' | 'plan', { choices, cursor, hinted }
   return label === PLAN_TEXT_DEFAULT ? '' : label;
 }
 
+/** True only when `choices` are numbered exactly 1..n, in that order, with
+ *  no gap and no repeat -- a crafted Bash/Write command previewed in the
+ *  same block can contain lines shaped like "4. No, and tell Claude what to
+ *  do differently" (final review: a reviewer-supplied capture built from
+ *  fixture 50 showed parsed keys [4,1,2,3,4]), which would otherwise fake an
+ *  extra row ahead of the real ones -- computeTextRow's `find` takes the
+ *  FIRST row with the cursor's number, so a repeated key can substitute a
+ *  fake row's label for the real one it belongs to. */
+function hasSequentialKeys(choices: PromptChoice[]): boolean {
+  return choices.every((c, i) => c.key === String(i + 1));
+}
+
 function readDialog(lines: string[], expect: DialogExpect): ScreenRead {
   const block = findDialogBlock(lines);
   if (!block) return { match: false, why: 'no_dialog_on_screen' };
@@ -113,6 +125,7 @@ function readDialog(lines: string[], expect: DialogExpect): ScreenRead {
   const parsed = parseDialogChoices(block, expect.kind);
   const { choices, cursor } = parsed;
   if (choices.length === 0) return { match: false, why: 'no_options_found' };
+  if (!hasSequentialKeys(choices)) return { match: false, why: 'option_numbers_not_sequential' };
 
   if (expect.kind === 'plan') {
     if (!block.some((l) => l.includes('Would you like to proceed?'))) {

@@ -1706,6 +1706,27 @@ describe("session:launch / session:reattach -- Task 13's real handlers", () => {
     const resumeHandler = ipc.match(/ipcMain\.handle\(\s*'session:resume',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
     expect(resumeHandler).toMatch(/resumeSession\(/);
   });
+
+  // Hardening: session:watch's on-demand ingestSpool dependency must call
+  // notifySessionChanged with the ids it touched (the same composition
+  // src/main/index.ts's own spool tick uses), so a pane read that ran
+  // before the terminal drew the dialog still gets a follow-up push --
+  // tests/main/sessionLive.test.ts proves the actual push behaviour this
+  // wiring produces; this only proves ipc.ts still calls it from inside
+  // the ingestSpool dependency, since session:watch cannot be invoked
+  // directly under plain-node vitest (see this file's top-of-module
+  // comment on the electron mock).
+  it("session:watch's ingestSpool dependency calls notifySessionChanged", () => {
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
+    expect(ipc).toMatch(/import\s*\{[^}]*notifySessionChanged[^}]*\}\s*from\s*'\.\/sessionLive\.ts'/);
+    const watchHandler = ipc.match(/ipcMain\.handle\(\s*'session:watch',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
+    const ingestDep = watchHandler.match(/ingestSpool:\s*\(\)\s*=>\s*\{([\s\S]*?)\},\s*\}\),/)?.[1] ?? '';
+    expect(ingestDep).toMatch(/notifySessionChanged\(touched\)/);
+    // Guards against a version that calls it unconditionally: it must only
+    // fire when something was actually ingested, or the follow-up push
+    // would loop forever on an always-empty touched set.
+    expect(ingestDep).toMatch(/if\s*\(\s*ingestSpool\([^)]*\)\s*>\s*0\s*\)\s*\{[\s\S]*notifySessionChanged/);
+  });
 });
 
 describe('resolveReattachTarget', () => {

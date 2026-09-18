@@ -38,7 +38,7 @@ import type { Provider } from '../core/types.ts';
 import { launchSession, reattachSession, resumeSession, type LaunchResult } from './launch.ts';
 import { isCodexBusy } from './codexBusy.ts';
 import {
-  buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, type WatchDeps,
+  buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, notifySessionChanged, type WatchDeps,
 } from './sessionLive.ts';
 import { answerPrompt, type AnswerResult } from './answer.ts';
 import { hooksState, setHooks, type HooksResult } from '../hooks/switch.ts';
@@ -1351,7 +1351,13 @@ export function registerIpc(
   // started. `ingestSpool` runs only for a waiting session (buildSessionLive
   // decides), so the PermissionRequest Claude spools just after flipping to
   // waiting is in this push rather than the next 1 s tick; the fleet gets
-  // the same push the tick would have sent.
+  // the same push the tick would have sent. notifySessionChanged on the ids
+  // it touched then schedules a follow-up push (sessionLive.ts's 250ms
+  // coalesce), the same way index.ts's own spool tick does -- a pane read
+  // taken before the terminal has actually drawn the dialog still gets a
+  // second look shortly after, instead of only this one push. This never
+  // loops: ingestSpool deletes each file as it reads it, so the follow-up
+  // push's own ingest finds 0 files and touches nothing further.
   ipcMain.handle('session:watch', (event, pid: unknown) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const validPid = typeof pid === 'number' ? pid : null;
@@ -1361,7 +1367,13 @@ export function registerIpc(
       buildPayload: () => validPid === null ? null
         : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), {
           cached: cachedPushOpenSessions,
-          ingestSpool: () => { if (ingestSpool(db, spoolDir, 'claude') > 0) pushFleet(win); },
+          ingestSpool: () => {
+            const touched = new Set<string>();
+            if (ingestSpool(db, spoolDir, 'claude', touched) > 0) {
+              pushFleet(win);
+              notifySessionChanged(touched);
+            }
+          },
         }),
       send: payload => { if (win && !win.isDestroyed()) win.webContents.send('session:live', payload); },
     };

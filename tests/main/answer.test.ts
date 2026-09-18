@@ -475,6 +475,29 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
     expect(pane.sent[3]).toEqual(['send-keys', '-t', `=${NAME}:`, '-l', '--', 'Skip it and reply NOPROBE']);
   });
 
+  // Hardening: if the row Down lands on already reads as an open text row
+  // (textRow !== null) BEFORE this delivery has pressed Tab at all -- stale
+  // state from an earlier attempt, or any other reason the screen already
+  // shows "No, ..." -- pressing Tab and trusting the later empty-row match
+  // would prove nothing (that match could just be re-observing the same
+  // stale state, not something THIS Tab press caused). The fix stops right
+  // there: no Tab, nothing typed.
+  it('Bash No with text: refuses to press Tab when the row already reads as open (stale/faked state)', async () => {
+    registered();
+    const onNo = screen('52-perm-bash2-cursor-no');
+    const on1 = moveCursor(onNo, '3', '1');
+    const on2 = moveCursor(onNo, '3', '2');
+    // Cursor lands on 3 already reading "No, and tell Claude what to do
+    // differently" -- the amended/open label -- with no Tab pressed yet.
+    const alreadyOpenAt3 = screen('53-perm-bash2-tab-on-no');
+    const view = viewFor(BASH_NO, on1);
+    const pane = fakePane([on1, on2, alreadyOpenAt3]);
+    const result = await answerPrompt(PID, view.id,
+      { kind: 'choice_text', key: '3', text: 'Skip it and reply NOPROBE' }, deps(pane, view));
+    expect(result).toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+    expect(pane.keys()).toEqual(['Down', 'Down']);
+  });
+
   // Task 6 (by eye): David's dialog has four options with No at 4. 57/58
   // are fixture 50 hand-edited (auto-mode row at 3, No at 4).
   describe('text on the takesText row at any key', () => {

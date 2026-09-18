@@ -468,6 +468,14 @@ class Run {
         if (!next) return this.fail();
         cur = next;
       }
+      // The row must not already read as an open text row before Tab is
+      // pressed -- otherwise the empty-row check just below could match a
+      // row that was already open (stale state from an earlier attempt, or
+      // a crafted screen faking the No row's amended label -- promptScreen's
+      // own guard against that is defence in depth, not a reason to trust
+      // this read), proving nothing about whether THIS Tab press opened it.
+      // Stopping here presses no more keys and types nothing.
+      if ((cur.read as DialogRead).textRow !== null) return this.fail();
       if (!this.press('Tab')) return this.fail();
       if (!await this.settle(s => onRow(s, ''))) return this.fail();
     }

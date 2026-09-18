@@ -757,6 +757,102 @@ describe('spool ingest pushes the watched session', () => {
   });
 });
 
+// Hardening: the `ingestSpool` dependency itself (the shape wired in
+// src/main/ipc.ts's session:watch handler) must call notifySessionChanged
+// with the ids IT touched, the same way index.ts's 1 s spool tick already
+// does -- not leave that to the caller, as the test above does by hand. A
+// pane read that ran before the terminal had actually drawn the dialog (the
+// push at PID2's first `pushSessionLive()` call below, with the event
+// spooled but not yet ingested) must still get a follow-up push once the
+// ingest lands, and that follow-up must not itself trigger another: the
+// spooled file is deleted as it is read, so the follow-up's own ingest
+// finds 0 files and calls notifySessionChanged for nobody.
+describe('the ingestSpool dependency calls notifySessionChanged with the ids it touched', () => {
+  const EVENTS = 'tests/fixtures/quick-answers/events';
+  const SESSION = '319735a2-7eb7-445e-a620-bf9ab4fb12a1';
+  const PID = 4833;
+  const WAITING_SINCE = Date.parse('2026-09-17T21:40:14.300Z');
+  const NOW = WAITING_SINCE + 1_000;
+  const NOOP: WatchDeps = { processes: () => [], buildPayload: () => null, send: () => {} };
+  let spool: string;
+
+  afterEach(() => {
+    watchSessionFor(null, NOOP);
+    vi.useRealTimers();
+    clearPromptCache();
+    rmSync(spool, { recursive: true, force: true });
+  });
+
+  it('pushes a follow-up after the on-demand ingest, then stops once the spool is empty', () => {
+    spool = mkdtempSync(join(tmpdir(), 'llmws-spool-'));
+    const db = openDb(':memory:');
+    const processes = [proc({
+      pid: PID, provider: 'claude', cwd: '/repo/claude',
+      liveSession: { sessionId: SESSION, cwd: '/repo/claude', startedAtMs: STARTED, status: 'waiting' },
+    })];
+    const read = (): LiveSessionRead => ({
+      ok: true,
+      file: {
+        sessionId: SESSION, cwd: '/repo/claude', startedAtMs: STARTED, status: 'waiting',
+        statusUpdatedAtMs: WAITING_SINCE, waitingFor: null,
+      },
+    });
+    const sent: SessionLivePayload[] = [];
+    const handle: WatchHandle = { on: () => {}, close: () => {} };
+    const ingestCalls: number[] = [];
+    // Exactly src/main/ipc.ts's session:watch shape: a fresh Set every call,
+    // notifySessionChanged only when something was actually ingested.
+    const ingestSpoolDep = () => {
+      const touched = new Set<string>();
+      const written = ingestSpool(db, spool, 'claude', touched);
+      ingestCalls.push(written);
+      if (written > 0) notifySessionChanged(touched);
+    };
+    vi.useFakeTimers();
+
+    // Watch starts with the spool still empty -- no event ingested yet, so
+    // no prompt, but this is what sets watchState.sessionId to SESSION
+    // (notifySessionChanged is a no-op before that, by construction: see
+    // its own doc comment). Mirrors the status-file push landing just
+    // before the PermissionRequest is spooled.
+    watchSessionFor(PID, {
+      processes: () => processes,
+      buildPayload: () => buildSessionLive(db, PID, processes, NOW, { read, ingestSpool: ingestSpoolDep }),
+      send: p => sent.push(p),
+      watch: () => handle,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ sessionId: SESSION, prompt: null });
+
+    // The PermissionRequest lands in the spool, then some other trigger
+    // (the coalesced watcher/tick pushes this fixes -- pushSessionLive
+    // itself, here standing in for one) causes the next push.
+    const payload = JSON.parse(readFileSync(join(EVENTS, '1789706218.842-PermissionRequest-89928.json'), 'utf8'));
+    writeFileSync(join(spool, 'pr-1.json'), JSON.stringify({
+      event_id: 'pr-1', occurred_at: '2026-09-17T21:40:14.000Z', ppid: 1, payload,
+    }));
+    pushSessionLive();
+
+    // This push already carries the prompt (ingest runs before the
+    // promptEvent lookup), and its own ingest scheduled a follow-up because
+    // watchState.sessionId is set by now.
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.prompt).toMatchObject({ id: 'pr-1', kind: 'question' });
+
+    vi.advanceTimersByTime(250);
+    // The follow-up push: proves a pane read that missed the dialog on the
+    // push above still gets a second look.
+    expect(sent).toHaveLength(3);
+    expect(sent[2]?.prompt).toMatchObject({ id: 'pr-1', kind: 'question' });
+
+    vi.advanceTimersByTime(250);
+    // No third follow-up: the file was deleted on the first ingest, so this
+    // ingest touched nothing and scheduled nothing further -- it does not loop.
+    expect(sent).toHaveLength(3);
+    expect(ingestCalls).toEqual([0, 1, 0]);
+  });
+});
+
 // Task 6 (by eye): the fallback card flashed before the prompt card. The
 // status-file push fires ~250 ms after the flip to waiting, while the
 // PermissionRequest lands in the spool ~20 ms after it -- so a push for a
