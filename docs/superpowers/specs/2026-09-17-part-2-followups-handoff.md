@@ -162,6 +162,19 @@ message in the same form as an unsent one). What worked, all day:
   transcript). The full wording of those replies is not on disk anywhere.
 - **FIXED 2026-09-18 (477225e): long questions wrap with a "│ " border** and were
   refused; the reader strips it (fixture 98).
+- **FIXED 2026-09-18 (667e6ea): multi-line and taller-than-pane commands** now
+  answer from the card (bordered lines, exact command match, tail rule for
+  overflow, ambiguity guard for two prompts in one wait). Follow-ups from the
+  security review: tighten file-tool and other-tool anchors to the same
+  exact-region rule as Bash (today: basename/tool name anywhere in the dialog).
+- **Usage button (David's idea):** Claude plan limits are exposed token-free
+  only via the status line JSON (`rate_limits.five_hour` / `seven_day`
+  `used_percentage` + `resets_at`, Pro/Max); David has no status line
+  configured, so the app can add one (write-only helper that saves the latest
+  snapshot per session and prints a short footer). Codex weekly usage is already
+  in rollout `token_count` events (`rate_limits.primary.used_percent`,
+  `window_minutes`, `resets_at`). Plan: status line feed first, then the context
+  chip and the Usage panel read from it (mockup first).
 - **Questions with previews** (side-by-side layout) are read-only on the card;
   measure that layout to support it.
 - **Context chip (next, David's spec):** short form (2k, 20k, 200k) plus "% left"
