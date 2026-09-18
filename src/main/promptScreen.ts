@@ -387,7 +387,9 @@ function readQuestion(lines: string[], headers: string[], questions: string[]): 
     afterTitleIdx++;
   }
   const title = titleParts.join(' ').trim();
-  if (titleParts.length === 0 || !title.endsWith('?')) return { match: false, why: 'no_question_title_found' };
+  // No "must end in ?" rule: real questions often end in ")" or "." (measured
+  // 2026-09-18). The title must still EQUAL a hook question text below.
+  if (titleParts.length === 0 || title === '') return { match: false, why: 'no_question_title_found' };
 
   const collapse = (t: string) => t.replace(/\s+/g, ' ').trim();
   const current = questions.findIndex((q) => collapse(q) === collapse(title));

@@ -766,6 +766,25 @@ describe('readPromptScreen -- one-question layout (header line, no tab row)', ()
       .toBe(false);
   });
 
+  // Measured 2026-09-18: a real question that does not end in "?" ("Which
+  // 'left' should the context chip show? (This session: 605k used)") was
+  // refused, because the title had to end with "?". The exact match against
+  // the hook's question text is the real check; the "?" rule only lost cards.
+  it('matches a question whose text does not end in "?"', () => {
+    const q = "Which 'left' should the context chip show? (This session: 605k used)";
+    const cap = screen('96-ask-one-question').replace('Should I create qa-7.txt with the current timestamp now?', q);
+    const result = readPromptScreen(cap, oneExpect('Next step', q));
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.current).toBe(0);
+  });
+
+  it('still rejects that screen when the hook question differs', () => {
+    const q = "Which 'left' should the context chip show? (This session: 605k used)";
+    const cap = screen('96-ask-one-question').replace('Should I create qa-7.txt with the current timestamp now?', q);
+    expect(readPromptScreen(cap, oneExpect('Next step', 'Which one should the chip show?')).match).toBe(false);
+  });
+
   it('rejects 96 for a two-question expectation: the header line alone is only ever one question', () => {
     const result = readPromptScreen(screen('96-ask-one-question'),
       askExpect(['Next step', 'Other'], [ONE_Q, 'Which other?']));
