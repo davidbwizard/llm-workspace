@@ -131,7 +131,7 @@ function screenExpect(view: PromptView): ScreenExpect | null {
   }
   if (view.kind === 'plan') return { kind: 'plan' };
   const anchor = view.command || (view.filePath ? basename(view.filePath) : '') || view.toolName || '';
-  return anchor ? { kind: 'permission', toolName: view.toolName ?? '', anchor } : null;
+  return anchor ? { kind: 'permission', toolName: view.toolName ?? '', anchor, description: view.description } : null;
 }
 
 /** One capture, no retry: this runs inside a push. */

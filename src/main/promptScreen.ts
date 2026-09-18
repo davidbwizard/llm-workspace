@@ -35,6 +35,9 @@ function bare(s: string): string {
 /** How much of a cut-off command must be on screen before its tail can
  *  stand for the whole (non-whitespace characters). */
 const MIN_VISIBLE_TAIL = 40;
+/** The Bash dialog's description line when the hook has none (measured:
+ *  events 47761/59737 carry no description; fixtures 50/52 show this). */
+const BASH_DEFAULT_DESCRIPTION = 'Run shell command';
 const PERMISSION_NO_TEXT_DEFAULT = 'No, and tell Claude what to do differently';
 const PLAN_TEXT_DEFAULT = 'Tell Claude what to change';
 
@@ -150,13 +153,41 @@ function hasSequentialKeys(choices: PromptChoice[]): boolean {
   return choices.every((c, i) => c.key === String(i + 1));
 }
 
-/** The dialog's top is on screen, so all of its command is: the whole
- *  anchor must appear in the block. Whitespace-insensitive -- a long
- *  command wraps at the pane width (even mid-word) and a multi-line command
- *  spans lines -- and each line's one "│" border is dropped first, or it
- *  would split a bordered command where its lines join. */
+/** Screen text compared whitespace-insensitively -- a long command wraps at
+ *  the pane width (even mid-word) and a multi-line command spans lines --
+ *  with each line's one "│" border dropped first, or it would split a
+ *  bordered command where its lines join. */
+function unbordered(lines: string[]): string {
+  return bare(lines.map((l) => stripBorder(l.trim())).join(''));
+}
+
+/** A non-Bash tool with its dialog's top on screen: the anchor (a file
+ *  basename or the tool name) must appear in the block. */
 function blockHasAnchor(block: string[], anchor: string): boolean {
-  return bare(block.map((l) => stripBorder(l.trim())).join('')).includes(anchor);
+  return unbordered(block).includes(anchor);
+}
+
+/** A Bash dialog with its top on screen (fixtures 50, 62, 71): the header
+ *  ("Bash command"), a blank line, the command's lines, the description on
+ *  the line(s) straight under them, then a blank line. The command region
+ *  is what lies between the header and the description, and it must EQUAL
+ *  the hook's command -- merely containing it would let a short anchor hit
+ *  a longer command, the description or an option label. The description
+ *  must fill whole lines of its own, so a command cannot borrow its first
+ *  words. It is the hook's, or BASH_DEFAULT_DESCRIPTION when the hook has
+ *  none; any other layout fails safe as a mismatch. */
+function bashCommandEquals(above: string[], anchor: string, description: string | undefined): boolean {
+  let i = above.findIndex((l) => l.trim() !== ''); // the header
+  if (i === -1) return false;
+  i++;
+  while (i < above.length && (above[i] ?? '').trim() === '') i++;
+  const run: string[] = [];
+  while (i < above.length && (above[i] ?? '').trim() !== '') run.push(above[i++]!);
+  const shownDescription = bare(description?.trim() ? description : BASH_DEFAULT_DESCRIPTION);
+  for (let split = run.length - 1; split > 0; split--) {
+    if (bare(run.slice(split).join('')) === shownDescription && unbordered(run.slice(0, split)) === anchor) return true;
+  }
+  return false;
 }
 
 /** The dialog's top is cut off (findCutOffBlock), so only the command's
@@ -202,7 +233,9 @@ function readDialog(lines: string[], expect: DialogExpect): ScreenRead {
   // that is only whitespace would then match anything, so it never matches.
   const anchor = bare(expect.anchor);
   if (anchor === '') return { match: false, why: 'empty_anchor' };
-  const found = ruled ? blockHasAnchor(block, anchor) : tailMatchesAnchor(above, anchor);
+  const found = !ruled ? tailMatchesAnchor(above, anchor)
+    : expect.toolName === 'Bash' ? bashCommandEquals(above, anchor, expect.description)
+      : blockHasAnchor(block, anchor);
   if (!found) return { match: false, why: 'anchor_not_found' };
 
   return { match: true, kind: 'permission', choices, cursor, textRow: computeTextRow('permission', parsed) };

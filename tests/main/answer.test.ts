@@ -227,6 +227,19 @@ describe('buildPromptView', () => {
     expect(view).toMatchObject({ answerable: true, command: long });
   });
 
+  // The screen check compares the dialog's description line with the hook's
+  // (event 92658 carries one; fixture 71 shows it).
+  it('checks the hook description against the dialog: matches 71 as captured, not with another description', () => {
+    const ev = () => event('1789706567.760-PermissionRequest-92658.json');
+    const as71 = buildPromptView(ev(), NAME, { capture: () => ({ ok: true, stdout: screen('71-s2-bash-dialog') }) });
+    expect(as71).toMatchObject({ answerable: true, description: 'Create empty file perm-probe-always.txt' });
+    clearPromptCache();
+    const other = screen('71-s2-bash-dialog').replace('Create empty file perm-probe-always.txt', 'Create empty file other.txt');
+    expect(other).not.toBe(screen('71-s2-bash-dialog'));
+    const view = buildPromptView(ev(), NAME, { capture: () => ({ ok: true, stdout: other }) });
+    expect(view).toMatchObject({ answerable: false, reason: 'screen_unread' });
+  });
+
   it('never treats an empty anchor as a match', () => {
     const ev = event(BASH_YES);
     ev.payload = { tool_name: '', tool_input: {} };
