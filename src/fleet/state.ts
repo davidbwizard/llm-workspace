@@ -454,8 +454,17 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     const alive = hasMatchedProcess && m?.quality === 'unique';
     const oldest = m?.quality === 'unique' ? oldestProcess(matchedProcs) : null;
 
+    // Quick answers §5.2 (final review I2): the matched process's own
+    // status file wins over a blocker, the same rule openSessionsLive and
+    // buildSessionLive apply -- only for a unique match whose file names
+    // this very session, never one borrowed from another session's process.
+    const liveFile = m?.quality === 'unique'
+      ? matchedProcs.find(p => p.liveSession?.sessionId === r.session_id)?.liveSession ?? null
+      : null;
     const { lifecycle, activity } = deriveActivity({
-      lastTs: r.last_ts, lastKind: r.last_kind, blocker, hasMatchedProcess, hasLiveSignal, now,
+      lastTs: r.last_ts, lastKind: r.last_kind, blocker: liveFile ? null : blocker,
+      hasMatchedProcess, hasLiveSignal, now,
+      liveStatus: liveFile?.status ?? null, liveWaitingFor: liveFile?.waitingFor ?? null,
     });
 
     // Symmetric with the byCwd filter above: a disconnected session is not
@@ -790,9 +799,9 @@ export function openSessions(
  *     session_id IN (...)` on this small, known id list uses the
  *     `events_session_ts(session_id, ts)` index directly.
  *
- *  Blockers reuse currentBlockers(db, now) exactly as fleetState does --
- *  already a bounded read over signal_events, not the events table, so
- *  there is nothing to scope further. Activity/lifecycle reuse
+ *  Blockers reuse currentBlockers(db, now) as fleetState does, but only
+ *  when some matched session has no live status file (a status file always
+ *  wins, quick-answers design §5.2). Activity/lifecycle reuse
  *  deriveActivity, the same function fleetState's own per-row map now
  *  calls, so the two paths cannot compute it differently. */
 export function openSessionsLive(
@@ -972,7 +981,13 @@ export function openSessionsLive(
   const hasLiveSignal = processes.length > 0;
   const blockers = new Map<string, Blocker>();
   if (uniqueIds.length > 0) {
-    for (const b of currentBlockers(db, now)) blockers.set(b.sessionId, b);
+    // Quick answers §5.2 (final review I2/I4): a session with a status file
+    // never consults a blocker -- not even when its status string is
+    // unrecognised -- so the 24 h blocker scan only runs when some matched
+    // session has no status file at all.
+    if (uniqueIds.some(id => !liveStatusBySession.has(id))) {
+      for (const b of currentBlockers(db, now)) blockers.set(b.sessionId, b);
+    }
 
     const rows = db.prepare(`
       SELECT session_id, COUNT(*) events, MAX(ts) last_ts,
@@ -987,7 +1002,7 @@ export function openSessionsLive(
     `).all(...uniqueIds) as any[];
 
     for (const r of rows) {
-      const blocker = blockers.get(r.session_id) ?? null;
+      const blocker = liveStatusBySession.has(r.session_id) ? null : blockers.get(r.session_id) ?? null;
       const { activity } = deriveActivity({
         lastTs: r.last_ts, lastKind: r.last_kind, blocker, hasMatchedProcess: true, hasLiveSignal, now,
         liveStatus: liveStatusBySession.get(r.session_id) ?? null,
@@ -1009,13 +1024,13 @@ export function openSessionsLive(
     let enrichment: { sessionId: string; lastProse: string | null; events: number | null; activity: Activity | null } | null =
       m.quality === 'unique' ? enrichmentById.get(m.sessionId!) ?? null : null;
     // An exact match whose transcript has no rows yet: the process's own
-    // status (or a hook blocker) is the only activity signal there is.
-    // With neither, activity stays unknown rather than defaulting to idle.
+    // status is the only activity signal there is. It has a status file, so
+    // a blocker never counts here (final review I2); an unrecognised status
+    // leaves activity unknown rather than defaulting to idle.
     if (!enrichment && m.quality === 'unique' && p.liveSession) {
-      const blocker = blockers.get(m.sessionId!) ?? null;
-      const activity = (blocker || activityFromLiveStatus(p.liveSession.status) !== null)
+      const activity = activityFromLiveStatus(p.liveSession.status) !== null
         ? deriveActivity({
-            lastTs: null, lastKind: null, blocker, hasMatchedProcess: true, hasLiveSignal, now,
+            lastTs: null, lastKind: null, blocker: null, hasMatchedProcess: true, hasLiveSignal, now,
             liveStatus: p.liveSession.status, liveWaitingFor: p.liveSession.waitingFor ?? null,
           }).activity
         : null;

@@ -184,3 +184,23 @@ describe('deferred ingest: answer before ingesting, not after', () => {
     expect(main).toMatch(/discoveryTimer\s*=\s*setInterval\(pushAfterDiscoverySweep,\s*5000\)/);
   });
 });
+
+// Quick answers final review I1: the spool tick is the trigger that sees a
+// PermissionRequest land after the status file already said waiting, so it
+// must push the watched conversation pane as well as the fleet.
+describe('spool tick', () => {
+  it('passes the sessions it ingested to notifySessionChanged', () => {
+    const body = functionBody(main, 'startBackgroundWork');
+    const tick = body.slice(body.search(/spoolTimer\s*=\s*setInterval\(/));
+    expect(tick).toMatch(/ingestSpool\(db,\s*paths\.spool,\s*'claude',\s*touched\)\s*>\s*0/);
+    expect(tick).toMatch(/notifySessionChanged\(touched\)/);
+  });
+});
+
+// Quick answers final review M9: a failed chmod of the spool folder is
+// logged with its error, never swallowed.
+describe('spool folder permissions', () => {
+  it('logs a failure to tighten the spool folder instead of ignoring it', () => {
+    expect(main).toMatch(/chmodSync\(paths\.spool,\s*0o700\);\s*}\s*catch\s*\((\w+)\)\s*{\s*console\.error\([^)]*\1\)/);
+  });
+});

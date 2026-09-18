@@ -141,9 +141,18 @@ function startBackgroundWork(): void {
     pushTimer = setTimeout(() => { pushTimer = null; pushFleet(mainWindow); }, 250);
   });
 
+  // Quick answers (final review I1): Claude flips its status file to
+  // waiting just BEFORE the PermissionRequest hook is written, so the
+  // status-file push goes out with no prompt. The tick that ingests that
+  // event must push the watched session itself, or the card waits for the
+  // 5s sweep.
   spoolTimer = setInterval(() => {
     if (!db) return;
-    if (ingestSpool(db, paths.spool) > 0) pushFleet(mainWindow);
+    const touched = new Set<string>();
+    if (ingestSpool(db, paths.spool, 'claude', touched) > 0) {
+      pushFleet(mainWindow);
+      notifySessionChanged(touched);
+    }
   }, 1000);
   rotateSpool(paths.spool, { maxAgeDays: 30, maxFiles: 20000 });
 }
@@ -157,7 +166,9 @@ app.whenReady().then(() => {
   // helper created before its own umask fix) needs its own chmod to be
   // tightened, not just created narrow going forward.
   mkdirSync(paths.spool, { recursive: true, mode: 0o700 });
-  try { chmodSync(paths.spool, 0o700); } catch { /* best-effort; must not block startup */ }
+  // Best-effort (must not block startup), but never silent: the error names
+  // the folder and the reason, never any spooled file's contents.
+  try { chmodSync(paths.spool, 0o700); } catch (e) { console.error('Quick answers: could not tighten the spool folder to 0700:', e); }
 
   // Quick answers, spec §4: "On every app start with hooks installed,
   // refresh the copy if its content differs." src/hooks/helper.sh is not

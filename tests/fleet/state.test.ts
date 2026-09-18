@@ -398,6 +398,54 @@ describe('fleetState', () => {
     });
   });
 
+  // Quick answers design §5.2 / §12 (final review I2): with hooks installed
+  // a PermissionRequest blocker can outlive its prompt (its resolver is not
+  // installed), so fleetState -- History's cards -- must let the matched
+  // process's live status file win, exactly as openSessionsLive does.
+  describe('activity from the live session status', () => {
+    function withStalePermission() {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', ts:at(3), payload:{ cwd:'/repo/s' }, contentHash:'a' }),
+        ev({ kind:'turn.completed', ts:at(2), payload:{}, contentHash:'b', subIndex:1 }),
+      ]);
+      db.prepare(`INSERT INTO signal_events
+        (event_id, occurred_at, ingested_at, provider, session_id, prompt_id, kind, payload)
+        VALUES (?,?,?,?,?,?,?,?)`).run('e1', at(1), at(1), 'claude', 's1', 'p1',
+          'PermissionRequest', JSON.stringify({ tool_name:'Bash', tool_input:{ command:'ls' } }));
+      return db;
+    }
+    const withStatus = (sessionId: string, status: 'idle' | 'busy' | 'waiting' | null, waitingFor: string | null = null) =>
+      proc({ pid:3, cwd:'/repo/s', ageSeconds:600, liveSession: { sessionId, cwd:'/repo/s', startedAtMs:0, status, waitingFor } });
+
+    it('a stale PermissionRequest with a status file saying idle reads idle', () => {
+      const [s] = fleetState(withStalePermission(), { now: NOW, processes: [withStatus('s1', 'idle')] });
+      expect(s!.activity).toBe('idle');
+    });
+
+    it('waitingFor maps a waiting status to the two waiting kinds', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ kind:'session.started', ts:at(3), payload:{ cwd:'/repo/s' }, contentHash:'a' }),
+        ev({ kind:'turn.completed', ts:at(2), payload:{}, contentHash:'b', subIndex:1 }),
+      ]);
+      expect(fleetState(db, { now: NOW, processes: [withStatus('s1', 'waiting', 'permission prompt')] })[0]!.activity)
+        .toBe('waiting_permission');
+      expect(fleetState(db, { now: NOW, processes: [withStatus('s1', 'waiting', 'user input')] })[0]!.activity)
+        .toBe('waiting_input');
+    });
+
+    it('a status file with an unrecognised status still outranks the blocker', () => {
+      const [s] = fleetState(withStalePermission(), { now: NOW, processes: [withStatus('s1', null)] });
+      expect(s!.activity).toBe('idle');
+    });
+
+    it('ignores a status file that belongs to a different session', () => {
+      const [s] = fleetState(withStalePermission(), { now: NOW, processes: [withStatus('someone-else', 'idle')] });
+      expect(s!.activity).toBe('waiting_permission');
+    });
+  });
+
   // `lifecycle`'s ACTIVE_MS boundary itself (still governs `stale` and the
   // sharesWorktreeWith contention check, spec S9.5, independent of
   // whatever a process is doing) -- 25 minutes since the last transcript
@@ -790,6 +838,57 @@ describe('openSessionsLive', () => {
         proc({ pid:4, cwd:'/repo/new', ageSeconds:5, ...live('fresh', '/repo/new', null) }),
       ], NOW);
       expect(o!.activity).toBeNull();
+    });
+
+    // Final review I2: a status file exists, so the blocker never decides
+    // activity -- not even when the status string is one this code does not
+    // recognise (read as null).
+    const permissionBlocker = (db: ReturnType<typeof openDb>, sessionId: string) =>
+      db.prepare(`INSERT INTO signal_events
+        (event_id, occurred_at, ingested_at, provider, session_id, prompt_id, kind, payload)
+        VALUES (?,?,?,?,?,?,?,?)`).run(`${sessionId}-e1`, at(1), at(1), 'claude', sessionId, 'p1',
+          'PermissionRequest', JSON.stringify({ tool_name:'Bash', tool_input:{ command:'ls' } }));
+
+    it('an unrecognised status does not fall back to a blocker', () => {
+      const db = oneSession('turn.completed');
+      permissionBlocker(db, 's1');
+      expect(openSessionsLive(db, [withStatus(null)], NOW)[0]!.activity).toBe('idle');
+    });
+
+    it('an exact match with no index rows and an unrecognised status does not fall back to a blocker', () => {
+      const db = openDb(':memory:');
+      permissionBlocker(db, 'fresh');
+      const [o] = openSessionsLive(db, [
+        proc({ pid:4, cwd:'/repo/new', ageSeconds:5, ...live('fresh', '/repo/new', null) }),
+      ], NOW);
+      expect(o!.activity).toBeNull();
+    });
+
+    it('still uses the blocker for a matched session with no status file', () => {
+      const db = oneSession('turn.completed');
+      permissionBlocker(db, 's1');
+      expect(openSessionsLive(db, [proc({ pid:3, cwd:'/repo/s', ageSeconds:600 })], NOW)[0]!.activity)
+        .toBe('waiting_permission');
+    });
+
+    // Final review I4: the 24 h blocker scan (openBlockers' own query) runs
+    // only when some matched session has no status file to answer instead.
+    const scansBlockers = (prepare: { mock: { calls: unknown[][] } }) =>
+      prepare.mock.calls.some(([sql]) => String(sql).includes('WHERE occurred_at >= ?'));
+
+    it('skips the blocker scan when every matched session has a status file', () => {
+      const db = oneSession('turn.completed');
+      permissionBlocker(db, 's1');
+      const prepare = vi.spyOn(db, 'prepare');
+      openSessionsLive(db, [withStatus('idle')], NOW);
+      expect(scansBlockers(prepare)).toBe(false);
+    });
+
+    it('runs the blocker scan when a matched session has no status file', () => {
+      const db = oneSession('turn.completed');
+      const prepare = vi.spyOn(db, 'prepare');
+      openSessionsLive(db, [proc({ pid:3, cwd:'/repo/s', ageSeconds:600 })], NOW);
+      expect(scansBlockers(prepare)).toBe(true);
     });
   });
 

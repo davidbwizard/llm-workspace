@@ -204,8 +204,14 @@ export function buildSessionLive(
     events: number; last_ts: string | null; last_kind: string | null; last_prompt_ts: string | null;
   };
 
-  const blocker = currentBlockers(db, now).find(b => b.sessionId === target.sessionId) ?? null;
   const fresh = (deps.freshLiveSession ?? freshLiveSession)(pid, processes, read);
+  // Quick answers §5.2: a live status file outranks a blocker, even one
+  // whose status string this code does not recognise -- so the blocker
+  // (a 24 h scan of signal_events) is only looked up with no status file at
+  // all (final review I2/I4), matching openSessionsLive for the cards.
+  const blocker = fresh === null
+    ? currentBlockers(db, now).find(b => b.sessionId === target.sessionId) ?? null
+    : null;
 
   const { activity: rawActivity } = deriveActivity({
     lastTs: row.last_ts, lastKind: row.last_kind, blocker,
@@ -248,11 +254,13 @@ export function buildSessionLive(
   // Quick answers §5.1: the open prompt exists only while the status file
   // says waiting, and is the newest PermissionRequest from this wait.
   // waitingSince is statusUpdatedAtMs: Claude writes it only when `status`
-  // flips, so it holds still for the whole wait. The pane is read at most
-  // once per push (buildPromptView); a tmux name from the registry is
-  // enough to try -- session:answer re-verifies the session is alive.
-  const promptEvent = fresh?.status === 'waiting'
-    ? openPromptEvent(db, target.sessionId, fresh.statusUpdatedAtMs ?? 0)
+  // flips, so it holds still for the whole wait. Without it there is no
+  // wait to match an event against, so no prompt (final review M7). The
+  // pane is read at most once per push (buildPromptView); a tmux name from
+  // the registry is enough to try -- session:answer re-verifies the
+  // session is alive.
+  const promptEvent = fresh?.status === 'waiting' && typeof fresh.statusUpdatedAtMs === 'number'
+    ? openPromptEvent(db, target.sessionId, fresh.statusUpdatedAtMs)
     : null;
   const prompt = promptEvent ? buildPromptView(promptEvent, tmuxNameForPid(pid), deps.answer ?? {}) : null;
 

@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerSession, clearRegistry } from '../../src/main/sessions.ts';
 import { clearPromptCache } from '../../src/main/answer.ts';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
+import { ingestSpool } from '../../src/hooks/spool.ts';
 import {
   buildSessionLive, watchSessionFor, notifySessionChanged, pushSessionLive,
   type SessionLivePayload, type WatchDeps, type WatchHandle,
@@ -194,6 +195,44 @@ describe('buildSessionLive', () => {
     expect(p?.activity).toBe('waiting');
   });
 
+  // Final review I2/I4: a status file wins over a blocker even when its
+  // status string is one this code does not recognise -- the blocker is
+  // only consulted with no status file at all, same as the cards.
+  it('does not fall back to a blocker when the status file exists but its status is unrecognised', () => {
+    const db = openDb(':memory:');
+    insertBlocker(db, 'claude-1', '2026-09-17T10:00:15Z');
+    const processes = [proc({
+      pid: 4822, provider: 'claude', cwd: '/repo/claude',
+      liveSession: { sessionId: 'claude-1', cwd: '/repo/claude', startedAtMs: STARTED, status: null },
+    })];
+    const read = (): LiveSessionRead => ({
+      ok: true,
+      file: { sessionId: 'claude-1', cwd: '/repo/claude', startedAtMs: STARTED, status: null },
+    });
+
+    const p = buildSessionLive(db, 4822, processes, Date.parse('2026-09-17T10:00:30Z'), { read });
+    expect(p?.activity).toBe('idle');
+  });
+
+  // Final review I4: the 24 h blocker scan (openBlockers' own query) is not
+  // run at all when a status file answers the question.
+  it('does not scan for blockers when the live status file is present', () => {
+    const db = openDb(':memory:');
+    insertBlocker(db, 'claude-1', '2026-09-17T10:00:15Z');
+    const processes = [proc({
+      pid: 4822, provider: 'claude', cwd: '/repo/claude',
+      liveSession: { sessionId: 'claude-1', cwd: '/repo/claude', startedAtMs: STARTED, status: 'idle' },
+    })];
+    const read = (): LiveSessionRead => ({
+      ok: true,
+      file: { sessionId: 'claude-1', cwd: '/repo/claude', startedAtMs: STARTED, status: 'idle' },
+    });
+    const prepare = vi.spyOn(db, 'prepare');
+
+    buildSessionLive(db, 4822, processes, Date.parse('2026-09-17T10:00:30Z'), { read });
+    expect(prepare.mock.calls.some(([sql]) => String(sql).includes('WHERE occurred_at >= ?'))).toBe(false);
+  });
+
   it('returns a null activity when the pid matches no session', () => {
     const db = openDb(':memory:');
     const processes = [proc({ pid: 9999, provider: 'codex', cwd: '/repo/unmatched' })];
@@ -327,6 +366,20 @@ describe('buildSessionLive -- the open prompt', () => {
 
     const p = buildSessionLive(db, PID, processes, NOW, { read: readAs('idle') });
     expect(p?.prompt).toBeNull();
+  });
+
+  // Final review M7: with no statusUpdatedAt there is no waitingSince to
+  // match against, so no event can be proven to belong to this wait.
+  it('carries no prompt when the waiting status file has no statusUpdatedAt', () => {
+    const db = openDb(':memory:');
+    insertPrompt(db, '1789706218.842-PermissionRequest-89928.json');
+    const read = (): LiveSessionRead => ({
+      ok: true,
+      file: { sessionId: 'claude-1', cwd: '/repo/claude', startedAtMs: STARTED, status: 'waiting' },
+    });
+
+    const p = buildSessionLive(db, PID, processes, NOW, { read });
+    expect(p).toMatchObject({ activity: 'waiting', prompt: null });
   });
 
   it('carries no prompt when nothing matches the wait', () => {
@@ -635,5 +688,71 @@ describe('watchSessionFor / notifySessionChanged / pushSessionLive', () => {
     notifySessionChanged(new Set(['s1']));
     vi.advanceTimersByTime(250);
     expect(sent).toEqual([]);
+  });
+});
+
+// Final review I1: Claude flips its status file to waiting 15-30 ms BEFORE
+// the PermissionRequest hook is written, so the status-file push goes out
+// with no prompt. The spool tick that later ingests the event must itself
+// push the watched session, or the card waits for the 5 s sweep. Same
+// composition as src/main/index.ts's spool tick: ingestSpool collects the
+// touched session ids, notifySessionChanged pushes the watched one.
+describe('spool ingest pushes the watched session', () => {
+  const EVENTS = 'tests/fixtures/quick-answers/events';
+  const SESSION = '319735a2-7eb7-445e-a620-bf9ab4fb12a1';
+  const PID = 4830;
+  // The event's own whole-second stamp is 21:40:14; the status flipped a
+  // few ms into that same second, before the event was written.
+  const WAITING_SINCE = Date.parse('2026-09-17T21:40:14.300Z');
+  const NOW = WAITING_SINCE + 1_000;
+  const NOOP: WatchDeps = { processes: () => [], buildPayload: () => null, send: () => {} };
+  let spool: string;
+
+  afterEach(() => {
+    watchSessionFor(null, NOOP);
+    vi.useRealTimers();
+    clearPromptCache();
+    rmSync(spool, { recursive: true, force: true });
+  });
+
+  it('a PermissionRequest ingested after the status is already waiting produces a session:live push carrying the prompt', () => {
+    spool = mkdtempSync(join(tmpdir(), 'llmws-spool-'));
+    const db = openDb(':memory:');
+    const processes = [proc({
+      pid: PID, provider: 'claude', cwd: '/repo/claude',
+      liveSession: { sessionId: SESSION, cwd: '/repo/claude', startedAtMs: STARTED, status: 'waiting' },
+    })];
+    const read = (): LiveSessionRead => ({
+      ok: true,
+      file: {
+        sessionId: SESSION, cwd: '/repo/claude', startedAtMs: STARTED, status: 'waiting',
+        statusUpdatedAtMs: WAITING_SINCE, waitingFor: null,
+      },
+    });
+    const sent: SessionLivePayload[] = [];
+    const handle: WatchHandle = { on: () => {}, close: () => {} };
+    vi.useFakeTimers();
+
+    watchSessionFor(PID, {
+      processes: () => processes,
+      buildPayload: () => buildSessionLive(db, PID, processes, NOW, { read }),
+      send: p => sent.push(p),
+      watch: () => handle,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ sessionId: SESSION, activity: 'waiting', prompt: null });
+
+    const payload = JSON.parse(readFileSync(join(EVENTS, '1789706218.842-PermissionRequest-89928.json'), 'utf8'));
+    writeFileSync(join(spool, 'pr-1.json'), JSON.stringify({
+      event_id: 'pr-1', occurred_at: '2026-09-17T21:40:14.000Z', ppid: 1, payload,
+    }));
+    const touched = new Set<string>();
+    expect(ingestSpool(db, spool, 'claude', touched)).toBe(1);
+    expect([...touched]).toEqual([SESSION]);
+    notifySessionChanged(touched);
+    vi.advanceTimersByTime(250);
+
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.prompt).toMatchObject({ id: 'pr-1', kind: 'question' });
   });
 });
