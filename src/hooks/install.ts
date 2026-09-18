@@ -32,8 +32,16 @@ export class SettingsChangedError extends Error {
   }
 }
 
+/** `sh '<path>'`, with any single quote in the path escaped for the
+ *  shell. The one quoting rule for every command this app writes into
+ *  settings.json -- the hooks below and the "Usage and context" status line
+ *  (src/hooks/usageSwitch.ts) -- so the two can never quote differently. */
+export function shellCommandFor(scriptPath: string): string {
+  return `sh '${scriptPath.replace(/'/g, `'\\''`)}'`;
+}
+
 export function buildHookFragments(helperPath: string): Fragment[] {
-  const command = `sh '${helperPath.replace(/'/g, `'\\''`)}'`;
+  const command = shellCommandFor(helperPath);
   const frags: Fragment[] = HOOK_EVENTS.map(event => ({
     event, matcher: null, id: `llmws:${event}`, command,
   }));
@@ -152,8 +160,13 @@ export function planInstall(existing: any, fragments: Fragment[], previousManife
  *  changed the file since the diff was computed, refuse — the caller
  *  recomputes and re-shows the diff rather than clobbering a newer version.
  *  Only a missing file reads as empty; any other read failure is thrown
- *  (final review I3). A plan with nothing to add writes nothing (M10). */
-export function applyInstall(settingsPath: string, plan: InstallPlan & { baseText: string }): void {
+ *  (final review I3). A plan with nothing to add writes nothing (M10).
+ *  Takes only what it uses (`next`, `changed`, `baseText`), so the status
+ *  line switch (src/hooks/usageSwitch.ts) writes through this same
+ *  re-read-then-atomic-write path rather than a copy of it. */
+export function applyInstall(
+  settingsPath: string, plan: Pick<InstallPlan, 'next' | 'changed'> & { baseText: string },
+): void {
   let current = '';
   try {
     current = readFileSync(settingsPath, 'utf8');
