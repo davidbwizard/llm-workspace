@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync, chmodSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -128,6 +128,7 @@ describe('applyInstall', () => {
     applyInstall(settings, { ...plan, baseText: base });
     expect(statSync(settings).mode & 0o777).toBe(0o400);
     expect(JSON.stringify(JSON.parse(readFileSync(settings, 'utf8')))).toContain('/h.sh');
+    expect(readdirSync(dir).some(f => f.endsWith('.tmp'))).toBe(false);
   });
 
   it('writes atomically and leaves valid JSON', () => {

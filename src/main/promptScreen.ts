@@ -185,7 +185,8 @@ function readQuestion(lines: string[], headers: string[], questions: string[]): 
   // The question's title can wrap onto more than one line; join with a
   // single space, then match it against the hook's question texts with
   // whitespace runs collapsed on both sides (final review M4) -- the hook's
-  // text can carry a newline or a double space the screen shows as one. Headers are short chips (e.g. "Auth method") that usually do not
+  // text can carry a newline or a double space the screen shows as one.
+  // Headers are short chips (e.g. "Auth method") that usually do not
   // appear in the question text, so they cannot be used to find `current`.
   let qIdx = 0;
   while (qIdx < rest.length && (rest[qIdx] ?? '').trim() === '') qIdx++;

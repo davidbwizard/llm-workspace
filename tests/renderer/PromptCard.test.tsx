@@ -192,6 +192,23 @@ describe('PromptCard -- permission', () => {
     fireEvent.click(screen.getByRole('button', { name: '1 Yes' }));
     await waitFor(() => expect(fleet.answerPrompt).toHaveBeenCalledWith(4821, 'evt-2', { kind: 'choice', key: '1' }));
   });
+
+  // Residual fix: computeTextRow (promptScreen.ts) only ever reads key
+  // '3', so a takesText row at any other key (e.g. a two-option dialog's
+  // No, here key '2') must not offer a text action main would refuse.
+  it('shows no text action on a two-option dialog\'s takesText "No" at key 2', () => {
+    setFleet();
+    const twoOption: PromptView = {
+      id: 'evt-2b', kind: 'permission', answerable: true, reason: null,
+      toolName: 'Bash', command: 'touch permission-test.txt',
+      choices: [
+        { key: '1', label: 'Yes', takesText: false },
+        { key: '2', label: 'No', takesText: true },
+      ],
+    };
+    render(<PromptCard pid={4821} prompt={twoOption} onOpenTerminal={() => {}} />);
+    expect(screen.queryByRole('button', { name: 'and tell Claude what to do instead' })).toBeNull();
+  });
 });
 
 describe('PromptCard -- plan', () => {

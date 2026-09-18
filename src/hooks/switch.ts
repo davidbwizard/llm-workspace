@@ -75,7 +75,11 @@ function doInstall(settingsPath: string, stable: string, helperSource: string): 
   // A fresh home may not even have ~/.claude yet -- only settings.json
   // itself is allowed to be "missing" per spec; its parent directory is
   // created here so writing it is never blocked on that.
-  mkdirSync(dirname(settingsPath), { recursive: true });
+  try {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+  } catch (e) {
+    return `Could not create the settings directory: ${(e as Error).message}`;
+  }
 
   // Only a missing file is "missing" (final review I3): an unreadable one
   // is refused here, before anything is planned or written.
@@ -94,7 +98,15 @@ function doInstall(settingsPath: string, stable: string, helperSource: string): 
     catch { return PARSE_ERROR; }
   }
 
-  const plan = planInstall(parsed, buildHookFragments(stable));
+  // Valid JSON can still hold a shape planInstall cannot work with (e.g. a
+  // hooks[event] value that is not an array) -- that must be reported like
+  // any other refusal, not thrown out of setHooks.
+  let plan: ReturnType<typeof planInstall>;
+  try {
+    plan = planInstall(parsed, buildHookFragments(stable));
+  } catch (e) {
+    return `Could not read settings.json's hooks: ${(e as Error).message}`;
+  }
   try {
     applyInstall(settingsPath, { ...plan, baseText });
   } catch (e) {

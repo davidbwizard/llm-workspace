@@ -332,6 +332,23 @@ describe('answerPrompt guards -- each refusal presses nothing', () => {
       const view = askView();
       await refusedWith(view, PID, view.id, { kind: 'choice', key: '1' }, 'invalid', [screen('10-ask-q1')]);
     });
+
+    // Residual fix: computeTextRow (promptScreen.ts) only ever reads key
+    // '3', so a takesText row at any OTHER key (e.g. a two-option dialog's
+    // No, key '2') can never actually receive typed text on screen --
+    // refused here before any key is pressed, not discovered mid-delivery.
+    it('choice_text on a two-option permission dialog\'s No (key 2)', async () => {
+      registered();
+      const view: PromptView = {
+        id: 'e-two-option', kind: 'permission', answerable: true, reason: null,
+        toolName: 'Bash', command: 'touch perm-probe.txt',
+        choices: [
+          { key: '1', label: 'Yes', takesText: false },
+          { key: '2', label: 'No', takesText: true },
+        ],
+      };
+      await refusedWith(view, PID, view.id, { kind: 'choice_text', key: '2', text: 'use npm instead' }, 'invalid');
+    });
   });
 
   it('busy while an answer for the same pid is still in flight', async () => {

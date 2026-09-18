@@ -461,8 +461,15 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     const liveFile = m?.quality === 'unique'
       ? matchedProcs.find(p => p.liveSession?.sessionId === r.session_id)?.liveSession ?? null
       : null;
+    // Same rule as the `blocker` fed to deriveActivity just below: once a
+    // live status file wins, the blocker it overrode must not resurface on
+    // any OTHER field either -- `blocker`, `confidence` and `source` below
+    // all read this instead of the raw hook `blocker`, so a History card
+    // (SessionCard.tsx) never prints a stale "Permission: ..." line for a
+    // row whose activity already reads idle/working from the status file.
+    const effectiveBlocker = liveFile ? null : blocker;
     const { lifecycle, activity } = deriveActivity({
-      lastTs: r.last_ts, lastKind: r.last_kind, blocker: liveFile ? null : blocker,
+      lastTs: r.last_ts, lastKind: r.last_kind, blocker: effectiveBlocker,
       hasMatchedProcess, hasLiveSignal, now,
       liveStatus: liveFile?.status ?? null, liveWaitingFor: liveFile?.waitingFor ?? null,
     });
@@ -483,8 +490,8 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     // properties (confidence, source) widened to plain `string` before
     // `.sort()` runs, which then fails `npx tsc --noEmit` against the
     // declared `SessionState[]` return type.
-    const confidence: SessionState['confidence'] = blocker ? 'exact' : 'guess';
-    const source: SessionState['source'] = blocker ? 'hook' : 'transcript';
+    const confidence: SessionState['confidence'] = effectiveBlocker ? 'exact' : 'guess';
+    const source: SessionState['source'] = effectiveBlocker ? 'hook' : 'transcript';
 
     return {
       sessionId: r.session_id,
@@ -502,7 +509,7 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
       agents,
       liveAgents,
       events: r.events ?? 0,
-      blocker,
+      blocker: effectiveBlocker,
       match: m?.quality ?? 'unknown',
       candidates: m?.pids ?? [],
       host: m?.host ?? null,

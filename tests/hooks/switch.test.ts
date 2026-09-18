@@ -141,6 +141,24 @@ describe('setHooks(on)', () => {
     expect(result.error).not.toBeNull();
     expect(readFileSync(paths.claudeSettings, 'utf8')).toBe(bad);
   });
+
+  // Residual fix: planInstall (install.ts) assumes each hooks[event] it
+  // reads is already an array (`??=` leaves a present-but-wrong value
+  // alone, then calls .some() on it) -- valid JSON, but a shape it cannot
+  // work with, must return an error rather than throw a TypeError out of
+  // setHooks.
+  it('returns an error and leaves the file byte-unchanged when a hooks event is not an array', () => {
+    mkdirSync(dirname(paths.claudeSettings), { recursive: true });
+    const bad = JSON.stringify({ hooks: { SessionStart: 'not-an-array' } }, null, 2) + '\n';
+    writeFileSync(paths.claudeSettings, bad);
+
+    const result = setHooks(paths, true, HELPER_SOURCE);
+
+    expect(result.installed).toBe(false);
+    expect(typeof result.error).toBe('string');
+    expect(result.error).not.toBeNull();
+    expect(readFileSync(paths.claudeSettings, 'utf8')).toBe(bad);
+  });
 });
 
 describe('setHooks(on) -- read and write failures (final review I3/I5)', () => {

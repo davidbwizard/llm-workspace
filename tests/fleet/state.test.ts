@@ -423,6 +423,18 @@ describe('fleetState', () => {
       expect(s!.activity).toBe('idle');
     });
 
+    // Residual fix: fleetState's own `blocker`/`confidence`/`source` fields
+    // must agree with the activity the live status file just won -- a
+    // History card (SessionCard.tsx) reads `blocker` directly, so leaving
+    // the hook's PermissionRequest on this field would print "Permission:
+    // Bash ..." on a row whose activity already says idle.
+    it('a live status file winning also nulls out blocker/confidence/source', () => {
+      const [s] = fleetState(withStalePermission(), { now: NOW, processes: [withStatus('s1', 'idle')] });
+      expect(s!.blocker).toBeNull();
+      expect(s!.confidence).toBe('guess');
+      expect(s!.source).toBe('transcript');
+    });
+
     it('waitingFor maps a waiting status to the two waiting kinds', () => {
       const db = openDb(':memory:');
       insertEvents(db, [

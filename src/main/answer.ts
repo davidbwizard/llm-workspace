@@ -201,12 +201,17 @@ export function validateAnswer(view: PromptView, raw: unknown): Answer | null {
     const choice = view.choices?.find(c => c.key === a.key);
     if (!choice || !DIGITS.includes(choice.key)) return null;
     if (a.kind === 'choice') {
-      // A plain No (permission option 3, a takesText row) is its digit,
-      // which rejects directly (measured, fixture 56). Plan option 3 is
-      // only ever feedback, so it needs text.
+      // A plain No (the permission dialog's takesText row) rejects
+      // directly via its own digit (measured, fixture 56) -- true at
+      // whatever key the screen gave it, not only "3". Plan's takesText
+      // row is only ever feedback, so it needs typed text instead.
       return choice.takesText && view.kind !== 'permission' ? null : { kind: 'choice', key: choice.key };
     }
-    if (!choice.takesText) return null;
+    // Free text is only ever sent to option 3: computeTextRow
+    // (promptScreen.ts) reads no other key, so a takesText row at any
+    // other position (e.g. a two-option dialog's No, key '2') cannot
+    // actually receive typed text on screen and is refused here.
+    if (!choice.takesText || choice.key !== '3') return null;
     const text = cleanText(a.text);
     return text === null ? null : { kind: 'choice_text', key: choice.key, text };
   }
