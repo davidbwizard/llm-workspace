@@ -1346,10 +1346,11 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           mounts a fresh card -- resetting every local answer/text-box
           state rather than carrying stale picks over, and giving the
           "didn't take the answer" 3s check (PromptCard.tsx) a component
-          instance whose lifetime IS exactly this one prompt's. WaitingFallback
-          (a 2 s reading frame, then WaitingCard) covers everything else; it
-          mounts per waiting-without-prompt stretch, which starts its
-          timer, and is keyed by pid so a session switch restarts it. `pid !== null` mirrors
+          instance whose lifetime IS exactly this one prompt's.
+          WaitingFallback (a 2 s reading frame, then WaitingCard) covers
+          everything else; it mounts per waiting-without-prompt stretch,
+          which starts its timer, and is keyed by pid so a session switch
+          restarts it. `pid !== null` mirrors
           WorkingStrip's own guard just above -- `live` is only ever
           non-null for a pid useSessionLive was actually asked to watch. */}
       {live?.activity === 'waiting' && pid !== null && (
