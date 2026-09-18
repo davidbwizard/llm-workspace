@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { currentWindow, type ClaudeUsage, type RateWindow } from '../../core/usage.ts';
 
@@ -95,33 +95,40 @@ export function parseClaudeSnapshot(text: string): ClaudeSnapshot | null {
 const cache = new Map<string, { key: string; snapshot: ClaudeSnapshot | null }>();
 const CACHE_MAX = 512;
 
-/** lstat, not stat: a symlink is refused, never followed. */
+/** Opens once, O_NOFOLLOW|O_NONBLOCK: a symlink is refused at open time
+ *  (never a separate check racing a later open), and a FIFO planted at the
+ *  path never blocks the caller waiting for a writer. `fstat`s that single
+ *  descriptor for the regular-file and size checks, then reads from it --
+ *  no path-based re-open that a rename in between could point somewhere
+ *  else entirely. ENOENT and ELOOP are the ordinary "not there"/"not ours
+ *  to follow" outcomes and are not logged; anything else is. */
 function readSnapshotFile(path: string): SnapshotRead | null {
-  let st;
+  let fd: number;
   try {
-    st = lstatSync(path);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error('status line snapshot: could not stat', path, e);
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ELOOP') console.error('status line snapshot: could not open', path, e);
     return null;
   }
-  if (!st.isFile() || st.size > SNAPSHOT_MAX_BYTES) return null;
-
-  const key = `${st.ino}:${st.size}:${st.mtimeMs}`;
-  const hit = cache.get(path);
-  if (hit && hit.key === key) return hit.snapshot ? { snapshot: hit.snapshot, mtimeMs: st.mtimeMs } : null;
-
-  let snapshot: ClaudeSnapshot | null = null;
   try {
-    snapshot = parseClaudeSnapshot(readFileSync(path, 'utf8'));
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > SNAPSHOT_MAX_BYTES) return null;
+
+    const key = `${st.ino}:${st.size}:${st.mtimeMs}`;
+    const hit = cache.get(path);
+    if (hit && hit.key === key) return hit.snapshot ? { snapshot: hit.snapshot, mtimeMs: st.mtimeMs } : null;
+
+    const snapshot = parseClaudeSnapshot(readFileSync(fd, 'utf8'));
+    if (cache.size >= CACHE_MAX) cache.clear();
+    cache.set(path, { key, snapshot });
+    return snapshot ? { snapshot, mtimeMs: st.mtimeMs } : null;
   } catch (e) {
-    // Replaced or removed between the lstat and the read: the next call
-    // sees the new file. Anything else is logged, never thrown.
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error('status line snapshot: could not read', path, e);
+    console.error('status line snapshot: could not read', path, e);
     return null;
+  } finally {
+    closeSync(fd);
   }
-  if (cache.size >= CACHE_MAX) cache.clear();
-  cache.set(path, { key, snapshot });
-  return snapshot ? { snapshot, mtimeMs: st.mtimeMs } : null;
 }
 
 /** One session's latest snapshot. The id is checked before it reaches a
@@ -174,14 +181,21 @@ export function readClaudeRateLimits(dir: string, now: number): ClaudeUsage | nu
   return null;
 }
 
+/** The helper's own dot-prefixed temp name before its atomic rename
+ *  (mktemp "$DIR/.statusline.XXXXXX") -- a crash between mktemp and mv, or
+ *  a run killed past its EXIT trap, can leave one behind. */
+const TEMP_FILE = /^\.statusline\.[A-Za-z0-9]+$/;
+const TEMP_FILE_MAX_AGE_MS = 60 * 60 * 1000;
+
 /** Startup pruning (src/main/index.ts, beside rotateSpool): the helper
  *  writes one file per session and nothing else ever removes them, so a
- *  snapshot not rewritten in `maxAgeDays` is deleted. Only regular files
- *  named by the <session_id>.json rule are candidates -- lstat, so a
- *  symlink is never followed and never removed, and the helper's own
- *  `.statusline.*` temp names never match. Per-file failures are logged and
- *  skipped; a missing folder is a quiet no-op. Returns how many were
- *  deleted. */
+ *  snapshot not rewritten in `maxAgeDays` is deleted -- alongside any
+ *  leftover `.statusline.*` temp file older than an hour (a normal run
+ *  never leaves one behind at all; an hour is plenty even for the biggest
+ *  input this ever writes). Only regular files are candidates for either
+ *  rule -- lstat, so a symlink is never followed and never removed. Per-file
+ *  failures are logged and skipped; a missing folder is a quiet no-op.
+ *  Returns how many were deleted. */
 export function pruneSnapshots(dir: string, opts: { maxAgeDays: number; now?: number }): number {
   let names: string[];
   try {
@@ -190,14 +204,17 @@ export function pruneSnapshots(dir: string, opts: { maxAgeDays: number; now?: nu
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error('status line snapshots: could not list', dir, e);
     return 0;
   }
-  const cutoff = (opts.now ?? Date.now()) - opts.maxAgeDays * 86_400_000;
+  const now = opts.now ?? Date.now();
+  const snapshotCutoff = now - opts.maxAgeDays * 86_400_000;
+  const tempCutoff = now - TEMP_FILE_MAX_AGE_MS;
   let removed = 0;
   for (const name of names) {
-    if (!SNAPSHOT_FILE.test(name)) continue;
+    const isSnapshot = SNAPSHOT_FILE.test(name);
+    if (!isSnapshot && !TEMP_FILE.test(name)) continue;
     const path = join(dir, name);
     try {
       const st = lstatSync(path);
-      if (!st.isFile() || st.mtimeMs >= cutoff) continue;
+      if (!st.isFile() || st.mtimeMs >= (isSnapshot ? snapshotCutoff : tempCutoff)) continue;
       unlinkSync(path);
       cache.delete(path);
       removed++;

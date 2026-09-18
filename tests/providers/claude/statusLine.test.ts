@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, utimesSync, symlinkSync, renameSync, statSync,
   existsSync, readdirSync, lstatSync, lutimesSync,
 } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -155,6 +156,27 @@ describe('reading snapshot files', () => {
       symlinkSync(real, join(dir, `${FULL_ID}.json`));
       expect(readClaudeSnapshot(dir, FULL_ID)).toBeNull();
     });
+
+    // M2: opened O_NONBLOCK -- a FIFO planted at the session's path (any
+    // process running as the user can write into this folder) is refused
+    // immediately, never blocking the caller waiting for a writer.
+    it.runIf(process.platform !== 'win32')('refuses a FIFO without blocking', () => {
+      execFileSync('mkfifo', [join(dir, `${FULL_ID}.json`)]);
+      expect(readClaudeSnapshot(dir, FULL_ID)).toBeNull();
+    });
+
+    it('refuses a symlink without logging an error', () => {
+      const real = join(dir, 'elsewhere.json');
+      writeFileSync(real, FULL);
+      symlinkSync(real, join(dir, `${FULL_ID}.json`));
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(readClaudeSnapshot(dir, FULL_ID)).toBeNull();
+        expect(errSpy).not.toHaveBeenCalled();
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
   });
 
   describe('readClaudeRateLimits', () => {
@@ -264,8 +286,7 @@ describe('pruneSnapshots', () => {
     expect(readFileSync(target, 'utf8')).toBe('keep me');
   });
 
-  it('leaves anything not named <session_id>.json alone, however old', () => {
-    file('.statusline.AbC123', 30 * DAY);
+  it('leaves anything not named <session_id>.json or .statusline.* alone, however old', () => {
     file('notes.txt', 30 * DAY);
     file('a.b.json', 30 * DAY);
     file(`${'a'.repeat(129)}.json`, 30 * DAY);
@@ -274,11 +295,52 @@ describe('pruneSnapshots', () => {
     aged(sub, 30 * DAY);
 
     expect(pruneSnapshots(dir, { maxAgeDays: 7, now: NOW })).toBe(0);
-    expect(readdirSync(dir).length).toBe(5);
+    expect(readdirSync(dir).length).toBe(4);
     expect(existsSync(sub)).toBe(true);
   });
 
   it('is a quiet no-op for a missing folder', () => {
     expect(pruneSnapshots(join(dir, 'missing'), { maxAgeDays: 7, now: NOW })).toBe(0);
+  });
+
+  // M3: the helper's own leftover .statusline.* temp files (a crash between
+  // mktemp and its atomic rename, or a killed run past its EXIT trap) --
+  // pruned once they are stale, not the 7-day snapshot age.
+  describe('leftover .statusline.* temp files', () => {
+    it('deletes ones older than 1 hour and keeps fresher ones', () => {
+      file('.statusline.AbC123', 2 * 60 * 60_000);
+      file('.statusline.xyz999', 30 * 60_000);
+
+      expect(pruneSnapshots(dir, { maxAgeDays: 7, now: NOW })).toBe(1);
+      expect(readdirSync(dir)).toEqual(['.statusline.xyz999']);
+    });
+
+    it('keeps one exactly at the 1-hour cutoff', () => {
+      file('.statusline.edge01', 60 * 60_000);
+      expect(pruneSnapshots(dir, { maxAgeDays: 7, now: NOW })).toBe(0);
+      expect(readdirSync(dir)).toEqual(['.statusline.edge01']);
+    });
+
+    it('never follows or removes a symlinked temp-looking name, however old', () => {
+      const target = join(outside, 'precious-tmp.json');
+      writeFileSync(target, 'keep me');
+      aged(target, 3 * DAY);
+      const link = join(dir, '.statusline.linked');
+      symlinkSync(target, link);
+      const t = (NOW - 3 * DAY) / 1000;
+      lutimesSync(link, t, t);
+
+      expect(pruneSnapshots(dir, { maxAgeDays: 7, now: NOW })).toBe(0);
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readFileSync(target, 'utf8')).toBe('keep me');
+    });
+
+    it('leaves a directory named like a temp file alone', () => {
+      const sub = join(dir, '.statusline.folder');
+      mkdirSync(sub);
+      aged(sub, 3 * DAY);
+      expect(pruneSnapshots(dir, { maxAgeDays: 7, now: NOW })).toBe(0);
+      expect(existsSync(sub)).toBe(true);
+    });
   });
 });

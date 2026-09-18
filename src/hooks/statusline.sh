@@ -25,7 +25,7 @@ DIR="$HOME/.llm-workspace/statusline"
 
 # Files come out 0600 and every directory mkdir -p creates 0700.
 umask 077
-mkdir -p "$DIR" 2>/dev/null || exit 0
+[ -d "$DIR" ] || mkdir -p "$DIR" 2>/dev/null || exit 0
 
 # mktemp creates the file exclusively (never follows a planted name).
 TMP=$(mktemp "$DIR/.statusline.XXXXXX" 2>/dev/null) || exit 0
@@ -34,18 +34,29 @@ trap 'exit 0' HUP INT TERM PIPE
 
 # Size cap: read at most one byte past 64 KB; anything longer is dropped.
 head -c 65537 > "$TMP" 2>/dev/null || exit 0
-SIZE=$(wc -c < "$TMP" 2>/dev/null | tr -d ' \t')
+# `wc -c < file` pads its answer on some wc builds; `set --` word-splits it
+# back to a clean token without forking anything.
+SIZE=$(wc -c < "$TMP" 2>/dev/null)
+set -- $SIZE
+SIZE=${1:-}
 case "$SIZE" in ''|*[!0-9]*) exit 0 ;; esac
 [ "$SIZE" -gt 0 ] && [ "$SIZE" -le 65536 ] || exit 0
 
-# The top-level session_id. Splitting on , { } puts every key/value pair on
-# its own line, so the pattern can be anchored to the whole line; a
-# "session_id" quoted inside a string value is escaped (\") and never
-# matches. Top-level session_id comes before any nested object, so the
-# first match wins.
-SID=$(tr ',{}' '\n\n\n' < "$TMP" 2>/dev/null \
-  | sed -n 's/^[[:space:]]*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_-]*\)"[[:space:]]*$/\1/p' 2>/dev/null \
-  | head -n 1)
+# Every session_id in the input, one per line (splitting on , { } puts each
+# key/value pair on its own line, so the pattern can be anchored to the
+# whole line; a "session_id" quoted inside a string value is escaped (\")
+# and never matches). Top-level session_id comes before any nested object,
+# so it is the first line.
+IDS=$(tr ',{}' '\n\n\n' < "$TMP" 2>/dev/null \
+  | sed -n 's/^[[:space:]]*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_-]*\)"[[:space:]]*$/\1/p' 2>/dev/null)
+
+# More than one distinct session_id anywhere in the input is ambiguous about
+# which session this snapshot belongs to -- refuse rather than guess.
+DISTINCT=$(printf '%s\n' "$IDS" | sort -u | wc -l)
+set -- $DISTINCT
+[ "${1:-0}" -eq 1 ] 2>/dev/null || exit 0
+
+SID=$(printf '%s\n' "$IDS" | head -n 1)
 
 # Only [A-Za-z0-9_-]{1,128} ever becomes a file name.
 case "$SID" in ''|*[!A-Za-z0-9_-]*) exit 0 ;; esac

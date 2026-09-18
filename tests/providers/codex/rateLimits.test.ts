@@ -1,13 +1,26 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, utimesSync, appendFileSync, symlinkSync,
 } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   parseTokenCountLine, lastRateLimitsInFile, newestRollouts, readCodexRateLimits,
   parseTokenUsageLine, lastUsageInFile, readCodexContext,
 } from '../../../src/providers/codex/rateLimits.ts';
+
+// M1's readSync-short-read test needs to intercept the module's own
+// readSync without disturbing every other node:fs call this file makes;
+// node:fs's real ESM export is non-configurable (vi.spyOn cannot redefine
+// it), so the indirection is a mutable ref a real vi.mock factory forwards
+// through, restored to the real function after the one test that uses it.
+const { readSyncRef } = vi.hoisted(() => ({ readSyncRef: { current: null as unknown as typeof import('node:fs').readSync } }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  readSyncRef.current = actual.readSync;
+  return { ...actual, readSync: (...args: Parameters<typeof actual.readSync>) => readSyncRef.current(...args) };
+});
 
 // Real-shaped rollout lines (Codex 0.154 token_count events, content and
 // paths redacted) -- tests/fixtures/usage/codex-rollout.jsonl. Line 4 is a
@@ -121,6 +134,62 @@ describe('lastRateLimitsInFile -- a tail read, never the whole file', () => {
     expect(lastRateLimitsInFile(file(''))).toBeNull();
     expect(lastRateLimitsInFile(join(dir, 'missing.jsonl'))).toBeNull();
   });
+
+  // M1: readSync's return value, not the requested length, is the only
+  // trustworthy measure of what actually landed in a Buffer.allocUnsafe.
+  // This forges a short read that plants a fake, otherwise-well-formed
+  // token_count (used_percent: 99) exactly where the unchecked code would
+  // go looking first -- so a version that trusts the buffer regardless of
+  // what readSync returned would confidently report 99, not null.
+  it('returns null, never a value read from past the byte count readSync actually returned', () => {
+    const path = file(FIXTURE);
+    const fakeLine = JSON.stringify({
+      timestamp: '2026-09-17T19:00:00.000Z',
+      type: 'event_msg',
+      payload: { type: 'token_count', rate_limits: { primary: { used_percent: 99 } } },
+    });
+    const poison = Buffer.from('\n' + fakeLine, 'utf8');
+    const real = readSyncRef.current;
+    readSyncRef.current = ((fd, buf, offset, length, position) => {
+      const n = real(fd, buf, offset, length, position);
+      poison.copy(buf as Buffer, (buf as Buffer).length - poison.length);
+      return n - poison.length;
+    }) as typeof real;
+    try {
+      expect(lastRateLimitsInFile(path)).toBeNull();
+    } finally {
+      readSyncRef.current = real;
+    }
+  });
+
+  // M2: opened O_NONBLOCK, so a FIFO planted at the path (by another
+  // process, or an attacker with write access to the folder) is refused
+  // immediately rather than hanging the caller forever waiting for a writer.
+  it.runIf(process.platform !== 'win32')('returns null immediately for a FIFO, never blocking', () => {
+    const path = join(dir, 'rollout-2026-09-17T18-49-11-fifo.jsonl');
+    execFileSync('mkfifo', [path]);
+    expect(lastRateLimitsInFile(path)).toBeNull();
+  });
+
+  // M2: opened O_NOFOLLOW, so a symlink is refused at open time -- never
+  // followed, even to a legitimate rollout.
+  it('returns null for a symlink, never following it', () => {
+    const real = join(dir, 'elsewhere.jsonl');
+    writeFileSync(real, FIXTURE);
+    const link = join(dir, 'rollout-2026-09-17T18-49-11-link.jsonl');
+    symlinkSync(real, link);
+    expect(lastRateLimitsInFile(link)).toBeNull();
+  });
+
+  it('returns null for a directory, without logging an error', () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(lastRateLimitsInFile(dir)).toBeNull();
+      expect(errSpy).not.toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
 });
 
 describe('finding the newest rollouts', () => {
@@ -145,6 +214,19 @@ describe('finding the newest rollouts', () => {
 
   it('is empty for a missing root', () => {
     expect(newestRollouts(join(dir, 'missing'))).toEqual([]);
+  });
+
+  // M2: lstat, not stat -- a symlinked rollout is never counted among the
+  // newest, so it can never bump out a real one or leak its target's mtime.
+  it('excludes a symlinked rollout, even one newer than every real one', () => {
+    const real = rollout('2026/09/17', 'rollout-2026-09-17T07-21-08-real.jsonl', 1_789_700_000);
+    const target = join(dir, 'target.jsonl');
+    writeFileSync(target, FIXTURE);
+    utimesSync(target, 1_789_800_000, 1_789_800_000); // newer than `real`
+    const link = join(dir, '2026/09/17', 'rollout-2026-09-17T09-00-00-link.jsonl');
+    symlinkSync(target, link);
+
+    expect(newestRollouts(dir).map(r => r.path)).toEqual([real]);
   });
 
   describe('readCodexRateLimits', () => {
@@ -275,6 +357,14 @@ describe('Codex context from the latest token_count', () => {
       const link = join(dir, 'rollout-link.jsonl');
       symlinkSync(real, link);
       expect(readCodexContext(link)).toBeNull();
+    });
+
+    // M2: opened O_NONBLOCK, same as the rate-limits reader -- a FIFO
+    // planted at the path never blocks the caller.
+    it.runIf(process.platform !== 'win32')('returns null immediately for a FIFO, never blocking', () => {
+      const path = join(dir, 'rollout-fifo.jsonl');
+      execFileSync('mkfifo', [path]);
+      expect(readCodexContext(path)).toBeNull();
     });
   });
 });

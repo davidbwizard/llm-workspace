@@ -93,6 +93,26 @@ describe('setUsageSwitch(on)', () => {
     expect(readdirSync(dirname(stable)).some(f => f.includes('.tmp'))).toBe(false);
   });
 
+  // M4: the statusline snapshot folder itself (where the helper writes one
+  // JSON file per session) is tightened here, in main -- not left to the
+  // helper's own `mkdir -p` (umask-dependent, and never revisits a folder
+  // that already exists looser than that).
+  it('creates the statusline snapshot folder at 0700', () => {
+    writeSettings(userSettings());
+    setUsageSwitch(paths, true, SOURCE);
+    expect(modeOf(paths.statusLineDir)).toBe(0o700);
+  });
+
+  it('tightens an existing, looser statusline snapshot folder to 0700', () => {
+    writeSettings(userSettings());
+    mkdirSync(paths.statusLineDir, { recursive: true });
+    chmodSync(paths.statusLineDir, 0o755);
+
+    setUsageSwitch(paths, true, SOURCE);
+
+    expect(modeOf(paths.statusLineDir)).toBe(0o700);
+  });
+
   it('creates settings.json when it is missing', () => {
     expect(existsSync(paths.claudeSettings)).toBe(false);
     expect(setUsageSwitch(paths, true, SOURCE)).toEqual({ installed: true, error: null });

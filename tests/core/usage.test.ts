@@ -23,8 +23,16 @@ describe('contextWindowFor -- the documented windows only', () => {
     ['an empty string', ''],
     ['null', null],
     ['undefined', undefined],
+    ['a non-dated suffix', 'claude-opus-5-preview'],
+    ['a too-short date suffix', 'claude-opus-5-2025100'],
+    ['a too-long date suffix', 'claude-opus-5-202510011'],
+    ['a non-numeric date suffix', 'claude-opus-5-2025100a'],
   ])('is null for %s -- never guessed', (_label, model) => {
     expect(contextWindowFor(model)).toBeNull();
+  });
+
+  it('matches a bracket-suffixed id, like a date-suffixed one', () => {
+    expect(contextWindowFor('claude-opus-5[1m]')).toBe(1_000_000);
   });
 });
 

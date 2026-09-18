@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { currentWindow, type CodexRateWindow, type CodexUsage } from '../../core/usage.ts';
 
@@ -76,52 +76,75 @@ export function lastRateLimitsInFile(path: string, opts: TailOpts = {}): CodexLi
   return lastTokenCount(path, parseTokenCountLine, opts);
 }
 
-/** Walks `path` backwards from its end in `chunkBytes` steps, never further
- *  back than `maxBytes`, and returns the first non-null `parse` result --
- *  i.e. from the LAST matching token_count line. Lines are split on raw
- *  newline bytes (never inside a UTF-8 sequence), and only lines mentioning
- *  token_count are parsed at all. A line cut off by the budget is dropped,
- *  never parsed as a fragment. */
+/** Walks an already-open, already-`fstat`ed regular file backwards from its
+ *  end in `chunkBytes` steps, never further back than `maxBytes`, and
+ *  returns the first non-null `parse` result -- i.e. from the LAST matching
+ *  token_count line. Lines are split on raw newline bytes (never inside a
+ *  UTF-8 sequence), and only lines mentioning token_count are parsed at
+ *  all. A line cut off by the budget is dropped, never parsed as a
+ *  fragment. Never opens or closes `fd` -- that is the caller's job, so a
+ *  caller needing the same `fstat` for its own cache key pays for the
+ *  syscall once. */
+function tailReadFrom<T>(
+  fd: number, size: number, parse: (line: string) => T | null, maxBytes: number, chunkBytes: number,
+): T | null {
+  const floor = Math.max(0, size - maxBytes);
+  let pos = size;
+  // Bytes after `pos` that do not yet form a whole line (their start lies
+  // in a chunk not read yet).
+  let carry = Buffer.alloc(0);
+  while (pos > floor) {
+    const start = Math.max(floor, pos - chunkBytes);
+    const buf = Buffer.allocUnsafe(pos - start);
+    // The byte count readSync actually returns, never the requested length,
+    // decides how much of `buf` is real: anything short of the full request
+    // means the rest is leftover Buffer.allocUnsafe memory, never parsed.
+    const n = readSync(fd, buf, 0, buf.length, start);
+    if (n !== buf.length) return null;
+    pos = start;
+    const data = carry.length > 0 ? Buffer.concat([buf, carry]) : buf;
+    // Before the first newline is the tail of a line that began earlier --
+    // unless this chunk starts the file, where it is a whole line.
+    const firstNl = start === 0 ? -1 : data.indexOf(0x0a);
+    if (start !== 0 && firstNl === -1) { carry = data; continue; }
+    const whole = data.subarray(firstNl + 1);
+    let end = whole.length;
+    while (end > 0) {
+      const nl = whole.lastIndexOf(0x0a, end - 1);
+      const line = whole.subarray(nl + 1, end);
+      end = nl === -1 ? 0 : nl;
+      if (line.length === 0 || line.indexOf('"token_count"') === -1) continue;
+      const hit = parse(line.toString('utf8'));
+      if (hit !== null) return hit;
+    }
+    carry = firstNl === -1 ? Buffer.alloc(0) : data.subarray(0, firstNl);
+  }
+  return null;
+}
+
+/** Opens `path` O_NOFOLLOW (a symlink is refused at open time, never
+ *  followed -- no check-then-open gap for another process to race) and
+ *  O_NONBLOCK (a FIFO planted at the path is refused immediately, never
+ *  blocking the caller waiting for a writer that will never come), then
+ *  `fstat`s the descriptor once: a directory, FIFO or anything else that is
+ *  not a regular file is refused quietly, without attempting to read it.
+ *  ENOENT and ELOOP (the symlink case) are the ordinary "not there"/"not
+ *  ours to follow" outcomes and are not logged; anything else is. */
 function lastTokenCount<T>(path: string, parse: (line: string) => T | null, opts: TailOpts): T | null {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const chunkBytes = opts.chunkBytes ?? DEFAULT_CHUNK;
   let fd: number;
   try {
-    fd = openSync(path, 'r');
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error('codex rollout: could not open', path, e);
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ELOOP') console.error('codex rollout: could not open', path, e);
     return null;
   }
   try {
-    const size = fstatSync(fd).size;
-    const floor = Math.max(0, size - maxBytes);
-    let pos = size;
-    // Bytes after `pos` that do not yet form a whole line (their start lies
-    // in a chunk not read yet).
-    let carry = Buffer.alloc(0);
-    while (pos > floor) {
-      const start = Math.max(floor, pos - chunkBytes);
-      const buf = Buffer.allocUnsafe(pos - start);
-      readSync(fd, buf, 0, buf.length, start);
-      pos = start;
-      const data = carry.length > 0 ? Buffer.concat([buf, carry]) : buf;
-      // Before the first newline is the tail of a line that began earlier --
-      // unless this chunk starts the file, where it is a whole line.
-      const firstNl = start === 0 ? -1 : data.indexOf(0x0a);
-      if (start !== 0 && firstNl === -1) { carry = data; continue; }
-      const whole = data.subarray(firstNl + 1);
-      let end = whole.length;
-      while (end > 0) {
-        const nl = whole.lastIndexOf(0x0a, end - 1);
-        const line = whole.subarray(nl + 1, end);
-        end = nl === -1 ? 0 : nl;
-        if (line.length === 0 || line.indexOf('"token_count"') === -1) continue;
-        const hit = parse(line.toString('utf8'));
-        if (hit !== null) return hit;
-      }
-      carry = firstNl === -1 ? Buffer.alloc(0) : data.subarray(0, firstNl);
-    }
-    return null;
+    const st = fstatSync(fd);
+    if (!st.isFile()) return null;
+    return tailReadFrom(fd, st.size, parse, maxBytes, chunkBytes);
   } catch (e) {
     console.error('codex rollout: could not read', path, e);
     return null;
@@ -164,7 +187,10 @@ export function newestRollouts(root: string, limit = MAX_FILES): { path: string;
       if (!ROLLOUT_FILE.test(name)) continue;
       const path = join(dir, name);
       try {
-        const st = statSync(path);
+        // lstat, not stat: a symlinked rollout is never counted, so it can
+        // neither bump a real one out of the newest-five nor report its
+        // target's own size/mtime as if it were a real rollout.
+        const st = lstatSync(path);
         if (st.isFile()) files.push({ path, mtimeMs: st.mtimeMs, size: st.size });
       } catch {
         // Removed since the listing: skip it.
@@ -260,22 +286,36 @@ export function lastUsageInFile(path: string, opts: TailOpts = {}): CodexContext
 const contextCache = new Map<string, { key: string; read: CodexContextRead | null }>();
 const CONTEXT_CACHE_MAX = 64;
 
-/** One rollout's latest context use. lstat, not stat: a symlink is refused,
- *  never followed. null for a missing or non-regular file. */
+/** One rollout's latest context use. Opens once, O_NOFOLLOW|O_NONBLOCK (a
+ *  symlink or FIFO is refused without blocking, same as lastTokenCount
+ *  above), and `fstat`s that single descriptor for both the cache key and
+ *  the regular-file check -- no separate check-then-open against a path
+ *  that could change in between. null for a missing, non-regular or
+ *  oversized-by-nothing-in-particular (rollouts have no whole-file cap;
+ *  only the tail read is bounded) file. */
 export function readCodexContext(path: string): CodexContextRead | null {
-  let st;
+  let fd: number;
   try {
-    st = lstatSync(path);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error('codex rollout: could not stat', path, e);
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ELOOP') console.error('codex rollout: could not open', path, e);
     return null;
   }
-  if (!st.isFile()) return null;
-  const key = `${st.ino}:${st.size}:${st.mtimeMs}`;
-  const hit = contextCache.get(path);
-  if (hit && hit.key === key) return hit.read;
-  const read = lastUsageInFile(path);
-  if (contextCache.size >= CONTEXT_CACHE_MAX) contextCache.clear();
-  contextCache.set(path, { key, read });
-  return read;
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return null;
+    const key = `${st.ino}:${st.size}:${st.mtimeMs}`;
+    const hit = contextCache.get(path);
+    if (hit && hit.key === key) return hit.read;
+    const read = tailReadFrom(fd, st.size, parseTokenUsageLine, DEFAULT_MAX_BYTES, DEFAULT_CHUNK);
+    if (contextCache.size >= CONTEXT_CACHE_MAX) contextCache.clear();
+    contextCache.set(path, { key, read });
+    return read;
+  } catch (e) {
+    console.error('codex rollout: could not read', path, e);
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 }

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Paths } from '../config.ts';
 import { shellCommandFor } from './install.ts';
@@ -36,6 +36,15 @@ export function statusLineCommand(home: string): string {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Tightens the statusline snapshot folder to 0700 on every ON, in main --
+ *  never in the helper script, whose own `mkdir -p` only sets the mode at
+ *  creation and never revisits a folder that already exists looser than
+ *  that (the same reasoning as switch.ts's ensureBinDir). */
+function ensureStatusLineDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
 }
 
 /** Ours means a command status line running exactly our command string --
@@ -78,6 +87,7 @@ function turnOn(paths: Paths, source: string): string | null {
   try {
     ensureBinDir(stable);
     copyHelperAtomic(source, stable);
+    ensureStatusLineDir(paths.statusLineDir);
   } catch (e) {
     return `Could not install the status line script: ${(e as Error).message}`;
   }

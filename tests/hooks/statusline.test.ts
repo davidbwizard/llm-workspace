@@ -67,9 +67,19 @@ describe('statusline.sh', () => {
     expect(entries().sort()).toEqual([`${SESSION}.json`, 'other-session_2.json'].sort());
   });
 
-  it('uses the top-level session_id, not a later nested one', () => {
-    run('{"session_id":"top-level","agent":{"session_id":"nested"}}');
+  it('uses the top-level session_id when a nested one agrees with it', () => {
+    run('{"session_id":"top-level","agent":{"session_id":"top-level"}}');
     expect(entries()).toEqual(['top-level.json']);
+  });
+
+  // M5: a top-level and a nested session_id that disagree are ambiguous
+  // about which session this snapshot belongs to -- refuse rather than
+  // guess which one wins.
+  it('rejects a payload naming more than one distinct session_id: writes nothing, prints nothing, exits 0', () => {
+    const r = run('{"session_id":"top-level","agent":{"session_id":"nested"}}');
+    expect(r.status).toBe(0);
+    expect(r.stdout.length + r.stderr.length).toBe(0);
+    expect(entries()).toEqual([]);
   });
 
   it.each([

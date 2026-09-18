@@ -48,12 +48,22 @@ const DOCUMENTED_WINDOWS: ReadonlyArray<readonly [string, number]> = [
   ['claude-haiku-4-5', 200_000],
 ];
 
-/** Matches the model id itself or a dated/suffixed form of it
- *  (`claude-haiku-4-5-20251001`), never a look-alike (`claude-opus-50`). */
+/** An 8-digit date suffix (`-20251001`), the only hyphenated form recognised
+ *  -- anything else after the id (`-preview`, `-50`) is a different model,
+ *  not a dated build of this one. */
+const DATE_SUFFIX = /^-\d{8}$/;
+
+/** Matches the model id itself, a date-suffixed form of it
+ *  (`claude-haiku-4-5-20251001`), or a bracket-suffixed one
+ *  (`claude-opus-5[1m]`) -- never a look-alike (`claude-opus-50`) or an
+ *  arbitrary suffix (`claude-opus-5-preview`). */
 export function contextWindowFor(modelId: string | null | undefined): number | null {
   if (typeof modelId !== 'string' || modelId === '') return null;
   for (const [id, window] of DOCUMENTED_WINDOWS) {
-    if (modelId === id || modelId.startsWith(`${id}-`) || modelId.startsWith(`${id}[`)) return window;
+    if (modelId === id) return window;
+    if (!modelId.startsWith(id)) continue;
+    const rest = modelId.slice(id.length);
+    if (rest.startsWith('[') || DATE_SUFFIX.test(rest)) return window;
   }
   return null;
 }
