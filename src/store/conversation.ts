@@ -8,6 +8,13 @@ export type ConversationTurn = {
   ts: string;
   role: 'user' | 'assistant';
   text: string;
+  /** True only for a reply Claude Code saved solely as a thinking summary
+   *  (parse.ts's note-flagged `prose` event, CLAUDE_PARSER_VERSION 4) --
+   *  never present (not merely false) on an ordinary reply, matching how
+   *  the parser only ever sets the payload field when true. The renderer
+   *  shows this turn muted and italic but through the exact same markdown
+   *  path as any other reply. */
+  note?: boolean;
 };
 
 const NAME = /<command-name>([\s\S]*?)<\/command-name>/;
@@ -42,7 +49,11 @@ export type ConversationPage = {
   nextCursor: ConversationCursor | null;
 };
 
-type Row = { id: number; ts: string; kind: string; text: string | null };
+// note: SQLite's json_extract of a JSON `true` comes back as the integer 1
+// (verified against better-sqlite3); absent entirely on every row whose
+// payload has no `note` key at all, which is every row except a note-flagged
+// prose event -- so this is never 0, only 1 or null.
+type Row = { id: number; ts: string; kind: string; text: string | null; note: number | null };
 
 /** One stretch of the main thread: a human prompt (absent for prose recorded
  *  before the first prompt) and the prose that followed it, oldest first.
@@ -138,7 +149,8 @@ export function conversationFor(
     const lowest = prompts.length > limit ? prompts[limit - 1] : undefined;
     const lower = lowest ? 'AND (ts, id) >= (@lowTs, @lowId)' : '';
     const rows = db.prepare(
-      `SELECT id, ts, kind, json_extract(payload,'$.text') AS text FROM events
+      `SELECT id, ts, kind, json_extract(payload,'$.text') AS text,
+              json_extract(payload,'$.note') AS note FROM events
        WHERE session_id = @sessionId AND kind IN ('prompt.submitted','prose') AND agent_id IS NULL
          ${lower} ${upper}
        ORDER BY ts ASC, id ASC`,
@@ -183,7 +195,9 @@ export function conversationFor(
     // No collapsing: every prose row in the stretch is its own turn, oldest
     // first -- see the no-collapse decision above.
     for (const reply of prose) {
-      turns.push({ id: reply.id, ts: reply.ts, role: 'assistant', text: reply.text! });
+      const turn: ConversationTurn = { id: reply.id, ts: reply.ts, role: 'assistant', text: reply.text! };
+      if (reply.note === 1) turn.note = true;
+      turns.push(turn);
     }
   }
   return { turns, nextCursor };

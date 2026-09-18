@@ -31,6 +31,28 @@ function turnEvent(
   };
 }
 
+/** A note-flagged `prose` row -- parse.ts's shape for a reply Claude Code
+ *  saved only as a thinking summary (CLAUDE_PARSER_VERSION 4). Same identity
+ *  scheme as turnEvent above. */
+function noteEvent(sessionId: string, ts: string, text: string, agentId: string | null = null): NormalizedEvent {
+  const offset = nextOffset++;
+  return {
+    provider: 'claude',
+    sessionId,
+    runId: null,
+    agentId,
+    ts,
+    kind: 'prose',
+    payload: { text, role: 'assistant', note: true },
+    nativeId: null,
+    sourceFile: '/fake/transcript.jsonl',
+    sourceOffset: offset,
+    contentHash: `hash-${offset}`,
+    subIndex: 0,
+    parserVersion: 1,
+  };
+}
+
 /** A turn.completed row. conversationFor's query no longer selects this kind
  *  at all (see conversation.ts's no-collapse comment) -- every use below
  *  exists only to prove that inserting one, however many, and wherever it
@@ -350,6 +372,57 @@ describe('conversationFor', () => {
       'you: c (newer half of the tie)', 'agent: d (newest)',
       'you: a (oldest)', 'agent: b (older half of the tie)',
     ]);
+  });
+});
+
+// parse.ts's note-flagged prose event (CLAUDE_PARSER_VERSION 4, a reply
+// Claude Code saved only as a thinking summary) must keep that flag through
+// this assembly step so the renderer can still tell it apart, even though
+// every prose row is already its own turn (no collapsing) -- see
+// conversationFor's own doc comment.
+describe('conversationFor -- note flag (thinking-only replies)', () => {
+  it('carries note:true onto the assistant turn for a note-flagged prose row', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'go'),
+      noteEvent('s1', '2026-09-01T00:00:01Z', 'Kicking off the measurement.'),
+    ]);
+
+    const turns = conversationFor(db, 's1').turns;
+    expect(turns).toHaveLength(2);
+    expect(turns[1]).toMatchObject({ role: 'assistant', text: 'Kicking off the measurement.', note: true });
+  });
+
+  it('never sets note on an ordinary reply -- the field is absent, not false', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'go'),
+      turnEvent('s1', '2026-09-01T00:00:01Z', 'prose', 'Done.'),
+    ]);
+
+    const reply = conversationFor(db, 's1').turns[1]!;
+    expect(reply.text).toBe('Done.');
+    expect('note' in reply).toBe(false);
+  });
+
+  it('keeps a note turn and a plain reply as two separate turns, in recorded order', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'go'),
+      noteEvent('s1', '2026-09-01T00:00:01Z', 'Planning the fix.'),
+      turnEvent('s1', '2026-09-01T00:00:02Z', 'prose', 'Applied the fix.'),
+    ]);
+
+    const turns = conversationFor(db, 's1').turns;
+    expect(view(turns)).toEqual(['you: go', 'agent: Planning the fix.', 'agent: Applied the fix.']);
+    expect(turns[1]!.note).toBe(true);
+    expect('note' in turns[2]!).toBe(false);
+  });
+
+  it('never sets note on a user prompt turn', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [turnEvent('s1', '2026-09-01T00:00:00Z', 'prompt.submitted', 'go')]);
+    expect('note' in conversationFor(db, 's1').turns[0]!).toBe(false);
   });
 });
 

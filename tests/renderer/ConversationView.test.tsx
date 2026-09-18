@@ -1974,6 +1974,38 @@ describe('ConversationView -- the reading settings', () => {
   });
 });
 
+// A reply Claude Code saved only as a thinking summary (parse.ts's
+// note-flagged prose event, CLAUDE_PARSER_VERSION 4) shows at the same spot
+// in the timeline as any other reply, through the same markdown renderer,
+// muted and italic (ConversationView.css.test.ts carries the actual style
+// assertions -- jsdom computes no layout or paint, so this only proves the
+// DOM carries the class that stylesheet keys off).
+describe('ConversationView -- a thinking-only reply renders as a muted note', () => {
+  it('marks a note-flagged turn with the note class, on the same markdown-rendered element', async () => {
+    const { container } = showOne({ role: 'assistant', text: 'Kicking off the measurement.', note: true });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    const body = container.querySelector('.turn.assistant .turn-text') as HTMLElement;
+    expect(body.classList.contains('note')).toBe(true);
+    expect(body.classList.contains('md')).toBe(true); // same markdown path as any other reply
+    expect(body.textContent).toBe('Kicking off the measurement.');
+  });
+
+  it('gives an ordinary reply no note class', async () => {
+    const { container } = showOne({ role: 'assistant', text: 'All green.' });
+    await waitFor(() => expect(container.querySelector('.turn.assistant')).toBeTruthy());
+    expect(container.querySelector('.turn.assistant .turn-text')!.classList.contains('note')).toBe(false);
+  });
+
+  it('still copies the note text through the same per-turn copy button', async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const { container } = showOne({ role: 'assistant', text: 'Kicking off the measurement.', note: true });
+    await waitFor(() => expect(container.querySelector('.turn.assistant .turn-actions .copy-btn')).toBeTruthy());
+    fireEvent.click(container.querySelector('.turn.assistant .turn-actions .copy-btn') as HTMLButtonElement);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('Kicking off the measurement.'));
+  });
+});
+
 describe('ConversationView -- one-click copy', () => {
   function mockClipboard(write: (text: string) => Promise<void>) {
     const writeText = vi.fn(write);

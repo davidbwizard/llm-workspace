@@ -233,7 +233,7 @@ describe('parseClaudeLines', () => {
   });
 
   it('bumps the parser version so already-indexed transcripts are reparsed', () => {
-    expect(CLAUDE_PARSER_VERSION).toBe(3);
+    expect(CLAUDE_PARSER_VERSION).toBe(4);
   });
 
   it('still reports a genuinely unrecognized type as unparsed -- recognising the known-unmapped set does not blunt the drift signal', () => {
@@ -266,6 +266,82 @@ describe('parseClaudeLines', () => {
       expect(subIndices[0]).toBe(0);
       expect(subIndices).toEqual(subIndices.map((_, i) => i));
     }
+  });
+});
+
+// David's measured bug: Claude Code 2.1.276 + Opus 5 sometimes saves an
+// assistant reply as ONLY a thinking summary -- a non-empty `thinking`
+// block with no `text` block in the same record. The terminal shows these
+// as normal lines; before this, the conversation pane showed nothing,
+// because textFromContent only ever looked at `text` blocks. Real shape
+// (~/.claude/projects, a llm-workspace session): {"type":"assistant",
+// "message":{"id":"msg_...","content":[{"type":"thinking","thinking":
+// "...","signature":"..."}]}}, sharing message.id with a LATER record whose
+// content is a tool_use block -- each real JSONL row carries exactly one
+// content block, so the existing one-record-at-a-time loop already handles
+// that shape. A single record carrying both a thinking and a text block is
+// a defensive case below, not one measured live, but the API allows it.
+describe('parseClaudeLines — thinking-only replies (note events)', () => {
+  const assistantRec = (content: unknown[], extra: Record<string, unknown> = {}) => ({
+    text: JSON.stringify({
+      type: 'assistant', sessionId: 's1', timestamp: '2026-09-18T00:00:00.000Z',
+      uuid: 'a1', message: { role: 'assistant', content, usage: {} }, ...extra,
+    }),
+    offset: 0,
+  });
+
+  it('emits a note prose event for a thinking-only message', () => {
+    const evs = parseClaudeLines([assistantRec([
+      { type: 'thinking', thinking: 'Kicking off the measurement.', signature: 'sig' },
+    ])], '/f.jsonl');
+    const prose = evs.filter(e => e.kind === 'prose');
+    expect(prose).toHaveLength(1);
+    expect(prose[0]!.payload).toMatchObject({
+      text: 'Kicking off the measurement.', role: 'assistant', note: true,
+    });
+  });
+
+  it('ignores an empty (redacted) thinking block -- the shape Claude Code writes for a redacted thought', () => {
+    const evs = parseClaudeLines([assistantRec([
+      { type: 'thinking', thinking: '', signature: 'sig' },
+    ])], '/f.jsonl');
+    expect(evs.filter(e => e.kind === 'prose')).toHaveLength(0);
+  });
+
+  it('ignores a whitespace-only thinking block', () => {
+    const evs = parseClaudeLines([assistantRec([
+      { type: 'thinking', thinking: '   \n  ', signature: 'sig' },
+    ])], '/f.jsonl');
+    expect(evs.filter(e => e.kind === 'prose')).toHaveLength(0);
+  });
+
+  it('keeps a text-only message unchanged -- no note event, and the text payload carries no note field', () => {
+    const evs = parseClaudeLines(
+      [assistantRec([{ type: 'text', text: 'The magic link has no expiry.' }])], '/f.jsonl',
+    );
+    const prose = evs.filter(e => e.kind === 'prose');
+    expect(prose).toHaveLength(1);
+    expect(prose[0]!.payload).toEqual({ text: 'The magic link has no expiry.', role: 'assistant' });
+  });
+
+  it('emits both a note and a plain prose event when one message carries a thinking block AND a text block', () => {
+    const evs = parseClaudeLines([assistantRec([
+      { type: 'thinking', thinking: 'Planning the fix.', signature: 'sig' },
+      { type: 'text', text: 'Applied the fix.' },
+    ])], '/f.jsonl');
+    const prose = evs.filter(e => e.kind === 'prose');
+    expect(prose).toHaveLength(2);
+    expect(prose.find(e => e.payload.note === true)?.payload.text).toBe('Planning the fix.');
+    expect(prose.find(e => e.payload.note === undefined)?.payload.text).toBe('Applied the fix.');
+  });
+
+  it('gives the note event its own subIndex, distinct from the text event on the same line', () => {
+    const evs = parseClaudeLines([assistantRec([
+      { type: 'thinking', thinking: 'Planning the fix.', signature: 'sig' },
+      { type: 'text', text: 'Applied the fix.' },
+    ])], '/f.jsonl');
+    const prose = evs.filter(e => e.kind === 'prose');
+    expect(new Set(prose.map(e => e.subIndex)).size).toBe(2);
   });
 });
 

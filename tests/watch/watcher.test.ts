@@ -282,6 +282,51 @@ describe('ingestFileOnce — subagent-meta reparse (F2)', () => {
   });
 });
 
+// CLAUDE_PARSER_VERSION bumped to 4: a thinking-only reply (no `text` block)
+// now also produces a note-flagged `prose` event (parse.ts). A plain tail
+// never revisits already-ingested bytes, so a session indexed before this
+// bump would carry that note forever unless the bump forces the same
+// delete-then-reparse (staleParser) path the two prior bumps relied on --
+// this proves that path both fills the note in AND does not duplicate the
+// rest of the file's events, the same shape as the F2 test above.
+describe('ingestFileOnce — thinking-note reparse after a CLAUDE_PARSER_VERSION bump', () => {
+  it('a stale parser version backfills the note event without duplicating anything else in the file', () => {
+    const db = openDb(':memory:');
+    const thinkingOnly = JSON.stringify({
+      type: 'assistant', uuid: 'u-think', sessionId: 's1', cwd: '/repo',
+      timestamp: '2026-09-10T00:00:00.500Z',
+      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Summarising the plan.' }] },
+    }) + '\n';
+    writeFileSync(file, RECC('u1', 'one') + thinkingOnly + RECC('u2', 'two'));
+
+    ingestFileOnce(db, file, 'claude');
+    const firstTotal = countEvents(db, file);
+    const noteCountBefore = db.prepare(
+      "SELECT COUNT(*) c FROM events WHERE kind='prose' AND json_extract(payload,'$.note')=1",
+    ).get() as any;
+    expect(noteCountBefore.c).toBe(1);
+
+    // Simulate a pre-fix index: this file's rows (and its own ingest
+    // bookkeeping) all predate the real, current parser version — same
+    // technique as the F2 test above.
+    db.prepare('UPDATE events SET parser_version = 0 WHERE source_file = ?').run(file);
+    db.prepare('UPDATE ingest_files SET parser_version = 0 WHERE path = ?').run(file);
+
+    const r = ingestFileOnce(db, file, 'claude');
+    expect(r.restarted).toBe(false); // a version bump, not a truncation
+
+    expect(countEvents(db, file)).toBe(firstTotal); // replaced in place, not duplicated
+    const noteCountAfter = db.prepare(
+      "SELECT COUNT(*) c FROM events WHERE kind='prose' AND json_extract(payload,'$.note')=1",
+    ).get() as any;
+    expect(noteCountAfter.c).toBe(1);
+    const noteRow = db.prepare(
+      "SELECT parser_version FROM events WHERE kind='prose' AND json_extract(payload,'$.note')=1",
+    ).get() as any;
+    expect(noteRow.parser_version).toBe(CLAUDE_PARSER_VERSION);
+  });
+});
+
 // B1 (whole-branch review, 2026-09-11): 3663f24 fixed subagentIdentity's
 // thread_spawn handling (it was stringifying the nested thread_spawn object
 // to the literal text "[object Object]" instead of reading agent_nickname)
