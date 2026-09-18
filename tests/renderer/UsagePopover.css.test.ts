@@ -14,3 +14,16 @@ describe('UsagePopover.css: theme tokens only', () => {
     expect(css).toMatch(/box-shadow:\s*var\(--shadow-pop\)/);
   });
 });
+
+// David's own bug report against the real, running window: the popover
+// opens with its left edge at the Usage button and runs off the window's
+// right edge, clipping the % text on each bar row. LaunchBar.css.test.ts
+// covers the anchor side of the fix (right:0, opening leftward); this pins
+// the other half -- the popover must never grow wider than the window
+// itself, whatever width the window is resized down to.
+describe('UsagePopover.css: never wider than the viewport', () => {
+  it('caps width at min(360px, viewport minus a 32px margin)', () => {
+    const rule = css.slice(css.indexOf('.usagepop {'), css.indexOf('.usagesection'));
+    expect(rule).toMatch(/max-width:\s*min\(\s*360px\s*,\s*calc\(100vw\s*-\s*32px\)\s*\)/);
+  });
+});

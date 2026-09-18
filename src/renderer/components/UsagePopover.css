@@ -1,8 +1,14 @@
 /* src/renderer/components/UsagePopover.css -- tokens only, theme.css owns
    every colour. Same elevation/border language as ReplyPopover.css (this
    app's other floating panel), sized for two short provider sections
-   rather than one line of text. */
-.usagepop { position:absolute; z-index:20; width:240px; padding:12px 14px;
+   rather than one line of text. max-width caps it against a narrow window
+   (David's own bug report: it was running off the window's right edge and
+   clipping each bar row's % text) -- LaunchBar.css anchors it with
+   right:0 so it opens leftward, and this is the belt-and-braces half:
+   never wider than the viewport minus a comfortable margin, whatever
+   width the window itself is resized down to. */
+.usagepop { position:absolute; z-index:20; width:240px;
+  max-width:min(360px, calc(100vw - 32px)); padding:12px 14px;
   background:var(--raised); border:1px solid var(--line);
   border-radius:var(--r-md); box-shadow:var(--shadow-pop);
   display:flex; flex-direction:column; gap:14px; }

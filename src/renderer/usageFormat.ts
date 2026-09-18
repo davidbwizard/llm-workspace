@@ -22,19 +22,39 @@ export function contextTone(leftPct: number): 'critical' | 'signal' | null {
   return null;
 }
 
-/** "resets in 2h 10m" for a strictly positive duration. Minutes are
- *  dropped when they round to exactly zero (a bare "3h"); a sub-minute
- *  remainder rounds UP to "1m" rather than down to "0m" -- ceil, not
- *  round, since a still-future reset must never read as already due.
- *  Callers check the duration is finite and positive first (resetTextFor
- *  below) -- this function assumes that and does no checking of its own. */
+/** Shared duration-bucket scale for "resets in" and "updated ago" alike:
+ *  days+hours at 24h and up ("5d 15h"), hours+minutes from 1h up to a day
+ *  ("2h 35m"), bare minutes below that ("12m"). The days tier always shows
+ *  its hour part, even "0h" ("1d 0h"), so a duration that just crossed a
+ *  day boundary never silently drops a whole unit; the hours tier keeps
+ *  this file's older rule of dropping a genuinely-zero minute remainder
+ *  (a bare "3h", not "3h 0m"). `totalMin` must already be a non-negative
+ *  integer number of minutes -- callers decide whether to ceil (a
+ *  still-future countdown, formatResetIn) or floor (elapsed time,
+ *  formatUpdatedAgo). */
+function formatDuration(totalMin: number): string {
+  if (totalMin >= 1440) {
+    const d = Math.floor(totalMin / 1440);
+    const h = Math.floor((totalMin % 1440) / 60);
+    return `${d}d ${h}h`;
+  }
+  if (totalMin >= 60) {
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+  return `${totalMin}m`;
+}
+
+/** "resets in 2h 10m" for a strictly positive duration, using the shared
+ *  scale above. A sub-minute remainder rounds UP to "1m" rather than down
+ *  to "0m" -- ceil, not round, since a still-future reset must never read
+ *  as already due. Callers check the duration is finite and positive first
+ *  (resetTextFor below) -- this function assumes that and does no checking
+ *  of its own. */
 export function formatResetIn(deltaMs: number): string {
   const totalMin = Math.ceil(deltaMs / 60_000);
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  if (h > 0 && m > 0) return `resets in ${h}h ${m}m`;
-  if (h > 0) return `resets in ${h}h`;
-  return `resets in ${m}m`;
+  return `resets in ${formatDuration(totalMin)}`;
 }
 
 /** The reset line for one rate-limit window, or null when there is nothing
@@ -49,12 +69,17 @@ export function resetTextFor(resetsAt: number | null, now: number): string | nul
   return delta > 0 ? formatResetIn(delta) : null;
 }
 
-/** "updated N min ago". Never negative -- clock skew between main's
- *  updatedAt and the renderer's own Date.now() reads as "just now" (0
- *  min), not a nonsensical negative count. */
+/** "updated 4h 38m ago", using the same day/hour/minute scale as
+ *  formatResetIn above -- floored, not ceiled, since this is elapsed time:
+ *  "12.9m ago" honestly reads as "12m ago", not "13m ago". Anything under a
+ *  minute -- including clock skew between main's updatedAt and the
+ *  renderer's own Date.now(), clamped to zero rather than a nonsensical
+ *  negative count -- reads as "updated just now" rather than "updated 0m
+ *  ago". */
 export function formatUpdatedAgo(updatedAt: number, now: number): string {
-  const min = Math.max(0, Math.floor((now - updatedAt) / 60_000));
-  return `updated ${min} min ago`;
+  const totalMin = Math.floor(Math.max(0, now - updatedAt) / 60_000);
+  if (totalMin < 1) return 'updated just now';
+  return `updated ${formatDuration(totalMin)} ago`;
 }
 
 /** Clamps a rate-limit percentage to what a bar can actually draw (0-100)

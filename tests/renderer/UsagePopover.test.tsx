@@ -64,7 +64,7 @@ describe('UsagePopover', () => {
       expect(screen.getByText('resets in 2h 10m')).toBeTruthy();
       expect(screen.getByText('Weekly')).toBeTruthy();
       expect(screen.getByText('18% used')).toBeTruthy();
-      expect(screen.getByText('updated 3 min ago')).toBeTruthy();
+      expect(screen.getByText('updated 3m ago')).toBeTruthy();
     });
 
     it("labels Codex's bars from windowMinutes, not the slot name, and shows the secondary bar when present", async () => {
@@ -136,6 +136,33 @@ describe('UsagePopover', () => {
       await waitFor(() => {
         expect(screen.getByRole('progressbar', { name: /5-hour.*42% used/ })).toBeTruthy();
       });
+    });
+
+    // David's own bug report: the popover ran off the window's right edge
+    // and clipped the % text on each bar row. The reset above (UsagePopover
+    // .css/LaunchBar.css) fixes where the popover sits; this pins that the
+    // percentage is a real, visible text node on the row itself -- not
+    // something that only exists inside the progressbar's aria-label -- so
+    // there is something on screen for that fix to actually show.
+    it('shows each bar row\'s percent as visible text, not only inside the progressbar\'s aria-label', async () => {
+      setFleet({
+        usageGet: vi.fn(async () => ({
+          claude: {
+            fiveHour: { usedPct: 57, resetsAt: null },
+            sevenDay: { usedPct: 18, resetsAt: null },
+            updatedAt: now,
+          },
+          codex: null,
+        })),
+      });
+      const { container } = render(<UsagePopover />);
+      await waitFor(() => expect(screen.getByText('57% used')).toBeTruthy());
+      const heads = container.querySelectorAll('.usagebar-head');
+      expect(heads.length).toBe(2);
+      // Each row's own visible head, not merely the aria-label on its
+      // progressbar sibling -- textContent only ever reflects real nodes.
+      expect(heads[0]!.textContent).toContain('57%');
+      expect(heads[1]!.textContent).toContain('18%');
     });
   });
 
