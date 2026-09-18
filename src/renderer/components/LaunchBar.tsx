@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { LaunchResult } from '../../main/launch.ts';
 import { Icon } from './Icon.tsx';
 import { SettingsModal } from './SettingsModal.tsx';
+import { UsagePopover } from './UsagePopover.tsx';
 import './LaunchBar.css';
 
 // A live terminal only exists once TerminalView actually mounts, and it
@@ -31,6 +32,43 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
   // the close button, Done or the backdrop. A person who opened settings
   // from the keyboard must not be dropped back at the top of the document.
   const gearRef = useRef<HTMLButtonElement | null>(null);
+
+  // The Usage popover (usage design, Part B): small and non-modal (no
+  // background scroll lock, unlike SettingsModal's native <dialog>), so it
+  // gets the same Escape/outside-click/focus-return pattern OpenSessionCard's
+  // own compact `...` menu already uses, rather than SettingsModal's
+  // showModal()-based one, which would also inert the rest of the page.
+  const [usageOpen, setUsageOpen] = useState(false);
+  const usageWrapRef = useRef<HTMLDivElement | null>(null);
+  const usageBtnRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!usageOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setUsageOpen(false); };
+    // mousedown, not click -- see OpenSessionCard.tsx's own cardmenu effect
+    // for why: a click listener registered during the very click that
+    // opened this popover would otherwise fire again as that same event
+    // finishes bubbling to the window, closing it immediately.
+    const onDown = (e: MouseEvent) => {
+      if (!usageWrapRef.current?.contains(e.target as Node)) setUsageOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('mousedown', onDown);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onDown);
+    };
+  }, [usageOpen]);
+
+  // Focus returns to the button on every close path (Escape, outside click,
+  // or toggling the button itself) -- the cleanup below fires exactly once,
+  // on the true -> false transition (or unmount), never on every render,
+  // since the effect's own dependency is unchanged while usageOpen stays
+  // true.
+  useEffect(() => {
+    if (!usageOpen) return;
+    return () => { usageBtnRef.current?.focus(); };
+  }, [usageOpen]);
 
   async function launch(): Promise<void> {
     const dir = cwd.trim();
@@ -72,6 +110,19 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
       <button type="submit" className="launchgo" disabled={pending}>
         {pending ? 'Launching…' : 'Launch'}
       </button>
+      {/* Next to the gear (usage design, Part B). A wrapping div, not the
+          button itself, is the positioned ancestor and the outside-click
+          boundary -- same shape as OpenSessionCard.tsx's own cardmenu, so a
+          click on the button while the popover is open is never mistaken
+          for an outside click by the mousedown listener above. */}
+      <div className="usagewrap" ref={usageWrapRef}>
+        <button type="button" className="launchusage" ref={usageBtnRef}
+          aria-haspopup="true" aria-expanded={usageOpen}
+          onClick={() => setUsageOpen(o => !o)}>
+          Usage
+        </button>
+        {usageOpen && <UsagePopover />}
+      </div>
       {/* Beside Launch, per the mockup. A real button, so it is reachable
           by keyboard and carries a real accessible name -- "Settings", not
           the glyph, which Icon renders aria-hidden. Phosphor's Gear, not a

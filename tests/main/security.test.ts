@@ -61,6 +61,10 @@ describe('renderer security posture', () => {
       // Which pid's conversation is on screen -- see the dedicated
       // watchSessionFor pid-validation tests below.
       'session:watch',
+      // Usage and context: usage:get takes no argument and only reads; the
+      // switch writes settings.json only through the Quick answers switch's
+      // own path (tests/hooks/usageSwitch.test.ts).
+      'usage:get', 'usage:switch:get', 'usage:switch:set',
     ]);
   });
 });

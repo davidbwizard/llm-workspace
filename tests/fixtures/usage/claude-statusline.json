@@ -1,0 +1,68 @@
+{
+  "hook_event_name": "Status",
+  "cwd": "/Users/me/projects/llm-workspace",
+  "session_id": "3f2a9c1e-7b4d-4e8a-9c2f-1a2b3c4d5e6f",
+  "session_name": "usage-feed",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440000",
+  "transcript_path": "/Users/me/.claude/projects/-Users-me-projects-llm-workspace/3f2a9c1e-7b4d-4e8a-9c2f-1a2b3c4d5e6f.jsonl",
+  "model": {
+    "id": "claude-opus-5",
+    "display_name": "Opus"
+  },
+  "workspace": {
+    "current_dir": "/Users/me/projects/llm-workspace",
+    "project_dir": "/Users/me/projects/llm-workspace",
+    "added_dirs": []
+  },
+  "version": "2.1.262",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 4.81234,
+    "total_duration_ms": 5450000,
+    "total_api_duration_ms": 1302000,
+    "total_lines_added": 856,
+    "total_lines_removed": 123
+  },
+  "context_window": {
+    "total_input_tokens": 9215500,
+    "total_output_tokens": 81200,
+    "context_window_size": 1000000,
+    "used_percentage": 46,
+    "remaining_percentage": 54,
+    "current_usage": {
+      "input_tokens": 3,
+      "output_tokens": 1200,
+      "cache_creation_input_tokens": 4997,
+      "cache_read_input_tokens": 457000
+    }
+  },
+  "exceeds_200k_tokens": true,
+  "prompt_cache": {
+    "warm": true,
+    "caching_observed": true,
+    "ttl": "1h",
+    "expires_at": 1789833600,
+    "requests": 140,
+    "misses": 2,
+    "hit_ratio": 0.97
+  },
+  "fast_mode": false,
+  "effort": {
+    "level": "high"
+  },
+  "thinking": {
+    "enabled": true
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 23.5,
+      "resets_at": 1789840800
+    },
+    "seven_day": {
+      "used_percentage": 41.2,
+      "resets_at": 1790200800
+    }
+  }
+}

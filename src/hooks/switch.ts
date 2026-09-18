@@ -2,7 +2,7 @@ import {
   existsSync, mkdirSync, chmodSync, readFileSync, writeFileSync,
   renameSync, openSync, closeSync, fsyncSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   buildHookFragments, planInstall, applyInstall, uninstall, SettingsChangedError, type Manifest,
 } from './install.ts';
@@ -22,8 +22,10 @@ export function stableHelperPath(home: string): string {
 
 /** `paths.claudeSettings` is always `<home>/.claude/settings.json`
  *  (config.ts's resolvePaths) -- two `dirname`s recover `home` without
- *  needing a dedicated field on Paths that no other caller needs. */
-function homeOf(paths: Paths): string {
+ *  needing a dedicated field on Paths that no other caller needs. Exported
+ *  for the "Usage and context" switch (src/hooks/usageSwitch.ts), which
+ *  shares every settings.json and bin-folder helper in this file. */
+export function homeOf(paths: Paths): string {
   return dirname(dirname(paths.claudeSettings));
 }
 
@@ -38,10 +40,10 @@ function stableCommand(stable: string): string {
  *  fsynced, then renamed over -- the same discipline as install.ts's own
  *  atomic settings.json write, so a crash mid-copy can never leave a
  *  partially-written helper script for a hook to run mid-write. */
-function copyHelperAtomic(source: string, dest: string): void {
+export function copyHelperAtomic(source: string, dest: string): void {
   const dir = dirname(dest);
   const data = readFileSync(source);
-  const tmp = join(dir, `.helper.sh.llmws.${process.pid}.tmp`);
+  const tmp = join(dir, `.${basename(dest)}.llmws.${process.pid}.tmp`);
   writeFileSync(tmp, data);
   const fd = openSync(tmp, 'r+');
   try { fsyncSync(fd); } finally { closeSync(fd); }
@@ -52,13 +54,67 @@ function copyHelperAtomic(source: string, dest: string): void {
  *  directory -- an already-existing, looser bin directory (e.g. left over
  *  from before this app enforced 0700) would otherwise keep its old mode
  *  forever. The explicit chmod makes this idempotent regardless. */
-function ensureBinDir(stable: string): void {
+export function ensureBinDir(stable: string): void {
   const dir = dirname(stable);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
 }
 
-const PARSE_ERROR = 'settings.json is not valid JSON -- fix it by hand, then try again.';
+export const PARSE_ERROR = 'settings.json is not valid JSON -- fix it by hand, then try again.';
+
+/** A fresh home may not even have ~/.claude yet -- only settings.json
+ *  itself is allowed to be "missing" per spec; its parent directory is
+ *  created before writing so that is never blocked on it. Returns the error
+ *  message, or null. */
+export function ensureSettingsDir(settingsPath: string): string | null {
+  try {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+  } catch (e) {
+    return `Could not create the settings directory: ${(e as Error).message}`;
+  }
+  return null;
+}
+
+export type SettingsRead = { ok: true; baseText: string; parsed: unknown } | { ok: false; error: string };
+
+/** settings.json read for an edit, with the one error mapping both switches
+ *  share. Only a missing file is "missing" (final review I3) -- it reads as
+ *  `{}` with an empty baseText; an unreadable one is refused, and an
+ *  unparseable one is PARSE_ERROR. `baseText` is what applyInstall later
+ *  compares against, so a change on disk in between is refused, not
+ *  clobbered. Never writes anything. */
+export function readSettingsForEdit(settingsPath: string): SettingsRead {
+  let baseText = '';
+  try {
+    baseText = readFileSync(settingsPath, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return { ok: false, error: `Could not read settings.json: ${(e as Error).message}` };
+    }
+  }
+  let parsed: unknown = {};
+  if (baseText !== '') {
+    try { parsed = JSON.parse(baseText); }
+    catch { return { ok: false, error: PARSE_ERROR }; }
+  }
+  return { ok: true, baseText, parsed };
+}
+
+/** Writes an edit through applyInstall (re-read, refuse if changed, then the
+ *  atomic mode-keeping write) and maps its failures. Only the
+ *  changed-on-disk refusal is "try again" (final review I5); anything else
+ *  is shown with its real cause. Returns the error message, or null. */
+export function writeSettingsEdit(
+  settingsPath: string, edit: { next: unknown; changed: boolean; baseText: string },
+): string | null {
+  try {
+    applyInstall(settingsPath, edit);
+  } catch (e) {
+    if (e instanceof SettingsChangedError) return 'Settings changed while installing -- try again';
+    return `Could not write settings.json: ${(e as Error).message}`;
+  }
+  return null;
+}
 
 /** Step 3's exact order: mkdir bin 0700, copy the helper atomically, THEN
  *  read/parse settings.json -- a parse failure must still leave
@@ -72,31 +128,14 @@ function doInstall(settingsPath: string, stable: string, helperSource: string): 
     return `Could not install the helper script: ${(e as Error).message}`;
   }
 
-  // A fresh home may not even have ~/.claude yet -- only settings.json
-  // itself is allowed to be "missing" per spec; its parent directory is
-  // created here so writing it is never blocked on that.
-  try {
-    mkdirSync(dirname(settingsPath), { recursive: true });
-  } catch (e) {
-    return `Could not create the settings directory: ${(e as Error).message}`;
-  }
+  const dirError = ensureSettingsDir(settingsPath);
+  if (dirError) return dirError;
 
-  // Only a missing file is "missing" (final review I3): an unreadable one
-  // is refused here, before anything is planned or written.
-  let baseText = '';
-  try {
-    baseText = readFileSync(settingsPath, 'utf8');
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-      return `Could not read settings.json: ${(e as Error).message}`;
-    }
-  }
-
-  let parsed: unknown = {};
-  if (baseText !== '') {
-    try { parsed = JSON.parse(baseText); }
-    catch { return PARSE_ERROR; }
-  }
+  // An unreadable or unparseable file is refused here, before anything is
+  // planned or written.
+  const read = readSettingsForEdit(settingsPath);
+  if (!read.ok) return read.error;
+  const { baseText, parsed } = read;
 
   // Valid JSON can still hold a shape planInstall cannot work with (e.g. a
   // hooks[event] value that is not an array) -- that must be reported like
@@ -107,15 +146,7 @@ function doInstall(settingsPath: string, stable: string, helperSource: string): 
   } catch (e) {
     return `Could not read settings.json's hooks: ${(e as Error).message}`;
   }
-  try {
-    applyInstall(settingsPath, { ...plan, baseText });
-  } catch (e) {
-    // Only the changed-on-disk refusal is "try again" (final review I5);
-    // anything else is shown with its real cause.
-    if (e instanceof SettingsChangedError) return 'Settings changed while installing -- try again';
-    return `Could not write settings.json: ${(e as Error).message}`;
-  }
-  return null;
+  return writeSettingsEdit(settingsPath, { ...plan, baseText });
 }
 
 /** The command string is fixed (the stable path never changes), so no
@@ -174,15 +205,21 @@ export function setHooks(paths: Paths, on: boolean, helperSource: string): Hooks
  *  this runs during app startup and must not be able to block it. */
 export function refreshHelperIfInstalled(paths: Paths, helperSource: string): void {
   if (!hooksState(paths).installed) return;
-  const stable = stableHelperPath(homeOf(paths));
   try {
-    const source = readFileSync(helperSource);
-    const current = existsSync(stable) ? readFileSync(stable) : null;
-    if (current === null || !current.equals(source)) {
-      ensureBinDir(stable);
-      copyHelperAtomic(helperSource, stable);
-    }
+    refreshStableCopy(helperSource, stableHelperPath(homeOf(paths)));
   } catch (e) {
     console.error('Quick answers: could not refresh the helper copy:', e);
+  }
+}
+
+/** Re-copies `source` over `stable` only when the bytes differ (or the copy
+ *  is missing). Throws; each caller logs in its own words. Shared with the
+ *  status line switch's own startup refresh (src/hooks/usageSwitch.ts). */
+export function refreshStableCopy(source: string, stable: string): void {
+  const fresh = readFileSync(source);
+  const current = existsSync(stable) ? readFileSync(stable) : null;
+  if (current === null || !current.equals(fresh)) {
+    ensureBinDir(stable);
+    copyHelperAtomic(source, stable);
   }
 }

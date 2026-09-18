@@ -1,0 +1,8 @@
+/* src/renderer/components/ContextChip.css -- tokens only, theme.css owns
+   every colour. Muted by default; --signal/--critical are the chip's own
+   two urgency tiers (usage design, Part B), the same tones the rest of
+   this app already reserves for "worth a look" / "waiting on you". */
+.ctxchip { font-family:var(--f-mono); font-size:10.5px; color:var(--muted);
+  font-variant-numeric:tabular-nums; white-space:nowrap; }
+.ctxchip-signal { color:var(--signal); }
+.ctxchip-critical { color:var(--critical); }

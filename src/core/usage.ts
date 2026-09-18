@@ -1,0 +1,104 @@
+/** Usage and context (usage design, 2026-09-18): the shared types and the
+ *  pure maths. No node imports -- the renderer may import the types from
+ *  here (never from src/main/**). */
+
+/** One rate-limit window. `usedPct` is 0-100 as the provider reports it;
+ *  `resetsAt` is epoch MILLISECONDS (both providers report seconds; main
+ *  converts once, here at the boundary). */
+export interface RateWindow { usedPct: number; resetsAt: number | null }
+
+/** Codex windows carry their own length (10080 = weekly, 300 = 5-hour), so
+ *  the renderer labels them from the data, not from a guess about which slot
+ *  is which. */
+export interface CodexRateWindow extends RateWindow { windowMinutes: number | null }
+
+/** `updatedAt` is epoch ms: when the numbers were recorded (the snapshot
+ *  file's mtime for Claude, the token_count event's timestamp for Codex). */
+export interface ClaudeUsage { fiveHour?: RateWindow; sevenDay?: RateWindow; updatedAt: number }
+export interface CodexUsage { primary?: CodexRateWindow; secondary?: CodexRateWindow; planType?: string; updatedAt: number }
+
+/** usage:get's reply. null means "no current data" for that provider. */
+export interface UsagePayload { claude: ClaudeUsage | null; codex: CodexUsage | null }
+
+/** Per-session context on the session payloads. `leftPct` is the percent of
+ *  the whole context window not yet used -- the same number Claude Code's
+ *  own /context reports as its inverse (100 minus /context's "used" %), not
+ *  an estimate of where auto-compact kicks in. */
+export interface SessionContext { usedTokens: number; windowTokens: number; leftPct: number }
+
+/** Documented context windows (checked 2026-09-18). Anything else is null:
+ *  a wrong window would show a confident, wrong "% left". */
+const DOCUMENTED_WINDOWS: ReadonlyArray<readonly [string, number]> = [
+  ['claude-opus-5', 1_000_000],
+  ['claude-sonnet-5', 1_000_000],
+  ['claude-fable-5-1', 1_000_000],
+  ['claude-haiku-4-5', 200_000],
+];
+
+/** An 8-digit date suffix (`-20251001`), the only hyphenated form recognised
+ *  -- anything else after the id (`-preview`, `-50`) is a different model,
+ *  not a dated build of this one. */
+const DATE_SUFFIX = /^-\d{8}$/;
+
+/** Matches the model id itself, a date-suffixed form of it
+ *  (`claude-haiku-4-5-20251001`), or a bracket-suffixed one
+ *  (`claude-opus-5[1m]`) -- never a look-alike (`claude-opus-50`) or an
+ *  arbitrary suffix (`claude-opus-5-preview`). */
+export function contextWindowFor(modelId: string | null | undefined): number | null {
+  if (typeof modelId !== 'string' || modelId === '') return null;
+  for (const [id, window] of DOCUMENTED_WINDOWS) {
+    if (modelId === id) return window;
+    if (!modelId.startsWith(id)) continue;
+    const rest = modelId.slice(id.length);
+    if (rest.startsWith('[') || DATE_SUFFIX.test(rest)) return window;
+  }
+  return null;
+}
+
+/** max(0, round(100 * (window - used) / window)) -- the share of the whole
+ *  context window not yet used. No compaction estimate: David's decision
+ *  2026-09-18, "% left" is exactly 100 minus Claude Code's own /context
+ *  used % (measured: "605.2k/1m tokens (61%)" -> 39% left), for both
+ *  providers alike. `used > window` clamps to 0 rather than going negative. */
+export function leftPct(usedTokens: number, windowTokens: number): number {
+  return Math.max(0, Math.round(100 * (windowTokens - usedTokens) / windowTokens));
+}
+
+export function buildContext(usedTokens: number, windowTokens: number | null): SessionContext | null {
+  if (!Number.isFinite(usedTokens) || usedTokens < 0) return null;
+  if (windowTokens === null || !Number.isFinite(windowTokens) || windowTokens <= 0) return null;
+  return { usedTokens, windowTokens, leftPct: leftPct(usedTokens, windowTokens) };
+}
+
+/** The two places context use can come from for one Claude session. */
+export interface ContextSources {
+  /** The status line snapshot (src/providers/claude/statusLine.ts):
+   *  `usedTokens` is null before the first reply and right after /compact. */
+  snapshot: { usedTokens: number | null; windowTokens: number | null; modelId: string | null; mtimeMs: number } | null;
+  /** The session's latest main-thread turn.completed with tokens. */
+  turn: { usedTokens: number; modelId: string | null; tsMs: number } | null;
+}
+
+/** The newer source wins. A snapshot at least as new as the latest turn is
+ *  the truth even when it has no usage (just after /compact the old turn's
+ *  count is the pre-compact size, which would be wrong); an older snapshot
+ *  (the switch was turned off, so it stopped updating) loses to the turn.
+ *  The window comes from the snapshot's own size when it has one, else the
+ *  documented window for the model. */
+export function sessionContext(src: ContextSources): SessionContext | null {
+  const { snapshot, turn } = src;
+  if (snapshot && (!turn || snapshot.mtimeMs >= turn.tsMs)) {
+    if (snapshot.usedTokens === null) return null;
+    return buildContext(snapshot.usedTokens, snapshot.windowTokens ?? contextWindowFor(snapshot.modelId));
+  }
+  if (turn) return buildContext(turn.usedTokens, contextWindowFor(turn.modelId));
+  return null;
+}
+
+/** Claude Code drops a window once its reset time passes; so does this, so
+ *  a stale snapshot never shows a used% for a window that has already
+ *  reset. */
+export function currentWindow<T extends RateWindow>(w: T | null, now: number): T | null {
+  if (!w) return null;
+  return w.resetsAt !== null && w.resetsAt <= now ? null : w;
+}

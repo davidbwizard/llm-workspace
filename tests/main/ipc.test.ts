@@ -495,7 +495,7 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
     expect(OPEN_SESSION_SANITISED_FIELDS).toEqual(['cwd', 'project', 'lastProse']);
     expect(OPEN_SESSION_STRUCTURAL_FIELDS).toEqual([
       'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity', 'tmux',
-      'junk',
+      'junk', 'context',
     ]);
   });
 
@@ -654,6 +654,42 @@ describe('pushFleet / refreshPushEnrichment — the fleet:update push', () => {
     } finally {
       clearRegistry();
     }
+  });
+
+  // Usage design, Part A: context rides on the cached enrichment (the 5s
+  // refresh), so pushFleet still never queries -- see the test above.
+  it('carries per-session context on an enriched Claude card: { usedTokens, windowTokens, leftPct }', async () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ kind:'session.started', payload:{ cwd:'/repo/live' }, contentHash:'a' }),
+      ev({ kind:'turn.completed', ts:'2026-09-10T12:01:00Z', contentHash:'b', subIndex:1,
+        payload:{ inputTokens:3, outputTokens:9, cacheReadTokens:400_000, cacheWriteTokens:2_000, model:'claude-opus-5' } }),
+    ]);
+    const processes = await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'ps' && args[0] === '-axo') return '4242 claude\n';
+      if (bin === 'lsof') return 'p4242\nfcwd\nn/repo/live\n';
+      return '';
+    });
+    // A status line folder with nothing in it: the turn is the only source.
+    refreshPushEnrichment(db, processes, Date.now(), {
+      statusLineDir: '/nonexistent-llmws-statusline', codexSessions: '/nonexistent-llmws-codex',
+    });
+
+    const send = vi.fn();
+    const win = { isDestroyed: () => false, webContents: { send } } as unknown as
+      Parameters<typeof pushFleet>[0];
+    pushFleet(win);
+    const card = send.mock.calls[0]![1].openSessions[0]!;
+    expect(card.sessionId).toBe('s1');
+    expect(card.context).toEqual({ usedTokens: 402_003, windowTokens: 1_000_000, leftPct: 60 });
+  });
+
+  it('sends context: null on the first, unenriched fleet:list', async () => {
+    await refreshLiveProcesses(async (bin, args) => {
+      if (bin === 'ps' && args[0] === '-axo') return '4242 claude\n';
+      return '';
+    });
+    expect(buildFleetListPayload().openSessions[0]!.context).toBeNull();
   });
 
   it('does nothing when there is no window', () => {

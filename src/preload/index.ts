@@ -118,6 +118,12 @@ const api = {
   // channel here.
   hooksGet: () => ipcRenderer.invoke('hooks:get'),
   hooksSet: (on: boolean) => ipcRenderer.invoke('hooks:set', on),
+  // Usage and context (Settings switch, Usage button). The switch is
+  // re-read from settings.json on every call, like Quick answers -- this
+  // typing narrows nothing at the trust boundary.
+  usageSwitchGet: () => ipcRenderer.invoke('usage:switch:get'),
+  usageSwitchSet: (on: boolean) => ipcRenderer.invoke('usage:switch:set', on),
+  usageGet: () => ipcRenderer.invoke('usage:get'),
 };
 
 contextBridge.exposeInMainWorld('fleet', api);

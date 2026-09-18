@@ -275,4 +275,91 @@ describe('SettingsModal', () => {
       expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(true);
     });
   });
+
+  // Usage design, Part B: a switch and a number input, same pattern as
+  // Quick answers above (re-read fresh from main every time the modal
+  // opens, disabled until that first read resolves, an error line on a
+  // refusal) -- plus the coordinator's own two review notes: the hint
+  // names the trust/hooks preconditions, and a bad compacts-at value never
+  // reaches usage:compacts-at:set.
+  describe('Usage and context', () => {
+    let usageSwitchGet: ReturnType<typeof vi.fn>;
+    let usageSwitchSet: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      usageSwitchGet = vi.fn(async () => ({ installed: false, error: null }));
+      usageSwitchSet = vi.fn(async (on: boolean) => ({ installed: on, error: null }));
+      // Quick answers' own hooksGet/hooksSet are stubbed purely so that
+      // mount doesn't throw (its effect guards only on `window.fleet`
+      // existing, not on the specific method) -- its own behaviour is
+      // covered by the "Quick answers" describe block above.
+      const hooksGet = vi.fn(async () => ({ installed: false, error: null }));
+      const hooksSet = vi.fn(async (on: boolean) => ({ installed: on, error: null }));
+      (globalThis as never as { window: { fleet: unknown } }).window.fleet =
+        { usageSwitchGet, usageSwitchSet, hooksGet, hooksSet };
+    });
+
+    it('shows the exact hint sentence, including the trust/hooks preconditions', async () => {
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      expect(screen.getByText(
+        "Adds a status line to ~/.claude/settings.json so the app can show context and plan usage. "
+        + "Claude Code hides most footer hints while any status line is set. "
+        + "Needs a trusted folder; off when hooks are disabled.",
+      )).toBeTruthy();
+      await waitFor(() => expect(usageSwitchGet).toHaveBeenCalled());
+    });
+
+    it('reads the real state from usageSwitchGet when the modal opens', async () => {
+      usageSwitchGet.mockResolvedValue({ installed: true, error: null });
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'Usage and context' }).getAttribute('aria-checked')).toBe('true');
+      });
+    });
+
+    it('starts the switch disabled until the initial read resolves', async () => {
+      let resolve!: (v: { installed: boolean; error: null }) => void;
+      usageSwitchGet.mockReturnValue(new Promise(r => { resolve = r; }));
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      expect(screen.getByRole('switch', { name: 'Usage and context' }).hasAttribute('disabled')).toBe(true);
+      resolve({ installed: false, error: null });
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'Usage and context' }).hasAttribute('disabled')).toBe(false);
+      });
+    });
+
+    it('re-reads usageSwitchGet every time the modal is reopened', async () => {
+      const { rerender } = render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(usageSwitchGet).toHaveBeenCalledTimes(1));
+      rerender(<SettingsModal open={false} onClose={() => {}} />);
+      rerender(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(usageSwitchGet).toHaveBeenCalledTimes(2));
+    });
+
+    it('turns Usage and context on via usageSwitchSet and reflects the result', async () => {
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Usage and context' }).hasAttribute('disabled')).toBe(false));
+      fireEvent.click(screen.getByRole('switch', { name: 'Usage and context' }));
+      expect(usageSwitchSet).toHaveBeenCalledWith(true);
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: 'Usage and context' }).getAttribute('aria-checked')).toBe('true');
+      });
+    });
+
+    it('shows the refusal line when usageSwitchSet refuses, and leaves the switch reflecting the real state', async () => {
+      usageSwitchSet.mockResolvedValue({ installed: false, error: 'You already have a status line in settings.json -- not replaced.' });
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Usage and context' }).hasAttribute('disabled')).toBe(false));
+      fireEvent.click(screen.getByRole('switch', { name: 'Usage and context' }));
+      await waitFor(() => {
+        expect(screen.getByText('You already have a status line in settings.json -- not replaced.')).toBeTruthy();
+      });
+      expect(screen.getByRole('switch', { name: 'Usage and context' }).getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('does not crash when window.fleet is unavailable', () => {
+      (globalThis as never as { window: { fleet: unknown } }).window.fleet = undefined;
+      expect(() => render(<SettingsModal open={true} onClose={() => {}} />)).not.toThrow();
+      expect(screen.getByRole('switch', { name: 'Usage and context' }).hasAttribute('disabled')).toBe(true);
+    });
+  });
 });

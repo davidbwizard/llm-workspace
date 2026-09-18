@@ -31,6 +31,15 @@ const FOOTER_CAPTION = 'Changes apply right away and are remembered.';
 const QUICK_ANSWERS_HELP =
   "Adds the app's hooks to ~/.claude/settings.json so it can show what Claude is asking. Turning this off removes them.";
 
+/** Usage design, Part B, plus the coordinator's own review note: the base
+ *  two sentences are the design's exact text; the third names the two
+ *  preconditions (Part A's own concerns 1/2) that would otherwise leave
+ *  someone staring at "No data yet" with no idea why. */
+const USAGE_HELP =
+  "Adds a status line to ~/.claude/settings.json so the app can show context and plan usage. "
+  + "Claude Code hides most footer hints while any status line is set. "
+  + "Needs a trusted folder; off when hooks are disabled.";
+
 /** Fixed sample turns for the live preview -- never real session data, so the
  *  preview cannot leak transcript content into a settings panel, and never
  *  changes shape as sessions come and go. Timestamps are the ones in the
@@ -181,6 +190,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const textSizeLabelId = useId();
   const styleLabelId = useId();
   const quickAnswersLabelId = useId();
+  const usageLabelId = useId();
 
   // Quick answers (design §4): `null` means "not yet read" -- distinct from
   // `false`, so the switch can render disabled rather than a possibly-wrong
@@ -218,6 +228,45 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     void api.hooksSet(!hooksInstalled).then(
       r => { setHooksInstalled(r.installed); setHooksError(r.error); setHooksBusy(false); },
       err => { setHooksError(err instanceof Error ? err.message : String(err)); setHooksBusy(false); },
+    );
+  };
+
+  // Usage and context (usage design, Part B): same pattern as Quick answers
+  // above -- `null` means "not yet read", re-read fresh every time the
+  // modal opens, never trusting a remembered copy over what settings.json
+  // actually says right now.
+  const [usageInstalled, setUsageInstalled] = useState<boolean | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const [usageBusy, setUsageBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const api = window.fleet;
+    // Guarded on the specific method, not just `api` itself (unlike Quick
+    // answers' own effect above): several existing tests elsewhere in this
+    // app stub window.fleet with only the methods THEY exercise (e.g.
+    // LaunchBar.test.tsx's {launch, chooseDirectory, hooksGet, hooksSet}),
+    // and this modal mounts inside every one of them via the gear. Calling
+    // an absent usageSwitchGet would throw and take that unrelated test's
+    // render down with it.
+    if (!api?.usageSwitchGet) return;
+    let alive = true;
+    setUsageInstalled(null);
+    setUsageError(null);
+    void api.usageSwitchGet().then(
+      r => { if (alive) { setUsageInstalled(r.installed); setUsageError(r.error); } },
+      err => { if (alive) setUsageError(err instanceof Error ? err.message : String(err)); },
+    );
+    return () => { alive = false; };
+  }, [open]);
+
+  const onToggleUsage = () => {
+    const api = window.fleet;
+    if (!api?.usageSwitchSet || usageBusy || usageInstalled === null) return;
+    setUsageBusy(true);
+    void api.usageSwitchSet(!usageInstalled).then(
+      r => { setUsageInstalled(r.installed); setUsageError(r.error); setUsageBusy(false); },
+      err => { setUsageError(err instanceof Error ? err.message : String(err)); setUsageBusy(false); },
     );
   };
 
@@ -360,6 +409,23 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             </div>
             <p className="settingshelp">{QUICK_ANSWERS_HELP}</p>
             {hooksError !== null && <p className="settingserror" role="alert">{hooksError}</p>}
+          </div>
+        </section>
+
+        <section className="settingssection">
+          <h3 className="settingssectitle">Usage and context</h3>
+          <div className="settingsfield">
+            <div className="settingsswitchrow">
+              <div className="settingslabel" id={usageLabelId}>Usage and context</div>
+              <QuickAnswersSwitch
+                checked={usageInstalled}
+                disabled={usageInstalled === null || usageBusy}
+                labelId={usageLabelId}
+                onToggle={onToggleUsage}
+              />
+            </div>
+            <p className="settingshelp">{USAGE_HELP}</p>
+            {usageError !== null && <p className="settingserror" role="alert">{usageError}</p>}
           </div>
         </section>
 

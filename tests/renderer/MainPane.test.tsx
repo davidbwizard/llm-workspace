@@ -1,10 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { MainPane } from '../../src/renderer/components/MainPane.tsx';
 
 // @testing-library/user-event is not a project dependency (see
 // tests/renderer/SessionRail.test.tsx) -- fireEvent.click substitutes for
 // userEvent.click, matching every other renderer test file.
+
+// Wraps the real ContextChip so the "no stale flash on switch" test below
+// can see every value it was ever called with -- INCLUDING one React
+// discards mid-render before committing (the fix's whole point), which a
+// DOM assertion taken after rerender() returns can never observe: by then
+// every pending render has already settled. vi.hoisted is required because
+// vi.mock's factory is hoisted above this file's own top-level statements.
+const chipCalls = vi.hoisted(() => [] as unknown[]);
+vi.mock('../../src/renderer/components/ContextChip.tsx', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/renderer/components/ContextChip.tsx')>();
+  return {
+    ...actual,
+    ContextChip: (props: Parameters<typeof actual.ContextChip>[0]) => { chipCalls.push(props.context); return actual.ContextChip(props); },
+  };
+});
 
 const sessions = [{ pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'working', lastProse: 'x', cwd: '/a', host: 'iterm2', ageSeconds: 1, rssBytes: 1, events: 1, sessionId: 's1', tmux: true }] as never[];
 
@@ -145,6 +160,93 @@ describe('MainPane', () => {
     await waitFor(() => expect(api.conversation).toHaveBeenCalledTimes(1));
     rerender(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={bumped} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
     await waitFor(() => expect(screen.getByText('live')).toBeTruthy());
+  });
+
+  // Usage design, Part B: the conversation header's context chip
+  // (ContextChip), fed from OpenSession.context (the 5s sweep) until
+  // ConversationView's own onContext callback reports something fresher.
+  describe('the header context chip', () => {
+    it('is absent when the session has no context yet', () => {
+      const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      expect(container.querySelector('.ctxchip')).toBeNull();
+    });
+
+    it("shows the session's swept context in the header", () => {
+      const withContext = [{ ...(sessions[0] as unknown as object), context: { usedTokens: 462_400, windowTokens: 1_000_000, leftPct: 44 } }] as never[];
+      const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={withContext} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      // Scoped to .panehead: the same session also renders its own chip on
+      // the rail card (OpenSessionCard), so an unscoped query matches twice.
+      expect(within(container.querySelector('.panehead')!).getByText('462k · 44% left')).toBeTruthy();
+    });
+
+    // The header must not keep showing a departed session's reading once a
+    // different pid is selected -- proven here via the swept prop, which is
+    // the only source these fixtures ever populate (window.fleet carries no
+    // watchSession/onSessionLive in this file's beforeEach, so
+    // ConversationView's live-push side of the fold never fires).
+    it('does not carry a reading over to a newly selected session with none', () => {
+      const withContext = [
+        { ...(sessions[0] as unknown as object), context: { usedTokens: 462_400, windowTokens: 1_000_000, leftPct: 44 } },
+        { pid: 2, project: 'other', provider: 'claude', activity: 'idle', lastProse: null, cwd: '/b', host: 'iterm2', ageSeconds: 1, rssBytes: 1, events: 1, sessionId: 's2', tmux: true, context: null },
+      ] as never[];
+      const { container, rerender } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={withContext} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      const panehead = () => container.querySelector('.panehead') as HTMLElement;
+      expect(within(panehead()).getByText('462k · 44% left')).toBeTruthy();
+      rerender(<MainPane selection={{ pid: 2, view: 'conversation' }} sessions={withContext} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      expect(within(panehead()).queryByText('462k · 44% left')).toBeNull();
+    });
+
+    // Review finding: MainPane's own liveContext (fed by ConversationView's
+    // onContext callback, which reports the LIVE-push reading -- a
+    // different, fresher source than the swept `context` prop the two tests
+    // above exercise) used to reset via a useEffect keyed on the pid. An
+    // effect only runs after the pid-changed render has already committed
+    // and painted, so the DEPARTED session's live reading would still be
+    // passed to ContextChip for that one commit. Checking the DOM after
+    // rerender() returns cannot catch this -- by then every render this
+    // update triggers, including a since-corrected one, has already
+    // settled -- so this reads the wrapped ContextChip's own call log
+    // (declared at the top of this file) instead, which records every
+    // value ContextChip was ever invoked with, in order.
+    it('never passes the departed session\'s live-pushed context to the header chip, not even for one commit', () => {
+      const push = new Map<number, (p: unknown) => void>();
+      const watchSession = vi.fn().mockResolvedValue(true);
+      const onSessionLive = vi.fn((cb: (p: unknown) => void) => {
+        // main's watch is a single slot -- the latest subscriber is the
+        // live one, same as the real bridge.
+        push.set(0, cb);
+        return () => {};
+      });
+      const api = (window as unknown as { fleet: Record<string, unknown> }).fleet;
+      Object.assign(api, { watchSession, onSessionLive });
+
+      const both = [
+        { ...(sessions[0] as unknown as object), pid: 1, sessionId: 's1', context: null },
+        { pid: 2, project: 'other', provider: 'claude', activity: 'idle', lastProse: null, cwd: '/b', host: 'iterm2', ageSeconds: 1, rssBytes: 1, events: 1, sessionId: 's2', tmux: true, context: null },
+      ] as never[];
+
+      const { container, rerender } = render(
+        <MainPane selection={{ pid: 1, view: 'conversation' }} sessions={both} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />,
+      );
+
+      act(() => {
+        push.get(0)?.({
+          version: 1, pid: 1, sessionId: 's1', activity: 'working', since: 1, events: 1, prompt: null,
+          context: { usedTokens: 900_000, windowTokens: 1_000_000, leftPct: 10 },
+        });
+      });
+      expect(within(container.querySelector('.panehead')!).getByText('900k · 10% left')).toBeTruthy();
+
+      chipCalls.length = 0;
+      rerender(<MainPane selection={{ pid: 2, view: 'conversation' }} sessions={both} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+
+      // Every ContextChip call made anywhere in the tree while rendering
+      // pid 2 (the header's own instance, plus each rail card's) -- none
+      // of them may ever carry pid 1's departed 900k reading.
+      const everShowedStaleReading = chipCalls.some(c => (c as { usedTokens?: number } | null)?.usedTokens === 900_000);
+      expect(everShowedStaleReading).toBe(false);
+      expect(within(container.querySelector('.panehead')!).queryByText('900k · 10% left')).toBeNull();
+    });
   });
 
   it('lets the conversation message its own session, and routes a choice to the terminal', async () => {

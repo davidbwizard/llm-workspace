@@ -602,6 +602,52 @@ describe('ConversationView -- live push refresh (Task 7)', () => {
   });
 });
 
+// Usage design, Part B: the conversation header's context, resolved inside
+// this component (live push wins outright once one arrives, else the swept
+// `context` prop) and reported upward via onContext -- MainPane cannot
+// call useSessionLive a second time itself (main's live watch is a single
+// slot), so this callback is the only channel the header has.
+describe('ConversationView -- context for the header (usage design, Part B)', () => {
+  const ctx = { usedTokens: 462_000, windowTokens: 1_000_000, leftPct: 44 };
+
+  it('reports the swept context prop when no live push has arrived', async () => {
+    const onContext = vi.fn();
+    renderConv({ context: ctx, onContext });
+    await waitFor(() => expect(onContext).toHaveBeenCalledWith(ctx));
+  });
+
+  it('reports null when neither a live push nor the prop has anything', async () => {
+    const onContext = vi.fn();
+    renderConv({ context: null, onContext });
+    await waitFor(() => expect(onContext).toHaveBeenCalledWith(null));
+  });
+
+  it('prefers a live push over the swept prop once one has arrived, even a null one', async () => {
+    let pushLive: (payload: unknown) => void = () => {};
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns: [], nextCursor: null }),
+      watchSession: vi.fn().mockResolvedValue(true),
+      onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+    };
+    const onContext = vi.fn();
+    renderConv({ context: ctx, onContext });
+    await waitFor(() => expect(onContext).toHaveBeenCalledWith(ctx));
+
+    onContext.mockClear();
+    act(() => {
+      // A push right after /compact: usage design's own "newer wins, even
+      // with no usage" rule -- null here must override the still-present
+      // swept prop, not be treated as "nothing to report".
+      pushLive({ version: 1, pid: 4821, sessionId: 's1', activity: 'idle', since: null, events: 0, context: null });
+    });
+    await waitFor(() => expect(onContext).toHaveBeenLastCalledWith(null));
+  });
+
+  it('does not throw when onContext is not wired at all', async () => {
+    expect(() => renderConv({ context: ctx })).not.toThrow();
+  });
+});
+
 function showOne(turn: Record<string, unknown>) {
   (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
     conversation: async () => ({ turns: [{ id: 1, ts: '2026-09-12T10:00:00Z', ...turn }], nextCursor: null }),

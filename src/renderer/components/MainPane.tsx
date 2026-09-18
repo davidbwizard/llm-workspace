@@ -1,11 +1,14 @@
+import { useState } from 'react';
 import type { OpenSession } from '../../fleet/state.ts';
 import type { PaneView, Selection } from '../state/useFleet.ts';
 import type { KillResult, RevealResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
+import type { SessionContext } from '../../core/usage.ts';
 import { FleetView } from './FleetView.tsx';
 import { SessionRail } from './SessionRail.tsx';
 import { ConversationView } from './ConversationView.tsx';
 import { TerminalView } from './TerminalView.tsx';
+import { ContextChip } from './ContextChip.tsx';
 import './MainPane.css';
 
 /** Falls back to a closed refusal rather than throwing when the bridge is
@@ -54,6 +57,34 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
   onClear: () => void;
   railSide: 'left' | 'right';
 }) {
+  // Usage design, Part B: the conversation header's context chip. Fed by
+  // ConversationView's onContext callback (its own doc comment explains why
+  // a callback, not a second useSessionLive call -- main's live watch is a
+  // single slot). Reset on every pid change so a reading left behind by the
+  // session just departed is never shown as if it belonged to the new one;
+  // NOT reset on a view change alone, since ConversationView unmounts under
+  // the Terminal view and a slightly stale-but-still-correct-for-this-pid
+  // reading is preferable there to blanking the chip until Conversation is
+  // reopened. Declared before the early return below -- hooks must run
+  // unconditionally on every render, selection===null or not.
+  //
+  // Reset in the render body, not a useEffect keyed on the pid (React's own
+  // "adjust state when a prop changes" idiom, same as useSessionLive.ts):
+  // an effect only fires after this render has already committed and
+  // painted, so for one frame the previous session's reading would still
+  // be on screen under the new session's title. Comparing against a
+  // tracked `prevPid` and calling setState synchronously during render
+  // makes React discard that stale render before it ever paints; the
+  // ternary covers the one render where the setState calls have been made
+  // but `liveContext`/`prevPid` themselves have not yet updated.
+  const [liveContext, setLiveContext] = useState<SessionContext | null>(null);
+  const [prevPid, setPrevPid] = useState<number | null>(selection?.pid ?? null);
+  if ((selection?.pid ?? null) !== prevPid) {
+    setPrevPid(selection?.pid ?? null);
+    setLiveContext(null);
+  }
+  const currentLiveContext = (selection?.pid ?? null) !== prevPid ? null : liveContext;
+
   if (selection === null) {
     return (
       <div className="mainpane">
@@ -67,6 +98,13 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
   }
 
   const session = sessions.find(s => s.pid === selection.pid) ?? null;
+  // The freshest known reading: ConversationView's own callback once it has
+  // reported one for this pid, else the 5s-swept OpenSession.context --
+  // same fold ConversationView performs internally against `live`, applied
+  // here so the chip is not blank for however long it takes the first
+  // report to arrive (mount order: this render happens before that effect
+  // fires).
+  const headerContext = currentLiveContext ?? session?.context ?? null;
 
   return (
     <div className="mainpane split">
@@ -88,6 +126,10 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
               (spec §3.7). `title` keeps the untruncated value reachable on
               hover and to assistive tech once the CSS ellipsis bites. */}
           <span className="panetitle" title={session?.cwd ?? undefined}>{session?.cwd ?? 'session'}</span>
+          {/* Usage design, Part B: the context chip, hidden entirely (its
+              own null check) until some source has a count for this
+              session. */}
+          <ContextChip context={headerContext} />
           <span className="seg" role="group" aria-label="View">
             <button type="button" aria-pressed={selection.view === 'conversation'}
               onClick={() => onSetView('conversation')}>Conversation</button>
@@ -116,6 +158,11 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
               // then disabled with a reason rather than removed (spec §7.1).
               pid={session ? selection.pid : null}
               tmux={session?.tmux ?? false}
+              // Usage design, Part B: the swept fallback and the report-
+              // upward callback that keeps headerContext current -- see
+              // their own doc comments on ConversationView's props.
+              context={session?.context ?? null}
+              onContext={setLiveContext}
               // The pid is already the selection, so this only has to flip
               // the view -- unlike the rail's Answer, which must select
               // first (see onOpenTerminal on SessionRail above).

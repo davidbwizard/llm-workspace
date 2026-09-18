@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, render, act } from '@testing-library/react';
 import { useSessionLive } from '../../src/renderer/state/useSessionLive.ts';
 
 // A single fake session:live payload. `pid` is the only field these tests
@@ -7,7 +7,7 @@ import { useSessionLive } from '../../src/renderer/state/useSessionLive.ts';
 // has them, not because any test here reads them. `prompt` defaults to
 // null, same as a real payload whenever nothing is open (Task 5:
 // SessionLivePayload.prompt).
-function payload(overrides: Partial<{ pid: number; activity: 'working' | 'idle' | 'waiting' | null; since: number | null; events: number; prompt: unknown }> = {}) {
+function payload(overrides: Partial<{ pid: number; activity: 'working' | 'idle' | 'waiting' | null; since: number | null; events: number; prompt: unknown; context: unknown }> = {}) {
   return {
     version: 1,
     pid: 4821,
@@ -16,6 +16,7 @@ function payload(overrides: Partial<{ pid: number; activity: 'working' | 'idle' 
     since: 1_700_000_000_000,
     events: 3,
     prompt: null,
+    context: null,
     ...overrides,
   };
 }
@@ -46,7 +47,7 @@ describe('useSessionLive', () => {
     (globalThis as any).window.fleet = { watchSession, onSessionLive };
     const { result } = renderHook(() => useSessionLive(4821));
     act(() => { push(payload({ pid: 4821, activity: 'working', since: 111, events: 3 })); });
-    expect(result.current).toEqual({ activity: 'working', since: 111, events: 3, prompt: null });
+    expect(result.current).toEqual({ activity: 'working', since: 111, events: 3, prompt: null, context: null });
     delete (globalThis as any).window.fleet;
   });
 
@@ -62,6 +63,22 @@ describe('useSessionLive', () => {
     const prompt = { id: 'evt-1', kind: 'permission', answerable: true, reason: null };
     act(() => { push(payload({ pid: 4821, prompt })); });
     expect(result.current?.prompt).toEqual(prompt);
+    delete (globalThis as any).window.fleet;
+  });
+
+  // Usage design, Part B: the conversation header reads live.context
+  // straight off this hook, so a non-null SessionContext on the payload
+  // must come through unchanged, not be dropped the way an unlisted field
+  // would be (the mapping copies fields one by one).
+  it('passes a non-null context through unchanged', () => {
+    let push: (p: unknown) => void = () => {};
+    const watchSession = vi.fn().mockResolvedValue(true);
+    const onSessionLive = vi.fn((cb: (p: unknown) => void) => { push = cb; return () => {}; });
+    (globalThis as any).window.fleet = { watchSession, onSessionLive };
+    const { result } = renderHook(() => useSessionLive(4821));
+    const context = { usedTokens: 462_000, windowTokens: 1_000_000, leftPct: 44 };
+    act(() => { push(payload({ pid: 4821, context })); });
+    expect(result.current?.context).toEqual(context);
     delete (globalThis as any).window.fleet;
   });
 
@@ -107,7 +124,7 @@ describe('useSessionLive', () => {
     (globalThis as any).window.fleet = { watchSession, onSessionLive };
     const { result, rerender } = renderHook(({ pid }) => useSessionLive(pid), { initialProps: { pid: 4821 } });
     act(() => { push(payload({ pid: 4821, events: 3 })); });
-    expect(result.current).toEqual({ activity: 'working', since: 1_700_000_000_000, events: 3, prompt: null });
+    expect(result.current).toEqual({ activity: 'working', since: 1_700_000_000_000, events: 3, prompt: null, context: null });
 
     rerender({ pid: 5555 });
     expect(result.current).toBeNull();
@@ -131,5 +148,38 @@ describe('useSessionLive', () => {
     delete (globalThis as any).window.fleet;
     const { result } = renderHook(() => useSessionLive(4821));
     expect(result.current).toBeNull();
+  });
+
+  // Review finding: a useEffect-based reset only clears state AFTER the
+  // render with the new pid has already committed and painted, so the
+  // previous pid's context/prompt/activity shows for one frame under the
+  // new session's title. Rendered through a real component (not
+  // renderHook) so every render this hook produces -- including the one
+  // React discards before commit when it resets state during render, per
+  // React's "adjust state when a prop changes" idiom -- is captured, not
+  // just the value that survives to the end of the update.
+  it('never renders the previous pid\'s state for a new pid, not even for a discarded render', () => {
+    const seenForNewPid: unknown[] = [];
+    let push: (p: unknown) => void = () => {};
+    const watchSession = vi.fn().mockResolvedValue(true);
+    const onSessionLive = vi.fn((cb: (p: unknown) => void) => { push = cb; return () => {}; });
+    (globalThis as any).window.fleet = { watchSession, onSessionLive };
+
+    function Probe({ pid }: { pid: number }) {
+      const live = useSessionLive(pid);
+      if (pid === 5555) seenForNewPid.push(live);
+      return null;
+    }
+
+    const { rerender } = render(<Probe pid={4821} />);
+    act(() => { push(payload({ pid: 4821, events: 3 })); });
+
+    rerender(<Probe pid={5555} />);
+
+    // Every render Probe produced while pid was 5555 must be null -- the
+    // stale { events: 3, ... } reading from pid 4821 must never appear.
+    expect(seenForNewPid.length).toBeGreaterThan(0);
+    expect(seenForNewPid.every(v => v === null)).toBe(true);
+    delete (globalThis as any).window.fleet;
   });
 });

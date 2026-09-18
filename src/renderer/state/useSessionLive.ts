@@ -4,6 +4,10 @@ import { useEffect, useState } from 'react';
 // core (types.d.ts's own `Answer`/`AnswerResult` imports follow the same
 // pattern).
 import type { PromptView } from '../../core/prompt.ts';
+// Type-only, from src/core/** -- same rule and same reasoning as the
+// PromptView import above (src/core/** carries no node import, unlike
+// src/main/**, so a type-only pull from it is safe here).
+import type { SessionContext } from '../../core/usage.ts';
 
 /** One session's live state for the conversation pane -- mirrors
  *  src/main/sessionLive.ts's SessionLivePayload, minus the pid/sessionId/
@@ -21,6 +25,12 @@ export type SessionLive = {
    *  straight off the payload -- PromptCard.tsx renders it, WaitingCard.tsx
    *  is the fallback when this is null. */
   prompt: PromptView | null;
+  /** Context window use for the conversation header (usage design, Part A/
+   *  B) -- the same { usedTokens, windowTokens, leftPct } shape as
+   *  OpenSession.context, or null (no session, or no count yet). This is
+   *  the freshest source: main recomputes it on every push, ahead of the
+   *  5s fleet sweep that keeps OpenSession.context. */
+  context: SessionContext | null;
 };
 
 /** Subscribes the open conversation pane to one pid's live push (Task 6:
@@ -49,12 +59,25 @@ export type SessionLive = {
 export function useSessionLive(pid: number | null): SessionLive | null {
   const [state, setState] = useState<SessionLive | null>(null);
 
-  useEffect(() => {
-    // Reset on every pid change, not just on the first mount: whatever the
-    // PREVIOUS pid last reported must not keep reading as this session's
-    // state while the new watch's first payload is still in flight.
+  // Reset on every pid change, not just on the first mount: whatever the
+  // PREVIOUS pid last reported must not keep reading as this session's
+  // state while the new watch's first payload is still in flight. Done
+  // here, in the render body -- React's own "adjust state when a prop
+  // changes" idiom -- rather than in the effect below: an effect only runs
+  // AFTER this render has already committed and painted, so for one frame
+  // the previous pid's state would still be on screen. Comparing against a
+  // tracked `prevPid` and calling setState synchronously during render
+  // makes React discard that stale render before it ever paints (and the
+  // ternary below covers the one render where the two setState calls have
+  // been made but `state`/`prevPid` themselves have not yet updated).
+  const [prevPid, setPrevPid] = useState(pid);
+  if (pid !== prevPid) {
+    setPrevPid(pid);
     setState(null);
+  }
+  const current = pid !== prevPid ? null : state;
 
+  useEffect(() => {
     const api = window.fleet;
     if (!api?.watchSession || !api.onSessionLive) return;
 
@@ -76,7 +99,10 @@ export function useSessionLive(pid: number | null): SessionLive | null {
       // dropped rather than shown as if it belonged to the session now on
       // screen.
       if (payload.pid !== pid) return;
-      setState({ activity: payload.activity, since: payload.since, events: payload.events, prompt: payload.prompt ?? null });
+      setState({
+        activity: payload.activity, since: payload.since, events: payload.events,
+        prompt: payload.prompt ?? null, context: payload.context ?? null,
+      });
     });
 
     return () => {
@@ -88,5 +114,5 @@ export function useSessionLive(pid: number | null): SessionLive | null {
     };
   }, [pid]);
 
-  return state;
+  return current;
 }
