@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 import type { Db } from './db.ts';
 
 export interface SignalEvent {
@@ -121,4 +122,50 @@ export function openBlockers(db: Db, windowMs = OPEN_BLOCKERS_WINDOW_MS, now: nu
     });
   }
   return [...open.values()];
+}
+
+/** §5.1. The newest PermissionRequest at or after waitingSince - 2 s, and
+ *  only if nothing newer (except Notification) happened in the session. */
+export function openPromptEvent(db: Db, sessionId: string, waitingSinceMs: number): SignalEvent | null {
+  const rows = db.prepare(
+    `SELECT * FROM signal_events WHERE session_id = ?
+     ORDER BY occurred_at DESC, id DESC LIMIT 20`).all(sessionId) as any[];
+  for (const r of rows) {
+    // PreToolUse fires only for AskUserQuestion/ExitPlanMode (the matcher),
+    // always just before the same prompt's PermissionRequest, and in the
+    // SAME whole second -- ingest order (uuid filenames) cannot break that
+    // tie, so it must be skipped rather than read as "newer".
+    if (r.kind === 'Notification' || r.kind === 'PreToolUse') continue;
+    if (r.kind !== 'PermissionRequest') return null;
+    const at = Date.parse(r.occurred_at);
+    return at >= waitingSinceMs - 2000 ? rowToSignal(r) : null;
+  }
+  return null;
+}
+
+/** Cached per Db, same WeakMap pattern as src/hooks/spool.ts's own
+ *  statementCache -- currentBlockers (below) runs this on every poll
+ *  (Task 11's 250ms debounce), and a fresh db.prepare() on every call piles
+ *  up native Statement handles faster than GC reaps them (see spool.ts's
+ *  own comment for the Node 24 + better-sqlite3 finalization hazard this
+ *  avoids). */
+const newestStatementCache = new WeakMap<Db, Database.Statement>();
+
+function newestNonNotificationStatement(db: Db): Database.Statement {
+  let stmt = newestStatementCache.get(db);
+  if (!stmt) {
+    stmt = db.prepare(
+      `SELECT occurred_at FROM signal_events WHERE session_id = ? AND kind != 'Notification'
+       ORDER BY occurred_at DESC, id DESC LIMIT 1`);
+    newestStatementCache.set(db, stmt);
+  }
+  return stmt;
+}
+
+/** openBlockers, minus any blocker its session has moved past: PermissionRequest
+ *  carries no tool_use_id and its resolvers are not installed (§5.2). */
+export function currentBlockers(db: Db, now: number = Date.now()): Blocker[] {
+  const newest = newestNonNotificationStatement(db);
+  return openBlockers(db, undefined, now).filter(b =>
+    (newest.get(b.sessionId) as { occurred_at: string } | undefined)?.occurred_at === b.occurredAt);
 }

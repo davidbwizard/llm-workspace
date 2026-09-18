@@ -33,6 +33,16 @@ export type LiveSessionFile = {
    *  here must never reject the whole file, only leave buildSessionLive
    *  (src/main/sessionLive.ts) with no "since" to show for a busy session. */
   statusUpdatedAtMs?: number | null;
+  /** Claude Code's own description of what `status: "waiting"` is waiting
+   *  on: `"permission prompt"` for Bash, Write and plan approval,
+   *  `"input needed"` for a question (measured 2026-09-17, quick-answers
+   *  design §3). deriveActivity (src/fleet/state.ts) uses this to tell the
+   *  two kinds of waiting apart from the status file alone. Optional for
+   *  the same reason statusUpdatedAtMs is: every LiveSessionFile literal
+   *  already in the codebase predates this field. null when absent or not
+   *  a string -- same tolerance as every other field here: an unrecognised
+   *  shape never rejects the whole file. */
+  waitingFor?: string | null;
 };
 
 export type LiveSessionReadFailure =
@@ -68,7 +78,8 @@ export function parseLiveSessionFile(text: string, pid: number): LiveSessionFile
   const status = typeof r.status === 'string' && STATUSES.has(r.status) ? r.status as LiveSessionStatus : null;
   const statusUpdatedAtMs =
     typeof r.statusUpdatedAt === 'number' && Number.isFinite(r.statusUpdatedAt) ? r.statusUpdatedAt : null;
-  return { sessionId: r.sessionId, cwd: r.cwd, startedAtMs: r.startedAt, status, statusUpdatedAtMs };
+  const waitingFor = typeof r.waitingFor === 'string' ? r.waitingFor : null;
+  return { sessionId: r.sessionId, cwd: r.cwd, startedAtMs: r.startedAt, status, statusUpdatedAtMs, waitingFor };
 }
 
 /** Opens with O_NOFOLLOW so a symlink is refused at open time rather than

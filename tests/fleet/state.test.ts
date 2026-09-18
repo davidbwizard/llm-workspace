@@ -2,10 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions, activityFromLiveStatus, sessionCwd } from '../../src/fleet/state.ts';
+import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions, activityFromLiveStatus, deriveActivity, sessionCwd } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
 import type { OpenSession } from '../../src/fleet/state.ts';
+import type { Blocker } from '../../src/store/signals.ts';
 
 const NOW = Date.parse('2026-09-10T12:00:00Z');
 const at = (min: number) => new Date(NOW - min * 60_000).toISOString();
@@ -643,8 +644,10 @@ describe('openSessionsLive', () => {
     return { provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
   }
 
-  const live = (sessionId: string, cwd: string, status: 'idle' | 'busy' | 'waiting' | null = null) =>
-    ({ liveSession: { sessionId, cwd, startedAtMs: 0, status } });
+  const live = (
+    sessionId: string, cwd: string, status: 'idle' | 'busy' | 'waiting' | null = null,
+    waitingFor: string | null = null,
+  ) => ({ liveSession: { sessionId, cwd, startedAtMs: 0, status, waitingFor } });
 
   describe('exact session identity', () => {
     function twoSessionsOneFolder() {
@@ -729,8 +732,8 @@ describe('openSessionsLive', () => {
       ]);
       return db;
     }
-    const withStatus = (status: 'idle' | 'busy' | 'waiting' | null) =>
-      proc({ pid:3, cwd:'/repo/s', ageSeconds:600, ...live('s1', '/repo/s', status) });
+    const withStatus = (status: 'idle' | 'busy' | 'waiting' | null, waitingFor: string | null = null) =>
+      proc({ pid:3, cwd:'/repo/s', ageSeconds:600, ...live('s1', '/repo/s', status, waitingFor) });
 
     it('waiting means waiting on you, even after a turn boundary', () => {
       expect(openSessionsLive(oneSession('turn.completed'), [withStatus('waiting')], NOW)[0]!.activity).toBe('waiting_input');
@@ -748,13 +751,24 @@ describe('openSessionsLive', () => {
       expect(openSessionsLive(oneSession('prose'), [withStatus(null)], NOW)[0]!.activity).toBe('working');
     });
 
-    it('a hook PermissionRequest still wins over the file', () => {
+    // Quick answers design §5.2: a PermissionRequest is keyed by prompt_id
+    // (shared by the whole turn) and its resolver, PostToolUse, is not among
+    // the installed events -- so this blocker would otherwise never close
+    // before SessionEnd or the 24h window, reading as waiting for the rest
+    // of the day even after the process itself went idle. The live status
+    // file now wins whenever one is present.
+    it('a live status file wins over a hook PermissionRequest', () => {
       const db = oneSession('turn.completed');
       db.prepare(`INSERT INTO signal_events
         (event_id, occurred_at, ingested_at, provider, session_id, tool_use_id, kind, payload)
         VALUES (?,?,?,?,?,?,?,?)`).run('e1', at(1), at(1), 'claude', 's1', 't1',
           'PermissionRequest', JSON.stringify({ tool_name:'Bash', tool_input:{ command:'ls' } }));
-      expect(openSessionsLive(db, [withStatus('idle')], NOW)[0]!.activity).toBe('waiting_permission');
+      expect(openSessionsLive(db, [withStatus('idle')], NOW)[0]!.activity).toBe('idle');
+    });
+
+    it('a "permission prompt" waitingFor gives the specific waiting_permission kind', () => {
+      expect(openSessionsLive(oneSession('turn.completed'), [withStatus('waiting', 'permission prompt')], NOW)[0]!.activity)
+        .toBe('waiting_permission');
     });
 
     it('an exact match with no index rows yet still shows waiting', () => {
@@ -762,6 +776,13 @@ describe('openSessionsLive', () => {
         proc({ pid:4, cwd:'/repo/new', ageSeconds:5, ...live('fresh', '/repo/new', 'waiting') }),
       ], NOW);
       expect(o!.activity).toBe('waiting_input');
+    });
+
+    it('an exact match with no index rows yet reads waitingFor for the specific waiting kind', () => {
+      const [o] = openSessionsLive(openDb(':memory:'), [
+        proc({ pid:5, cwd:'/repo/new2', ageSeconds:5, ...live('fresh2', '/repo/new2', 'waiting', 'permission prompt') }),
+      ], NOW);
+      expect(o!.activity).toBe('waiting_permission');
     });
 
     it('an exact match with no index rows and no status leaves activity unknown', () => {
@@ -1584,6 +1605,47 @@ describe('activityFromLiveStatus', () => {
     expect(activityFromLiveStatus('idle')).toBe('idle');
     expect(activityFromLiveStatus(null)).toBeNull();
     expect(activityFromLiveStatus(undefined)).toBeNull();
+  });
+});
+
+describe('deriveActivity', () => {
+  const blocker = (kind: string): Blocker =>
+    ({ sessionId:'s1', kind, toolUseId:'t1', promptId:null, occurredAt:at(0), text:'x' });
+
+  // Quick answers design §5.2: the status file wins over a hook blocker
+  // whenever one is present -- see the doc comment on deriveActivity itself
+  // for why (PermissionRequest's resolver is not installed by default, so a
+  // blocker alone would never expire before SessionEnd or the 24h window).
+  it('a live status file wins over a blocker (idle over an open PermissionRequest)', () => {
+    const { activity } = deriveActivity({
+      lastTs:null, lastKind:null, blocker: blocker('PermissionRequest'),
+      hasMatchedProcess:true, hasLiveSignal:true, now:NOW, liveStatus:'idle',
+    });
+    expect(activity).toBe('idle');
+  });
+
+  it('waiting + "permission prompt" gives the specific waiting_permission', () => {
+    const { activity } = deriveActivity({
+      lastTs:null, lastKind:null, blocker:null, hasMatchedProcess:true, hasLiveSignal:true, now:NOW,
+      liveStatus:'waiting', liveWaitingFor:'permission prompt',
+    });
+    expect(activity).toBe('waiting_permission');
+  });
+
+  it('waiting + "input needed" stays the generic waiting_input', () => {
+    const { activity } = deriveActivity({
+      lastTs:null, lastKind:null, blocker:null, hasMatchedProcess:true, hasLiveSignal:true, now:NOW,
+      liveStatus:'waiting', liveWaitingFor:'input needed',
+    });
+    expect(activity).toBe('waiting_input');
+  });
+
+  it('falls back to the blocker when there is no live status file', () => {
+    const { activity } = deriveActivity({
+      lastTs:null, lastKind:null, blocker: blocker('PermissionRequest'),
+      hasMatchedProcess:true, hasLiveSignal:true, now:NOW,
+    });
+    expect(activity).toBe('waiting_permission');
   });
 });
 

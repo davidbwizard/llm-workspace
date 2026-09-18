@@ -155,12 +155,13 @@ describe('buildSessionLive', () => {
     expect(p?.activity).toBe('waiting');
   });
 
-  // The other of the "both waiting kinds" the brief's title covers:
-  // waiting_permission, from an open PermissionRequest blocker rather than
-  // the live status file. deriveActivity gives the blocker priority over
-  // liveStatus (src/fleet/state.ts), so an idle status alongside an open
-  // blocker must still read as waiting here, not idle.
-  it('maps an open permission blocker to waiting', () => {
+  // Reachable path (quick-answers design §5.2): a PermissionRequest is
+  // keyed by prompt_id, whose resolver (PostToolUse) is not among the
+  // installed hook events, so this stale blocker would otherwise never
+  // close before SessionEnd or the 24h window -- reading as waiting for the
+  // rest of the day even after the process itself went idle. The live
+  // status file now wins whenever one is present, so this reads idle.
+  it('reports idle for a stale permission blocker once the live status file says idle', () => {
     const db = openDb(':memory:');
     insertBlocker(db, 'claude-1', '2026-09-17T10:00:15Z');
     const processes = [proc({
@@ -173,6 +174,19 @@ describe('buildSessionLive', () => {
     });
 
     const p = buildSessionLive(db, 4822, processes, Date.parse('2026-09-17T10:00:30Z'), { read });
+    expect(p?.activity).toBe('idle');
+  });
+
+  // Without a status file at all (no liveSession on the matched process),
+  // an open blocker is still the only signal buildSessionLive has, so it
+  // must keep deciding activity -- the "no status + blocker" branch.
+  it('falls back to the blocker when the process has no live status file', () => {
+    const db = openDb(':memory:');
+    insertBlocker(db, 'codex-1', '2026-09-17T10:00:15Z');
+    const processes = [proc({ pid: 4823, provider: 'codex', cwd: '/repo/codex' })];
+    const cached = [{ pid: 4823, provider: 'codex', cwd: '/repo/codex', sessionId: 'codex-1' } as OpenSession];
+
+    const p = buildSessionLive(db, 4823, processes, Date.parse('2026-09-17T10:00:30Z'), { cached });
     expect(p?.activity).toBe('waiting');
   });
 

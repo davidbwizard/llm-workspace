@@ -6,7 +6,7 @@ import type { LiveProcess } from '../discovery/parse.ts';
 import { deriveActivity, type OpenSession } from '../fleet/state.ts';
 import type { LiveSessionRead, LiveSessionFile } from '../providers/claude/liveSession.ts';
 import { readLiveSession } from '../discovery/live.ts';
-import { openBlockers } from '../store/signals.ts';
+import { currentBlockers } from '../store/signals.ts';
 import { resolvePaths } from '../config.ts';
 import type { Provider } from '../core/types.ts';
 
@@ -192,7 +192,7 @@ export function buildSessionLive(
     events: number; last_ts: string | null; last_kind: string | null; last_prompt_ts: string | null;
   };
 
-  const blocker = openBlockers(db, undefined, now).find(b => b.sessionId === target.sessionId) ?? null;
+  const blocker = currentBlockers(db, now).find(b => b.sessionId === target.sessionId) ?? null;
   const fresh = (deps.freshLiveSession ?? freshLiveSession)(pid, processes, read);
 
   const { activity: rawActivity } = deriveActivity({
@@ -206,6 +206,7 @@ export function buildSessionLive(
     hasLiveSignal: processes.length > 0,
     now,
     liveStatus: fresh?.status ?? null,
+    liveWaitingFor: fresh?.waitingFor ?? null,
   });
 
   // waiting_permission/waiting_input both read as "waiting" here -- the
@@ -416,7 +417,7 @@ export function watchSessionFor(pid: number | null, deps: WatchDeps): boolean {
 
   // watchState is assigned BEFORE buildPayload runs, not after, so the
   // watcher just opened above is reachable through it even if buildPayload
-  // throws (it reaches db.prepare(...).get() and openBlockers, so a closed
+  // throws (it reaches db.prepare(...).get() and currentBlockers, so a closed
   // or busy database can throw). Every teardown path -- teardownWatch
   // itself, win.on('closed'), before-quit -- reaches the watcher only
   // through watchState, so assigning it after a call that can throw would

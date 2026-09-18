@@ -24,7 +24,21 @@ describe('parseLiveSessionFile', () => {
     expect(parseLiveSessionFile(text(REAL_SHAPE), 14041)).toEqual({
       sessionId: '00000000-0000-4000-8000-000000000001', cwd: '/Users/me/trellome',
       startedAtMs: 1789408337635, status: 'idle', statusUpdatedAtMs: 1789410297851,
+      waitingFor: null,
     });
+  });
+
+  // Quick answers design §3/§5.1: `waitingFor` is `"permission prompt"` for
+  // Bash, Write and plan approval, `"input needed"` for a question -- the
+  // signal deriveActivity (src/fleet/state.ts) uses to tell the two kinds
+  // of waiting apart from the status file alone. Same tolerance as every
+  // other optional field here: absent or the wrong type nulls it rather
+  // than rejecting the file.
+  it('reads waitingFor when present, and nulls it when absent or not a string', () => {
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, status: 'waiting', waitingFor: 'permission prompt' }), 14041)
+      ?.waitingFor).toBe('permission prompt');
+    expect(parseLiveSessionFile(text(REAL_SHAPE), 14041)?.waitingFor).toBeNull();
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, waitingFor: 42 }), 14041)?.waitingFor).toBeNull();
   });
 
   // buildSessionLive (src/main/sessionLive.ts) times a busy Claude session
