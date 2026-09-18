@@ -10,7 +10,9 @@ function screen(name: string): string {
 }
 
 const ASK_HEADERS = ['Color', 'Pets'];
-const askExpect = (headers: string[] = ASK_HEADERS): ScreenExpect => ({ kind: 'question', headers });
+const ASK_QUESTIONS = ['Which color?', 'Which pets?'];
+const askExpect = (headers: string[] = ASK_HEADERS, questions: string[] = ASK_QUESTIONS): ScreenExpect =>
+  ({ kind: 'question', headers, questions });
 const permExpect = (anchor: string, toolName = 'Bash'): ScreenExpect =>
   ({ kind: 'permission', toolName, anchor });
 const planExpect = (): ScreenExpect => ({ kind: 'plan' });
@@ -229,6 +231,48 @@ describe('readPromptScreen -- questions', () => {
     expect(result.match).toBe(true);
     if (!result.match || result.kind !== 'question') throw new Error('expected question match');
     expect(result.current).toBe(current);
+  });
+
+  it('finds current by the question text, not the header word -- headers are short chips that usually do not appear in the question', () => {
+    // A hand-built capture: header "Auth" never appears in its own question
+    // text at all, unlike the fixtures above (where "color"/"pets" happen to
+    // echo their headers). The old header-word heuristic would have failed
+    // here; matching the exact question text must not.
+    const capture = [
+      '←  ☐ Auth  ☐ Region  ✔ Submit  →',
+      '',
+      'Which login provider should we use?',
+      '',
+      '❯ 1. Google',
+      '  2. GitHub',
+      '  3. Type something.',
+      '  4. Chat about this',
+      '',
+    ].join('\n');
+    const result = readPromptScreen(
+      capture,
+      askExpect(['Auth', 'Region'], ['Which login provider should we use?', 'Which region?']),
+    );
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.current).toBe(0);
+    expect(result.answered).toEqual([false, false]);
+    expect(result.options).toEqual(['Google', 'GitHub']);
+  });
+
+  it('rejects when the screen\'s question text does not match any of the expected questions', () => {
+    const result = readPromptScreen(
+      screen('10-ask-q1'),
+      askExpect(ASK_HEADERS, ['Which colour?', 'Which pets?']), // "colour" -- deliberately not what's on screen
+    );
+    expect(result.match).toBe(false);
+  });
+
+  it('16-ask-left-back still finds current 0 by matching the question text', () => {
+    const result = readPromptScreen(screen('16-ask-left-back'), askExpect());
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.current).toBe(0);
   });
 });
 

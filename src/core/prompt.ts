@@ -30,7 +30,7 @@ export type Answer =
 export type ScreenExpect =
   | { kind: 'permission'; toolName: string; anchor: string }  // command, file basename, or tool name
   | { kind: 'plan' }
-  | { kind: 'question'; headers: string[] };
+  | { kind: 'question'; headers: string[]; questions: string[] };  // questions: the hook's question texts, same order as headers
 
 export type ScreenRead =
   | { match: true; kind: 'permission' | 'plan'; choices: PromptChoice[]; cursor: string | null; textRow: string | null }

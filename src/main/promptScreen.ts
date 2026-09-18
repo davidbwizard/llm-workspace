@@ -17,7 +17,7 @@ const PLAN_TEXT_DEFAULT = 'Tell Claude what to change';
 
 export function readPromptScreen(capture: string, expect: ScreenExpect): ScreenRead {
   const lines = capture.split('\n');
-  if (expect.kind === 'question') return readQuestion(lines, expect.headers);
+  if (expect.kind === 'question') return readQuestion(lines, expect.headers, expect.questions);
   return readDialog(lines, expect);
 }
 
@@ -148,7 +148,7 @@ function parseReviewAnswers(section: string[]): { question: string; answer: stri
   return answers;
 }
 
-function readQuestion(lines: string[], headers: string[]): ScreenRead {
+function readQuestion(lines: string[], headers: string[], questions: string[]): ScreenRead {
   const tabRowIdx = findLastTabRowIndex(lines);
   if (tabRowIdx === -1) return { match: false, why: 'no_tab_row_on_screen' };
 
@@ -168,16 +168,29 @@ function readQuestion(lines: string[], headers: string[]): ScreenRead {
     return { match: true, kind: 'review', answers };
   }
 
+  // The question's title can wrap onto more than one line; join with a
+  // single space, then match it verbatim against the hook's question
+  // texts. Headers are short chips (e.g. "Auth method") that usually do not
+  // appear in the question text, so they cannot be used to find `current`.
   let qIdx = 0;
   while (qIdx < rest.length && (rest[qIdx] ?? '').trim() === '') qIdx++;
-  const title = (rest[qIdx] ?? '').trim();
-  if (qIdx >= rest.length || !title.endsWith('?')) return { match: false, why: 'no_question_title_found' };
+  const titleParts: string[] = [];
+  let afterTitleIdx = qIdx;
+  while (afterTitleIdx < rest.length) {
+    const raw = rest[afterTitleIdx] ?? '';
+    const trimmed = raw.trim();
+    if (trimmed === '' || OPTION_LINE.test(raw)) break;
+    titleParts.push(trimmed);
+    afterTitleIdx++;
+  }
+  const title = titleParts.join(' ').trim();
+  if (titleParts.length === 0 || !title.endsWith('?')) return { match: false, why: 'no_question_title_found' };
 
-  let current = headers.findIndex((h) => title.toLowerCase().includes(h.toLowerCase()));
-  if (current === -1) current = 0;
+  const current = questions.findIndex((q) => q === title);
+  if (current === -1) return { match: false, why: 'question_text_mismatch' };
 
   const options: string[] = [];
-  for (let k = qIdx + 1; k < rest.length; k++) {
+  for (let k = afterTitleIdx; k < rest.length; k++) {
     const m = OPTION_LINE.exec(rest[k] ?? '');
     if (!m) continue;
     const label = (m[3] ?? '').trim().replace(/^\[[ ✔]\]\s*/, '');
