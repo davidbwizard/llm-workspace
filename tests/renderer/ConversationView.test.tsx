@@ -2481,14 +2481,59 @@ describe('ConversationView -- the prompt card (Task 5)', () => {
     expect(screen.queryByText('Answer in the Terminal')).toBeNull();
   });
 
-  it('falls back to the waiting card once the prompt is null again', async () => {
-    const push = withLivePush();
+  // Task 6 flash fix: with Quick answers on, a waiting stretch with no
+  // prompt first shows the reading frame; the fallback card only after 2 s.
+  it('falls back to the waiting card once the prompt is null again, after the 2 s reading frame', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const push = withLivePush();
+      renderConv();
+      await screen.findByLabelText('Message this session');
+      push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: permissionPrompt });
+      await waitFor(() => expect(screen.getByText('Claude wants to run a command')).toBeTruthy());
+      push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null });
+      expect(screen.getByText("Reading Claude's prompt…")).toBeTruthy();
+      expect(screen.queryByText('Answer in the Terminal')).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(screen.getByText('Answer in the Terminal')).toBeTruthy();
+      expect(screen.queryByText("Reading Claude's prompt…")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows the reading frame, never the fallback card, when the prompt arrives within 2 s of the wait', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const push = withLivePush();
+      renderConv();
+      await screen.findByLabelText('Message this session');
+      push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null });
+      expect(screen.getByText('Claude is waiting on you')).toBeTruthy();
+      expect(screen.getByText("Reading Claude's prompt…")).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Open Terminal' })).toBeNull();
+      // The hooks read resolves (on) and time passes, still inside 2 s.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+      expect(screen.queryByText('Answer in the Terminal')).toBeNull();
+
+      push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: permissionPrompt });
+      expect(screen.getByText('Claude wants to run a command')).toBeTruthy();
+      expect(screen.queryByText("Reading Claude's prompt…")).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(screen.queryByText('Answer in the Terminal')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows the fallback card at once when the hooks read says Quick answers is off', async () => {
+    const push = withLivePush({ hooksGet: vi.fn().mockResolvedValue({ installed: false, error: null }) });
     renderConv();
     await screen.findByLabelText('Message this session');
-    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: permissionPrompt });
-    await waitFor(() => expect(screen.getByText('Claude wants to run a command')).toBeTruthy());
     push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null });
-    await waitFor(() => expect(screen.getByText('Answer in the Terminal')).toBeTruthy());
+    // Well inside the 2 s window: only the read, not the timer, ends it.
+    await waitFor(() => expect(screen.getByText('Answer in the Terminal')).toBeTruthy(), { timeout: 500 });
+    expect(screen.queryByText("Reading Claude's prompt…")).toBeNull();
   });
 
   // Task 5's own ruling: hooksOn is a real fact read from main
@@ -2504,11 +2549,18 @@ describe('ConversationView -- the prompt card (Task 5)', () => {
   });
 
   it('says nothing about Quick answers once hooks are confirmed on', async () => {
-    const push = withLivePush({ hooksGet: vi.fn().mockResolvedValue({ installed: true, error: null }) });
-    renderConv();
-    await screen.findByLabelText('Message this session');
-    push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null });
-    await waitFor(() => expect(screen.getByText('Answer in the Terminal')).toBeTruthy());
-    expect(screen.queryByText('Turn on Quick answers in Settings to answer here.')).toBeNull();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const push = withLivePush({ hooksGet: vi.fn().mockResolvedValue({ installed: true, error: null }) });
+      renderConv();
+      await screen.findByLabelText('Message this session');
+      push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1, prompt: null });
+      // Past the reading frame (Task 6 flash fix) to the fallback card.
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(screen.getByText('Answer in the Terminal')).toBeTruthy();
+      expect(screen.queryByText('Turn on Quick answers in Settings to answer here.')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

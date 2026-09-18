@@ -9,7 +9,7 @@ import type { StageRefusal } from '../../main/staging.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import { WorkingStrip } from './WorkingStrip.tsx';
-import { WaitingCard } from './WaitingCard.tsx';
+import { WaitingFallback } from './WaitingCard.tsx';
 import { PromptCard } from './PromptCard.tsx';
 import { useSettings } from '../state/settings.ts';
 import { useSessionLive } from '../state/useSessionLive.ts';
@@ -790,13 +790,15 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // PromptCard means hooks are plainly on already), so the fetch is keyed
   // on the exact transition into showing that fallback, not on every
   // activity change -- there is no benefit to re-reading it, say, on every
-  // working<->idle flip.
+  // working<->idle flip. null until the first read answers (Task 6):
+  // WaitingFallback shows its neutral reading frame while it is unknown,
+  // rather than a fallback card that may be wrong. No bridge means off.
   const showsWaitingFallback = live?.activity === 'waiting' && live.prompt === null;
-  const [hooksOn, setHooksOn] = useState(false);
+  const [hooksOn, setHooksOn] = useState<boolean | null>(null);
   useEffect(() => {
     if (!showsWaitingFallback) return;
     const api = window.fleet;
-    if (!api?.hooksGet) return;
+    if (!api?.hooksGet) { setHooksOn(false); return; }
     let alive = true;
     void api.hooksGet().then(
       r => { if (alive) setHooksOn(r.installed); },
@@ -1344,14 +1346,16 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           mounts a fresh card -- resetting every local answer/text-box
           state rather than carrying stale picks over, and giving the
           "didn't take the answer" 3s check (PromptCard.tsx) a component
-          instance whose lifetime IS exactly this one prompt's. WaitingCard
-          stays the fallback for everything else. `pid !== null` mirrors
+          instance whose lifetime IS exactly this one prompt's. WaitingFallback
+          (a 2 s reading frame, then WaitingCard) covers everything else; it
+          mounts per waiting-without-prompt stretch, which starts its
+          timer, and is keyed by pid so a session switch restarts it. `pid !== null` mirrors
           WorkingStrip's own guard just above -- `live` is only ever
           non-null for a pid useSessionLive was actually asked to watch. */}
       {live?.activity === 'waiting' && pid !== null && (
         live.prompt
           ? <PromptCard key={live.prompt.id} pid={pid} prompt={live.prompt} onOpenTerminal={onOpenTerminal} />
-          : <WaitingCard provider={provider} hooksOn={hooksOn} onOpenTerminal={onOpenTerminal} />
+          : <WaitingFallback key={`waiting-${pid}`} provider={provider} hooksOn={hooksOn} onOpenTerminal={onOpenTerminal} />
       )}
       {/* Keyed by pid so switching session remounts the box: its draft,
           any standing refusal and the choice prompt all belong to the
