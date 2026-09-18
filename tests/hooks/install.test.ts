@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildHookFragments, planInstall, applyInstall, uninstall } from '../../src/hooks/install.ts';
+import {
+  buildHookFragments, planInstall, applyInstall, uninstall, SettingsChangedError,
+} from '../../src/hooks/install.ts';
+
+const asRoot = process.getuid?.() === 0;
+const inode = (path: string) => statSync(path).ino;
 
 let dir: string, settings: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'hooks-')); settings = join(dir, 'settings.json'); });
@@ -74,6 +79,57 @@ describe('applyInstall', () => {
       .toThrow(/changed on disk/i);
   });
 
+  // Final review I5: the refusal has its own class, so the switch can tell
+  // it apart from a read or write failure.
+  it('throws SettingsChangedError for the changed-on-disk refusal', () => {
+    writeFileSync(settings, JSON.stringify({ hooks: {} }));
+    const before = readFileSync(settings, 'utf8');
+    const plan = planInstall(JSON.parse(before), buildHookFragments('/h.sh'));
+    writeFileSync(settings, JSON.stringify({ hooks: { Stop: [] } }));
+    expect(() => applyInstall(settings, { ...plan, baseText: before })).toThrow(SettingsChangedError);
+  });
+
+  // Final review I3: only ENOENT reads as "missing".
+  it.skipIf(asRoot)('rethrows a read failure other than a missing file, and writes nothing', () => {
+    writeFileSync(settings, JSON.stringify({ hooks: {} }));
+    const plan = planInstall({}, buildHookFragments('/h.sh'));
+    chmodSync(settings, 0o000);
+    try {
+      let thrown: unknown = null;
+      try { applyInstall(settings, { ...plan, baseText: '' }); } catch (e) { thrown = e; }
+      expect(thrown).not.toBeInstanceOf(SettingsChangedError);
+      expect((thrown as NodeJS.ErrnoException).code).toBe('EACCES');
+    } finally {
+      chmodSync(settings, 0o600);
+    }
+    expect(readFileSync(settings, 'utf8')).toBe(JSON.stringify({ hooks: {} }));
+  });
+
+  // Final review M10.
+  it('writes nothing when every fragment is already present', () => {
+    const first = planInstall({}, buildHookFragments('/h.sh'));
+    applyInstall(settings, { ...first, baseText: '' });
+    const base = readFileSync(settings, 'utf8');
+    const again = planInstall(JSON.parse(base), buildHookFragments('/h.sh'));
+    expect(again.changed).toBe(false);
+    const ino = inode(settings);
+    applyInstall(settings, { ...again, baseText: base });
+    expect(inode(settings)).toBe(ino);
+  });
+
+  // Final review M9: the temp file is created with the original mode and
+  // written through one descriptor, so a read-only original cannot fail a
+  // reopen or leave a temp file behind.
+  it('keeps a read-only original mode and leaves no temp file', () => {
+    writeFileSync(settings, JSON.stringify({ hooks: {} }));
+    chmodSync(settings, 0o400);
+    const base = readFileSync(settings, 'utf8');
+    const plan = planInstall(JSON.parse(base), buildHookFragments('/h.sh'));
+    applyInstall(settings, { ...plan, baseText: base });
+    expect(statSync(settings).mode & 0o777).toBe(0o400);
+    expect(JSON.stringify(JSON.parse(readFileSync(settings, 'utf8')))).toContain('/h.sh');
+  });
+
   it('writes atomically and leaves valid JSON', () => {
     writeFileSync(settings, JSON.stringify({ hooks: {} }));
     const base = readFileSync(settings, 'utf8');
@@ -116,6 +172,17 @@ describe('uninstall', () => {
     // it must survive, and only our exact-match entry is removed.
     expect(after.hooks.Stop.some((e: any) => e.hooks[0].command.startsWith('echo'))).toBe(true);
     expect(after.hooks.Stop.some((e: any) => e.hooks[0].command === ourCommand)).toBe(false);
+  });
+});
+
+describe('uninstall -- nothing to remove (final review M10)', () => {
+  it('writes nothing when none of our fragments are present', () => {
+    writeFileSync(settings, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'mine.sh' }] }] } }));
+    const ino = inode(settings);
+    const text = readFileSync(settings, 'utf8');
+    uninstall(settings, { owned: [], command: buildHookFragments('/h.sh')[0]!.command });
+    expect(inode(settings)).toBe(ino);
+    expect(readFileSync(settings, 'utf8')).toBe(text);
   });
 });
 

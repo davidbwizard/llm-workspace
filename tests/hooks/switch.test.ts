@@ -16,6 +16,21 @@ const HELPER_SOURCE = resolve('src/hooks/helper.sh');
 let home: string;
 let paths: Paths;
 
+// Permission-based failures below (an unreadable file, a read-only folder)
+// cannot be produced as root, which can read and write through them.
+const asRoot = process.getuid?.() === 0;
+
+/** Identity of the file on disk: an atomic write renames a new file over
+ *  the old one, so an unchanged inode proves nothing was written. */
+function fileId(path: string): { ino: number; mtimeMs: number } {
+  const st = statSync(path);
+  return { ino: st.ino, mtimeMs: st.mtimeMs };
+}
+
+function tempFilesIn(dir: string): string[] {
+  return readdirSync(dir).filter(f => f.endsWith('.tmp'));
+}
+
 beforeEach(() => {
   // Hard safety rule: every path here is inside a fresh mkdtemp directory.
   // Nothing in this file ever reads or writes the real ~/.claude or
@@ -128,6 +143,51 @@ describe('setHooks(on)', () => {
   });
 });
 
+describe('setHooks(on) -- read and write failures (final review I3/I5)', () => {
+  it.skipIf(asRoot)('refuses an unreadable settings.json: returns the read error and writes nothing', () => {
+    writeUserSettings(0o600);
+    const before = readFileSync(paths.claudeSettings, 'utf8');
+    chmodSync(paths.claudeSettings, 0o000);
+    try {
+      const result = setHooks(paths, true, HELPER_SOURCE);
+      expect(result.installed).toBe(false);
+      expect(result.error).toMatch(/^Could not read settings\.json: .*EACCES/);
+      expect(modeOf(paths.claudeSettings)).toBe(0o000);
+      expect(tempFilesIn(dirname(paths.claudeSettings))).toEqual([]);
+    } finally {
+      chmodSync(paths.claudeSettings, 0o600);
+    }
+    expect(readFileSync(paths.claudeSettings, 'utf8')).toBe(before);
+  });
+
+  it.skipIf(asRoot)('reports a write failure with its real message, not "Settings changed"', () => {
+    writeUserSettings(0o600);
+    const before = readFileSync(paths.claudeSettings, 'utf8');
+    const dir = dirname(paths.claudeSettings);
+    chmodSync(dir, 0o500);
+    try {
+      const result = setHooks(paths, true, HELPER_SOURCE);
+      expect(result.installed).toBe(false);
+      expect(result.error).toMatch(/^Could not write settings\.json: .*EACCES/);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+    expect(readFileSync(paths.claudeSettings, 'utf8')).toBe(before);
+  });
+
+  // Final review M10: nothing to add means nothing written.
+  it('does not rewrite settings.json when every hook is already present', () => {
+    writeUserSettings(0o600);
+    setHooks(paths, true, HELPER_SOURCE);
+    const before = fileId(paths.claudeSettings);
+
+    const result = setHooks(paths, true, HELPER_SOURCE);
+
+    expect(result).toEqual({ installed: true, error: null });
+    expect(fileId(paths.claudeSettings)).toEqual(before);
+  });
+});
+
 describe('setHooks(off)', () => {
   it('leaves the user\'s three hooks deep-equal and removes the owned command', () => {
     writeUserSettings(0o600);
@@ -147,6 +207,61 @@ describe('setHooks(off)', () => {
     const allCommands = Object.values(after.hooks).flat().flatMap((e: any) => e.hooks.map((h: any) => h.command));
     expect(allCommands).not.toContain(ourCommand);
     expect(modeOf(paths.claudeSettings)).toBe(0o600);
+  });
+
+  it('returns the parse error and leaves the file byte-unchanged when settings.json does not parse', () => {
+    mkdirSync(dirname(paths.claudeSettings), { recursive: true });
+    const bad = '{ this is not json';
+    writeFileSync(paths.claudeSettings, bad);
+
+    const result = setHooks(paths, false, HELPER_SOURCE);
+
+    expect(result).toEqual({
+      installed: false, error: 'settings.json is not valid JSON -- fix it by hand, then try again.',
+    });
+    expect(readFileSync(paths.claudeSettings, 'utf8')).toBe(bad);
+  });
+
+  it.skipIf(asRoot)('refuses an unreadable settings.json with the read error, not the parse error', () => {
+    writeUserSettings(0o600);
+    setHooks(paths, true, HELPER_SOURCE);
+    const before = readFileSync(paths.claudeSettings, 'utf8');
+    chmodSync(paths.claudeSettings, 0o000);
+    try {
+      const result = setHooks(paths, false, HELPER_SOURCE);
+      expect(result.error).toMatch(/^Could not update settings\.json: .*EACCES/);
+      expect(tempFilesIn(dirname(paths.claudeSettings))).toEqual([]);
+    } finally {
+      chmodSync(paths.claudeSettings, 0o600);
+    }
+    expect(readFileSync(paths.claudeSettings, 'utf8')).toBe(before);
+  });
+
+  it.skipIf(asRoot)('reports a write failure with its real message, not the parse error', () => {
+    writeUserSettings(0o600);
+    setHooks(paths, true, HELPER_SOURCE);
+    const before = readFileSync(paths.claudeSettings, 'utf8');
+    const dir = dirname(paths.claudeSettings);
+    chmodSync(dir, 0o500);
+    try {
+      const result = setHooks(paths, false, HELPER_SOURCE);
+      expect(result.installed).toBe(true);
+      expect(result.error).toMatch(/^Could not update settings\.json: .*EACCES/);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+    expect(readFileSync(paths.claudeSettings, 'utf8')).toBe(before);
+  });
+
+  // Final review M10: nothing of ours to remove means nothing written.
+  it('does not rewrite settings.json when none of our hooks are there', () => {
+    writeUserSettings(0o600);
+    const before = fileId(paths.claudeSettings);
+
+    const result = setHooks(paths, false, HELPER_SOURCE);
+
+    expect(result).toEqual({ installed: false, error: null });
+    expect(fileId(paths.claudeSettings)).toEqual(before);
   });
 
   it('tolerates a missing settings.json -- no error, nothing created', () => {

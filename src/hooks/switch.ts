@@ -3,7 +3,9 @@ import {
   renameSync, openSync, closeSync, fsyncSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { buildHookFragments, planInstall, applyInstall, uninstall, type Manifest } from './install.ts';
+import {
+  buildHookFragments, planInstall, applyInstall, uninstall, SettingsChangedError, type Manifest,
+} from './install.ts';
 import { probeCapabilities, type Paths } from '../config.ts';
 
 /** Quick answers design §4. `hooksState`/`setHooks` are the whole surface
@@ -75,8 +77,16 @@ function doInstall(settingsPath: string, stable: string, helperSource: string): 
   // created here so writing it is never blocked on that.
   mkdirSync(dirname(settingsPath), { recursive: true });
 
+  // Only a missing file is "missing" (final review I3): an unreadable one
+  // is refused here, before anything is planned or written.
   let baseText = '';
-  try { baseText = readFileSync(settingsPath, 'utf8'); } catch { baseText = ''; }
+  try {
+    baseText = readFileSync(settingsPath, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return `Could not read settings.json: ${(e as Error).message}`;
+    }
+  }
 
   let parsed: unknown = {};
   if (baseText !== '') {
@@ -87,8 +97,11 @@ function doInstall(settingsPath: string, stable: string, helperSource: string): 
   const plan = planInstall(parsed, buildHookFragments(stable));
   try {
     applyInstall(settingsPath, { ...plan, baseText });
-  } catch {
-    return 'Settings changed while installing -- try again';
+  } catch (e) {
+    // Only the changed-on-disk refusal is "try again" (final review I5);
+    // anything else is shown with its real cause.
+    if (e instanceof SettingsChangedError) return 'Settings changed while installing -- try again';
+    return `Could not write settings.json: ${(e as Error).message}`;
   }
   return null;
 }
@@ -99,10 +112,12 @@ function doUninstall(settingsPath: string, stable: string): string | null {
   const manifest: Manifest = { owned: [], command: stableCommand(stable) };
   try {
     uninstall(settingsPath, manifest);
-  } catch {
-    // uninstall() itself tolerates a missing file; the only way it throws
-    // is an existing settings.json that fails to parse.
-    return PARSE_ERROR;
+  } catch (e) {
+    // uninstall() itself tolerates a missing file. Only a real JSON parse
+    // failure is the not-valid-JSON message (final review I5); a read or
+    // write failure is shown with its real cause.
+    if (e instanceof SyntaxError) return PARSE_ERROR;
+    return `Could not update settings.json: ${(e as Error).message}`;
   }
   return null;
 }
