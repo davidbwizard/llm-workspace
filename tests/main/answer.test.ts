@@ -881,6 +881,55 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
     });
   });
 
+  // Measured 2026-09-18: a long typed answer sits on the "Type something."
+  // row and wraps onto an indented continuation line (100; 99 is the same
+  // prompt right after pressing 3, before typing). The pre-Enter text check
+  // must read the whole wrapped answer, not just its first screen line.
+  describe('one question, a long typed answer wraps across lines (99, 100)', () => {
+    const focused = () => screen('99-ask-one-other-focused');
+    const typed = () => screen('100-ask-one-other-typed-wrapped');
+    const gone = () => screen('97-ask-one-after-key2'); // Structure-only reuse: no tab row, no header line.
+    const LONG_TEXT = 'Look. notifications are not nuts. They work.  Im not doubling up on more procs. '
+      + 'If we can fix it, lets do it now please.';
+
+    function pickView(): PromptView {
+      const ev = event(ASK, 'pick-wrap');
+      ev.payload = {
+        tool_name: 'AskUserQuestion',
+        tool_input: {
+          questions: [{
+            question: 'Which option do you prefer for this test?', header: 'Pick', multiSelect: false,
+            options: [
+              { label: 'Alpha', description: 'First implementation approach' },
+              { label: 'Beta', description: 'Second implementation approach' },
+            ],
+          }],
+        },
+      };
+      return buildPromptView(ev, NAME, {});
+    }
+
+    it('other: 3, the full wrapped text, then Enter once the row shows it -- sent', async () => {
+      registered();
+      const view = pickView();
+      const pane = fakePane([focused(), typed(), typed(), gone()]);
+      const answer = { kind: 'questions', picks: [{ options: [], other: LONG_TEXT }] };
+      expect(await answerPrompt(PID, view.id, answer, deps(pane, view))).toEqual({ status: 'sent' });
+      expect(pane.keys()).toEqual(['3', LONG_TEXT, 'Enter']);
+    });
+
+    it('no Enter when the row\'s continuation reads differently from the typed text', async () => {
+      registered();
+      const view = pickView();
+      const mismatched = typed().replace('it, lets do it now please.', 'this is not what was typed.');
+      const pane = fakePane([focused(), mismatched]);
+      const answer = { kind: 'questions', picks: [{ options: [], other: LONG_TEXT }] };
+      expect(await answerPrompt(PID, view.id, answer, deps(pane, view)))
+        .toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+      expect(pane.keys()).toEqual(['3', LONG_TEXT]);
+    });
+  });
+
   // Measured today: the same header-line layout, but the title wraps across
   // two lines, each drawn with a "│ " border (98). readPromptScreen strips
   // that border before comparing to the hook's question text (Task: bordered

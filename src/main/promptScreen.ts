@@ -13,6 +13,13 @@ const OPTION_LINE = /^\s*(❯\s*)?(\d+)\.\s+(.*)$/;
 const TAB_ROW = /^←.*→$/;
 const HEADER_LINE = /^[☐☒]\s+\S/;
 const HINT_LINE = 'shift+tab to approve with this feedback';
+/** Multi-select's own "Submit" row, drawn directly under the last checkbox
+ *  once every option has been enumerated (fixtures 34, 35, 36, 37) -- and
+ *  sometimes the cursor's own row (38: "❯    Submit"). It carries no
+ *  leading digit, so it never matches OPTION_LINE, but it is a control of
+ *  its own, not a continuation of the row above it, and must stop a typed
+ *  answer's continuation join before it is swallowed into the label. */
+const SUBMIT_ROW = /^Submit$/;
 const WRAPPED_IN_WORD = /\S[-/]$/;
 /** A wrapped question title draws every one of its lines with a left border,
  *  "│ " (U+2502 + space) -- measured today, fixture 98. A short title that
@@ -324,6 +331,19 @@ function parseTabRow(line: string): { headers: string[]; answered: boolean[] } {
   return { headers, answered };
 }
 
+/** The index in `rest`, at or after `from`, of the "Chat about this" option
+ *  line -- always the last option of any AskUserQuestion question (measured,
+ *  fixtures 96-100) -- or -1 when none is on screen. Used to find the row
+ *  right before it: the "Type something" / typed-answer row, the only one
+ *  whose continuation lines are ever joined into its label. */
+function findChatAboutThisIndex(rest: string[], from: number): number {
+  for (let k = from; k < rest.length; k++) {
+    const m = OPTION_LINE.exec(rest[k] ?? '');
+    if (m && /^Chat about this$/i.test((m[3] ?? '').trim())) return k;
+  }
+  return -1;
+}
+
 function parseReviewAnswers(section: string[]): { question: string; answer: string }[] {
   const answers: { question: string; answer: string }[] = [];
   for (let i = 0; i < section.length; i++) {
@@ -395,12 +415,40 @@ function readQuestion(lines: string[], headers: string[], questions: string[]): 
   const current = questions.findIndex((q) => collapse(q) === collapse(title));
   if (current === -1) return { match: false, why: 'question_text_mismatch' };
 
+  // The row right before "Chat about this" is always "Type something." --
+  // or, once the user has typed into it, the typed text itself. A long
+  // answer wraps at the pane width (measured 2026-09-18, fixture 100): its
+  // continuation lines carry no leading digit, so the plain per-line loop
+  // below would otherwise read only the first screen line of it. Found by
+  // position, not by content (the label no longer reads "Type something."
+  // once text replaces it), so an option's own description line (e.g.
+  // "First implementation approach" under "1. Alpha", fixture 99) is never
+  // mistaken for it: that line sits above this row, not below it.
+  const chatIdx = findChatAboutThisIndex(rest, afterTitleIdx);
+  let typedRowIdx = -1;
+  for (let k = chatIdx - 1; k >= afterTitleIdx; k--) {
+    if (OPTION_LINE.test(rest[k] ?? '')) { typedRowIdx = k; break; }
+  }
+
   const options: string[] = [];
   for (let k = afterTitleIdx; k < rest.length; k++) {
     const m = OPTION_LINE.exec(rest[k] ?? '');
     if (!m) continue;
-    const label = (m[3] ?? '').trim().replace(/^\[[ ✔]\]\s*/, '');
-    if (/^Type something\.?$/i.test(label) || /^Chat about this$/i.test(label)) break;
+    let label = (m[3] ?? '').trim().replace(/^\[[ ✔]\]\s*/, '');
+    if (/^Chat about this$/i.test(label)) break;
+    if (/^Type something\.?$/i.test(label)) break;
+    if (k === typedRowIdx) {
+      // Join this row's continuation lines with a single space, stopping at
+      // the next option row, a blank line, a rule, or (multi-select) the
+      // "Submit" row -- never at a different row's own continuation, since
+      // this only ever runs for the one row right before "Chat about this".
+      for (let j = k + 1; j < chatIdx; j++) {
+        const next = rest[j] ?? '';
+        const trimmed = next.trim();
+        if (trimmed === '' || RULE_LINE.test(trimmed) || SUBMIT_ROW.test(trimmed) || OPTION_LINE.test(next)) break;
+        label += ` ${trimmed}`;
+      }
+    }
     options.push(label);
   }
 
