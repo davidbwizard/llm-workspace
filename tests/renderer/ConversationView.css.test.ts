@@ -199,3 +199,12 @@ describe('ConversationView.css: readable line length', () => {
     expect(blockAfter('.turn .turn-text {')).toMatch(/max-width:\s*72ch/);
   });
 });
+
+describe('ConversationView.css: long unbroken text wraps in every turn', () => {
+  // Seen 2026-09-18: a user message containing a long comma-joined token
+  // (a MySQL sql_mode list) ran past its bubble. Markdown replies already
+  // wrapped (.turn-text.md); plain user text did not.
+  it('breaks long words in the shared turn text rule, not only in markdown', () => {
+    expect(blockAfter('.turn .turn-text {')).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+});
