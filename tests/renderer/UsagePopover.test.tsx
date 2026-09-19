@@ -29,16 +29,16 @@ describe('UsagePopover', () => {
       await waitFor(() => expect(screen.getByText('No data yet')).toBeTruthy());
     });
 
-    it('shows "No Codex sessions yet" when codex is null', async () => {
+    it('shows "No Codex usage in the last 8 days" when codex is null', async () => {
       setFleet();
       render(<UsagePopover />);
-      await waitFor(() => expect(screen.getByText('No Codex sessions yet')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('No Codex usage in the last 8 days')).toBeTruthy());
     });
 
     it('does not crash and shows the empty states when window.fleet is unavailable', async () => {
       (globalThis as never as { window: { fleet: unknown } }).window.fleet = undefined;
       expect(() => render(<UsagePopover />)).not.toThrow();
-      await waitFor(() => expect(screen.getByText('No Codex sessions yet')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('No Codex usage in the last 8 days')).toBeTruthy());
     });
   });
 

@@ -18,12 +18,23 @@ export interface CodexLimitsRead {
   updatedAt: number | null;
 }
 
-/** Look at most this many of the newest rollouts (design: "at most the 5
- *  newest"), found among this many of the most recent day folders -- a
+/** Look at most this many of the newest rollouts, modified at most this
+ *  long ago, found among this many of the most recent day folders -- a
  *  session keeps writing into the folder of the day it started, so the
- *  newest-by-mtime file can sit a day or more back. */
-const MAX_FILES = 5;
-const MAX_DAY_DIRS = 7;
+ *  newest-by-mtime file can sit a day or more back.
+ *
+ *  Both MAX_FILES and MAX_AGE_MS bound the walk in readCodexRateLimits:
+ *  Codex Desktop (originator "Codex Desktop", source "vscode") writes
+ *  totals only, never rate_limits, and can write far more than five
+ *  rollouts between refreshes (measured 2026-09-18: 39 in one burst), so
+ *  the CLI rollout that does carry rate limits can sit well past the
+ *  newest handful. MAX_DAY_DIRS is generous relative to MAX_AGE_MS's 8
+ *  days -- listing an extra day folder is cheap, and it covers both a
+ *  gap-day-per-folder Codex history and a session that keeps writing into
+ *  a folder older than the window. */
+const MAX_FILES = 200;
+const MAX_AGE_MS = 8 * 24 * 60 * 60 * 1000;
+const MAX_DAY_DIRS = 20;
 const DEFAULT_MAX_BYTES = 1 << 20;
 const DEFAULT_CHUNK = 64 * 1024;
 const ROLLOUT_FILE = /^rollout-.*\.jsonl$/;
@@ -165,9 +176,24 @@ function descendingDirs(dir: string): string[] {
   }
 }
 
-/** The (at most) five newest rollout files by mtime, among the most recent
- *  day folders -- a bounded walk, never the whole history. */
-export function newestRollouts(root: string, limit = MAX_FILES): { path: string; mtimeMs: number; size: number }[] {
+export interface RolloutCandidate { path: string; mtimeMs: number; size: number; ino: number }
+
+export interface NewestRolloutsOpts {
+  /** For the age bound below; defaults to Date.now(). */
+  now?: number;
+  limit?: number;
+  maxAgeMs?: number;
+}
+
+/** The rollout files modified within the last `maxAgeMs` (default
+ *  MAX_AGE_MS), newest by mtime first, capped at `limit` (default
+ *  MAX_FILES) and found among the most recent MAX_DAY_DIRS day folders --
+ *  a bounded walk, never the whole history. */
+export function newestRollouts(root: string, opts: NewestRolloutsOpts = {}): RolloutCandidate[] {
+  const now = opts.now ?? Date.now();
+  const limit = opts.limit ?? MAX_FILES;
+  const floor = now - (opts.maxAgeMs ?? MAX_AGE_MS);
+
   const dayDirs: string[] = [];
   outer:
   for (const year of descendingDirs(root)) {
@@ -179,7 +205,7 @@ export function newestRollouts(root: string, limit = MAX_FILES): { path: string;
     }
   }
 
-  const files: { path: string; mtimeMs: number; size: number }[] = [];
+  const files: RolloutCandidate[] = [];
   for (const dir of dayDirs) {
     let names: string[];
     try { names = readdirSync(dir); } catch { continue; }
@@ -188,10 +214,10 @@ export function newestRollouts(root: string, limit = MAX_FILES): { path: string;
       const path = join(dir, name);
       try {
         // lstat, not stat: a symlinked rollout is never counted, so it can
-        // neither bump a real one out of the newest-five nor report its
+        // neither bump a real one out of the newest-N nor report its
         // target's own size/mtime as if it were a real rollout.
         const st = lstatSync(path);
-        if (st.isFile()) files.push({ path, mtimeMs: st.mtimeMs, size: st.size });
+        if (st.isFile() && st.mtimeMs >= floor) files.push({ path, mtimeMs: st.mtimeMs, size: st.size, ino: st.ino });
       } catch {
         // Removed since the listing: skip it.
       }
@@ -200,28 +226,67 @@ export function newestRollouts(root: string, limit = MAX_FILES): { path: string;
   return files.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit);
 }
 
-/** Per-file results, reused while the file's size and mtime are unchanged.
- *  Rebuilt from the current candidates on every call, so it holds at most
- *  five entries. */
+/** Per-file results, reused while the file's (inode, size, mtime) is
+ *  unchanged. Rebuilt from the current candidates on every call, plus the
+ *  remembered last-good file below, so it holds at most MAX_FILES + 1
+ *  entries. */
 let cache = new Map<string, { key: string; read: CodexLimitsRead | null }>();
 
+/** The path of the last rollout that produced rate limits. Checked first
+ *  on every call (cache permitting, so this costs one lstat when nothing
+ *  changed) so a burst of newer rollouts with no rate limits at all --
+ *  Codex Desktop, which records totals only -- can never push the file the
+ *  switch actually reads for out of the bounded walk below. Forgotten once
+ *  it is gone, no longer a regular file, or has aged out of MAX_AGE_MS. */
+let lastGoodPath: string | null = null;
+
 /** Account-wide Codex rate limits: the most recent token_count with rate
- *  limits among the newest rollouts, minus windows that have already reset.
- *  null when there is none. */
+ *  limits among the newest rollouts (bounded by MAX_FILES and MAX_AGE_MS,
+ *  plus the remembered last-good file), minus windows that have already
+ *  reset. null when there is none. */
 export function readCodexRateLimits(root: string, now: number): CodexUsage | null {
   const next = new Map<string, { key: string; read: CodexLimitsRead | null }>();
-  let best: { read: CodexLimitsRead; at: number } | null = null;
-  for (const f of newestRollouts(root)) {
-    const key = `${f.size}:${f.mtimeMs}`;
-    const hit = cache.get(f.path);
-    const read = hit && hit.key === key ? hit.read : lastRateLimitsInFile(f.path);
-    next.set(f.path, { key, read });
-    if (!read) continue;
-    // An event with no timestamp is dated by its file's mtime.
-    const at = read.updatedAt ?? f.mtimeMs;
-    if (!best || at > best.at) best = { read, at };
+
+  // Pure w.r.t. `best` below (only touches the cache maps) so a `let best`
+  // reassigned from the plain loop bodies further down stays narrowable by
+  // TypeScript's control flow analysis -- reassigning it from inside a
+  // nested function instead defeats that narrowing.
+  function readOne(path: string, mtimeMs: number, size: number, ino: number): CodexLimitsRead | null {
+    const key = `${ino}:${size}:${mtimeMs}`;
+    const hit = cache.get(path);
+    const read = hit && hit.key === key ? hit.read : lastRateLimitsInFile(path);
+    next.set(path, { key, read });
+    return read;
   }
+
+  let best: { read: CodexLimitsRead; at: number; path: string } | null = null;
+
+  const rememberedPath = lastGoodPath;
+  if (rememberedPath) {
+    try {
+      const st = lstatSync(rememberedPath);
+      if (st.isFile() && now - st.mtimeMs <= MAX_AGE_MS) {
+        const read = readOne(rememberedPath, st.mtimeMs, st.size, st.ino);
+        // An event with no timestamp is dated by its file's mtime.
+        if (read) best = { read, at: read.updatedAt ?? st.mtimeMs, path: rememberedPath };
+      } else {
+        lastGoodPath = null; // aged out
+      }
+    } catch {
+      lastGoodPath = null; // gone since the last call
+    }
+  }
+
+  for (const f of newestRollouts(root, { now })) {
+    if (f.path === rememberedPath) continue; // already read above
+    const read = readOne(f.path, f.mtimeMs, f.size, f.ino);
+    if (!read) continue;
+    const at = read.updatedAt ?? f.mtimeMs;
+    if (!best || at > best.at) best = { read, at, path: f.path };
+  }
+
   cache = next;
+  lastGoodPath = best ? best.path : null;
   if (!best) return null;
 
   const primary = currentWindow(best.read.primary, now);

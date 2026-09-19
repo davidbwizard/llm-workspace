@@ -143,7 +143,8 @@ export function withContext(db: Db, open: OpenSession[], opts: ContextOpts): Ope
 
 /** Account-wide rate limits for the Usage button. Called only when the
  *  popover asks, never on a push. Reads files only: the snapshot folder's
- *  listing, and a bounded tail of at most five rollouts (both cached). */
+ *  listing, and a bounded tail of at most 200 rollouts modified in the
+ *  last 8 days (both cached). */
 export function buildUsagePayload(
   paths: Pick<Paths, 'statusLineDir' | 'codexSessions'>, now: number = Date.now(),
 ): UsagePayload {

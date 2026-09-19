@@ -15,11 +15,24 @@ import {
 // node:fs's real ESM export is non-configurable (vi.spyOn cannot redefine
 // it), so the indirection is a mutable ref a real vi.mock factory forwards
 // through, restored to the real function after the one test that uses it.
-const { readSyncRef } = vi.hoisted(() => ({ readSyncRef: { current: null as unknown as typeof import('node:fs').readSync } }));
+// openCountRef counts real opens the same way, for the cache-reuse tests:
+// a warm call must hit the (inode, size, mtime) cache, never re-open a file
+// that has not changed.
+const { readSyncRef, openCountRef } = vi.hoisted(() => ({
+  readSyncRef: { current: null as unknown as typeof import('node:fs').readSync },
+  openCountRef: { current: 0 },
+}));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   readSyncRef.current = actual.readSync;
-  return { ...actual, readSync: (...args: Parameters<typeof actual.readSync>) => readSyncRef.current(...args) };
+  return {
+    ...actual,
+    readSync: (...args: Parameters<typeof actual.readSync>) => readSyncRef.current(...args),
+    openSync: (...args: Parameters<typeof actual.openSync>) => {
+      openCountRef.current++;
+      return actual.openSync(...args);
+    },
+  };
 });
 
 // Real-shaped rollout lines (Codex 0.154 token_count events, content and
@@ -35,7 +48,10 @@ const LINE6_TS = Date.parse('2026-09-17T18:50:02.400Z');
 const NOW = Date.parse('2026-09-17T19:00:00Z');
 
 let dir: string;
-beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'llmws-codex-limits-')); });
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'llmws-codex-limits-'));
+  openCountRef.current = 0;
+});
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('parseTokenCountLine', () => {
@@ -202,18 +218,30 @@ describe('finding the newest rollouts', () => {
     return path;
   }
 
-  it('returns at most five rollout files, newest by mtime first, including an older day still being written', () => {
+  it('returns at most `limit` rollout files, newest by mtime first, including an older day still being written', () => {
     const paths: string[] = [];
     for (let i = 0; i < 6; i++) paths.push(rollout('2026/09/18', `rollout-2026-09-18T0${i}-00-00-a${i}.jsonl`, 1_789_700_000 + i));
     const longRunning = rollout('2026/09/17', 'rollout-2026-09-17T07-21-08-long.jsonl', 1_789_700_100);
     writeFileSync(join(dir, '2026/09/18', 'notes.txt'), 'x');
 
-    const got = newestRollouts(dir).map(r => r.path);
+    const got = newestRollouts(dir, { now: NOW, limit: 5 }).map(r => r.path);
     expect(got).toEqual([longRunning, paths[5], paths[4], paths[3], paths[2]]);
   });
 
+  it('defaults to at most 200 files', () => {
+    for (let i = 0; i < 205; i++) rollout('2026/09/18', `rollout-2026-09-18T00-00-${String(i).padStart(2, '0')}-a${i}.jsonl`, 1_789_700_000 + i);
+    expect(newestRollouts(dir, { now: NOW })).toHaveLength(200);
+  });
+
+  it('excludes files older than the 8-day default age bound, even with room in the file-count bound', () => {
+    const eightDaysMs = 8 * 24 * 60 * 60 * 1000;
+    const inBounds = rollout('2026/09/09', 'rollout-2026-09-09T07-21-08-in.jsonl', (NOW - eightDaysMs + 60_000) / 1000);
+    rollout('2026/09/09', 'rollout-2026-09-09T07-20-08-out.jsonl', (NOW - eightDaysMs - 60_000) / 1000);
+    expect(newestRollouts(dir, { now: NOW }).map(r => r.path)).toEqual([inBounds]);
+  });
+
   it('is empty for a missing root', () => {
-    expect(newestRollouts(join(dir, 'missing'))).toEqual([]);
+    expect(newestRollouts(join(dir, 'missing'), { now: NOW })).toEqual([]);
   });
 
   // M2: lstat, not stat -- a symlinked rollout is never counted among the
@@ -226,7 +254,7 @@ describe('finding the newest rollouts', () => {
     const link = join(dir, '2026/09/17', 'rollout-2026-09-17T09-00-00-link.jsonl');
     symlinkSync(target, link);
 
-    expect(newestRollouts(dir).map(r => r.path)).toEqual([real]);
+    expect(newestRollouts(dir, { now: NOW }).map(r => r.path)).toEqual([real]);
   });
 
   describe('readCodexRateLimits', () => {
@@ -268,6 +296,89 @@ describe('finding the newest rollouts', () => {
       appendFileSync(path, JSON.stringify(rec) + '\n');
       utimesSync(path, 1_789_700_060, 1_789_700_060);
       expect(readCodexRateLimits(dir, NOW)?.primary?.usedPct).toBe(31);
+    });
+
+    // Regression: Codex Desktop writes a burst of rollouts with no
+    // rate_limits at all (it records totals only). The reader must keep
+    // walking past all of them, newest-first, to reach the CLI rollout
+    // that still carries rate limits -- bounded by the file-count and
+    // age caps below, not by the old "five newest" limit.
+    describe('past a flood of newer rollouts with no rate limits', () => {
+      const noRateLimits = LINES.slice(6).join('\n') + '\n'; // no token_count with rate_limits
+
+      function desktopRollouts(count: number, newestMtimeSec: number) {
+        for (let i = 0; i < count; i++) {
+          rollout('2026/09/18', `rollout-2026-09-18T14-00-${String(i).padStart(3, '0')}-desktop.jsonl`, newestMtimeSec - i, noRateLimits);
+        }
+      }
+
+      it('finds rate limits in an older file past 45 newer ones with none', () => {
+        rollout('2026/09/17', 'rollout-2026-09-17T07-21-08-cli.jsonl', 1_789_700_000, FIXTURE);
+        desktopRollouts(45, 1_789_700_100); // newer mtimes, none carry rate limits
+
+        expect(readCodexRateLimits(dir, NOW)?.primary?.usedPct).toBe(27);
+      });
+
+      it('does not find it once more than 200 newer files with none crowd it out', () => {
+        // 200 desktop files strictly newer than the CLI file's mtime, so
+        // the 200-file cap drops exactly the CLI file.
+        rollout('2026/09/17', 'rollout-2026-09-17T07-21-08-cli.jsonl', 1_789_699_800, FIXTURE);
+        desktopRollouts(200, 1_789_700_100); // range: 1_789_699_901..1_789_700_100
+
+        expect(readCodexRateLimits(dir, NOW)).toBeNull();
+      });
+
+      it('does not find it once the file is older than the 8-day bound, even with room in the 200-file cap', () => {
+        const eightDaysMs = 8 * 24 * 60 * 60 * 1000;
+        const tooOldSec = (NOW - eightDaysMs - 60_000) / 1000;
+        rollout('2026/09/09', 'rollout-2026-09-09T07-21-08-cli.jsonl', tooOldSec, FIXTURE);
+
+        expect(readCodexRateLimits(dir, NOW)).toBeNull();
+      });
+
+      it('remembers the last file that had rate limits and reuses its cached result, opening nothing on a warm call', () => {
+        rollout('2026/09/17', 'rollout-2026-09-17T07-21-08-cli.jsonl', 1_789_700_000, FIXTURE);
+        desktopRollouts(10, 1_789_700_100);
+
+        expect(readCodexRateLimits(dir, NOW)?.primary?.usedPct).toBe(27);
+        expect(openCountRef.current).toBeGreaterThan(0); // cold: real opens happened
+
+        openCountRef.current = 0;
+        expect(readCodexRateLimits(dir, NOW)?.primary?.usedPct).toBe(27);
+        expect(openCountRef.current).toBe(0); // warm: every file's (inode, size, mtime) is unchanged
+      });
+
+      it('re-reads only the files that changed since the last call', () => {
+        const cliPath = rollout('2026/09/17', 'rollout-2026-09-17T07-21-08-cli.jsonl', 1_789_700_000, FIXTURE);
+        desktopRollouts(10, 1_789_700_100);
+        expect(readCodexRateLimits(dir, NOW)?.primary?.usedPct).toBe(27);
+
+        openCountRef.current = 0;
+        const rec = JSON.parse(LINES[5]!);
+        rec.timestamp = '2026-09-17T18:55:00.000Z';
+        rec.payload.rate_limits.primary.used_percent = 31;
+        appendFileSync(cliPath, JSON.stringify(rec) + '\n');
+        utimesSync(cliPath, 1_789_700_061, 1_789_700_061);
+
+        expect(readCodexRateLimits(dir, NOW)?.primary?.usedPct).toBe(31);
+        expect(openCountRef.current).toBe(1); // only the changed file was reopened
+      });
+
+      it('still refuses a symlink and an oversized rollout even in the wider walk', () => {
+        const target = join(dir, 'target.jsonl');
+        writeFileSync(target, FIXTURE);
+        mkdirSync(join(dir, '2026/09/17'), { recursive: true });
+        const link = join(dir, '2026/09/17', 'rollout-2026-09-17T07-21-08-link.jsonl');
+        symlinkSync(target, link);
+        utimesSync(link, 1_789_700_100, 1_789_700_100);
+
+        // The rate-limits line sits near the start; padding after it pushes
+        // the file's last 1 MB (the only part ever read) past that line.
+        const bigOutput = JSON.stringify({ type: 'response_item', payload: { output: 'y'.repeat(2_000_000) } });
+        rollout('2026/09/16', 'rollout-2026-09-16T07-21-08-oversize.jsonl', 1_789_700_050, FIXTURE + bigOutput + '\n');
+
+        expect(readCodexRateLimits(dir, NOW)).toBeNull();
+      });
     });
   });
 });

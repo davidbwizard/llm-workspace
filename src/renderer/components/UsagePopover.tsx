@@ -106,7 +106,7 @@ export function UsagePopover() {
       <section className="usagesection">
         <h3 className="usagesectitle">Codex</h3>
         {codex === null ? (
-          <p className="usageempty">No Codex sessions yet</p>
+          <p className="usageempty">No Codex usage in the last 8 days</p>
         ) : (
           <>
             {codex.primary && <UsageBar label={codexLabel((codex.primary as CodexRateWindow).windowMinutes)} window={codex.primary} now={now} />}
