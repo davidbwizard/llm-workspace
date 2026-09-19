@@ -200,6 +200,9 @@ message in the same form as an unsent one). What worked, all day:
   Fable 5.1 1M, Haiku 4.5 200k (documented). The compact point is NOT
   documented (CLI: `--autocompact <auto|100k-1M>`), so a "Compacts at" setting
   defaults to 83% of the window, marked as an estimate.
-- Ideas from David, not scheduled: switch permission mode from the Conversation
-  view (mockup first); a right-click edit menu in text boxes; the agent graph view
-  (worktree `../llm-workspace-agent-graph`, branch `agent-graph`).
+- **SHIPPED 2026-09-18 (3863e02):** right-click edit menu, favourite folders
+  (launch bar, conversation header, card menu; chips under the launch bar),
+  Cmd+1-9 (numbers beside the card menu, sidebar order), wrapped long "Other"
+  answers. Still open: switch permission mode from the Conversation view (mockup
+  first); the agent graph view (worktree `../llm-workspace-agent-graph`, branch
+  `agent-graph`); Part 3 (iTerm, with a Terminal.app fallback).
