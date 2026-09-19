@@ -393,6 +393,39 @@ describe('SessionRail', () => {
     });
   });
 
+  // Cmd+1..9: unlike the grid (FleetView.test.tsx), the rail DOES reorder
+  // cards (the unread promotion above) -- these prove the hotkey number
+  // still tracks each session's RANK in the incoming `sessions` prop, not
+  // wherever it currently sits on screen, so pressing Cmd+N (App.tsx, which
+  // reads the same canonical `sessions`/openSessions order) always lands on
+  // the card carrying that same number, regardless of unread reshuffling.
+  // David's own ruling: "same numbering everywhere... in sidebar order" --
+  // App.tsx computes ONE shared pid->number map (useFleet.ts's
+  // orderedSessions, which already mirrors this component's own unread-
+  // promotion sort) and hands it down as cmdIndexByPid, rather than this
+  // component deriving numbers from its own rank or its own reordered
+  // display position.
+  describe('the Cmd+N hotkey numbers', () => {
+    it("shows the number cmdIndexByPid gives each pid, tracking that pid through its own reordering", () => {
+      const cmdIndexByPid = new Map([[1, 1], [2, 2], [3, 3]]);
+      const { rerender, container } = render(<SessionRail sessions={sessionsPlain} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" cmdIndexByPid={cmdIndexByPid} />);
+      expect([...container.querySelectorAll('.proj')].map(el => el.textContent)).toEqual(['llm-workspace', 'game-viewer']);
+      expect([...container.querySelectorAll('.cmdnum')].map(n => n.textContent)).toEqual(['1', '2']);
+
+      // pid 2 (game-viewer) becomes unread and is promoted above pid 1 in
+      // THIS component's own display order -- its number must follow it
+      // (still "2"), since it's a lookup by pid, not by position.
+      rerender(<SessionRail sessions={sessionsPlainPid2Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" cmdIndexByPid={cmdIndexByPid} />);
+      expect([...container.querySelectorAll('.proj')].map(el => el.textContent)).toEqual(['game-viewer', 'llm-workspace']);
+      expect([...container.querySelectorAll('.cmdnum')].map(n => n.textContent)).toEqual(['2', '1']);
+    });
+
+    it('shows no numbers at all when cmdIndexByPid is not supplied', () => {
+      const { container } = render(<SessionRail sessions={sessionsPlain} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      expect(container.querySelectorAll('.cmdnum')).toHaveLength(0);
+    });
+  });
+
   describe('SessionRail -- compact cards', () => {
     it('renders compact cards by default, which is what the setting ships as', () => {
       const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);

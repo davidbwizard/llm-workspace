@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import { App, ErrorBoundary } from '../../src/renderer/App.tsx';
 import { reloadSettings, setSettings } from '../../src/renderer/state/settings.ts';
 
@@ -73,5 +73,98 @@ describe('App -- appearance', () => {
     await waitFor(() => expect(document.documentElement.getAttribute('data-theme')).toBe('light'));
     expect((window as unknown as { fleet: { setTheme: ReturnType<typeof vi.fn> } }).fleet.setTheme)
       .toHaveBeenCalledWith('light');
+  });
+});
+
+// Cmd+1..9: a window-level keydown listener, installed once at the app
+// level (App.tsx's own effect has an empty dependency array), that selects
+// an open session the same way clicking its card does. Session order here
+// is plain payload order throughout -- none of these fixtures ever produce
+// an unread promotion, so useFleet.ts's orderedSessions (tested directly,
+// with that promotion, in useFleet.test.tsx) matches it exactly.
+describe('App -- Cmd+1..9 session shortcuts', () => {
+  const openSessions = (n: number) => Array.from({ length: n }, (_, i) => ({
+    pid: i + 1, project: `proj-${i + 1}`, provider: 'claude', activity: null, lastProse: null,
+    cwd: `/proj-${i + 1}`, host: 'iterm2', ageSeconds: 60, rssBytes: null, events: null,
+    sessionId: null, tmux: false, junk: false, match: 'unknown', context: null,
+  })) as never[];
+
+  beforeEach(() => {
+    localStorage.clear();
+    reloadSettings();
+    document.documentElement.removeAttribute('data-theme');
+  });
+
+  async function renderWithSessions(n: number) {
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      listFleet: vi.fn().mockResolvedValue({ version: 1, generatedAt: '', openSessions: openSessions(n) }),
+      listHistory: vi.fn().mockResolvedValue({ version: 1, generatedAt: '', sessions: [], total: 0 }),
+      onFleet: vi.fn(() => () => {}),
+      setTheme: vi.fn().mockResolvedValue({ status: 'set', theme: 'system' }),
+      killSession: vi.fn().mockResolvedValue({ status: 'killed' }),
+      revealSession: vi.fn().mockResolvedValue({ status: 'revealed' }),
+      reattach: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
+      resume: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
+    };
+    const result = render(<App />);
+    await waitFor(() => expect(screen.getByText(`${n} open`)).toBeTruthy());
+    return result;
+  }
+
+  function pressCmd(key: string, extra: Partial<KeyboardEventInit> = {}): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { key, metaKey: true, cancelable: true, bubbles: true, ...extra });
+    act(() => { window.dispatchEvent(event); });
+    return event;
+  }
+
+  it('selects the Nth open session, in the sidebar/fleet order, on Cmd+N', async () => {
+    const { container } = await renderWithSessions(3);
+    pressCmd('2');
+    await waitFor(() => expect(container.querySelector('.panetitle')?.textContent).toBe('/proj-2'));
+  });
+
+  it('selects the last open session on Cmd+9', async () => {
+    const { container } = await renderWithSessions(11);
+    pressCmd('9');
+    await waitFor(() => expect(container.querySelector('.panetitle')?.textContent).toBe('/proj-11'));
+  });
+
+  it('ignores Cmd+N when there are fewer open sessions than N, and never prevents default', async () => {
+    const { container } = await renderWithSessions(2);
+    const event = pressCmd('5');
+    expect(container.querySelector('.panetitle')).toBeNull();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('prevents default only once it has actually selected a session', async () => {
+    await renderWithSessions(3);
+    const event = pressCmd('2');
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('ignores the chord when Ctrl, Alt or Shift rides along with Cmd', async () => {
+    const { container } = await renderWithSessions(3);
+    pressCmd('2', { ctrlKey: true });
+    pressCmd('2', { altKey: true });
+    pressCmd('2', { shiftKey: true });
+    expect(container.querySelector('.panetitle')).toBeNull();
+  });
+
+  it('ignores a bare digit with no Cmd (meta) modifier', async () => {
+    const { container } = await renderWithSessions(3);
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', cancelable: true, bubbles: true })); });
+    expect(container.querySelector('.panetitle')).toBeNull();
+  });
+
+  it('selects through the same path a card click uses, defaulting to the Conversation view', async () => {
+    await renderWithSessions(3);
+    pressCmd('1');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^conversation$/i }).getAttribute('aria-pressed')).toBe('true'));
+  });
+
+  it('removes the listener on unmount', async () => {
+    const { unmount } = await renderWithSessions(3);
+    unmount();
+    expect(() => pressCmd('1')).not.toThrow();
   });
 });

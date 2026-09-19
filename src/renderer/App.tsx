@@ -1,4 +1,4 @@
-import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
+import { Component, useEffect, useMemo, useRef, type ErrorInfo, type ReactNode } from 'react';
 import { MainPane } from './components/MainPane.tsx';
 import { LaunchBar } from './components/LaunchBar.tsx';
 import { useFleet } from './state/useFleet.ts';
@@ -72,8 +72,55 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
  *  three states FleetView used to guard on its own, before it became one
  *  branch inside MainPane instead of everything App rendered). */
 export function App() {
-  const { payload, error, selection, select, setView, clear } = useFleet();
+  const { payload, error, selection, select, setView, clear, orderedSessions } = useFleet();
   const settings = useSettings();
+
+  // Cmd+1..9: the small hotkey number every open-session card shows (both
+  // the grid and the rail) is looked up from this SAME map, so a card's own
+  // number always matches what pressing that chord actually selects --
+  // orderedSessions (useFleet.ts) is the one shared ranking both this and
+  // every card's own number are built from.
+  const cmdIndexByPid = useMemo(() => {
+    const m = new Map<number, number>();
+    orderedSessions.forEach((s, i) => { if (i < 9) m.set(s.pid, i + 1); });
+    return m;
+  }, [orderedSessions]);
+
+  // Latest-value refs, not effect dependencies: the listener below is
+  // installed exactly once, for the component's whole lifetime (its own
+  // effect has an empty dependency array), and reads through these instead
+  // of closing over a stale orderedSessions/select from whichever render
+  // happened to run when it was attached.
+  const orderedRef = useRef(orderedSessions);
+  orderedRef.current = orderedSessions;
+  const selectRef = useRef(select);
+  selectRef.current = select;
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent): void {
+      // Meta alone -- Ctrl/Alt/Shift riding along means something else
+      // entirely (a browser/OS chord, or nothing this app defines).
+      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const digit = Number(e.key);
+      if (!Number.isInteger(digit) || digit < 1 || digit > 9) return;
+      const sessions = orderedRef.current;
+      // Ignored, not clamped: with fewer open sessions than the digit
+      // pressed, there is no Nth (or, for 9, no "last" beyond what a lower
+      // digit already reaches) session to select.
+      if (sessions.length < digit) return;
+      const target = digit === 9 ? sessions[sessions.length - 1] : sessions[digit - 1];
+      // preventDefault only now that this has actually acted -- an ignored
+      // chord (too few sessions, or one this handler doesn't own) must not
+      // swallow whatever the OS or the page would otherwise do with it.
+      e.preventDefault();
+      // The same select() a card click uses -- always resets the view to
+      // Conversation (useFleet.ts's own select), never straight to the
+      // Terminal one.
+      selectRef.current(target!.pid);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -133,6 +180,7 @@ export function App() {
           onSetView={setView}
           onClear={clear}
           railSide="left"
+          cmdIndexByPid={cmdIndexByPid}
         />
       </ErrorBoundary>
     </main>
