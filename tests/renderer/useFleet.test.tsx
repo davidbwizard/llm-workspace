@@ -79,3 +79,76 @@ describe('useFleet payload', () => {
     delete (globalThis as any).window.fleet;
   });
 });
+
+// Cmd+1..9 and the shared hotkey number (OpenSessionCard's cmdIndex, wired
+// through App.tsx) both key off this one ranking -- "same numbering
+// everywhere... in sidebar order", so this mirrors SessionRail's own
+// unread-promotion sort (tests/renderer/SessionRail.test.tsx's "relevance
+// ordering" describe block covers that comparator itself in depth; these
+// prove useFleet's own copy of it behaves the same way).
+describe('useFleet orderedSessions', () => {
+  const session = (over: Partial<Record<string, unknown>>) => ({
+    pid: 1, project: 'p', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/a',
+    junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, sessionId: null,
+    tmux: false, context: null, match: 'unknown', ...over,
+  });
+
+  function push(onFleet: ReturnType<typeof vi.fn>, sessions: unknown[]): void {
+    const handler = onFleet.mock.calls[0]![0] as (p: unknown) => void;
+    act(() => handler({ version: 1, generatedAt: 't', openSessions: sessions }));
+  }
+
+  it('is empty before the payload has loaded', () => {
+    delete (globalThis as any).window.fleet;
+    const { result } = renderHook(() => useFleet());
+    expect(result.current.orderedSessions).toEqual([]);
+  });
+
+  it('matches payload order when nothing is unread or blocked', async () => {
+    const onFleet = vi.fn().mockReturnValue(() => {});
+    (globalThis as any).window.fleet = {
+      listFleet: vi.fn().mockResolvedValue({
+        version: 1, generatedAt: 't',
+        openSessions: [session({ pid: 1 }), session({ pid: 2 }), session({ pid: 3 })],
+      }),
+      onFleet,
+    };
+    const { result } = renderHook(() => useFleet());
+    await waitFor(() => expect(result.current.orderedSessions).toHaveLength(3));
+    expect(result.current.orderedSessions.map(s => s.pid)).toEqual([1, 2, 3]);
+    delete (globalThis as any).window.fleet;
+  });
+
+  it('promotes a session whose events grow while it is not selected, same as the sidebar', async () => {
+    const onFleet = vi.fn().mockReturnValue(() => {});
+    (globalThis as any).window.fleet = {
+      listFleet: vi.fn().mockResolvedValue({
+        version: 1, generatedAt: 't',
+        openSessions: [session({ pid: 1 }), session({ pid: 2 }), session({ pid: 3 })],
+      }),
+      onFleet,
+    };
+    const { result } = renderHook(() => useFleet());
+    await waitFor(() => expect(result.current.orderedSessions).toHaveLength(3));
+    push(onFleet, [session({ pid: 1 }), session({ pid: 2, events: 15 }), session({ pid: 3 })]);
+    await waitFor(() => expect(result.current.orderedSessions.map(s => s.pid)).toEqual([2, 1, 3]));
+    delete (globalThis as any).window.fleet;
+  });
+
+  it('never promotes the currently selected session, even as its own events grow', async () => {
+    const onFleet = vi.fn().mockReturnValue(() => {});
+    (globalThis as any).window.fleet = {
+      listFleet: vi.fn().mockResolvedValue({
+        version: 1, generatedAt: 't',
+        openSessions: [session({ pid: 1 }), session({ pid: 2 })],
+      }),
+      onFleet,
+    };
+    const { result } = renderHook(() => useFleet());
+    await waitFor(() => expect(result.current.orderedSessions).toHaveLength(2));
+    act(() => result.current.select(1));
+    push(onFleet, [session({ pid: 1, events: 15 }), session({ pid: 2 })]);
+    expect(result.current.orderedSessions.map(s => s.pid)).toEqual([1, 2]);
+    delete (globalThis as any).window.fleet;
+  });
+});

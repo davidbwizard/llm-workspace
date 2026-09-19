@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { LaunchBar } from '../../src/renderer/components/LaunchBar.tsx';
+import { reloadFavourites } from '../../src/renderer/state/favourites.ts';
 
 // @testing-library/user-event is not a project dependency (see
 // tests/renderer/SessionRail.test.tsx) -- fireEvent substitutes for it,
@@ -133,6 +134,134 @@ describe('LaunchBar', () => {
       expect(screen.getByRole('dialog', { name: /usage/i })).toBeTruthy();
       fireEvent.click(usageBtn);
       expect(screen.queryByRole('dialog', { name: /usage/i })).toBeNull();
+    });
+  });
+
+  // Favourite folders: a star toggle beside the folder input, persisted to
+  // localStorage as "llmws.favourites" (a JSON array of absolute paths),
+  // rendered as chips directly under the bar. jsdom's real localStorage is
+  // used throughout, same convention as SessionRail.test.tsx's own
+  // llmws:rail-width persistence tests -- cleared here so no favourite
+  // written by one test leaks into the next.
+  describe('favourite folders', () => {
+    // favourites.ts is a module-scoped singleton store (shared with
+    // MainPane's header star and OpenSessionCard's own menu item) -- same
+    // reset requirement as settings.ts's own store: clearing localStorage
+    // alone leaves the in-memory `current` untouched, so every test also
+    // reloads it, same as reloadSettings() elsewhere.
+    beforeEach(() => { localStorage.clear(); reloadFavourites(); });
+
+    it('disables the star with no folder chosen', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      const star = screen.getByRole('button', { name: 'Add to favourites' }) as HTMLButtonElement;
+      expect(star.disabled).toBe(true);
+      expect(star.getAttribute('aria-pressed')).toBe('false');
+    });
+
+    it('enables the star once a folder is typed, and toggles it on click', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/Users/me/proj' } });
+      const star = screen.getByRole('button', { name: 'Add to favourites' }) as HTMLButtonElement;
+      expect(star.disabled).toBe(false);
+      fireEvent.click(star);
+      expect(screen.getByRole('button', { name: 'Remove from favourites' }).getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('shows a chip for the favourite, named by its last path segment, titled with the full path', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/Users/me/proj' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add to favourites' }));
+      const chip = screen.getByRole('button', { name: 'proj' });
+      expect(chip.closest('[title]')?.getAttribute('title')).toBe('/Users/me/proj');
+    });
+
+    it('shows no favourites row at all when there are none', () => {
+      const { container } = render(<LaunchBar onLaunched={() => {}} />);
+      expect(container.querySelector('.favrow')).toBeNull();
+    });
+
+    it("launches the chip's folder, under the currently selected provider, through the same call the Launch button uses", async () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/Users/me/proj' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add to favourites' }));
+      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'proj' }));
+      await waitFor(() => expect(launch).toHaveBeenCalledWith('codex', '/Users/me/proj', expect.any(Number), expect.any(Number)));
+    });
+
+    it('removes a favourite from its own × button', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/Users/me/proj' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add to favourites' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Remove proj from favourites' }));
+      expect(screen.queryByRole('button', { name: 'proj' })).toBeNull();
+    });
+
+    it('persists favourites across a remount', () => {
+      const { unmount } = render(<LaunchBar onLaunched={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/Users/me/proj' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add to favourites' }));
+      unmount();
+      render(<LaunchBar onLaunched={() => {}} />);
+      expect(screen.getByRole('button', { name: 'proj' })).toBeTruthy();
+    });
+
+    it('ignores corrupt stored favourites rather than crashing', () => {
+      localStorage.setItem('llmws.favourites', 'not json');
+      // favourites.ts is read at module load and on explicit reload only
+      // (see the store's own beforeEach comment above) -- reloadFavourites
+      // is what actually exercises the corrupt-JSON path here; its own
+      // parsing is unit-tested directly in favourites.test.ts.
+      expect(() => reloadFavourites()).not.toThrow();
+      expect(() => render(<LaunchBar onLaunched={() => {}} />)).not.toThrow();
+      expect(screen.queryByRole('group', { name: /favourite/i })).toBeNull();
+    });
+
+    it('validates stored entries: drops non-strings and relative paths, dedupes, and caps at 12', () => {
+      const junk = ['/a', '/a', 42, null, 'relative', '/b', ...Array.from({ length: 20 }, (_, i) => `/many-${i}`)];
+      localStorage.setItem('llmws.favourites', JSON.stringify(junk));
+      reloadFavourites();
+      const { container } = render(<LaunchBar onLaunched={() => {}} />);
+      expect(container.querySelectorAll('.favchip')).toHaveLength(12);
+    });
+
+    it('disables the star at 12 favourites, with a title explaining why', () => {
+      const twelve = Array.from({ length: 12 }, (_, i) => `/proj-${i}`);
+      localStorage.setItem('llmws.favourites', JSON.stringify(twelve));
+      reloadFavourites();
+      render(<LaunchBar onLaunched={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/proj-new' } });
+      const star = screen.getByRole('button', { name: 'Add to favourites' }) as HTMLButtonElement;
+      expect(star.disabled).toBe(true);
+      expect(star.getAttribute('title')).toMatch(/12/);
+    });
+
+    it('still allows un-favouriting at the cap', () => {
+      const twelve = Array.from({ length: 12 }, (_, i) => `/proj-${i}`);
+      localStorage.setItem('llmws.favourites', JSON.stringify(twelve));
+      reloadFavourites();
+      render(<LaunchBar onLaunched={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/proj-0' } });
+      const star = screen.getByRole('button', { name: 'Remove from favourites' }) as HTMLButtonElement;
+      expect(star.disabled).toBe(false);
+    });
+
+    it('keeps working even when localStorage throws on read', () => {
+      const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('nope'); });
+      expect(() => reloadFavourites()).not.toThrow();
+      expect(() => render(<LaunchBar onLaunched={() => {}} />)).not.toThrow();
+      spy.mockRestore();
+    });
+
+    it('keeps working even when localStorage throws on write', () => {
+      const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('nope'); });
+      render(<LaunchBar onLaunched={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/Users/me/proj' } });
+      expect(() => fireEvent.click(screen.getByRole('button', { name: 'Add to favourites' }))).not.toThrow();
+      // Still reflected in this render's own state even though persistence failed.
+      expect(screen.getByRole('button', { name: 'Remove from favourites' })).toBeTruthy();
+      spy.mockRestore();
     });
   });
 });

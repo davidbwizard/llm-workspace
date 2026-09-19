@@ -3,6 +3,7 @@ import type { LaunchResult } from '../../main/launch.ts';
 import { Icon } from './Icon.tsx';
 import { SettingsModal } from './SettingsModal.tsx';
 import { UsagePopover } from './UsagePopover.tsx';
+import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES, lastSegment } from '../state/favourites.ts';
 import './LaunchBar.css';
 
 // A live terminal only exists once TerminalView actually mounts, and it
@@ -42,6 +43,27 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
   const usageWrapRef = useRef<HTMLDivElement | null>(null);
   const usageBtnRef = useRef<HTMLButtonElement | null>(null);
 
+  // Favourite folders: state/favourites.ts is the one shared store
+  // LaunchBar, MainPane's header star and OpenSessionCard's own menu item
+  // all read and write -- adding one from the header or a card shows up
+  // here, as a chip, with no reload (useFavourites is a useSyncExternalStore
+  // subscription, same as useSettings()).
+  const favourites = useFavourites();
+  const trimmedCwd = cwd.trim();
+  const isFav = trimmedCwd !== '' && favourites.includes(trimmedCwd);
+  const favouritesFull = !isFav && favourites.length >= MAX_FAVOURITES;
+
+  /** Adds or removes the CURRENT folder field's (trimmed) text -- not
+   *  whichever chip, if any, happens to match it -- toggling is the star's
+   *  own job; a chip's own × calls the store's removeFavourite directly,
+   *  the only way to drop one that isn't the folder currently typed. A
+   *  no-op on an empty field (the button is disabled then anyway); the cap
+   *  and dedupe rules live in the store itself (addFavourite), not here. */
+  function toggleFavourite(): void {
+    if (trimmedCwd === '') return;
+    if (isFav) removeFavourite(trimmedCwd); else addFavourite(trimmedCwd);
+  }
+
   useEffect(() => {
     if (!usageOpen) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setUsageOpen(false); };
@@ -70,8 +92,13 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
     return () => { usageBtnRef.current?.focus(); };
   }, [usageOpen]);
 
-  async function launch(): Promise<void> {
-    const dir = cwd.trim();
+  /** The one path anything in this component starts a session through --
+   *  the Launch button (no argument, the typed/chosen folder field) AND a
+   *  favourite chip (its own stored path) both call this, rather than the
+   *  chip duplicating launch's own pending/error handling. Provider always
+   *  comes from the `provider` state below, currently-selected either way. */
+  async function launch(targetDir?: string): Promise<void> {
+    const dir = (targetDir ?? cwd).trim();
     if (dir === '') { setMessage('Choose a working directory first.'); return; }
     setPending(true);
     setMessage(null);
@@ -95,6 +122,7 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
   }
 
   return (
+    <>
     <form className="launchbar" onSubmit={e => { e.preventDefault(); void launch(); }}>
       <select className="launchprovider" aria-label="Provider" value={provider}
         onChange={e => setProvider(e.target.value === 'codex' ? 'codex' : 'claude')}>
@@ -103,6 +131,20 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
       </select>
       <input className="launchcwd" type="text" aria-label="Working directory"
         placeholder="/path/to/project" value={cwd} onChange={e => setCwd(e.target.value)} />
+      {/* The star glyph itself is aria-hidden (decorative -- ☆/★ carry no
+          meaning to a screen reader on their own); the accessible name and
+          the pressed state below carry the actual state, same convention
+          as every icon in this app (Icon.tsx renders its glyphs
+          aria-hidden too). Disabled both with nothing typed (there's no
+          folder to favourite) and, per spec, once 12 are already saved --
+          unless the current folder is ALREADY one of them, since removing
+          at the cap must still work. */}
+      <button type="button" className="launchfav" aria-label={isFav ? 'Remove from favourites' : 'Add to favourites'}
+        aria-pressed={isFav} disabled={trimmedCwd === '' || favouritesFull}
+        title={favouritesFull ? `You can save up to ${MAX_FAVOURITES} favourites.` : undefined}
+        onClick={toggleFavourite}>
+        <span aria-hidden="true">{isFav ? '★' : '☆'}</span>
+      </button>
       <button type="button" className="launchchoose" aria-label="Choose a working directory"
         disabled={pending} onClick={() => { void chooseDirectory(); }}>
         Choose…
@@ -138,5 +180,27 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
       }} />
       {message && <p className="launchmsg" role="status">{message}</p>}
     </form>
+    {/* Only rendered once there is at least one favourite -- an empty row
+        would just be dead space under the bar. A sibling of the form, not
+        nested inside it, so it reads as its own row directly under the
+        launch bar rather than wrapping inside it. */}
+    {favourites.length > 0 && (
+      <div className="favrow" role="group" aria-label="Favourite folders">
+        {favourites.map(path => (
+          <span className="favchip" key={path} title={path}>
+            <button type="button" className="favchip-name" disabled={pending}
+              onClick={() => { void launch(path); }}>
+              {lastSegment(path)}
+            </button>
+            <button type="button" className="favchip-remove"
+              aria-label={`Remove ${lastSegment(path)} from favourites`}
+              onClick={() => removeFavourite(path)}>
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+    )}
+    </>
   );
 }

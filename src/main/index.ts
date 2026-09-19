@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, nativeTheme } from 'electron';
+import { app, BrowserWindow, shell, nativeTheme, Menu } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync, existsSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -14,6 +14,7 @@ import { refreshLiveProcesses } from '../discovery/live.ts';
 import { adoptRunningSessions } from './sessions.ts';
 import { readStoredTheme } from './appearance.ts';
 import { notifySessionChanged, pushSessionLive, watchSessionFor, type WatchDeps } from './sessionLive.ts';
+import { contextMenuTemplate } from './contextMenu.ts';
 
 // The release-only shape of watchSessionFor's deps -- window close and
 // before-quit only ever call it with pid: null (stop watching), which
@@ -95,6 +96,27 @@ function createWindow(): void {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.on('will-frame-navigate', (e) => e.preventDefault());
   win.webContents.on('will-redirect', (e) => e.preventDefault());
+
+  // The right-click edit menu. contextMenuTemplate (src/main/contextMenu.ts)
+  // is pure -- it decides WHAT the menu contains from `params` alone, with
+  // no webContents of its own to call anything on. This is the one place
+  // that turns its plain data into a real Electron menu: 'suggestion' items
+  // get a click that calls the real replaceMisspelling; 'role' items need
+  // no click handler at all (Electron performs cut/copy/paste/select-all
+  // itself for a MenuItem carrying that role). An empty template (neither
+  // editable nor a text selection) never calls popup() -- no menu at all,
+  // per contextMenuTemplate's own doc comment, rather than an empty one.
+  win.webContents.on('context-menu', (_event, params) => {
+    const items = contextMenuTemplate(params);
+    if (items.length === 0) return;
+    Menu.buildFromTemplate(items.map(item => {
+      if (item.kind === 'separator') return { type: 'separator' };
+      if (item.kind === 'suggestion') {
+        return { label: item.label, click: () => win.webContents.replaceMisspelling(item.label) };
+      }
+      return { label: item.label, role: item.role, enabled: item.enabled };
+    })).popup();
+  });
 
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void win.loadFile(join(import.meta.dirname, '../renderer/index.html'));

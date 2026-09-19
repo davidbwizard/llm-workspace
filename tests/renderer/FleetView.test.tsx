@@ -355,4 +355,32 @@ describe('FleetView', () => {
       expect(container.querySelectorAll('.fleet .card.compact').length).toBe(0);
     });
   });
+
+  // Cmd+1..9: the grid never reorders (unlike SessionRail's own unread
+  // promotion -- see SessionRail.test.tsx), so each card's hotkey number is
+  // simply its position in openSessions, 1-based, and only for the first
+  // nine.
+  // David's own ruling: "same numbering everywhere... in sidebar order" --
+  // App.tsx computes ONE shared pid->number map (useFleet.ts's
+  // orderedSessions) and hands it down as cmdIndexByPid, rather than this
+  // component deriving its own from its own render order. These prove
+  // FleetView renders exactly what that map says, including a pid the map
+  // leaves out (index 9 and past) and one it maps to a number that doesn't
+  // match this component's own array position -- proof it's a lookup, not a
+  // re-derivation.
+  describe('the Cmd+N hotkey numbers', () => {
+    it('shows the number cmdIndexByPid gives each pid, and nothing for a pid it omits', () => {
+      const many = Array.from({ length: 11 }, (_, i) => o({ pid: i + 1, project: `p${i + 1}` }));
+      const cmdIndexByPid = new Map(Array.from({ length: 9 }, (_, i) => [i + 1, i + 1]));
+      const { container } = render(<FleetView payload={payload(many)} error={null} onSelect={() => {}} cmdIndexByPid={cmdIndexByPid} />);
+      const nums = [...container.querySelectorAll('.fleet .cmdnum')].map(n => n.textContent);
+      expect(nums).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9']);
+    });
+
+    it('shows no numbers at all when cmdIndexByPid is not supplied', () => {
+      const many = Array.from({ length: 3 }, (_, i) => o({ pid: i + 1, project: `p${i + 1}` }));
+      const { container } = render(<FleetView payload={payload(many)} error={null} onSelect={() => {}} />);
+      expect(container.querySelectorAll('.fleet .cmdnum')).toHaveLength(0);
+    });
+  });
 });

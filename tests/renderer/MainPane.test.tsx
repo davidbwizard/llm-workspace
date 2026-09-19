@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { MainPane } from '../../src/renderer/components/MainPane.tsx';
+import { getFavourites, addFavourite, reloadFavourites } from '../../src/renderer/state/favourites.ts';
 
 // @testing-library/user-event is not a project dependency (see
 // tests/renderer/SessionRail.test.tsx) -- fireEvent.click substitutes for
@@ -39,6 +41,11 @@ beforeEach(() => {
     // this directly for any selection whose session has a non-null sessionId.
     conversation: vi.fn().mockResolvedValue({ turns: [], nextCursor: null }),
   };
+  // favourites.ts is a module-scoped singleton store (settings.ts's own
+  // shape) -- clearing localStorage alone leaves the in-memory value
+  // untouched, so every test also reloads it.
+  localStorage.clear();
+  reloadFavourites();
 });
 
 describe('MainPane', () => {
@@ -272,5 +279,54 @@ describe('MainPane', () => {
     await waitFor(() => expect(api.sendKeys).toHaveBeenCalledWith(1, 'go'));
     fireEvent.click(screen.getByRole('button', { name: /^open terminal$/i }));
     expect(onSetView).toHaveBeenCalledWith('terminal');
+  });
+
+  // Favourite folders: David's addition -- a star in the conversation
+  // header, on the SAME shared store as LaunchBar's own (state/favourites.ts),
+  // so a session's folder can be favourited without ever typing its path
+  // into the launch bar.
+  describe('the header favourite star', () => {
+    it('is unpressed for a folder that is not yet a favourite', () => {
+      render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      const star = screen.getByRole('button', { name: 'Add a to favourites' }) as HTMLButtonElement;
+      expect(star.getAttribute('aria-pressed')).toBe('false');
+      expect(star.disabled).toBe(false);
+    });
+
+    it('adds the session folder to the shared store, live, with no reload', () => {
+      render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      fireEvent.click(screen.getByRole('button', { name: 'Add a to favourites' }));
+      expect(getFavourites()).toContain('/a');
+      expect(screen.getByRole('button', { name: 'Remove a from favourites' }).getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('shows pressed, with a Remove label, when the folder is already a favourite', () => {
+      addFavourite('/a');
+      render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      const star = screen.getByRole('button', { name: 'Remove a from favourites' }) as HTMLButtonElement;
+      expect(star.getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('removes the session folder from the shared store', () => {
+      addFavourite('/a');
+      render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      fireEvent.click(screen.getByRole('button', { name: 'Remove a from favourites' }));
+      expect(getFavourites()).not.toContain('/a');
+    });
+
+    it('is disabled when the session has no working directory at all', () => {
+      const noCwd = [{ ...(sessions[0] as unknown as object), cwd: null }] as never[];
+      render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={noCwd} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      const star = screen.getByRole('button', { name: 'Add to favourites' }) as HTMLButtonElement;
+      expect(star.disabled).toBe(true);
+    });
+
+    // The path is the only control in this row that shrinks -- proven
+    // directly against the stylesheet, since jsdom computes no layout and
+    // so cannot prove an overflow visually.
+    it('never shrinks, unlike the folder path beside it', () => {
+      const css = readFileSync('src/renderer/components/MainPane.css', 'utf8');
+      expect(css).toMatch(/\.panefav\s*\{[^}]*flex:\s*none/);
+    });
   });
 });

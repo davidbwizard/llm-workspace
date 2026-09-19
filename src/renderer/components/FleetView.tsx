@@ -21,10 +21,14 @@ const HISTORY_PAGE = 60;
 // same data. FleetView is now just one consumer of that shared state, passed
 // in as props -- it still owns everything below (History's own accordion
 // state and paging), which no other view needs.
-export function FleetView({ payload, error, onSelect }: {
+export function FleetView({ payload, error, onSelect, cmdIndexByPid }: {
   payload: FleetListPayload | null;
   error: string | null;
   onSelect: (pid: number) => void;
+  /** Cmd+1..9's own shared ranking (App.tsx/useFleet.ts) -- pid to hotkey
+   *  number (1-9). Optional so this component's own tests keep rendering
+   *  exactly as they did before this existed. */
+  cmdIndexByPid?: Map<number, number>;
 }) {
   // The two independent enumerations, per the model correction: "ALL OPEN
   // SESSIONS should show. And the source." Open sessions come from live
@@ -118,7 +122,7 @@ export function FleetView({ payload, error, onSelect }: {
           {openSessions.map(o => (
             <OpenSessionCard key={o.pid} state={o} onOpen={onSelect} onKill={fleetApi.killSession}
               onReveal={fleetApi.revealSession} onReattach={fleetApi.reattach} onResume={fleetApi.resume}
-              compact={compact} />
+              compact={compact} cmdIndex={cmdIndexByPid?.get(o.pid)} />
           ))}
         </div>
       ) : (

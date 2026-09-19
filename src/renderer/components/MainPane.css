@@ -49,3 +49,11 @@
    itself, since that component is also reused inside OpenSessionCard's
    own, unrelated flex context, which this fix has no business touching. */
 .panehead .ctxchip { flex:none; }
+/* Favourite folders' header star -- flex:none like every other control in
+   this row (.panetitle above is the only one that ever shrinks). */
+.panefav { display:inline-flex; align-items:center; justify-content:center; flex:none;
+  line-height:1; font-size:13px; color:var(--muted); background:none; border:0;
+  padding:0 2px; cursor:pointer; }
+.panefav:hover { color:var(--ink); }
+.panefav[aria-pressed="true"] { color:var(--accent); }
+.panefav:disabled { opacity:.5; cursor:default; }

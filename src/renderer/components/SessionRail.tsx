@@ -79,7 +79,7 @@ function writeStoredRailWidth(w: number): void {
  *  routing decision (select this pid, show Conversation) both live in
  *  `onAnswer`, owned by the caller. */
 export function SessionRail({
-  sessions, selectedPid, onSelect, onKill, onReveal, onReattach, onResume, onAnswer, side,
+  sessions, selectedPid, onSelect, onKill, onReveal, onReattach, onResume, onAnswer, side, cmdIndexByPid,
 }: {
   sessions: OpenSession[];
   selectedPid: number | null;
@@ -94,6 +94,13 @@ export function SessionRail({
    *  not wire it. */
   onAnswer?: (pid: number) => void;
   side: 'left' | 'right';
+  /** Cmd+1..9's own shared ranking (App.tsx/useFleet.ts) -- pid to hotkey
+   *  number (1-9), the SAME map FleetView's own cards read, so a number
+   *  never disagrees with what Cmd+N actually selects even though this
+   *  component's own displaySessions (below) can reorder a card away from
+   *  that rank for the unread-promotion tier alone. Optional so this
+   *  component's own tests keep rendering exactly as they did before. */
+  cmdIndexByPid?: Map<number, number>;
 }) {
   // Which places use compact cards is one setting with four values, so
   // "Both on but Fleet off" is not a state that can exist -- the rail reads
@@ -217,7 +224,8 @@ export function SessionRail({
           return (
             <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
               <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill} onReveal={onReveal}
-                onReattach={onReattach} onResume={onResume} unread={unread} compact={compact} />
+                onReattach={onReattach} onResume={onResume} unread={unread} compact={compact}
+                cmdIndex={cmdIndexByPid?.get(s.pid)} />
               {waiting && (
                 // Named with project and pid, matching the neighbouring
                 // Close button's own convention (OpenSessionCard.tsx's

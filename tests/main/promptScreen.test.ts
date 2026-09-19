@@ -844,6 +844,49 @@ describe('readPromptScreen -- wrapped question title with a border prefix', () =
   });
 });
 
+// Measured 2026-09-18: after pressing the "Type something." option digit and
+// typing a long answer, the text sits on that option's row and wraps onto an
+// indented continuation line (100). The reader must join it back into one
+// string, without pulling in a DIFFERENT row's own description line (here,
+// "First implementation approach" under "1. Alpha", one row above).
+describe('readPromptScreen -- a typed answer that wraps across lines (99, 100)', () => {
+  const PICK_Q = 'Which option do you prefer for this test?';
+  const pickExpect = (): ScreenExpect => ({ kind: 'question', headers: ['Pick'], questions: [PICK_Q] });
+  const TYPED = 'Look. notifications are not nuts. They work.  Im not doubling up on more procs. '
+    + 'If we can fix it, lets do it now please.';
+
+  it('99: matches with the cursor freshly on "Type something.", nothing typed yet', () => {
+    const result = readPromptScreen(screen('99-ask-one-other-focused'), pickExpect());
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.current).toBe(0);
+    expect(result.options).toEqual(['Alpha', 'Beta']);
+  });
+
+  it('100: joins the typed answer\'s wrapped continuation line into one option, whole', () => {
+    const result = readPromptScreen(screen('100-ask-one-other-typed-wrapped'), pickExpect());
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.options).toEqual(['Alpha', 'Beta', TYPED]);
+  });
+
+  it('100: does not pull Alpha\'s own description line into Alpha\'s label', () => {
+    const result = readPromptScreen(screen('100-ask-one-other-typed-wrapped'), pickExpect());
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.options[0]).toBe('Alpha');
+    expect(result.options[1]).toBe('Beta');
+  });
+
+  it('a continuation line belonging to a different, later row is never joined backwards', () => {
+    // Alpha's description line sits directly above the typed row; if the
+    // join ever walked upward instead of only forward from the typed row,
+    // it would end up here instead of on the typed answer.
+    const result = readPromptScreen(screen('100-ask-one-other-typed-wrapped'), pickExpect());
+    if (!result.match || result.kind !== 'question') throw new Error('expected question match');
+    expect(result.options[0]).not.toContain('procs');
+  });
+});
+
 describe('readPromptScreen -- negatives that prove the reader tells outcomes apart', () => {
   // Every one of these screens shows something other than the expected live
   // prompt: a trust dialog, an idle composer, a busy spinner, an answered

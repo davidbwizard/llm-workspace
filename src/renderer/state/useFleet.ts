@@ -1,9 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 // FleetListPayload lives in main/ipc.ts, not fleet/state.ts -- OpenSession
 // (which state.ts does export) is the payload's element type, not the
 // payload itself. FleetView.tsx already imports it from here; matched for
 // consistency rather than introducing a second import path for one type.
 import type { FleetListPayload } from '../../main/ipc.ts';
+// TYPE-only from state.ts (same reasoning as SessionRail.tsx's own import of
+// OpenSession -- that module reaches node:os and the database, which do not
+// exist in a sandboxed renderer; a type import is erased at build and costs
+// nothing). compareOpenSessions itself is order.ts's own pure, Node-free
+// export -- see that file's doc comment on why the comparator was split out
+// of state.ts in the first place.
+import type { OpenSession } from '../../fleet/state.ts';
+import { compareOpenSessions } from '../../fleet/order.ts';
 
 export type PaneView = 'conversation' | 'terminal';
 export type Selection = { pid: number; view: PaneView } | null;
@@ -42,5 +50,48 @@ export function useFleet() {
   }, []);
   const clear = useCallback(() => setSelection(null), []);
 
-  return { payload, error, selection, select, setView, clear };
+  // Cmd+1..9 (App.tsx's own window keydown listener) and the small hotkey
+  // number OpenSessionCard shows on both the grid and the rail (spec:
+  // "same numbering everywhere... in sidebar order") both need ONE
+  // canonical ranking, computed once, here, rather than each view deriving
+  // its own -- otherwise a card's own number could disagree with what
+  // Cmd+N actually selects. This mirrors SessionRail's own unread-promotion
+  // sort exactly (same comparator, same "recorded on first sight or while
+  // selected" baseline rule) so the ranking matches what the sidebar shows
+  // whenever it's the thing on screen; SessionRail keeps its own separate
+  // tracking for its unread DOT and its own live reordering, which this
+  // does not replace -- this exists solely to give every card a single,
+  // globally-agreed number.
+  const [seenEvents, setSeenEvents] = useState<Map<number, number>>(new Map());
+  useEffect(() => {
+    if (!payload) return;
+    setSeenEvents(prev => {
+      let next: Map<number, number> | null = null;
+      for (const s of payload.openSessions) {
+        if (s.events == null) continue;
+        const shouldRecord = s.pid === selection?.pid || !prev.has(s.pid);
+        if (shouldRecord && prev.get(s.pid) !== s.events) {
+          if (!next) next = new Map(prev);
+          next.set(s.pid, s.events);
+        }
+      }
+      return next ?? prev;
+    });
+  }, [payload, selection?.pid]);
+
+  const orderedSessions = useMemo<OpenSession[]>(() => {
+    if (!payload) return [];
+    const sessions = payload.openSessions;
+    const rankByPid = new Map(sessions.map((s, i) => [s.pid, i]));
+    const isUnread = (s: OpenSession): boolean =>
+      s.pid !== selection?.pid && s.events != null && s.events > (seenEvents.get(s.pid) ?? s.events);
+    return [...sessions].sort(compareOpenSessions(
+      s => s.junk,
+      s => rankByPid.get(s.pid) ?? 0,
+      () => 0, // no ties possible on the rank above (pid-unique indices)
+      isUnread,
+    ));
+  }, [payload, seenEvents, selection?.pid]);
+
+  return { payload, error, selection, select, setView, clear, orderedSessions };
 }

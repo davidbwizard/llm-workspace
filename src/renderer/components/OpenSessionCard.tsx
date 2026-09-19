@@ -4,6 +4,7 @@ import type { KillResult, KillRefusalReason } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { ContextChip } from './ContextChip.tsx';
+import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES } from '../state/favourites.ts';
 import './OpenSessionCard.css';
 
 // One card per live process (David: "ALL OPEN SESSIONS should show. And
@@ -108,7 +109,7 @@ const KILL_SETTLE_MS = 5_500;
 const REATTACH_COLS = 120;
 const REATTACH_ROWS = 40;
 
-export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume, unread, compact = false }: {
+export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume, unread, compact = false, cmdIndex }: {
   state: OpenSession; onOpen: (pid: number) => void;
   /** Sends session:kill for this card's pid. Always resolves to a
    *  KillResult (src/main/ipc.ts), never throws by contract -- but this
@@ -146,6 +147,19 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
    *  Optional and defaulted to false rather than required, so every
    *  existing call site keeps rendering exactly what it rendered before. */
   compact?: boolean;
+  /** Cmd+1..9 (App.tsx's own window keydown listener): 1-9 shows a small
+   *  muted hotkey number in the corner, titled with the actual chord.
+   *  Supplied by the caller (FleetView/SessionRail), keyed to that same
+   *  session's RANK in the canonical sessions/openSessions order -- not
+   *  wherever this card currently sits on screen, which for SessionRail can
+   *  differ from that rank once its own unread promotion reorders the
+   *  rendered list (see SessionRail.tsx's own doc comment on why). Decorative
+   *  (aria-hidden) like the badge/unread-dot above: the card's own
+   *  accessible name already carries everything about it that matters to a
+   *  screen reader, and this is a purely visual hint for a sighted,
+   *  keyboard-driven user. Omitted (no number shown) for anything past the
+   *  ninth card, and for any caller that doesn't track this at all. */
+  cmdIndex?: number;
 }) {
   const hostLabel = hostLabelFor(state.host) ?? undefined;
   // Age and memory are NEVER gated on match quality here: the card IS the
@@ -246,6 +260,16 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   // obscure failure); an already-interactive session gets neither, since
   // there is nothing wrong with it to explain.
   const reattachEligible = state.provider === 'claude' && !state.tmux;
+
+  // Favourite folders: the SAME shared store LaunchBar's own star and
+  // MainPane's header star read and write (state/favourites.ts) --
+  // favouriting a session's folder from this card's own menu shows up as a
+  // chip under the launch bar with no reload. Disabled with no cwd at all
+  // (nothing to favourite), or once MAX_FAVOURITES is reached and this
+  // folder isn't already one of them (removing at the cap must still work).
+  const favourites = useFavourites();
+  const isFav = state.cwd !== null && favourites.includes(state.cwd);
+  const favouritesAtCap = !isFav && favourites.length >= MAX_FAVOURITES;
 
   // idle -> confirming -> pending -> (launched, handled by navigating away
   // and resetting) | 'failed' (dismissable, retryable from idle) |
@@ -435,55 +459,81 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
             {activityWord}
           </span>
         )}
-        {compact && (
-          <div
-            className="cardmenu"
-            ref={menuRef}
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.stopPropagation()}
+        {/* Un-gated from `compact` (David's addition): a full card gets this
+            menu too now, for the one item it doesn't already offer as an
+            inline pill button -- favouriting the session's folder. The
+            three PRE-EXISTING items stay compact-only below, exactly as
+            before: a full card still shows Close/Reattach as its own
+            visible pills (.actionsrow), not hidden behind this menu. */}
+        <div
+          className="cardmenu"
+          ref={menuRef}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="cardmenu-btn"
+            aria-haspopup="true"
+            aria-expanded={menuOpen}
+            // Named with the pid for the same reason the Close button is:
+            // with several cards in the rail, a bare "Session actions"
+            // would put indistinguishable buttons in the accessibility
+            // tree, which is the one thing the rail exists to prevent.
+            aria-label={`Session actions, pid ${state.pid}`}
+            onClick={() => setMenuOpen(o => !o)}
           >
-            <button
-              type="button"
-              className="cardmenu-btn"
-              aria-haspopup="true"
-              aria-expanded={menuOpen}
-              // Named with the pid for the same reason the Close button is:
-              // with several cards in the rail, a bare "Session actions"
-              // would put indistinguishable buttons in the accessibility
-              // tree, which is the one thing the rail exists to prevent.
-              aria-label={`Session actions, pid ${state.pid}`}
-              onClick={() => setMenuOpen(o => !o)}
-            >
-              <span aria-hidden="true">…</span>
-            </button>
-            {/* Plain buttons, not role="menu"/"menuitem": that ARIA pattern
-                promises arrow-key roving focus and Home/End navigation this
-                popover doesn't implement (only Escape and click-outside,
-                same as the rest of this app's few popovers -- ReplyPopover
-                included). A half-implemented menu role is worse for
-                assistive tech than a plain button list, so each item keeps
-                its ordinary, fully-supported button semantics. */}
-            {menuOpen && (
-              <div className="cardmenu-list">
-                {hostLabel && onReveal && (
-                  <button type="button" className="cardmenu-item"
-                    onClick={() => { setMenuOpen(false); void onReveal(state.pid); }}>
-                    Show in {hostLabel}
-                  </button>
-                )}
-                {reattachEligible && (
-                  <button type="button" className="cardmenu-item"
-                    onClick={() => { setMenuOpen(false); setReattachPhase('confirming'); }}>
-                    Reattach in app
-                  </button>
-                )}
+            <span aria-hidden="true">…</span>
+          </button>
+          {/* Plain buttons, not role="menu"/"menuitem": that ARIA pattern
+              promises arrow-key roving focus and Home/End navigation this
+              popover doesn't implement (only Escape and click-outside,
+              same as the rest of this app's few popovers -- ReplyPopover
+              included). A half-implemented menu role is worse for
+              assistive tech than a plain button list, so each item keeps
+              its ordinary, fully-supported button semantics. */}
+          {menuOpen && (
+            <div className="cardmenu-list">
+              {compact && hostLabel && onReveal && (
+                <button type="button" className="cardmenu-item"
+                  onClick={() => { setMenuOpen(false); void onReveal(state.pid); }}>
+                  Show in {hostLabel}
+                </button>
+              )}
+              {compact && reattachEligible && (
+                <button type="button" className="cardmenu-item"
+                  onClick={() => { setMenuOpen(false); setReattachPhase('confirming'); }}>
+                  Reattach in app
+                </button>
+              )}
+              <button type="button" className="cardmenu-item"
+                disabled={state.cwd === null || favouritesAtCap}
+                title={favouritesAtCap ? `You can save up to ${MAX_FAVOURITES} favourites.` : undefined}
+                onClick={() => {
+                  setMenuOpen(false);
+                  if (state.cwd === null) return;
+                  if (isFav) removeFavourite(state.cwd); else addFavourite(state.cwd);
+                }}>
+                {isFav ? 'Remove folder from favourites' : 'Add folder to favourites'}
+              </button>
+              {compact && (
                 <button type="button" className="cardmenu-item cardmenu-danger"
                   onClick={() => { setMenuOpen(false); setPhase('confirming'); }}>
                   Close session
                 </button>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
+        </div>
+        {/* Cmd+1..9's own hotkey number (David: to the right of the "…"
+            menu button, same row -- not the corner badge this used to be).
+            A plain flex sibling of .cardmenu, not absolutely positioned: it
+            rides along after .cardmenu's own margin-left:auto rather than
+            needing position math of its own, and .metrics never wraps
+            (SessionCard.css's own .metrics has no flex-wrap), so it can
+            never push the menu button out of place or onto its own line. */}
+        {cmdIndex != null && cmdIndex >= 1 && cmdIndex <= 9 && (
+          <span className="cmdnum" aria-hidden="true" title={`Cmd+${cmdIndex}`}>{cmdIndex}</span>
         )}
       </div>
 
