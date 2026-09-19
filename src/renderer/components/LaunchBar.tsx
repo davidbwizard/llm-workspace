@@ -3,6 +3,7 @@ import type { LaunchResult } from '../../main/launch.ts';
 import { Icon } from './Icon.tsx';
 import { SettingsModal } from './SettingsModal.tsx';
 import { UsagePopover } from './UsagePopover.tsx';
+import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES, lastSegment } from '../state/favourites.ts';
 import './LaunchBar.css';
 
 // A live terminal only exists once TerminalView actually mounts, and it
@@ -11,51 +12,6 @@ import './LaunchBar.css';
 // reasonable starting size for the pane before that, not an exact one.
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
-
-// Favourite folders: a JSON array of absolute path strings, keyed like this
-// app's own settings/rail-width preferences (a per-viewer UI convenience,
-// never fleet state -- nothing here belongs in the store/db). Read/write
-// are both wrapped in try/catch: localStorage can throw in a locked-down or
-// private-mode webview, and losing the star/chips is never worth taking the
-// bar down over (same "must still work" rule as SessionRail's own
-// readStoredRailWidth/writeStoredRailWidth).
-const FAVOURITES_KEY = 'llmws.favourites';
-const MAX_FAVOURITES = 12;
-
-/** Validates on every read, not just on write -- the stored value could
- *  have been left behind by an older version of this app, or edited by
- *  hand: only absolute-path strings survive, deduped, capped at
- *  MAX_FAVOURITES. Any failure (missing key, invalid JSON, a throw from
- *  localStorage itself) falls back to no favourites rather than crashing
- *  the bar. */
-function readFavourites(): string[] {
-  try {
-    const raw = localStorage.getItem(FAVOURITES_KEY);
-    if (raw === null) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const valid = parsed.filter((p): p is string => typeof p === 'string' && p.startsWith('/'));
-    return Array.from(new Set(valid)).slice(0, MAX_FAVOURITES);
-  } catch {
-    return [];
-  }
-}
-
-/** Best-effort only: a failed write leaves this render's own state (already
- *  updated by the caller) as the only copy of the change, gone on the next
- *  reload -- still better than throwing and losing the click entirely. */
-function writeFavourites(list: string[]): void {
-  try { localStorage.setItem(FAVOURITES_KEY, JSON.stringify(list)); } catch { /* best-effort only */ }
-}
-
-/** The chip label (spec: "the folder's last path segment"). A bare "/" (no
- *  segment at all) falls back to the path itself rather than an empty
- *  label -- unreachable in practice (readFavourites only ever keeps
- *  strings starting with "/", and "/" itself is a legal absolute path). */
-function lastSegment(path: string): string {
-  const parts = path.split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? path;
-}
 
 /** Starts a new session from the app -- the renderer's one job is naming a
  *  provider and an explicit, user-typed directory; main re-derives
@@ -87,35 +43,25 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
   const usageWrapRef = useRef<HTMLDivElement | null>(null);
   const usageBtnRef = useRef<HTMLButtonElement | null>(null);
 
-  const [favourites, setFavourites] = useState<string[]>(() => readFavourites());
+  // Favourite folders: state/favourites.ts is the one shared store
+  // LaunchBar, MainPane's header star and OpenSessionCard's own menu item
+  // all read and write -- adding one from the header or a card shows up
+  // here, as a chip, with no reload (useFavourites is a useSyncExternalStore
+  // subscription, same as useSettings()).
+  const favourites = useFavourites();
   const trimmedCwd = cwd.trim();
-  const isFavourite = trimmedCwd !== '' && favourites.includes(trimmedCwd);
-  const favouritesFull = !isFavourite && favourites.length >= MAX_FAVOURITES;
+  const isFav = trimmedCwd !== '' && favourites.includes(trimmedCwd);
+  const favouritesFull = !isFav && favourites.length >= MAX_FAVOURITES;
 
   /** Adds or removes the CURRENT folder field's (trimmed) text -- not
    *  whichever chip, if any, happens to match it -- toggling is the star's
-   *  own job; a chip's own × (removeFavourite below) is the only way to
-   *  drop one that isn't the folder currently typed. A no-op on an empty
-   *  field (the button is disabled then anyway) and on trying to ADD past
-   *  the cap -- removing already-favourited-at-the-cap must still work, so
-   *  the cap only ever blocks the add branch. */
+   *  own job; a chip's own × calls the store's removeFavourite directly,
+   *  the only way to drop one that isn't the folder currently typed. A
+   *  no-op on an empty field (the button is disabled then anyway); the cap
+   *  and dedupe rules live in the store itself (addFavourite), not here. */
   function toggleFavourite(): void {
     if (trimmedCwd === '') return;
-    setFavourites(prev => {
-      const next = prev.includes(trimmedCwd)
-        ? prev.filter(p => p !== trimmedCwd)
-        : (prev.length >= MAX_FAVOURITES ? prev : [...prev, trimmedCwd]);
-      if (next !== prev) writeFavourites(next);
-      return next;
-    });
-  }
-
-  function removeFavourite(path: string): void {
-    setFavourites(prev => {
-      const next = prev.filter(p => p !== path);
-      writeFavourites(next);
-      return next;
-    });
+    if (isFav) removeFavourite(trimmedCwd); else addFavourite(trimmedCwd);
   }
 
   useEffect(() => {
@@ -193,11 +139,11 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
           folder to favourite) and, per spec, once 12 are already saved --
           unless the current folder is ALREADY one of them, since removing
           at the cap must still work. */}
-      <button type="button" className="launchfav" aria-label={isFavourite ? 'Remove from favourites' : 'Add to favourites'}
-        aria-pressed={isFavourite} disabled={trimmedCwd === '' || favouritesFull}
+      <button type="button" className="launchfav" aria-label={isFav ? 'Remove from favourites' : 'Add to favourites'}
+        aria-pressed={isFav} disabled={trimmedCwd === '' || favouritesFull}
         title={favouritesFull ? `You can save up to ${MAX_FAVOURITES} favourites.` : undefined}
         onClick={toggleFavourite}>
-        <span aria-hidden="true">{isFavourite ? '★' : '☆'}</span>
+        <span aria-hidden="true">{isFav ? '★' : '☆'}</span>
       </button>
       <button type="button" className="launchchoose" aria-label="Choose a working directory"
         disabled={pending} onClick={() => { void chooseDirectory(); }}>

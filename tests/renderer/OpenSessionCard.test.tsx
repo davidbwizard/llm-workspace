@@ -1,10 +1,19 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { OpenSessionCard } from '../../src/renderer/components/OpenSessionCard.tsx';
 import type { OpenSession } from '../../src/fleet/state.ts';
 import type { KillResult } from '../../src/main/ipc.ts';
 import type { LaunchResult } from '../../src/main/launch.ts';
+import { getFavourites, addFavourite, reloadFavourites } from '../../src/renderer/state/favourites.ts';
+
+// favourites.ts is a module-scoped singleton store (settings.ts's own
+// shape) -- clearing localStorage alone leaves the in-memory value
+// untouched, so every test also reloads it.
+beforeEach(() => {
+  localStorage.clear();
+  reloadFavourites();
+});
 
 // The model correction: one card per live process, "ALL OPEN SESSIONS
 // should show. And the source." Unmatched by default -- most tests below
@@ -84,6 +93,51 @@ describe('OpenSessionCard', () => {
     );
     expect(screen.getByText('Codex')).toBeTruthy();
     expect(container.querySelector('.prov.codex')).not.toBeNull();
+  });
+
+  // Cmd+1..9: a small muted hotkey number on the first nine open-session
+  // cards. cmdIndex is supplied by the caller (FleetView/SessionRail) --
+  // this component just renders whatever it's given, 1..9, decorative
+  // (aria-hidden -- the card's own accessible name already carries its
+  // identity) with a native title tooltip spelling out the actual chord.
+  describe('the Cmd+N hotkey number', () => {
+    it('shows the given number, aria-hidden, titled with the actual chord', () => {
+      const { container } = render(
+        <OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} cmdIndex={3} />,
+      );
+      const num = container.querySelector('.cmdnum');
+      expect(num?.textContent).toBe('3');
+      expect(num?.getAttribute('title')).toBe('Cmd+3');
+      expect(num?.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('shows nothing when no cmdIndex is given', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
+      expect(container.querySelector('.cmdnum')).toBeNull();
+    });
+
+    it('shows the same number on a compact card', () => {
+      const { container } = render(
+        <OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} compact cmdIndex={9} />,
+      );
+      expect(container.querySelector('.cmdnum')?.textContent).toBe('9');
+    });
+
+    // David, looking at the real, running window: move it to the right of
+    // the "…" menu button, same row, bottom-right corner -- not the
+    // top-left corner badge this used to be.
+    it('sits in the metrics row, immediately after the "…" menu button', () => {
+      const { container } = render(
+        <OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} cmdIndex={3} />,
+      );
+      const metrics = container.querySelector('.metrics')!;
+      const num = metrics.querySelector('.cmdnum');
+      const menu = metrics.querySelector('.cardmenu');
+      expect(num).not.toBeNull();
+      expect(menu).not.toBeNull();
+      // nodeType 4 (DOCUMENT_POSITION_FOLLOWING) -- num comes after menu.
+      expect(menu!.compareDocumentPosition(num!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
   });
 
   it('renders no last-message text when unmatched -- blank is honest, not a placeholder', () => {
@@ -748,11 +802,11 @@ describe('OpenSessionCard', () => {
       expect(screen.getByRole('button', { name: /session actions/i })).toBeTruthy();
     });
 
-    it('opens the menu with the three documented items', () => {
+    it('opens the menu with the four documented items, favourites included', () => {
       const { container } = renderCompact({}, { onReveal: vi.fn(async () => {}) });
       fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
       expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
-        .toEqual(['Show in iTerm2', 'Reattach in app', 'Close session']);
+        .toEqual(['Show in iTerm2', 'Reattach in app', 'Add folder to favourites', 'Close session']);
     });
 
     it('omits Reattach for a session that is already tmux-backed, and Show in host with no host', () => {
@@ -763,7 +817,7 @@ describe('OpenSessionCard', () => {
       const { container } = renderCompact({ tmux: true, host: 'unknown' });
       fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
       expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
-        .toEqual(['Close session']);
+        .toEqual(['Add folder to favourites', 'Close session']);
     });
 
     it.each([
@@ -841,7 +895,67 @@ describe('OpenSessionCard', () => {
         onReattach={neverReattach()} onResume={neverResume()} state={enrichedCompact} />);
       expect(container.querySelector('.card')!.classList.contains('compact')).toBe(false);
       expect(screen.getByText('/Users/me/trellome')).toBeTruthy();
-      expect(screen.queryByRole('button', { name: /session actions/i })).toBeNull();
+    });
+
+    // David's addition: the "⋯" menu now exists on a full card too, but
+    // ONLY for favouriting -- Close/Reattach stay exactly as they were,
+    // visible inline pills, never duplicated into this menu for a full card.
+    it('offers a session-actions menu on a full card too, with only the favourites item in it', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+        onReattach={neverReattach()} onResume={neverResume()} state={enrichedCompact} />);
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
+        .toEqual(['Add folder to favourites']);
+      // Close/Reattach still render as their own visible pills, unaffected.
+      expect(screen.getByRole('button', { name: /^Close, pid/ })).toBeTruthy();
     });
   });
+
+  // Favourite folders (David's addition): the SAME shared store LaunchBar's
+  // star and MainPane's header star use (state/favourites.ts) -- exercised
+  // here through the card's own "⋯" menu item, on both card sizes.
+  describe('the favourites menu item', () => {
+    it('adds the session folder to the shared store, live, with no reload', () => {
+      renderCompact({}, {});
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      // Same as every other item (Show in X/Reattach/Close): clicking closes
+      // the menu, so the toggled label is checked by reopening it.
+      fireEvent.click(screen.getByRole('button', { name: 'Add folder to favourites' }));
+      expect(getFavourites()).toContain('/Users/me/trellome');
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      expect(screen.getByRole('button', { name: 'Remove folder from favourites' })).toBeTruthy();
+    });
+
+    it('shows Remove, and removes on click, once the folder is already a favourite', () => {
+      addFavourite('/Users/me/trellome');
+      renderCompact({}, {});
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Remove folder from favourites' }));
+      expect(getFavourites()).not.toContain('/Users/me/trellome');
+    });
+
+    it('is disabled when the session has no cwd at all', () => {
+      renderCompact({ cwd: null }, {});
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      const item = screen.getByRole('button', { name: 'Add folder to favourites' }) as HTMLButtonElement;
+      expect(item.disabled).toBe(true);
+    });
+
+    it('never opens the session when clicked, same as every other menu item', () => {
+      const onOpen = vi.fn();
+      renderCompact({}, { onOpen });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Add folder to favourites' }));
+      expect(onOpen).not.toHaveBeenCalled();
+    });
+  });
+
+  function renderCompact(over: Partial<OpenSession> = {}, props: Record<string, unknown> = {}) {
+    const enrichedCompact: OpenSession = {
+      ...base, match: 'unique', sessionId: 's1', lastProse: 'Reused the JWT helper',
+      events: 9129, activity: 'working', tmux: false,
+    };
+    return render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
+      onResume={neverResume()} compact state={{ ...enrichedCompact, ...over }} {...props} />);
+  }
 });

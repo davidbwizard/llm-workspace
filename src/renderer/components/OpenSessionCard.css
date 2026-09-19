@@ -24,6 +24,16 @@
 .unread-dot { position:absolute; top:16px; right:18px; width:8px; height:8px;
   border-radius:50%; background:var(--signal); }
 
+/* Cmd+1..9's own hotkey number (OpenSessionCard.tsx's cmdIndex prop) --
+   David's own placement, seen against the real, running window: to the
+   RIGHT of the "…" menu button, in the bottom-right corner of the card
+   (.metrics is the last row), not a corner badge. A plain flex child, not
+   absolutely positioned -- .metrics never wraps (see its own rule,
+   SessionCard.css), so this can never push .cardmenu out of place or force
+   a second line. Muted and small: a hint for a keyboard-driven user, not a
+   status signal, so it never competes with --signal/--critical. */
+.cmdnum { font-family:var(--f-mono); font-size:10px; color:var(--faint); line-height:1; }
+
 /* The whole-card unread treatment David asked for beyond the dot alone
    ("maybe the box color should be different until I click on it") --
    same --signal tone as the dot above, same shape SessionCard.css's own
@@ -201,6 +211,8 @@
 .cardmenu-item { text-align:left; font-family:var(--f-mono); font-size:11px; color:var(--ink-2);
   background:none; border:0; border-radius:5px; padding:6px 9px; cursor:pointer; white-space:nowrap; }
 .cardmenu-item:hover { background:var(--raised); color:var(--ink); }
+.cardmenu-item:disabled { opacity:.5; cursor:default; }
+.cardmenu-item:disabled:hover { background:none; color:var(--ink-2); }
 /* Close is the one destructive item, and it still only opens the confirm
    panel -- the colour marks which item it is, not what pressing it does. */
 .cardmenu-danger:hover { color:var(--critical); }

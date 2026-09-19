@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { LaunchBar } from '../../src/renderer/components/LaunchBar.tsx';
+import { reloadFavourites } from '../../src/renderer/state/favourites.ts';
 
 // @testing-library/user-event is not a project dependency (see
 // tests/renderer/SessionRail.test.tsx) -- fireEvent substitutes for it,
@@ -143,7 +144,12 @@ describe('LaunchBar', () => {
   // llmws:rail-width persistence tests -- cleared here so no favourite
   // written by one test leaks into the next.
   describe('favourite folders', () => {
-    beforeEach(() => { localStorage.clear(); });
+    // favourites.ts is a module-scoped singleton store (shared with
+    // MainPane's header star and OpenSessionCard's own menu item) -- same
+    // reset requirement as settings.ts's own store: clearing localStorage
+    // alone leaves the in-memory `current` untouched, so every test also
+    // reloads it, same as reloadSettings() elsewhere.
+    beforeEach(() => { localStorage.clear(); reloadFavourites(); });
 
     it('disables the star with no folder chosen', () => {
       render(<LaunchBar onLaunched={() => {}} />);
@@ -203,6 +209,11 @@ describe('LaunchBar', () => {
 
     it('ignores corrupt stored favourites rather than crashing', () => {
       localStorage.setItem('llmws.favourites', 'not json');
+      // favourites.ts is read at module load and on explicit reload only
+      // (see the store's own beforeEach comment above) -- reloadFavourites
+      // is what actually exercises the corrupt-JSON path here; its own
+      // parsing is unit-tested directly in favourites.test.ts.
+      expect(() => reloadFavourites()).not.toThrow();
       expect(() => render(<LaunchBar onLaunched={() => {}} />)).not.toThrow();
       expect(screen.queryByRole('group', { name: /favourite/i })).toBeNull();
     });
@@ -210,6 +221,7 @@ describe('LaunchBar', () => {
     it('validates stored entries: drops non-strings and relative paths, dedupes, and caps at 12', () => {
       const junk = ['/a', '/a', 42, null, 'relative', '/b', ...Array.from({ length: 20 }, (_, i) => `/many-${i}`)];
       localStorage.setItem('llmws.favourites', JSON.stringify(junk));
+      reloadFavourites();
       const { container } = render(<LaunchBar onLaunched={() => {}} />);
       expect(container.querySelectorAll('.favchip')).toHaveLength(12);
     });
@@ -217,6 +229,7 @@ describe('LaunchBar', () => {
     it('disables the star at 12 favourites, with a title explaining why', () => {
       const twelve = Array.from({ length: 12 }, (_, i) => `/proj-${i}`);
       localStorage.setItem('llmws.favourites', JSON.stringify(twelve));
+      reloadFavourites();
       render(<LaunchBar onLaunched={() => {}} />);
       fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/proj-new' } });
       const star = screen.getByRole('button', { name: 'Add to favourites' }) as HTMLButtonElement;
@@ -227,6 +240,7 @@ describe('LaunchBar', () => {
     it('still allows un-favouriting at the cap', () => {
       const twelve = Array.from({ length: 12 }, (_, i) => `/proj-${i}`);
       localStorage.setItem('llmws.favourites', JSON.stringify(twelve));
+      reloadFavourites();
       render(<LaunchBar onLaunched={() => {}} />);
       fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/proj-0' } });
       const star = screen.getByRole('button', { name: 'Remove from favourites' }) as HTMLButtonElement;
@@ -235,6 +249,7 @@ describe('LaunchBar', () => {
 
     it('keeps working even when localStorage throws on read', () => {
       const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('nope'); });
+      expect(() => reloadFavourites()).not.toThrow();
       expect(() => render(<LaunchBar onLaunched={() => {}} />)).not.toThrow();
       spy.mockRestore();
     });

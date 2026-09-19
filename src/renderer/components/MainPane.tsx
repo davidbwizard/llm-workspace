@@ -10,6 +10,7 @@ import { ConversationView } from './ConversationView.tsx';
 import { TerminalView } from './TerminalView.tsx';
 import { ContextChip } from './ContextChip.tsx';
 import { abbreviateHome } from '../pathFormat.ts';
+import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES, lastSegment } from '../state/favourites.ts';
 import './MainPane.css';
 
 /** Falls back to a closed refusal rather than throwing when the bridge is
@@ -50,13 +51,20 @@ function revealSession(pid: number): Promise<RevealResult> {
  *  task. Wrapping `sessions` back into a payload for FleetView below is
  *  therefore never lossy: by the time this file runs, that payload IS just
  *  these sessions. */
-export function MainPane({ selection, sessions, onSelect, onSetView, onClear, railSide }: {
+export function MainPane({ selection, sessions, onSelect, onSetView, onClear, railSide, cmdIndexByPid }: {
   selection: Selection;
   sessions: OpenSession[];
   onSelect: (pid: number) => void;
   onSetView: (v: PaneView) => void;
   onClear: () => void;
   railSide: 'left' | 'right';
+  /** Cmd+1..9's own shared ranking (App.tsx, backed by useFleet.ts's
+   *  orderedSessions) -- pid to hotkey number (1-9), for whichever open-
+   *  session cards this pane renders (the grid below, or the rail further
+   *  down). Optional so every existing direct render of this component
+   *  (this file's own tests included) keeps working with no numbers shown,
+   *  rather than every call site needing one. */
+  cmdIndexByPid?: Map<number, number>;
 }) {
   // Usage design, Part B: the conversation header's context chip. Fed by
   // ConversationView's onContext callback (its own doc comment explains why
@@ -86,6 +94,13 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
   }
   const currentLiveContext = (selection?.pid ?? null) !== prevPid ? null : liveContext;
 
+  // Favourite folders' header star (shared with LaunchBar and
+  // OpenSessionCard's own menu item via state/favourites.ts's single
+  // store) -- called unconditionally, before the no-selection early return
+  // below, per the Rules of Hooks; only actually rendered in the split
+  // view further down.
+  const favourites = useFavourites();
+
   if (selection === null) {
     return (
       <div className="mainpane">
@@ -93,6 +108,7 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
           payload={{ version: 1, generatedAt: new Date().toISOString(), openSessions: sessions }}
           error={null}
           onSelect={onSelect}
+          cmdIndexByPid={cmdIndexByPid}
         />
       </div>
     );
@@ -107,6 +123,11 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
   // fires).
   const headerContext = currentLiveContext ?? session?.context ?? null;
 
+  const paneCwd = session?.cwd ?? null;
+  const paneFavName = paneCwd ? lastSegment(paneCwd) : null;
+  const isPaneFav = paneCwd !== null && favourites.includes(paneCwd);
+  const paneFavFull = !isPaneFav && favourites.length >= MAX_FAVOURITES;
+
   return (
     <div className="mainpane split">
       <SessionRail sessions={sessions} selectedPid={selection.pid} onSelect={onSelect} onKill={killSession}
@@ -118,7 +139,7 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
         // Conversation view instead of the Terminal one, since that's
         // where the prompt card (or its waiting-card fallback) lives.
         onAnswer={pid => { onSelect(pid); onSetView('conversation'); }}
-        side={railSide} />
+        side={railSide} cmdIndexByPid={cmdIndexByPid} />
       <section className="pane">
         <header className="panehead">
           <button type="button" className="paneback" onClick={onClear}>All sessions</button>
@@ -131,6 +152,23 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
           <span className="panetitle" title={session?.cwd ?? undefined}>
             {session?.cwd ? abbreviateHome(session.cwd) : 'session'}
           </span>
+          {/* Favourite folders: the same star as LaunchBar's, on the same
+              shared store (state/favourites.ts) -- adding or removing here
+              shows up as a chip under the launch bar with no reload. `flex:
+              none` in MainPane.css, same as every other control in this row:
+              .panetitle above is the only one that ever shrinks. Disabled
+              with no cwd at all (nothing to favourite) for this session. */}
+          <button type="button" className="panefav"
+            aria-label={paneFavName === null ? 'Add to favourites'
+              : isPaneFav ? `Remove ${paneFavName} from favourites` : `Add ${paneFavName} to favourites`}
+            aria-pressed={isPaneFav} disabled={paneCwd === null || paneFavFull}
+            title={paneFavFull ? `You can save up to ${MAX_FAVOURITES} favourites.` : undefined}
+            onClick={() => {
+              if (paneCwd === null) return;
+              if (isPaneFav) removeFavourite(paneCwd); else addFavourite(paneCwd);
+            }}>
+            <span aria-hidden="true">{isPaneFav ? '★' : '☆'}</span>
+          </button>
           {/* Usage design, Part B: the context chip, hidden entirely (its
               own null check) until some source has a count for this
               session. */}
