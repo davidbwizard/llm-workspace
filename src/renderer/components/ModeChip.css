@@ -29,7 +29,11 @@
 .modechip > button:disabled { opacity:.55; cursor:default; }
 .modechip > button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .modechip .dot { width:7px; height:7px; border-radius:50%; background:var(--m); flex:none; }
-.modechip .caret { font-size:9px; color:var(--muted); }
+/* Drawn, not typed -- see the note in ModeChip.tsx. Sized in px rather
+   than em so it cannot inherit its way to the wrong size, and `display:
+   block` so the inline baseline gap does not push it off centre in the
+   flex row. */
+.modechip .caret { width:9px; height:6px; display:block; flex:none; color:var(--muted); }
 
 /* Layout C puts the chip in the composer's foot, so the menu opens UPWARD
    (the mockup's `.modechip.up`). The `.down` variant it also carried was

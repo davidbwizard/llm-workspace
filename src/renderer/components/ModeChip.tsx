@@ -161,7 +161,17 @@ export function ModeChip({ pid, state, onOpenTerminal }: {
         >
           <span className="dot" aria-hidden="true" />
           <span className="label">{labelFor(provider, mode)}</span>
-          <span className="caret" aria-hidden="true">&#9650;</span>
+          {/* An SVG, not the text glyph the mockup used. U+25B2 is not in
+              IBM Plex Mono, so macOS substitutes some other font for that
+              one character -- a different shape at a different size than
+              the 9px this rule asks for, which is what David saw. Every
+              other mark in this app is drawn (StatusIcon.tsx, Icon.tsx)
+              for exactly this reason: a glyph the font does not have is
+              not a glyph you have chosen. */}
+          <svg className="caret" viewBox="0 0 10 6" aria-hidden="true">
+            <path d="M1 5 5 1l4 4" fill="none" stroke="currentColor"
+              strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
         {open && (
           <div className="modemenu" role="menu" aria-label="Permission mode" ref={menuRef} onKeyDown={onMenuKeyDown}>
