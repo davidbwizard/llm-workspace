@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { OpenSession } from '../../fleet/state.ts';
 import type { PaneView, Selection } from '../state/useFleet.ts';
 import type { KillResult, RevealResult } from '../../main/ipc.ts';
@@ -9,6 +9,8 @@ import { SessionRail } from './SessionRail.tsx';
 import { ConversationView } from './ConversationView.tsx';
 import { TerminalView } from './TerminalView.tsx';
 import { ContextChip } from './ContextChip.tsx';
+import { FileViewer, type ViewerFile, type ViewerMode } from './FileViewer.tsx';
+import { FileLinkContext } from './FilePath.tsx';
 import { abbreviateHome } from '../pathFormat.ts';
 import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES, lastSegment } from '../state/favourites.ts';
 import './MainPane.css';
@@ -39,6 +41,30 @@ function resumeSession(sessionId: string, cwd: string, cols: number, rows: numbe
 function revealSession(pid: number): Promise<RevealResult> {
   return window.fleet?.revealSession(pid) ?? Promise.resolve({ status: 'refused', reason: 'signal_failed' });
 }
+
+/** Where the side panel stops being usable, measured on the row that holds
+ *  the conversation and the viewer -- NOT on the window, because the rail
+ *  takes a variable amount of width and can sit on either side, so the same
+ *  window gives the pane two different widths.
+ *
+ *  The number is the sum of the two floors, not a round guess:
+ *    - The viewer needs ~360px. Below that its own header row (name, size,
+ *      "Reveal in Finder", close) stops leaving room for a readable file
+ *      name, and fenced code blocks -- which is most of what the app's own
+ *      markdown contains -- scroll sideways on every line.
+ *    - The conversation needs ~420px. Its text measure is 72ch
+ *      (ConversationView.css) and its message row carries chips capped at
+ *      260px plus the send control; below ~420 those start stacking.
+ *    - Plus the 1px divider, and a little slack so the breakpoint is not
+ *      exactly the point at which both halves are already at their floor.
+ *
+ *  At the app's minimum window (720px wide, src/main/index.ts) the pane is
+ *  always narrower than this, so a small window always gets the sheet --
+ *  which is the intended behaviour, not an accident of the number.
+ *
+ *  Exported so the test can assert against the same constant the component
+ *  uses rather than a copy of it. */
+export const SIDE_PANEL_MIN_PX = 820;
 
 /** The pluggable pane. Fleet and the session views today; Graph (Phase 4) and
  *  Game (spec section 14) are additional cases here, not rewrites -- which is
@@ -87,12 +113,82 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
   // ternary covers the one render where the setState calls have been made
   // but `liveContext`/`prevPid` themselves have not yet updated.
   const [liveContext, setLiveContext] = useState<SessionContext | null>(null);
+  // The open file. Cleared on every pid change for the same reason
+  // liveContext is: a document opened out of one session's folder must never
+  // stay on screen under another session's title. Declared here, above the
+  // reset block, because that block calls its setter during render.
+  const [viewer, setViewer] = useState<ViewerFile | null>(null);
   const [prevPid, setPrevPid] = useState<number | null>(selection?.pid ?? null);
   if ((selection?.pid ?? null) !== prevPid) {
     setPrevPid(selection?.pid ?? null);
     setLiveContext(null);
+    setViewer(null);
   }
   const currentLiveContext = (selection?.pid ?? null) !== prevPid ? null : liveContext;
+
+  const currentViewer = (selection?.pid ?? null) !== prevPid ? null : viewer;
+
+  // The pane chooses the placement by width, with no setting -- see
+  // SIDE_PANEL_MIN_PX above. Measured on the element rather than assumed
+  // from the window, and re-measured on every resize of it (the rail is
+  // draggable, so this changes without the window changing at all).
+  // A callback ref, not useRef: the element only exists in the split branch
+  // below, so an effect keyed on a ref would never see it appear.
+  const [paneBody, setPaneBody] = useState<HTMLDivElement | null>(null);
+  const [wide, setWide] = useState(true);
+  useEffect(() => {
+    if (!paneBody) return;
+    const measure = () => {
+      const w = paneBody.getBoundingClientRect().width;
+      // A zero width means "not laid out yet", not "narrow" -- acting on it
+      // would flash the sheet open on every mount.
+      if (w > 0) setWide(w >= SIDE_PANEL_MIN_PX);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      // No ResizeObserver (jsdom): the window is still a signal, just a
+      // coarser one. The app's real runtime always has the observer.
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(paneBody);
+    return () => observer.disconnect();
+  }, [paneBody]);
+  const viewerMode: ViewerMode = wide ? 'side' : 'sheet';
+
+  // A click on a path in the conversation. The renderer's entire
+  // contribution is this string: main (src/main/files.ts) resolves it
+  // against the session's own folder -- which it looks up itself, by pid --
+  // and decides whether it is read, revealed, or refused. A refusal other
+  // than "too large" is deliberately silent here: main has already logged
+  // it, and the path is one an agent wrote, not one the person typed.
+  const openFile = useCallback(async (candidate: string, reveal?: boolean) => {
+    const pid = selection?.pid;
+    const api = window.fleet;
+    if (pid === undefined || !api?.fileOpen) return;
+    try {
+      const result = await api.fileOpen(pid, candidate, reveal);
+      if (result.ok && result.action === 'markdown') {
+        setViewer({ kind: 'file', candidate, name: result.name, size: result.size, path: result.path, text: result.text });
+      } else if (!result.ok && result.reason === 'too_large') {
+        setViewer({ kind: 'too_large', candidate, name: result.name ?? candidate, size: result.size ?? 0 });
+      }
+      // 'revealed': Finder is already in front, and there is nothing for
+      // this pane to show.
+    } catch (err) {
+      console.error('session:file:open failed:', err);
+    }
+  }, [selection?.pid]);
+
+  // Memoised: a fresh object here would re-render every path control in
+  // the conversation on every render of this pane, which is most of them.
+  const pid = selection?.pid ?? null;
+  const hasSession = sessions.some(s => s.pid === pid);
+  const fileLink = useMemo(
+    () => (pid !== null && hasSession ? { pid, onOpen: (c: string) => { void openFile(c); } } : null),
+    [pid, hasSession, openFile],
+  );
 
   // Favourite folders' header star (shared with LaunchBar and
   // OpenSessionCard's own menu item via state/favourites.ts's single
@@ -180,6 +276,12 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
               onClick={() => onSetView('terminal')}>Terminal</button>
           </span>
         </header>
+        {/* The row the conversation and the side panel share, and the
+            element the placement is measured on. position:relative
+            (MainPane.css) is what the sheet's scrim is positioned against,
+            so the sheet covers the conversation rather than the whole
+            window. */}
+        <div className="panebody" ref={setPaneBody}>
         {selection.view === 'terminal'
           ? <TerminalView pid={selection.pid} />
           // sessionId is `string | null` -- NOT coerced to '' here. Null is
@@ -189,7 +291,12 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
           // it rather than the misleading "no conversation recorded". `match`
           // rides along so ConversationView can say WHY sessionId is null
           // (ambiguous vs. unknown) instead of one generic claim.
-          : <ConversationView sessionId={session?.sessionId ?? null} match={session?.match}
+          // The conversation's paths become clickable only when there is a
+          // live pid to resolve them against -- FilePath.tsx renders every
+          // path as plain text with a null context, which is exactly what
+          // a stale selection should do.
+          : <FileLinkContext.Provider value={fileLink}>
+            <ConversationView sessionId={session?.sessionId ?? null} match={session?.match}
               // Falls back to 'claude' only when the selected pid has left
               // the fleet entirely -- the pane is then showing a stale
               // selection and the glyph is cosmetic.
@@ -209,7 +316,24 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
               // The pid is already the selection, so this only has to flip
               // the view -- unlike the rail's Answer, which must select
               // first (see onOpenTerminal on SessionRail above).
-              onOpenTerminal={() => onSetView('terminal')} />}
+              onOpenTerminal={() => onSetView('terminal')} />
+          </FileLinkContext.Provider>}
+        {/* Only under the Conversation view: the viewer is opened from a
+            path in a reply, and a sheet floating over a live terminal
+            would cover the thing being typed into. Switching back to
+            Conversation brings it straight back. */}
+        {currentViewer && selection.view === 'conversation' && (
+          <FileViewer
+            file={currentViewer}
+            mode={viewerMode}
+            onClose={() => setViewer(null)}
+            // The same candidate the click proposed goes back to main,
+            // which re-runs every check on it. Nothing the renderer has
+            // held on to is treated as already-validated.
+            onReveal={() => { void openFile(currentViewer.candidate, true); }}
+          />
+        )}
+        </div>
       </section>
     </div>
   );

@@ -53,7 +53,12 @@ describe('renderer security posture', () => {
       'session:answer',
       // session:image and session:attachments: read-only; their checks live
       // in src/main/images.ts and src/main/attachments.ts.
-      'session:attach', 'session:attachments', 'session:conversation', 'session:detach', 'session:image', 'session:keys',
+      'session:attach', 'session:attachments', 'session:conversation', 'session:detach',
+      // The only channels where a string a MODEL wrote reaches an OS call.
+      // Every check is in src/main/files.ts (tests/main/files.test.ts), and
+      // the call itself is shell.showItemInFolder -- asserted below.
+      'session:file:open', 'session:file:probe',
+      'session:image', 'session:keys',
       'session:kill', 'session:launch', 'session:raw', 'session:reattach',
       'session:resize', 'session:resume', 'session:reveal',
       // Bytes only; checked and written by src/main/staging.ts.
@@ -66,6 +71,34 @@ describe('renderer security posture', () => {
       // own path (tests/hooks/usageSwitch.test.ts).
       'usage:get', 'usage:switch:get', 'usage:switch:set',
     ]);
+  });
+});
+
+/** The file viewer deliberately lets a path an agent wrote reach an OS
+ *  call. shell.openPath hands that path to the file's DEFAULT APPLICATION,
+ *  which for a .command, .app, .scpt or .webloc is arbitrary code execution
+ *  straight out of transcript text; shell.showItemInFolder only selects it
+ *  in Finder. The distinction is the whole feature, so it is asserted on
+ *  source here rather than left to review -- same reasoning as the posture
+ *  checks above. */
+describe('a model-written path never reaches the OS default application', () => {
+  const files = readFileSync('src/main/files.ts', 'utf8');
+  const sources = ['src/main/ipc.ts', 'src/main/files.ts', 'src/main/index.ts', 'src/preload/index.ts']
+    .map(f => strip(readFileSync(f, 'utf8')));
+
+  it('reveals in Finder', () => {
+    expect(strip(readFileSync('src/main/ipc.ts', 'utf8'))).toMatch(/shell\.showItemInFolder/);
+  });
+
+  it('calls openPath nowhere', () => {
+    for (const src of sources) expect(src).not.toMatch(/openPath/);
+  });
+
+  it('keeps electron out of the module that resolves the path at all', () => {
+    // No electron import means no openPath, no dialog and no BrowserWindow
+    // in reach of the one module that turns renderer text into a path --
+    // the reveal call is injected instead (its `reveal` dependency).
+    expect(files).not.toMatch(/from\s*'electron'/);
   });
 });
 

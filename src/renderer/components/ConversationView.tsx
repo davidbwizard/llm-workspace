@@ -10,6 +10,7 @@ import type { StageRefusal } from '../../main/staging.ts';
 // same rule MAX_REPLY_CHARS's own comment states for src/main imports.
 import type { SessionContext } from '../../core/usage.ts';
 import { ProviderMark } from './ProviderMark.tsx';
+import { remarkFilePaths, PathSpan } from './FilePath.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import { WorkingStrip } from './WorkingStrip.tsx';
 import { WaitingFallback } from './WaitingCard.tsx';
@@ -162,7 +163,17 @@ const MARKDOWN_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   img: ({ src, alt }) => <LinkedImage src={typeof src === 'string' ? src : undefined} alt={alt} />,
   pre: ({ node: _node, ...props }) => <CodeBlock {...props} />,
+  // The only span this pane can produce is the one remarkFilePaths marks
+  // (raw HTML never becomes an element here), and PathSpan checks the
+  // class before it treats it as one -- see src/renderer/components/
+  // FilePath.tsx.
+  span: PathSpan,
 };
+
+/** Shared by every MarkdownText below, so the plugin list is built once
+ *  rather than as a new array on each render (a new array is a new prop,
+ *  which makes react-markdown redo work it need not). */
+const REMARK_PLUGINS = [remarkGfm, remarkFilePaths];
 
 /** react-markdown's default drops file: URLs; keep them for images only, so
  *  LinkedImage can hand them to main. Everything else is unchanged. */
@@ -178,7 +189,7 @@ const urlTransform: UrlTransform = (url, key, node) =>
 // after module evaluation finishes, never at module-top-level.
 export function MarkdownText({ text }: { text: string }) {
   return (
-    <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS} urlTransform={urlTransform}>
+    <Markdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={urlTransform}>
       {text}
     </Markdown>
   );

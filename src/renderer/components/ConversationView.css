@@ -104,6 +104,25 @@
   background:var(--raised); border:1px solid var(--line-soft); border-radius:var(--r-sm); padding:8px 10px;
   overflow-x:auto; white-space:pre; }
 .turn-text.md pre code { background:none; border-radius:0; padding:0; font-size:inherit; }
+/* A path an agent wrote that really is a file in this session's folder
+   (src/renderer/components/FilePath.tsx). Styling is the mockup's .fp: it
+   reads as the inline code it usually already was, plus a dotted underline
+   that says it can be clicked. A <button> rather than a styled span, so it
+   is reachable by keyboard and announced as a control -- which means
+   font/colour/border all have to be reset off the UA default first.
+   Inherits font-size rather than restating it, so it tracks .turn-text.md
+   code inside a code span and the body size in prose. */
+.turn-text.md .fp { font-family:var(--f-mono); font-size:calc(var(--conv-size) * 0.8125);
+  background:var(--raised); border:1px solid transparent; border-radius:4px; padding:1px 4px;
+  color:var(--ink); cursor:pointer; text-align:left;
+  text-decoration:underline; text-decoration-style:dotted;
+  text-decoration-color:var(--faint); text-underline-offset:3px; }
+.turn-text.md .fp:hover { color:var(--accent); text-decoration-color:currentColor;
+  border-color:color-mix(in srgb, var(--accent) 35%, transparent); }
+.turn-text.md .fp:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+/* Inside an inline code span the background is already there; doubling it
+   makes a raised block on a raised block. */
+.turn-text.md code .fp, .turn-text.md .fp code { background:none; padding:0; }
 .turn-text.md table { display:block; max-width:100%; overflow-x:auto; border-collapse:collapse;
   font-size:calc(var(--conv-size) * 0.8125); }
 .turn-text.md th, .turn-text.md td { border:1px solid var(--line); padding:3px 8px; text-align:left; vertical-align:top; }

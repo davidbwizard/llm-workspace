@@ -3,7 +3,7 @@
 // binds ipcMain to undefined rather than throwing. That stays harmless only
 // because ipcMain is dereferenced inside registerIpc's body, never at module
 // scope -- a test that imports and calls registerIpc directly will throw.
-import { app, ipcMain, BrowserWindow, dialog, nativeTheme } from 'electron';
+import { app, ipcMain, BrowserWindow, dialog, nativeTheme, shell } from 'electron';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -24,6 +24,7 @@ import type { LiveSessionRead } from '../providers/claude/liveSession.ts';
 import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { readSessionImage } from './images.ts';
+import { probeSessionFiles, openSessionFile, type FileDeps } from './files.ts';
 import { readTurnImages, MAX_ATTACHMENTS } from './attachments.ts';
 import { createStager, createFileStager } from './staging.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
@@ -1333,6 +1334,17 @@ function statusLineSourcePath(): string {
  *  is exactly the kind of change only a fresh discovery sweep can surface,
  *  and the card should not sit stale for up to 5s waiting for the next
  *  scheduled one. */
+/** The session:file:* channels' whole view of the world. `cwdForPid` reads
+ *  THIS process's discovery cache -- the same source revealSession looks a
+ *  host up in -- so a pid the app does not currently see as a live session
+ *  has no working directory and nothing resolves for it. `reveal` is
+ *  shell.showItemInFolder and deliberately nothing else; src/main/files.ts
+ *  imports no electron at all, so there is no openPath in reach of it. */
+const fileDeps: FileDeps = {
+  cwdForPid: pid => getCachedLiveProcesses().find(p => p.pid === pid)?.cwd ?? null,
+  reveal: path => shell.showItemInFolder(path),
+};
+
 export function registerIpc(
   db: Db, onFleetList?: () => void, onSessionKill?: () => void, onSessionLaunch?: () => void,
 ): void {
@@ -1408,6 +1420,24 @@ export function registerIpc(
   ipcMain.handle('session:image', async (_event, sessionId: unknown, src: unknown) => {
     const result = await readSessionImage(sessionId, src, { cwdFor: id => sessionCwd(db, id) });
     if (!result.ok && result.reason !== 'invalid') console.error('session:image refused:', result.reason);
+    return result;
+  });
+  // A file an agent's reply names, clicked in the conversation. The
+  // renderer only proposes the string it read off the transcript; every
+  // decision -- which folder it resolves against, whether it is really
+  // inside that folder once both sides are realpath'd, whether it exists,
+  // whether it is small enough to render, and whether it is read at all or
+  // merely shown in Finder -- is made in src/main/files.ts. The session's
+  // folder comes from this process's own discovery sweep, keyed by pid, so
+  // the renderer never names a root. shell.showItemInFolder, never
+  // shell.openPath: openPath launches the file's default application,
+  // which for a .command or a .app is code execution out of model-written
+  // text.
+  ipcMain.handle('session:file:probe', (_event, pid: unknown, candidates: unknown) =>
+    probeSessionFiles(pid, candidates, fileDeps));
+  ipcMain.handle('session:file:open', async (_event, pid: unknown, candidate: unknown, reveal: unknown) => {
+    const result = await openSessionFile(pid, candidate, reveal, fileDeps);
+    if (!result.ok && result.reason !== 'invalid') console.error('session:file:open refused:', result.reason);
     return result;
   });
   // Images a person attached to a prompt, read back from the transcript line

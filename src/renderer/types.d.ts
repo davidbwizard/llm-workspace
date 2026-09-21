@@ -4,6 +4,7 @@ import type { TerminalDataPayload } from '../main/stream.ts';
 import type { LaunchResult } from '../main/launch.ts';
 import type { ImageResult } from '../main/images.ts';
 import type { AttachmentResult } from '../main/attachments.ts';
+import type { FileProbeResult, FileOpenResult } from '../main/files.ts';
 import type { StageResult } from '../main/staging.ts';
 import type { SessionLivePayload } from '../main/sessionLive.ts';
 import type { AnswerResult } from '../main/answer.ts';
@@ -44,6 +45,13 @@ declare global {
       image: (sessionId: string, src: string) => Promise<ImageResult>;
       // Images attached to one of your prompts, read back by main.
       attachments: (turnId: number) => Promise<AttachmentResult>;
+      // A file an agent's reply names. Main owns every decision here --
+      // which folder the candidate resolves against (its own discovery
+      // data, keyed by pid), containment after realpath on both sides,
+      // existence, the size cap, and read-vs-reveal. These typings narrow
+      // nothing at the trust boundary itself.
+      fileProbe: (pid: number, candidates: string[]) => Promise<FileProbeResult>;
+      fileOpen: (pid: number, candidate: string, reveal?: boolean) => Promise<FileOpenResult>;
       // attach/detach/resize/sendRaw: Tasks 6b/10's streaming bridge. Left as
       // `unknown` here rather than guessed at when this file was written --
       // TerminalView.tsx (Task 10) narrows each with its own local cast

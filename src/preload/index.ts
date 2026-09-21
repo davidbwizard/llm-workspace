@@ -54,6 +54,19 @@ const api = {
   image: (sessionId: string, src: string) => ipcRenderer.invoke('session:image', sessionId, src),
   // Images attached to one of your prompts; main finds and checks them.
   attachments: (turnId: number) => ipcRenderer.invoke('session:attachments', turnId),
+  // A file an agent's reply names. This is the only channel where a string
+  // a MODEL wrote reaches an OS call, so main decides everything: the pid
+  // is the only session-identifying argument, and main looks the session's
+  // working directory up in its own discovery data from it (the renderer
+  // never names a folder). fileProbe only stats -- it is what lets a path
+  // that does not resolve stay plain text instead of becoming a dead link.
+  // fileOpen reads a small markdown file back as text, or reveals anything
+  // else in Finder; `reveal` asks for Finder regardless. Nothing is ever
+  // handed to the OS default application. These typings narrow nothing at
+  // the trust boundary -- see src/main/files.ts for every actual check.
+  fileProbe: (pid: number, candidates: string[]) => ipcRenderer.invoke('session:file:probe', pid, candidates),
+  fileOpen: (pid: number, candidate: string, reveal?: boolean) =>
+    ipcRenderer.invoke('session:file:open', pid, candidate, reveal),
   attach: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:attach', pid, cols, rows),
   detach: (pid: number) => ipcRenderer.invoke('session:detach', pid),
   resize: (pid: number, cols: number, rows: number) => ipcRenderer.invoke('session:resize', pid, cols, rows),
