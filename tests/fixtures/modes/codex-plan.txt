@@ -1,0 +1,30 @@
+╰─────────────────────────────────────────────────╯
+
+╭─────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                      │
+│                                                 │
+│ model:     gpt-5.6-sol xhigh   /model to change │
+│ directory: /private/tmp/…/scratchpad/modeprobe  │
+╰─────────────────────────────────────────────────╯
+
+  Tip: New Use /fast to enable our fastest inference with increased plan usage.
+
+• You have 2 usage limit resets available. Run /usage to use one.
+
+• Model changed to gpt-5.6-sol medium for Plan mode.
+
+• Model changed to gpt-5.6-sol xhigh for Default mode.
+
+• Model changed to gpt-5.6-sol medium for Plan mode.
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol medium fast · /private/tmp/claude-502/-Users-user000000000-Documents-David-llm-workspace/c81e7d19-985a-4721-87e9-f7358912a320/scratch… Plan mode
+
+
+
+
+
+
+

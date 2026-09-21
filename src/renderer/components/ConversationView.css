@@ -206,6 +206,19 @@
 .convsubmit { font:inherit; font-size:14px; font-weight:600; color:var(--ink); background:var(--raised);
   border:1px solid var(--line); border-radius:var(--r-sm); padding:8px 14px; cursor:pointer; }
 .convsubmit:disabled { opacity:.45; cursor:default; }
+/* The composer's foot (mode-switcher design §2, layout C's `.composer
+   .foot`): the strip under the message box the permission-mode chip sits
+   in. This app has no "Enter to send" hint of its own, so unlike the
+   mockup's own foot this row currently holds the chip alone -- still a
+   row rather than a bare element, so a hint or anything else can join it
+   later without moving the chip. The chip's own look lives in
+   ModeChip.css, beside the component that draws it. */
+.convfoot { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px; }
+/* The row is empty whenever the chip draws nothing -- an unknown mode, or
+   a session this app did not launch -- and an empty flex row would still
+   claim its margin. :empty collapses it so the composer looks exactly as
+   it did before this feature in those cases. */
+.convfoot:empty { display:none; }
 
 /* One-click copy: an always-visible icon under each agent reply and in the
    bottom-right corner of each code block; its native tooltip reads Copy.

@@ -15,8 +15,9 @@ import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import { WorkingStrip } from './WorkingStrip.tsx';
 import { WaitingFallback } from './WaitingCard.tsx';
 import { PromptCard } from './PromptCard.tsx';
+import { ModeChip } from './ModeChip.tsx';
 import { useSettings } from '../state/settings.ts';
-import { useSessionLive } from '../state/useSessionLive.ts';
+import { useSessionLive, type SessionMode } from '../state/useSessionLive.ts';
 import { addPending, pendingFor, dropPending, matchPending, markQueued, tickIdle, NOT_SEEN_AFTER_MS } from '../state/pending.ts';
 import './ConversationView.css';
 
@@ -416,7 +417,7 @@ function readFile(file: File, as: 'dataUrl' | 'bytes'): Promise<string | ArrayBu
 
 type Attachment = { id: string; name: string; kind: AttachKind; thumb: string | null };
 
-function MessageBox({ pid, sessionId, tmux, provider, waiting, onOpenTerminal, attachRef, onPendingChange, onPendingSent }: {
+function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, onOpenTerminal, attachRef, onPendingChange, onPendingSent }: {
   pid: number | null;
   /** Which recorded session this pid is, used ONLY to prove a stored draft
    *  belongs to the session now on screen. Null when the app cannot tell,
@@ -436,6 +437,12 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, onOpenTerminal, a
    *  so answering in the Terminal and coming back finds it exactly as it
    *  was left. */
   waiting: boolean;
+  /** The permission-mode chip's state, straight off the live push, or null
+   *  when there is no chip to show. Threaded through this box rather than
+   *  rendered beside it because the chip belongs to the composer's own
+   *  foot (spec §2, layout C) -- the strip under the message box -- and
+   *  that strip is part of this component's markup. */
+  mode: SessionMode | null;
   onOpenTerminal: () => void;
   /** Set while this box can take an image, for the pane's drop handler. */
   attachRef?: MutableRefObject<((files: File[]) => void) | null>;
@@ -717,6 +724,17 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, onOpenTerminal, a
       <button type="button" className="convsubmit" disabled={inputDisabled} onClick={() => void send()}>
         Send
       </button>
+      </div>
+      {/* The composer's foot (mode-switcher design §2, layout C): the
+          permission-mode chip sits here, under the message box, where
+          Claude Code itself prints the mode in the terminal and where the
+          eye already is when about to send. The pane header is deliberately
+          untouched -- it already carries five controls and a sixth wraps it
+          at a narrow window. The chip renders nothing at all when the mode
+          is unknown or the session was not launched by this app, so this
+          row is empty rather than half-drawn in those cases. */}
+      <div className="convfoot">
+        <ModeChip pid={pid} state={mode} onOpenTerminal={onOpenTerminal} />
       </div>
       {counter && (
         <p className={`convcount${counter.warn ? ' convcount-warn' : ''}`}>{counter.label}</p>
@@ -1407,7 +1425,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           session that produced them, and none should carry over to the
           next one. */}
       <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux} provider={provider}
-        waiting={live?.activity === 'waiting'}
+        waiting={live?.activity === 'waiting'} mode={live?.mode ?? null}
         onOpenTerminal={onOpenTerminal} attachRef={attachRef}
         onPendingChange={() => retickPending(t => t + 1)}
         onPendingSent={() => { pendingSentRef.current = true; }} />

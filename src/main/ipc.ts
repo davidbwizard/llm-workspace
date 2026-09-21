@@ -42,6 +42,7 @@ import {
   buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, notifySessionChanged, type WatchDeps,
 } from './sessionLive.ts';
 import { answerPrompt, type AnswerResult } from './answer.ts';
+import { setModeFor, readModeFor, type ModeSetResult } from './mode.ts';
 import { hooksState, setHooks, type HooksResult } from '../hooks/switch.ts';
 import { usageSwitchState, setUsageSwitch, type UsageSwitchResult } from '../hooks/usageSwitch.ts';
 import { withContext, defaultContextOpts, buildUsagePayload, type ContextOpts } from './usage.ts';
@@ -1510,9 +1511,29 @@ export function registerIpc(
   // Returns a promise: the key sequence waits on the pane between steps.
   ipcMain.handle('session:answer', (_event, pid: unknown, promptId: unknown, answer: unknown): Promise<AnswerResult> =>
     answerPrompt(pid, promptId, answer, {
+      // `mode: () => null` skips the chip's own capture-pane: this payload
+      // is built purely to reach `.prompt`, and reading a mode here would
+      // spend a tmux call on a question nobody asked.
       currentPrompt: p => buildSessionLive(
-        db, p, getCachedLiveProcesses(), Date.now(), { cached: cachedPushOpenSessions },
+        db, p, getCachedLiveProcesses(), Date.now(), { cached: cachedPushOpenSessions, mode: () => null },
       )?.prompt ?? null,
+    }));
+  // The mode switcher (src/main/mode.ts). The renderer names a pid and a
+  // mode and nothing else: main resolves the provider itself, checks the
+  // mode against THAT provider's list, refuses while the session is
+  // mid-turn or a prompt card is up, reads the pane before pressing, and
+  // presses only BTab -- the one key name the tmux allowlist gained for
+  // this. Returns a promise: the press loop waits on the pane between
+  // presses. The chip's own state is not fetched here; it rides the
+  // session:live push (buildSessionLive), so it updates whether the mode
+  // changed through this channel or in the terminal.
+  ipcMain.handle('session:mode:set', (_event, pid: unknown, mode: unknown): Promise<ModeSetResult> =>
+    setModeFor(pid, mode, {
+      provider: providerForPid,
+      busy: busyForPid,
+      promptOpen: p => promptOpenFor(p, {
+        cached: cachedPushOpenSessions, processes: getCachedLiveProcesses(), read: readLiveSession,
+      }),
     }));
   ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
 
