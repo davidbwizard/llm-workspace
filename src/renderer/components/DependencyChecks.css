@@ -222,3 +222,22 @@
   font-size: 11px;
   color: var(--muted);
 }
+
+/* The one state where the app has no answer. Reads as "unknown", never as
+   "absent" -- see DependencyChecks.tsx on why no install command appears
+   here. */
+.checkunknown {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.checkunknown code {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--ground);
+  user-select: text;
+}

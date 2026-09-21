@@ -110,12 +110,21 @@ function CheckRow({ check, homebrew }: { check: DependencyCheck; homebrew: boole
       </div>
       <p className="checkdetail">{check.detail}</p>
       <p className="checkpurpose">{check.purpose}</p>
-      {/* §5: for anything missing, one line on what it is for and the exact
-          command, copyable. Shown for "no answer" too -- a person whose tmux
-          does not respond is equally stuck, and the command is the same one
-          that reinstalls it. */}
-      {(needsInstalling || check.state === 'timeout') && (
-        <InstallRoutes routes={check.install} homebrew={homebrew} />
+      {/* §5: for anything MISSING, one line on what it is for and the exact
+          command, copyable.
+          Deliberately not shown for "no answer". A probe that timed out
+          says the app could not confirm the tool -- not that it is absent.
+          The tool is very likely installed and merely slow or wedged, and
+          `brew install tmux` is then a guess dressed as a remedy: it is not
+          the fix, and printing it under "No answer" is exactly how a
+          timeout gets read as "not installed". The honest action there is
+          to check again, which is a button away. */}
+      {needsInstalling && <InstallRoutes routes={check.install} homebrew={homebrew} />}
+      {check.state === 'timeout' && (
+        <p className="checkunknown">
+          This does not mean {check.name} is missing &mdash; only that it did not answer
+          in time. Check again, or run <code>{check.probe}</code> in a terminal to see for yourself.
+        </p>
       )}
       {/* doctor's own words, verbatim, for the person to read. The app does
           not interpret them (design §3) -- it just hands them over. */}

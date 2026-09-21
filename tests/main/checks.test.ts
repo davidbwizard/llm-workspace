@@ -394,7 +394,7 @@ function stub(id: 'tmux' | 'claude' | 'codex'): DependencyCheck {
   return {
     id, name: id, state: 'ok', version: null, purpose: 'x',
     install: [{ command: 'x', requires: null, note: null }],
-    doctor: null, detail: 'x',
+    probe: 'x --version', doctor: null, detail: 'x',
   };
 }
 

@@ -110,6 +110,12 @@ export interface DependencyCheck {
   /** Confirmed ways to install it, best first. SHOWN, with a copy button,
    *  and never executed -- the app installs nothing (design §5). */
   install: InstallRoute[];
+  /** The version command this app itself ran, as the person could run it.
+   *  Handed over for the one state where the app has no answer -- a probe
+   *  that timed out -- so they can settle it themselves rather than take
+   *  the app's "could not tell" as the end of it. Derived from the same
+   *  definition the probe uses, so it is literally what was run. */
+  probe: string;
   doctor: DoctorReport | null;
   /** This state, as one sentence a person can read. Also what a disabled
    *  control shows as its reason, so the two can never disagree. */
@@ -274,7 +280,10 @@ export async function defaultProbeExec(bin: string, args: string[], timeoutMs: n
  *  can never be mistaken for evidence of presence. */
 export async function probeDependency(id: DependencyId, exec: ProbeExec = defaultProbeExec): Promise<DependencyCheck> {
   const def = DEFINITIONS[id];
-  const base = { id, name: def.name, purpose: def.purpose, install: def.install };
+  const base = {
+    id, name: def.name, purpose: def.purpose, install: def.install,
+    probe: [def.bin, ...def.versionArgs].join(' '),
+  };
 
   const version = await exec(def.bin, def.versionArgs, VERSION_TIMEOUT_MS);
 

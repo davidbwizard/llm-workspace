@@ -13,6 +13,7 @@ function check(id: 'tmux' | 'claude' | 'codex', state: CheckState, over: Partial
     version: state === 'ok' ? '1.2.3' : null,
     purpose: `What ${name} is for.`,
     install: [{ command: `brew install ${id}`, requires: 'homebrew', note: null }],
+    probe: `${id} --version`,
     doctor: null,
     detail: `${name} detail for ${state}.`,
     ...over,
@@ -57,6 +58,64 @@ describe('every state gets its own words', () => {
   it('shows a version when there is one', () => {
     panel(readiness([check('tmux', 'ok'), check('claude', 'ok'), check('codex', 'ok')]));
     expect(screen.getAllByText('1.2.3').length).toBe(3);
+  });
+});
+
+// The lead's question, 2026-09-21: can a `timeout` be mistaken for a
+// `missing` anywhere in the UI text? These pin the answer.
+describe('"no answer" never reads as "not installed"', () => {
+  const timedOut = () => panel(readiness(
+    [check('tmux', 'timeout'), check('claude', 'ok'), check('codex', 'ok')],
+  ));
+
+  // The blur this closes: a timed-out tool used to be offered an install
+  // command. If it is installed and merely wedged, `brew install tmux` is a
+  // guess dressed as a remedy -- and printing it under "No answer" is
+  // exactly how a timeout gets read as absent.
+  it('offers no install command for a tool that simply did not answer', () => {
+    timedOut();
+    expect(screen.queryByText('brew install tmux')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+  });
+
+  it('says outright that it is not the same as missing', () => {
+    timedOut();
+    expect(screen.getByText(/does not mean tmux is missing/)).toBeTruthy();
+  });
+
+  it('hands over the command the app itself ran, so they can settle it', () => {
+    timedOut();
+    expect(screen.getByText('tmux --version')).toBeTruthy();
+  });
+
+  it('gives a missing tool the install command, and a timed-out one none', () => {
+    panel(readiness([check('tmux', 'missing'), check('claude', 'timeout'), check('codex', 'ok')]));
+    expect(screen.getByText('brew install tmux')).toBeTruthy();
+    expect(screen.queryByText('brew install claude')).toBeNull();
+  });
+
+  // Nothing on screen may collapse the four into fewer. The labels, and the
+  // sentences main writes, must all differ.
+  it('renders four distinct labels for the four states', () => {
+    const { container } = panel(readiness([
+      check('tmux', 'ok'), check('claude', 'unhealthy'), check('codex', 'missing'),
+    ]));
+    const labels = [...container.querySelectorAll('.checkstate')].map(el => el.textContent);
+    expect(new Set(labels).size).toBe(3);
+    expect(labels).toEqual(['Ready', 'Needs attention', 'Not installed']);
+    // And the fourth is its own word, not a synonym of any of them.
+    expect(labels).not.toContain('No answer');
+  });
+
+  it('marks missing and timeout with different emphasis, not the same one', () => {
+    const { container } = panel(readiness([
+      check('tmux', 'missing'), check('claude', 'timeout'), check('codex', 'ok'),
+    ]));
+    const rows = [...container.querySelectorAll('.checkrow')];
+    expect(rows[0]!.getAttribute('data-state')).toBe('missing');
+    expect(rows[1]!.getAttribute('data-state')).toBe('timeout');
+    const cls = rows.map(r => r.querySelector('.checkstate')!.className);
+    expect(cls[0]).not.toBe(cls[1]);
   });
 });
 
