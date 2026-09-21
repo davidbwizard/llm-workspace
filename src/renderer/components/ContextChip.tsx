@@ -20,9 +20,21 @@ export function ContextChip({ context }: { context: SessionContext | null }) {
   // same convention as OpenSessionCard.tsx's own `!= null` guards.
   if (context == null) return null;
   const tone = contextTone(context.leftPct);
+  // Three spans rather than one text node, so the rail's container query
+  // can drop the token count on its own as the rail narrows (status row,
+  // variant A) -- CSS cannot address half of a text node. The percent is
+  // the half that never drops at any width, per David.
+  //
+  // The separator carries its own spaces and belongs to the COUNT, not the
+  // percent: hiding .ctxchip-tok alone would leave the row opening on a
+  // stray "·". Read as text this is still exactly "462k · 44% left",
+  // character for character -- the split is structural, and every caller
+  // that reads the chip's text rather than its elements is untouched.
   return (
     <span className={`ctxchip${tone ? ` ctxchip-${tone}` : ''}`}>
-      {formatContextShort(context.usedTokens)} · {context.leftPct}% left
+      <span className="ctxchip-tok">{formatContextShort(context.usedTokens)}</span>
+      <span className="ctxchip-sep"> · </span>
+      <span className="ctxchip-pct">{context.leftPct}% left</span>
     </span>
   );
 }

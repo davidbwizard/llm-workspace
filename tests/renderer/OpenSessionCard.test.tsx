@@ -175,14 +175,16 @@ describe('OpenSessionCard', () => {
       expect(container.querySelector('.ctxchip')).toBeNull();
     });
 
+    // textContent, not getByText -- the chip is three spans now so the
+    // rail can drop the token count alone. Rendered text is unchanged.
     it('shows the short form and percent left on the full card', () => {
-      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={withContext} />);
-      expect(screen.getByText('462k · 44% left')).toBeTruthy();
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={withContext} />);
+      expect(container.querySelector('.ctxchip')!.textContent).toBe('462k · 44% left');
     });
 
     it('also shows on the compact card', () => {
-      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} compact state={withContext} />);
-      expect(screen.getByText('462k · 44% left')).toBeTruthy();
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} compact state={withContext} />);
+      expect(container.querySelector('.ctxchip')!.textContent).toBe('462k · 44% left');
     });
   });
 
@@ -203,11 +205,16 @@ describe('OpenSessionCard', () => {
       expect(screen.getByText('working')).toBeTruthy();
     });
 
+    // The visible row says "waiting" (it is the widest word in the row and
+    // was setting both of the rail's breakpoints on its own); the card's
+    // accessible NAME still says "waiting on you". Both halves asserted,
+    // because dropping either would be the regression.
     it('shows the blocked badge and wording when the matched session is waiting on the user', () => {
       const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
         onReattach={neverReattach()} onResume={neverResume()} state={{ ...enriched, activity: 'waiting_permission' }} />);
       expect(container.querySelector('.badge')).not.toBeNull();
-      expect(screen.getByText(/waiting on you/)).toBeTruthy();
+      expect(container.querySelector('.state-word')!.textContent).toBe('waiting');
+      expect(container.querySelector('.card')!.getAttribute('aria-label')).toContain('waiting on you');
     });
 
     it('includes project, provider, activity and last prose in the accessible name, and no pid', () => {
@@ -792,7 +799,8 @@ describe('OpenSessionCard', () => {
     it('keeps the blocked badge and its wording', () => {
       const { container } = renderCompact({ activity: 'waiting_permission' });
       expect(container.querySelector('.badge')).not.toBeNull();
-      expect(screen.getByText(/waiting on you/)).toBeTruthy();
+      expect(container.querySelector('.state-word')!.textContent).toBe('waiting');
+      expect(container.querySelector('.card')!.getAttribute('aria-label')).toContain('waiting on you');
     });
 
     it('offers no bare Close or Reattach button -- they live in the menu', () => {
@@ -958,4 +966,56 @@ describe('OpenSessionCard', () => {
     return render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
       onResume={neverResume()} compact state={{ ...enrichedCompact, ...over }} {...props} />);
   }
+});
+
+/* ---- Status row, variant A -------------------------------------------
+   At the rail's narrowest widths the status word is hidden and the icon is
+   the only thing left showing the state. Which width that happens at is
+   CSS (SessionRail.css's container query) and jsdom computes no layout --
+   but the part that MUST hold at every width is testable here: the word is
+   in the DOM, in every state, always. CSS only ever hides it visually. */
+describe('the status row', () => {
+  const render1 = (activity: OpenSession['activity']) => render(
+    <OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
+      onResume={neverResume()} state={{ ...base, match: 'unique', sessionId: 's1', activity }} />,
+  );
+
+  it.each<[NonNullable<OpenSession['activity']>, string]>([
+    ['working', 'working'], ['idle', 'idle'], ['error', 'error'],
+    // Shortened for the row alone (ACTIVITY_WORD_ROW): it was the widest
+    // word the row could hold and set both of the rail's breakpoints for
+    // every other state. The card's NAME keeps the full phrase -- asserted
+    // separately below.
+    ['waiting_permission', 'waiting'], ['waiting_input', 'waiting'],
+  ])('renders %s with its word in the DOM, never an icon alone', (activity, word) => {
+    const { container } = render1(activity);
+    expect(container.querySelector('.state-word')!.textContent).toBe(word);
+    expect(container.querySelector('.stateicon')).toBeTruthy();
+  });
+
+  // The card's accessible name carries the state too, so the status is
+  // reachable even at the width where the word is visually hidden.
+  it.each<NonNullable<OpenSession['activity']>>(['waiting_permission', 'waiting_input'])(
+    'names the card "waiting on you" for %s', (activity) => {
+      const { container } = render1(activity);
+      expect(container.querySelector('.card')!.getAttribute('aria-label'))
+        .toContain('waiting on you');
+    });
+
+  // The icon is decoration; the word beside it is the name. If the icon
+  // announced itself too, a screen reader would say the state twice.
+  it('leaves the naming to the word, not the icon', () => {
+    const { container } = render1('working');
+    expect(container.querySelector('.stateicon')!.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  // The colour-only dot is retired everywhere, not merely hidden in the
+  // rail: David asked for one treatment across the rail and the fleet
+  // view, and a dot left in the markup would be a second one waiting to
+  // come back.
+  it('no longer renders the colour-only dot anywhere', () => {
+    const { container } = render1('idle');
+    expect(container.querySelector('.state .dot')).toBeNull();
+    expect(container.querySelector('.state .stateicon')).toBeTruthy();
+  });
 });

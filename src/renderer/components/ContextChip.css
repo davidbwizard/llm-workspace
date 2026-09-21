@@ -6,3 +6,14 @@
   font-variant-numeric:tabular-nums; white-space:nowrap; }
 .ctxchip-signal { color:var(--signal); }
 .ctxchip-critical { color:var(--critical); }
+
+/* The chip's two halves (status row, variant A). Neither shrinks: these
+   are numbers, and half a number read at a glance is worse than no number
+   -- the rail drops the count WHOLE at a measured width instead (see
+   SessionRail.css's container query). The separator is the count's, so it
+   leaves with it.
+
+   The percent carries no rule of its own on purpose: there is nothing
+   that may ever hide it, at any width, so there is nothing to declare. */
+.ctxchip-tok, .ctxchip-sep { flex:none; }
+.ctxchip-sep { color:var(--faint); }

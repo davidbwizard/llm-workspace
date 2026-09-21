@@ -48,6 +48,15 @@ beforeEach(() => {
   reloadFavourites();
 });
 
+// The context chip renders as three spans (ContextChip.tsx) so the rail can
+// drop the token count on its own, which means getByText -- which matches an
+// element's OWN direct text -- no longer sees the whole string. Its rendered
+// text is unchanged, so read that instead. Returns null when there is no
+// chip, which is what the "no stale reading" assertions below check.
+function chipText(scope: HTMLElement): string | null {
+  return scope.querySelector('.ctxchip')?.textContent ?? null;
+}
+
 describe('MainPane', () => {
   it('shows the full grid and no rail when nothing is selected', () => {
     const { container } = render(<MainPane selection={null} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
@@ -195,7 +204,7 @@ describe('MainPane', () => {
       const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={withContext} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
       // Scoped to .panehead: the same session also renders its own chip on
       // the rail card (OpenSessionCard), so an unscoped query matches twice.
-      expect(within(container.querySelector('.panehead')!).getByText('462k · 44% left')).toBeTruthy();
+      expect(chipText(container.querySelector('.panehead')!)).toBe('462k · 44% left');
     });
 
     // The header must not keep showing a departed session's reading once a
@@ -210,9 +219,9 @@ describe('MainPane', () => {
       ] as never[];
       const { container, rerender } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={withContext} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
       const panehead = () => container.querySelector('.panehead') as HTMLElement;
-      expect(within(panehead()).getByText('462k · 44% left')).toBeTruthy();
+      expect(chipText(panehead())).toBe('462k · 44% left');
       rerender(<MainPane selection={{ pid: 2, view: 'conversation' }} sessions={withContext} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
-      expect(within(panehead()).queryByText('462k · 44% left')).toBeNull();
+      expect(chipText(panehead())).toBeNull();
     });
 
     // Review finding: MainPane's own liveContext (fed by ConversationView's
@@ -254,7 +263,7 @@ describe('MainPane', () => {
           context: { usedTokens: 900_000, windowTokens: 1_000_000, leftPct: 10 },
         });
       });
-      expect(within(container.querySelector('.panehead')!).getByText('900k · 10% left')).toBeTruthy();
+      expect(chipText(container.querySelector('.panehead')!)).toBe('900k · 10% left');
 
       chipCalls.length = 0;
       rerender(<MainPane selection={{ pid: 2, view: 'conversation' }} sessions={both} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
@@ -264,7 +273,7 @@ describe('MainPane', () => {
       // of them may ever carry pid 1's departed 900k reading.
       const everShowedStaleReading = chipCalls.some(c => (c as { usedTokens?: number } | null)?.usedTokens === 900_000);
       expect(everShowedStaleReading).toBe(false);
-      expect(within(container.querySelector('.panehead')!).queryByText('900k · 10% left')).toBeNull();
+      expect(chipText(container.querySelector('.panehead')!)).toBeNull();
     });
   });
 

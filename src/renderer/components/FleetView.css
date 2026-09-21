@@ -12,6 +12,41 @@
         background:var(--raised); border-radius:20px; padding:4px 11px; }
 .chip.attn { color:var(--critical); }
 .fleet { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
+
+/* The status row's own breakpoint for the GRID's cards, measured the same
+   way the rail's were (and separately from them -- a grid card is not a
+   rail card, and assuming it inherited would have missed this).
+   auto-fill means the narrowest column this grid can produce is the 280px
+   minmax floor, and at that width the open-session card's row overflowed
+   its card by 27px BEFORE the status icon existed: the grid card carries
+   an event count the rail's does not, on top of the same chip, status,
+   menu and hotkey digit.
+
+   Measured: the full row needs 275px of card content, so below that the
+   token count goes (276, not 274: card widths land on fractional pixels,
+   and at exactly the boundary the count was showing while the row had
+   ~274.4px to draw it in, which wrapped) -- the same thing that goes
+   first in the rail, and the percent left still never goes at all.
+   Dropping it alone clears the OPEN-session card at every column width the
+   grid can produce, with no second breakpoint: a grid card never gets
+   narrow enough to have to give up the status word too.
+
+   The HISTORY card (SessionCard, in the second .fleet grid -- FleetView's
+   #history-group carries this same class) is a STATED FINDING here, not a
+   fix. It has no token count to drop: its row is a dial, a live/total
+   pair, an event count and the status. Between a 280px and a 358px column
+   it therefore falls through to the wrap floor and takes a second line.
+   That is already better than what it did before, which was to overflow
+   its own card by up to 23px. Putting it back on one line means deciding
+   what that row gives up first, and nobody has been asked.
+
+   No scrollbar headroom, unlike the rail's: the card is not a scroll
+   container, so a classic scrollbar on the pane around it narrows the card
+   itself and this query sees the real width. */
+.fleet .card { container-type:inline-size; container-name:gridcard; }
+@container gridcard (max-width: 276px) {
+  .ctxchip-tok, .ctxchip-sep { display:none; }
+}
 .fleet.dim { opacity:.62; }
 .fleet.dim:hover { opacity:1; }
 .divider { font-family:var(--f-body); font-weight:600; font-size:13px;
