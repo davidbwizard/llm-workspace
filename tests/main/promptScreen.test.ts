@@ -918,3 +918,99 @@ describe('readPromptScreen -- negatives that prove the reader tells outcomes apa
         .toBe(false);
     });
 });
+
+// Measured 2026-09-21 (Claude Code 2.1.278, fixture 110): a question whose
+// options carry `preview` text is drawn in a layout this app had never read
+// -- the options in a narrow LEFT COLUMN, a bordered preview panel on the
+// SAME screen rows to their right, long labels wrapped onto unnumbered
+// continuation lines, a "Notes: press n to add notes" line, and a "Chat
+// about this" row with NO number of its own. 111 and 112 are 110 with the ❯
+// caret moved down one and two rows: the capture caught only the untouched
+// screen (no key was ever sent to the live session), so the caret is moved
+// the way every other fixture draws it -- "❯ " on the focused row, two
+// spaces on the rest. The panel beside it is left exactly as captured; the
+// reader never looks right of the panel's left edge, and the fixture makes
+// no claim about what the real panel would redraw.
+describe('readPromptScreen -- the preview layout (110-115)', () => {
+  const PREVIEW_Q = 'When the card can answer preview questions, how should the preview itself appear on it?';
+  const previewExpect = (): ScreenExpect => ({ kind: 'question', headers: ['Preview UI'], questions: [PREVIEW_Q] });
+  const LABELS = [
+    'Inline, expandable',
+    'Side by side, like the terminal',
+    'Labels only, previews in the terminal',
+  ];
+
+  it('reads the left column only, joining each wrapped label back into one string', () => {
+    const result = readPromptScreen(screen('110-ask-preview-focus1'), previewExpect());
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'question') throw new Error('expected a question match');
+    expect(result.options).toEqual(LABELS);
+    expect(result.preview).toBe(true);
+    expect(result.cursor).toBe(0);
+    expect(result.current).toBe(0);
+    expect(result.answered).toEqual([false]);
+    expect(result.headerOnly).toBe(true);
+  });
+
+  it('reads the caret after one Down and after two', () => {
+    for (const [file, cursor] of [['111-ask-preview-focus2', 1], ['112-ask-preview-focus3', 2]] as const) {
+      const result = readPromptScreen(screen(file), previewExpect());
+      expect(result.match).toBe(true);
+      if (!result.match || result.kind !== 'question') throw new Error('expected a question match');
+      expect(result.cursor).toBe(cursor);
+      expect(result.options).toEqual(LABELS);
+    }
+  });
+
+  it('rejects the preview screen for a question text that is not the hook\'s', () => {
+    expect(readPromptScreen(screen('110-ask-preview-focus1'),
+      { kind: 'question', headers: ['Preview UI'], questions: ['Something else entirely?'] }).match).toBe(false);
+    expect(readPromptScreen(screen('110-ask-preview-focus1'),
+      { kind: 'question', headers: ['Other'], questions: [PREVIEW_Q] }).match).toBe(false);
+  });
+
+  // The reader must TELL THE LAYOUTS APART, not merely match this one: the
+  // plain no-preview screens still read as before and carry no preview flag,
+  // so the answer path still uses digits for them.
+  it('does not flag the plain no-preview layout as a preview one', () => {
+    const plain = readPromptScreen(screen('96-ask-one-question'),
+      { kind: 'question', headers: ['Next step'], questions: ['Should I create qa-7.txt with the current timestamp now?'] });
+    expect(plain.match).toBe(true);
+    if (!plain.match || plain.kind !== 'question') throw new Error('expected a question match');
+    expect(plain.preview).toBeUndefined();
+    expect(plain.cursor).toBeUndefined();
+    expect(plain.options).toEqual(['Yes, create it', 'No, stop here', 'Plan it first']);
+
+    const other = readPromptScreen(screen('99-ask-one-other-focused'),
+      { kind: 'question', headers: ['Pick'], questions: ['Which option do you prefer for this test?'] });
+    expect(other.match).toBe(true);
+    if (!other.match || other.kind !== 'question') throw new Error('expected a question match');
+    expect(other.preview).toBeUndefined();
+    expect(other.options).toEqual(['Alpha', 'Beta']);
+  });
+
+  it('refuses a left column whose option numbers are not 1..n (a label wrapped into a fake row)', () => {
+    const result = readPromptScreen(screen('113-ask-preview-forged-number'), previewExpect());
+    expect(result.match).toBe(false);
+    if (result.match) throw new Error('expected a refusal');
+    expect(result.why).toBe('option_numbers_not_sequential');
+  });
+
+  it('refuses a left-column line that continues no option (a partial redraw)', () => {
+    const result = readPromptScreen(screen('114-ask-preview-orphan-line'), previewExpect());
+    expect(result.match).toBe(false);
+  });
+
+  it('refuses a half-drawn panel instead of reading the panel text as labels', () => {
+    const result = readPromptScreen(screen('115-ask-preview-half-drawn'), previewExpect());
+    expect(result.match).toBe(false);
+  });
+
+  it('refuses the preview screen for every other expectation too', () => {
+    for (const file of ['110-ask-preview-focus1', '113-ask-preview-forged-number', '115-ask-preview-half-drawn']) {
+      expect(readPromptScreen(screen(file), permExpect('touch perm-probe.txt')).match).toBe(false);
+      expect(readPromptScreen(screen(file), planExpect()).match).toBe(false);
+      expect(readPromptScreen(screen(file), askExpect()).match).toBe(false);
+    }
+  });
+});

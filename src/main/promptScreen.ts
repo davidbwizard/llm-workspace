@@ -344,6 +344,83 @@ function findChatAboutThisIndex(rest: string[], from: number): number {
   return -1;
 }
 
+/** The preview panel's own left border, repeated on every one of its rows:
+ *  a plain side, the "lines hidden" divider's tee, or the bottom corner. */
+const PANEL_SIDE = /[│├└]/;
+
+/** The preview layout (measured 2026-09-21, Claude Code 2.1.278, fixture
+ *  110): a question whose options carry `preview` text is drawn with the
+ *  options in a NARROW LEFT COLUMN and a bordered preview panel on the SAME
+ *  screen rows to their right. The panel is a rectangle: its top-left "┌"
+ *  fixes a column every one of its rows repeats, so everything left of that
+ *  column is the option list and everything from it rightwards is panel.
+ *
+ *  Found by the top-left corner at a column past the first (a corner at
+ *  column 0 is not a right-hand panel). 'broken' -- a corner is on screen
+ *  but no rectangle closes under it -- is a REFUSAL, not a fall-through to
+ *  the plain reader: with a panel half drawn the plain reader would splice
+ *  the panel's own text onto the option labels (fixture 115). */
+function findPanelColumn(rest: string[], from: number, to: number): number | 'broken' | null {
+  let col = -1;
+  let top = -1;
+  for (let k = from; k < to; k++) {
+    const idx = (rest[k] ?? '').indexOf('┌');
+    if (idx >= 1) { col = idx; top = k; break; }
+  }
+  if (col === -1) return null;
+  for (let k = top + 1; k < to; k++) {
+    const ch = (rest[k] ?? '')[col];
+    if (ch === undefined || !PANEL_SIDE.test(ch)) break;
+    if (ch === '└') return k >= top + 2 ? col : 'broken';
+  }
+  return 'broken';
+}
+
+/** Reads the option list out of the preview layout's left column. Every
+ *  line is cut at the panel's left edge first, so no panel text can ever
+ *  reach a label.
+ *
+ *  A label too long for the narrow column wraps onto a continuation line
+ *  with no number of its own (fixture 110: "Side by side, like the" +
+ *  "terminal"), joined here the same way parseDialogChoices joins a wrapped
+ *  path. Only a line DIRECTLY under its option row -- or under that row's
+ *  own previous continuation -- can continue it: a blank left column ends
+ *  the run, so the "Notes: press n to add notes" line and any leftover from
+ *  a partial redraw (fixture 114) continue nothing and refuse the screen
+ *  rather than being spliced onto a label.
+ *
+ *  Unlike the plain layout there is no "Type something." row and no
+ *  numbered "Chat about this" row: the options are exactly the hook's own,
+ *  which is why answer.ts can compare them to the payload label for label. */
+function readPreviewOptions(
+  rest: string[], from: number, to: number, col: number,
+): { options: string[]; cursor: number | null } | { why: string } {
+  const options: string[] = [];
+  const keys: string[] = [];
+  let cursor: number | null = null;
+  let open = -1; // the option still able to take a continuation line, or -1
+  for (let k = from; k < to; k++) {
+    const left = (rest[k] ?? '').slice(0, col).trimEnd();
+    if (left.trim() === '') { open = -1; continue; }
+    const m = OPTION_LINE.exec(left);
+    if (m) {
+      if (m[1]) cursor = options.length;
+      keys.push(m[2]!);
+      options.push((m[3] ?? '').trim());
+      open = options.length - 1;
+      continue;
+    }
+    if (open === -1) return { why: 'preview_left_column_unreadable' };
+    const tail = left.trim();
+    options[open] += WRAPPED_IN_WORD.test(options[open]!) ? tail : ` ${tail}`;
+  }
+  if (options.length === 0) return { why: 'no_options_found' };
+  // Same guard, same reason as the dialog reader: a label that wrapped onto
+  // a line shaped like "2. ..." would otherwise fake a row of its own.
+  if (!keys.every((key, i) => key === String(i + 1))) return { why: 'option_numbers_not_sequential' };
+  return { options, cursor };
+}
+
 function parseReviewAnswers(section: string[]): { question: string; answer: string }[] {
   const answers: { question: string; answer: string }[] = [];
   for (let i = 0; i < section.length; i++) {
@@ -414,6 +491,29 @@ function readQuestion(lines: string[], headers: string[], questions: string[]): 
   const collapse = (t: string) => t.replace(/\s+/g, ' ').trim();
   const current = questions.findIndex((q) => collapse(q) === collapse(title));
   if (current === -1) return { match: false, why: 'question_text_mismatch' };
+
+  // The question block ends at the rule under the options (drawn by both
+  // layouts: fixtures 96, 99, 110), or at the end of the capture. The
+  // preview panel is looked for inside that block only, so a box drawn
+  // anywhere in the scrollback above or below cannot be taken for one.
+  let blockEnd = rest.length;
+  for (let k = afterTitleIdx; k < rest.length; k++) {
+    if (RULE_LINE.test((rest[k] ?? '').trim())) { blockEnd = k; break; }
+  }
+  const col = findPanelColumn(rest, afterTitleIdx, blockEnd);
+  if (col === 'broken') return { match: false, why: 'preview_panel_unreadable' };
+  if (col !== null) {
+    const parsed = readPreviewOptions(rest, afterTitleIdx, blockEnd, col);
+    if ('why' in parsed) return { match: false, why: parsed.why };
+    // Enter is pressed only on a confirmed cursor, so a layout that shows
+    // none cannot be answered and is not reported as readable.
+    if (parsed.cursor === null) return { match: false, why: 'no_focused_option' };
+    const read = {
+      match: true as const, kind: 'question' as const,
+      current, answered, options: parsed.options, preview: true as const, cursor: parsed.cursor,
+    };
+    return headerOnly ? { ...read, headerOnly: true as const } : read;
+  }
 
   // The row right before "Chat about this" is always "Type something." --
   // or, once the user has typed into it, the typed text itself. A long

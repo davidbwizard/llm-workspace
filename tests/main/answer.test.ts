@@ -176,18 +176,33 @@ describe('buildPromptView', () => {
     expect(good).toHaveBeenCalledTimes(1);
   });
 
-  // Measured today: any option with a `preview` field makes Claude Code
-  // draw a side-by-side layout this app has never measured, so the prompt
-  // must never claim it is answerable -- the card still gets the question
-  // content (read-only), just not a way to send it.
-  it('is read-only with unsupported_layout when an option has a preview field', () => {
+  // Measured 2026-09-21 (fixture 110): the SINGLE-select preview layout is
+  // read now, so such a question is answerable from its payload alone, the
+  // same as any other question -- still without reading the screen here.
+  it('marks a single-select question with previews answerable, reading no screen', () => {
     const input = JSON.parse(readFileSync(new URL('one-question-preview-tool_input.json', EVENTS), 'utf8'));
     const ev = event(ASK, 'e-preview');
     ev.payload = { tool_name: 'AskUserQuestion', tool_input: input };
     const capture = vi.fn();
     const view = buildPromptView(ev, NAME, { capture });
-    expect(view).toMatchObject({ kind: 'question', answerable: false, reason: 'unsupported_layout' });
+    expect(view).toMatchObject({ kind: 'question', answerable: true, reason: null });
     expect(view.questions?.[0]).toMatchObject({ question: 'How should these recovered summaries look in the conversation?' });
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  // The MULTI-select preview layout has never been captured: its toggles
+  // and Submit row sit somewhere beside the panel this app has not seen, so
+  // it stays read-only rather than being guessed at.
+  it('is read-only with unsupported_layout when a MULTI-select question has previews', () => {
+    const input = JSON.parse(readFileSync(new URL('one-question-preview-tool_input.json', EVENTS), 'utf8')) as {
+      questions: Record<string, unknown>[];
+    };
+    input.questions[0]!.multiSelect = true;
+    const ev = event(ASK, 'e-preview-multi');
+    ev.payload = { tool_name: 'AskUserQuestion', tool_input: input };
+    const capture = vi.fn();
+    const view = buildPromptView(ev, NAME, { capture });
+    expect(view).toMatchObject({ kind: 'question', answerable: false, reason: 'unsupported_layout' });
     expect(capture).not.toHaveBeenCalled();
   });
 
@@ -958,6 +973,150 @@ describe('answerPrompt key sequences, against a fake pane replaying fixture scre
     const pane = fakePane([screen('10-ask-q1'), screen('41-ask3-key5-chat')]);
     expect(await answerPrompt(PID, view.id, { kind: 'chat' }, deps(pane, view))).toEqual({ status: 'sent' });
     expect(pane.keys()).toEqual(['5']);
+  });
+});
+
+// Measured 2026-09-21 (Claude Code 2.1.278, fixtures 110-112): a
+// single-select question whose options carry previews is drawn with the
+// options in a narrow left column beside a bordered preview panel. Its
+// footer advertises "Enter to select · ↑/↓ to navigate · n to add notes ·
+// Esc to cancel" -- the digits are DRAWN but never advertised there, and an
+// unbound key risks landing in the notes editor, so the cursor is walked
+// with Down and the pick is taken with Enter. 111/112 are 110 with the
+// caret moved down one and two rows (see promptScreen.test.ts for why they
+// are derived and not captured).
+describe('a single-select question with previews (110-112)', () => {
+  const focus1 = () => screen('110-ask-preview-focus1');
+  const focus2 = () => screen('111-ask-preview-focus2');
+  const focus3 = () => screen('112-ask-preview-focus3');
+  const gone = () => screen('97-ask-one-after-key2'); // Structure-only reuse: no tab row, no header line.
+
+  function previewView(multiSelect = false): PromptView {
+    const ev = event(ASK, 'preview-q');
+    const input = JSON.parse(readFileSync(new URL('preview-question-tool_input.json', EVENTS), 'utf8')) as {
+      questions: Record<string, unknown>[];
+    };
+    if (multiSelect) input.questions[0]!.multiSelect = true;
+    ev.payload = { tool_name: 'AskUserQuestion', tool_input: input };
+    return buildPromptView(ev, NAME, {});
+  }
+
+  it('the fixture screen and the fixture payload are the same question', () => {
+    const view = previewView();
+    expect(view.answerable).toBe(true);
+    expect(view.questions?.[0]?.options.map(o => o.label)).toEqual([
+      'Inline, expandable', 'Side by side, like the terminal', 'Labels only, previews in the terminal',
+    ]);
+  });
+
+  it('walks the cursor down to the pick and takes it with Enter -- never a digit', async () => {
+    registered();
+    const view = previewView();
+    const pane = fakePane([focus1(), focus2(), focus3(), gone()]);
+    expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [2] }] }, deps(pane, view)))
+      .toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['Down', 'Down', 'Enter']);
+  });
+
+  it('presses Enter alone when the pick is already the focused option', async () => {
+    registered();
+    const view = previewView();
+    const pane = fakePane([focus1(), gone()]);
+    expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [0] }] }, deps(pane, view)))
+      .toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['Enter']);
+  });
+
+  it('re-reads the screen between every Down, and confirms the caret before Enter', async () => {
+    registered();
+    const view = previewView();
+    const pane = fakePane([focus1(), focus2(), gone()]);
+    expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [1] }] }, deps(pane, view)))
+      .toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['Down', 'Enter']);
+    // One capture before the first key, one after each Down that moved the
+    // caret, and the settle reads after Enter -- never a key on a stale read.
+    expect(pane.captures.filter(c => c[0] === 'capture-pane').length).toBeGreaterThan(2);
+  });
+
+  it('stops without Enter when the caret does not move, rather than pressing on', async () => {
+    registered();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const view = previewView();
+    const pane = fakePane([focus1()]); // Down never moves the caret.
+    expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [2] }] }, deps(pane, view)))
+      .toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+    expect(pane.keys()).toEqual(['Down']);
+    expect(pane.keys()).not.toContain('Enter');
+  });
+
+  it('caps the Downs: a caret that keeps moving but never lands on the pick stops cleanly', async () => {
+    registered();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const view = previewView();
+    // The caret hops 1 -> 3 -> 1 -> 3 ... so "it moved" holds after every
+    // press, but option 2 is never reached. Without the cap this would
+    // press Down for ever; with it, three presses (one per option) and stop.
+    const pane = fakePane([focus1(), focus3(), focus1(), focus3(), focus1()]);
+    const res = await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [1] }] }, deps(pane, view));
+    expect(res).toEqual({ status: 'refused', reason: 'unconfirmed_partial' });
+    expect(pane.keys()).toEqual(['Down', 'Down', 'Down']);
+  });
+
+  it('refuses free text on this layout before any key -- it has no "Type something." row', async () => {
+    registered();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const view = previewView();
+    const pane = fakePane([focus1()]);
+    expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [], other: 'my own answer' }] }, deps(pane, view)))
+      .toEqual({ status: 'refused', reason: 'unconfirmed' });
+    expect(pane.sent).toEqual([]);
+  });
+
+  it('refuses Chat about this on this layout -- it is drawn with no number', async () => {
+    registered();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const view = previewView();
+    const pane = fakePane([focus1()]);
+    expect(await answerPrompt(PID, view.id, { kind: 'chat' }, deps(pane, view)))
+      .toEqual({ status: 'refused', reason: 'unconfirmed' });
+    expect(pane.sent).toEqual([]);
+  });
+
+  it('refuses a half-drawn preview screen before any key', async () => {
+    registered();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const view = previewView();
+    const pane = fakePane([screen('115-ask-preview-half-drawn')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [0] }] }, deps(pane, view)))
+      .toEqual({ status: 'refused', reason: 'unconfirmed' });
+    expect(pane.sent).toEqual([]);
+  });
+
+  it('refuses when the screen shows a DIFFERENT question from the card', async () => {
+    registered();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const view = previewView();
+    const pane = fakePane([screen('96-ask-one-question')]);
+    expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [0] }] }, deps(pane, view)))
+      .toEqual({ status: 'refused', reason: 'unconfirmed' });
+    expect(pane.sent).toEqual([]);
+  });
+
+  // The plain layout still answers with a digit: the preview path must not
+  // have taken the no-preview screens with it.
+  it('the plain no-preview layout still answers with its digit, not Down/Enter', async () => {
+    registered();
+    const ev = event(ASK, 'plain-q');
+    ev.payload = {
+      tool_name: 'AskUserQuestion',
+      tool_input: JSON.parse(readFileSync(new URL('one-question-tool_input.json', EVENTS), 'utf8')),
+    };
+    const view = buildPromptView(ev, NAME, {});
+    const pane = fakePane([screen('96-ask-one-question'), gone()]);
+    expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [1] }] }, deps(pane, view)))
+      .toEqual({ status: 'sent' });
+    expect(pane.keys()).toEqual(['2']);
   });
 });
 
