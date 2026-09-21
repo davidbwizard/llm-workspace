@@ -175,14 +175,16 @@ describe('OpenSessionCard', () => {
       expect(container.querySelector('.ctxchip')).toBeNull();
     });
 
+    // textContent, not getByText -- the chip is three spans now so the
+    // rail can drop the token count alone. Rendered text is unchanged.
     it('shows the short form and percent left on the full card', () => {
-      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={withContext} />);
-      expect(screen.getByText('462k · 44% left')).toBeTruthy();
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={withContext} />);
+      expect(container.querySelector('.ctxchip')!.textContent).toBe('462k · 44% left');
     });
 
     it('also shows on the compact card', () => {
-      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} compact state={withContext} />);
-      expect(screen.getByText('462k · 44% left')).toBeTruthy();
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} compact state={withContext} />);
+      expect(container.querySelector('.ctxchip')!.textContent).toBe('462k · 44% left');
     });
   });
 
@@ -958,4 +960,54 @@ describe('OpenSessionCard', () => {
     return render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
       onResume={neverResume()} compact state={{ ...enrichedCompact, ...over }} {...props} />);
   }
+});
+
+/* ---- Status row, variant A -------------------------------------------
+   At the rail's narrowest widths the status word is hidden and the icon is
+   the only thing left showing the state. Which width that happens at is
+   CSS (SessionRail.css's container query) and jsdom computes no layout --
+   but the part that MUST hold at every width is testable here: the word is
+   in the DOM, in every state, always. CSS only ever hides it visually. */
+describe('the status row', () => {
+  const render1 = (activity: OpenSession['activity']) => render(
+    <OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
+      onResume={neverResume()} state={{ ...base, match: 'unique', sessionId: 's1', activity }} />,
+  );
+
+  it.each<[NonNullable<OpenSession['activity']>, string]>([
+    ['working', 'working'], ['idle', 'idle'], ['error', 'error'],
+    // Kept at the full phrasing: this same string feeds the fleet view's
+    // cards, which this redesign is scoped not to change. It is also the
+    // widest word the row can hold, so it alone sets both breakpoints --
+    // see SessionRail.css.
+    ['waiting_permission', 'waiting on you'], ['waiting_input', 'waiting on you'],
+  ])('renders %s with its word in the DOM, never an icon alone', (activity, word) => {
+    const { container } = render1(activity);
+    expect(container.querySelector('.state-word')!.textContent).toBe(word);
+    expect(container.querySelector('.stateicon')).toBeTruthy();
+  });
+
+  // The card's accessible name carries the state too, so the status is
+  // reachable even at the width where the word is visually hidden.
+  it.each<NonNullable<OpenSession['activity']>>(['waiting_permission', 'waiting_input'])(
+    'names the card "waiting on you" for %s', (activity) => {
+      const { container } = render1(activity);
+      expect(container.querySelector('.card')!.getAttribute('aria-label'))
+        .toContain('waiting on you');
+    });
+
+  // The icon is decoration; the word beside it is the name. If the icon
+  // announced itself too, a screen reader would say the state twice.
+  it('leaves the naming to the word, not the icon', () => {
+    const { container } = render1('working');
+    expect(container.querySelector('.stateicon')!.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  // The fleet view's grid cards are out of scope for this redesign and
+  // keep the dot they have always had -- it is still rendered, and CSS
+  // (not this component) decides which of the two is seen.
+  it('still renders the dot, which the fleet view grid keeps', () => {
+    const { container } = render1('idle');
+    expect(container.querySelector('.state .dot')).toBeTruthy();
+  });
 });

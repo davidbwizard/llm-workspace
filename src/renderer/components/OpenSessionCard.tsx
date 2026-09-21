@@ -4,6 +4,7 @@ import type { KillResult, KillRefusalReason } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { ContextChip } from './ContextChip.tsx';
+import { StatusIcon } from './StatusIcon.tsx';
 import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES } from '../state/favourites.ts';
 import './OpenSessionCard.css';
 
@@ -49,6 +50,17 @@ const ACTIVITY_WORD: Record<Activity, string> = {
   working:'working', waiting_permission:'waiting on you',
   waiting_input:'waiting on you', idle:'idle', error:'error',
 };
+
+/* A note for whoever tunes the status row next, because it cost a
+   measurement to learn: "waiting on you" is 14 characters where every
+   other word here is at most 7, and it is the single widest thing the row
+   can contain. It alone sets both breakpoints in SessionRail.css -- with
+   it, the token count needs a 313px rail to survive; with the mockup's
+   shorter "waiting" it needs 269px, against a 420px maximum.
+
+   Left at the full phrasing deliberately. This map also feeds the FLEET
+   view's grid cards, which this redesign is scoped not to change, and
+   "waiting on you" is the wording that says the thing worth saying. */
 
 /** Formats a running process's elapsed time for a human ("9d", not
  *  "777600s"). Coarsest unit that keeps at least one significant digit --
@@ -453,10 +465,21 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
             hidden entirely when there is no count yet (ContextChip's own
             null check). */}
         <ContextChip context={state.context} />
-        {activityWord && (
+        {/* Status row, variant A: the icon carries the state once the rail
+            is too narrow for the word, so both are rendered at every width
+            and CSS decides which is SEEN. The word is never removed from
+            the DOM and never `display:none` -- SessionRail.css hides it
+            with the same clip-path technique ConversationView.css's
+            .wholabel uses, which leaves it in the accessibility tree. An
+            icon with no name would make the state unreadable to a screen
+            reader exactly where it is already unreadable without colour
+            vision. .dot stays for the fleet view's grid cards, which this
+            redesign is deliberately not changing (see SessionRail.css). */}
+        {activityWord && state.activity && (
           <span className={`state ${state.activity}`}>
             <span className="dot" aria-hidden="true" />
-            {activityWord}
+            <StatusIcon activity={state.activity} />
+            <span className="state-word">{activityWord}</span>
           </span>
         )}
         {/* Un-gated from `compact` (David's addition): a full card gets this

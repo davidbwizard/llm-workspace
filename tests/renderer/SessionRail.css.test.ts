@@ -81,3 +81,64 @@ describe('SessionRail.css: meta-row containment (bug -- "47s · 228 MB" stacked 
     expect(hostAndMeta).toMatch(/min-width:\s*0/);
   });
 });
+
+/* ---- Status row, variant A -------------------------------------------
+   Which text is SHOWN at which width is layout, and jsdom computes none of
+   it -- the container query never evaluates there, so nothing below can
+   prove the row looks right. What it can prove is that the mechanism is
+   the intended one and that the two rules with real consequences hold: the
+   percent is never hidden, and the status word is never removed from the
+   accessibility tree. Both were established by measurement in Electron
+   (see the commit message); these guard them against a later edit. */
+describe('SessionRail.css: the status row drops text by the RAIL\'s width', () => {
+  it('makes the card column itself the query container, not the window', () => {
+    const rule = blockAfter('.railcards');
+    expect(rule).toMatch(/container-type:\s*inline-size/);
+    expect(rule).toMatch(/container-name:\s*rail/);
+  });
+
+  // The rail is resizable independently of the window, and a classic macOS
+  // scrollbar takes ~15px off .railcards without the window changing at
+  // all -- a width media query cannot see either.
+  it('uses container queries rather than window-width media queries', () => {
+    expect(css).toMatch(/@container\s+rail\s*\(/);
+    expect(css).not.toMatch(/@media[^{]*\(\s*(max|min)-width/);
+  });
+
+  it('drops the token count and its separator together, at the wider breakpoint', () => {
+    const m = css.match(/@container rail \(max-width:\s*(\d+)px\)\s*\{\s*([^}]*)\}/);
+    expect(m, 'no @container block found').toBeTruthy();
+    expect(m![2]).toMatch(/\.ctxchip-tok/);
+    expect(m![2]).toMatch(/\.ctxchip-sep/);
+    expect(m![2]).toMatch(/display:\s*none/);
+  });
+
+  // The one rule David was explicit about: "the numbers matter, and this
+  // is the one that survives". Nothing anywhere in this file may hide it.
+  it('never hides the percent left, at any width', () => {
+    expect(css).not.toMatch(/\.ctxchip-pct[^{]*\{[^}]*display:\s*none/);
+    for (const block of css.match(/@container[^{]*\{[\s\S]*?\n\}/g) ?? [])
+      expect(block, 'a container query hides the percent').not.toMatch(/ctxchip-pct/);
+  });
+
+  // An icon with no accessible name is the failure mode this guards: at
+  // the narrowest width the icon is the ONLY thing showing the state, so
+  // the word has to stay readable to assistive tech.
+  it('hides the status word visually WITHOUT removing it from the a11y tree', () => {
+    const blocks = css.match(/@container[^{]*\{[\s\S]*?\n\}/g) ?? [];
+    const wordBlock = blocks.find(b => b.includes('.state-word'));
+    expect(wordBlock, 'no rule hides the status word').toBeTruthy();
+    expect(wordBlock!).toMatch(/clip-path:\s*inset\(50%\)/);
+    expect(wordBlock!).not.toMatch(/display:\s*none/);
+    expect(wordBlock!).not.toMatch(/visibility:\s*hidden/);
+  });
+
+  it('keeps the wrap floor underneath both breakpoints', () => {
+    expect(blockAfter('.rail .metrics')).toMatch(/flex-wrap:\s*wrap/);
+  });
+
+  it('swaps the colour-only dot for the shape, in the rail only', () => {
+    expect(css).toMatch(/\.rail \.state \.dot\s*\{[^}]*display:\s*none/);
+    expect(css).toMatch(/\.rail \.state \.stateicon\s*\{[^}]*display:\s*block/);
+  });
+});

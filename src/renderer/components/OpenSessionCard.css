@@ -34,6 +34,24 @@
    status signal, so it never competes with --signal/--critical. */
 .cmdnum { font-family:var(--f-mono); font-size:10px; color:var(--faint); line-height:1; }
 
+/* The status shape (StatusIcon.tsx), for the rail's cards. Hidden HERE, by
+   default, and switched on only under .rail (SessionRail.css) -- the fleet
+   view's grid cards keep the plain .dot they have always had, because this
+   redesign is scoped to the rail and a grid card is never narrow enough to
+   lose its word. Costs one unpainted <svg> per grid card; deleting .dot
+   and this one `display:none` is all it takes to promote the icon
+   everywhere, if David wants that after seeing it.
+
+   Each hue matches the dot's own existing mapping in SessionCard.css
+   exactly, so the two treatments never disagree about what a state looks
+   like. Colour is the SECOND channel here, never the only one -- the
+   shapes differ too (see StatusIcon.tsx). */
+.stateicon { display:none; flex:none; }
+.state .stateicon { color:var(--faint); }
+.state.working .stateicon { color:var(--accent); }
+.state.waiting_permission .stateicon, .state.waiting_input .stateicon { color:var(--critical); }
+.state.error .stateicon { color:var(--signal); }
+
 /* The whole-card unread treatment David asked for beyond the dot alone
    ("maybe the box color should be different until I click on it") --
    same --signal tone as the dot above, same shape SessionCard.css's own

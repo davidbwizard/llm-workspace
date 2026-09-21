@@ -12,8 +12,21 @@
 .rail.left  { border-right:1px solid var(--line); order:0; }
 .rail.right { border-left:1px solid var(--line); order:2; }
 
+/* container-type:inline-size makes this the query container for the status
+   row at the bottom of this file -- the RAIL's own width, which is what
+   actually decides whether a card's row fits. A window-width media query
+   would be wrong here: the rail is user-resizable (140-420px,
+   SessionRail.tsx) independently of the window, so the same window can
+   hold a rail at either end of that range.
+
+   It also hardens the floor below: inline-size containment means this
+   element's width resolves WITHOUT consulting its contents, so a card can
+   no longer push the rail wider even if some future row loses its ability
+   to shrink. `flex:1; min-width:0` already made that true in this layout;
+   this makes it true by construction. */
 .railcards { flex:1; min-width:0; display:flex; flex-direction:column;
-  gap:6px; padding:8px; overflow-y:auto; }
+  gap:6px; padding:8px; overflow-y:auto;
+  container-type:inline-size; container-name:rail; }
 
 /* The resize grip -- a thin strip on the rail's INNER edge (the border it
    shares with the main pane), so dragging it changes the one thing this
@@ -90,6 +103,70 @@
    is too narrow for it. */
 .rail .metrics { flex-wrap:wrap; row-gap:6px; }
 .rail .ctxchip { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+
+/* ---- Status row, variant A (David's approved mockup) ------------------
+   Text while it fits, an icon when it does not. The rail's cards only: the
+   fleet view's grid cards keep their dot and their word (.stateicon is
+   display:none by default, in OpenSessionCard.css), because a grid card is
+   never narrow enough to lose either.
+
+   The shape replaces the dot here, and .state becomes the one item in
+   .metrics that may give way -- so a row that is slightly too wide
+   ellipsises the word rather than immediately wrapping to a second line.
+   The wrap above is still the floor underneath all of it. */
+.rail .state .dot { display:none; }
+.rail .state .stateicon { display:block; }
+.rail .state { min-width:0; gap:5px; }
+.rail .state-word { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* The mockup's spacing, which is tighter than the grid card's 13px: at
+   13px the row could not fit on one line at ANY width the rail can be set
+   to (measured -- even icon-only needed a 194px rail, above the 180px
+   default), so the gap is not cosmetic here, it is what makes variant A
+   reachable at all. Column gap only; the row gap above is the wrap floor's
+   and stays at 6px. */
+.rail .metrics { column-gap:7px; }
+
+/* The two breakpoints, MEASURED rather than chosen (see this file's git
+   history for the harness numbers). Each is the container width one pixel
+   below where that row last fit on a single line without squeezing
+   anything, using the widest real string for every slot: "778k" (the
+   4-char cap on formatContextShort), "100% left" (the widest percent) and
+   the longest status word the row can show -- see
+   ACTIVITY_WORD_ROW in OpenSessionCard.tsx).
+
+     query width >= 305px   778k · 100% left  (icon) waiting on you  ... 1
+     261-304px                     100% left  (icon) waiting on you  ... 1
+     < 261px                       100% left  (icon)                 ... 1
+
+   Both are set by the widest STATUS WORD, "waiting on you" -- 14
+   characters where every other word is at most 7. Shortening it to the
+   mockup's "waiting" would move the first breakpoint down by a 44px rail
+   (313px -> 269px); it is left long on purpose, because the same string
+   feeds the fleet view's cards. See OpenSessionCard.tsx's note.
+
+   Both numbers carry 15px of headroom over what was measured, and that is
+   not padding-for-luck. A container query is evaluated against the content
+   box INCLUDING the scrollbar gutter, so a classic macOS scrollbar takes
+   15px of usable width that the query cannot see: measured, the word
+   appeared at the same query width (246px) in both scrollbar modes, but in
+   the classic one only 231px of it was actually available and the row
+   wrapped. The headroom is what makes one rule correct in both states.
+   Its cost is that with overlay scrollbars the text drops up to a 15px
+   rail width earlier than it strictly must, which is the cheaper mistake:
+   the wrap floor above catches everything below these widths anyway. */
+@container rail (max-width: 304px) {
+  .rail .ctxchip-tok, .rail .ctxchip-sep { display:none; }
+}
+@container rail (max-width: 260px) {
+  /* NOT display:none -- the word has to stay in the accessibility tree
+     once the icon is the only thing left showing the state, or the card
+     loses its status entirely for a screen reader at exactly the width
+     where it is also unreadable without colour vision. Same technique as
+     ConversationView.css's .wholabel, and the reason StatusIcon is
+     aria-hidden. */
+  .rail .state-word { position:absolute; width:1px; height:1px; margin:-1px;
+    padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+}
 
 /* The reply trigger for a card that is waiting on you. A sibling of
    OpenSessionCard's own <article>, not something nested inside it -- the
