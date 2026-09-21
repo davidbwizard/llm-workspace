@@ -36,6 +36,17 @@
    warming the ground, the text AND the accent together is what reads as sepia.
    The accent carries the warmth alone. See the visual design doc §1. */
 :root {
+  /* What Chromium paints its OWN widgets from -- the scrollbars above all.
+     Not decoration: with no color-scheme declared, the used value is
+     `normal`, so a page whose every token is dark still gets the LIGHT
+     scrollbar, and the rail's showed up as a wide pale bar over the warm
+     dark cards. `nativeTheme.themeSource` (src/main/ipc.ts's app:theme,
+     whose comment claims it "drives native scrollbars") does NOT reach
+     these: it sets prefers-color-scheme and the OS chrome around the
+     window -- title bar, folder picker -- while the scrollbars INSIDE the
+     page follow this property alone. Declared in all three theme blocks,
+     same three-state structure as the tokens beside it. */
+  color-scheme: dark;
   --ground:#1a1918; --surface:#232120; --raised:#2e2b29;
   --line:#3b3735; --line-soft:#282523;
   --ink:#ece9e6; --ink-2:#c3bdb8; --muted:#938c86; --faint:#635d58;
@@ -83,6 +94,7 @@
    an identical token set so they cannot drift apart unnoticed. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
+    color-scheme: light;
     --ground:#f6f5f3; --surface:#ffffff; --raised:#ecebe8;
     --line:#d9d5d0; --line-soft:#e8e5e1;
     --ink:#1c1a18; --ink-2:#48443f; --muted:#736d67; --faint:#a29b94;
@@ -95,6 +107,7 @@
   }
 }
 :root[data-theme="light"] {
+  color-scheme: light;
   --ground:#f6f5f3; --surface:#ffffff; --raised:#ecebe8;
   --line:#d9d5d0; --line-soft:#e8e5e1;
   --ink:#1c1a18; --ink-2:#48443f; --muted:#736d67; --faint:#a29b94;
