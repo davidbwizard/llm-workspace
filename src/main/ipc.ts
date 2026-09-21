@@ -1289,12 +1289,11 @@ export function applyThemeChoice(raw: unknown, deps: ThemeDeps = {}): ThemeResul
 }
 
 /** Quick answers (src/hooks/switch.ts): which copy of src/hooks/helper.sh
- *  to install from. src/hooks/helper.sh is not part of the bundled build
- *  output today (electron-builder.yml ships only out/**), so
- *  app.getAppPath() -- the project root in dev, the asar/app root when
- *  packaged -- is the one resolution that works in both without a
- *  packaging change of its own. Matches src/main/index.ts's own startup
- *  refresh, which resolves the same path the same way. */
+ *  to install from. app.getAppPath() is the project root in dev and the
+ *  asar/app root when packaged; electron-builder.yml ships src/hooks/*.sh
+ *  at that same relative path, so this one resolution works in both.
+ *  Matches src/main/index.ts's own startup refresh, which resolves the same
+ *  path the same way. */
 function helperSourcePath(): string {
   return join(app.getAppPath(), 'src/hooks/helper.sh');
 }
