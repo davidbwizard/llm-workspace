@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   DEPENDENCIES, VERSION_TIMEOUT_MS, DOCTOR_TIMEOUT_MS, MAX_DOCTOR_OUTPUT_CHARS,
-  probeDependency, runChecks, capabilitiesFor, firstLine, defaultProbeExec,
+  probeDependency, runChecks, capabilitiesFor, firstLine, defaultProbeExec, HOMEBREW_URL,
   type ProbeRun, type ProbeExec, type DependencyCheck,
 } from '../../src/main/checks.ts';
 
@@ -88,6 +88,10 @@ describe('what the probes are allowed to run', () => {
     };
     await runChecks({ exec, pathReady });
     expect(calls.sort()).toEqual([
+      // Not a dependency of the APP -- a dependency of the ADVICE, so the
+      // pre-check never prints a `brew` command to a Mac without Homebrew.
+      // Local and free: 20ms, measured.
+      'brew --version',
       'claude --version', 'claude doctor',
       'codex --version', 'codex doctor',
       'tmux -V',
@@ -218,11 +222,12 @@ describe('reading a version', () => {
 });
 
 describe('every dependency says what it is for and how to get it', () => {
-  it.each([...DEPENDENCIES])('%s carries a purpose and an install command', async id => {
+  it.each([...DEPENDENCIES])('%s carries a purpose and at least one install route', async id => {
     const check = await probeDependency(id, execFrom({}));
     expect(check.purpose.length).toBeGreaterThan(0);
     expect(check.install.length).toBeGreaterThan(0);
     expect(check.name.length).toBeGreaterThan(0);
+    for (const route of check.install) expect(route.command.length).toBeGreaterThan(0);
   });
 
   // The app installs nothing (design §5). Nothing here may be executed, so
@@ -233,7 +238,72 @@ describe('every dependency says what it is for and how to get it', () => {
       exec: async (bin, args) => { calls.push([bin, ...args].join(' ')); return { status: 'missing' }; },
       pathReady,
     });
-    expect(calls.some(c => /brew|npm|curl|install/.test(c))).toBe(false);
+    // `brew --version` is expected; `brew install ...` never is.
+    expect(calls.every(c => !/\binstall\b/.test(c))).toBe(true);
+    expect(calls.every(c => !/curl|bash/.test(c))).toBe(true);
+  });
+
+  // The lead's ruling, 2026-09-21: do not ship a pipe-to-shell command for
+  // Codex -- that one is unverified, and it is the worst kind to get wrong.
+  it('never offers a pipe-to-shell command', async () => {
+    for (const id of DEPENDENCIES) {
+      const check = await probeDependency(id, execFrom({}));
+      for (const route of check.install) {
+        expect(route.command).not.toMatch(/\|\s*(ba)?sh\b/);
+      }
+    }
+  });
+});
+
+// A command starting `brew` is useless to someone without Homebrew, and
+// telling them to install a package manager is a bigger ask than this app
+// should make casually. So Homebrew is probed -- not as a dependency of the
+// app, but as a dependency of the ADVICE it gives.
+describe('advice a machine can actually act on', () => {
+  const withBrew = (brew: ProbeRun) => runChecks({
+    exec: execFrom({ 'brew --version': brew }),
+    pathReady,
+  });
+
+  it('reports whether Homebrew is there', async () => {
+    expect((await withBrew(exited(0, 'Homebrew 7.0.6'))).homebrew).toBe(true);
+    expect((await withBrew({ status: 'missing' })).homebrew).toBe(false);
+  });
+
+  it('marks every route that needs Homebrew as needing it', async () => {
+    const r = await withBrew({ status: 'missing' });
+    expect(byId(r.checks, 'tmux').install.every(route => route.requires === 'homebrew')).toBe(true);
+  });
+
+  // Claude Code has a documented route that does not go through Homebrew,
+  // so someone without brew is not stuck. tmux and Codex do not -- and the
+  // honest answer there is to say so, not to invent one.
+  it('offers Claude Code a route that does not need Homebrew', async () => {
+    const claude = byId((await withBrew({ status: 'missing' })).checks, 'claude');
+    expect(claude.install.some(route => route.requires === null)).toBe(true);
+  });
+
+  it('does not invent a non-Homebrew route where none is confirmed', async () => {
+    const r = await withBrew({ status: 'missing' });
+    for (const id of ['tmux', 'codex'] as const) {
+      expect(byId(r.checks, id).install.some(route => route.requires === null)).toBe(false);
+    }
+  });
+
+  it('prefers Homebrew first, since it is one idiom for all three', async () => {
+    const r = await withBrew(exited(0, 'Homebrew 7.0.6'));
+    for (const c of r.checks) expect(c.install[0]!.requires).toBe('homebrew');
+  });
+
+  it('points somewhere real for getting Homebrew itself', () => {
+    expect(HOMEBREW_URL).toMatch(/^https:\/\/brew\.sh/);
+  });
+
+  it('treats a brew probe that times out as "not there" rather than assuming', async () => {
+    // The conservative answer: show the caveat rather than print a command
+    // that may not work. Being told about a prerequisite you already have
+    // costs a sentence; the other way round costs a dead end.
+    expect((await withBrew({ status: 'timeout' })).homebrew).toBe(false);
   });
 });
 
@@ -322,7 +392,8 @@ describe('degrading per capability, never refusing to start', () => {
  *  capabilitiesFor test above, which cares about nothing else. */
 function stub(id: 'tmux' | 'claude' | 'codex'): DependencyCheck {
   return {
-    id, name: id, state: 'ok', version: null, purpose: 'x', install: 'x',
+    id, name: id, state: 'ok', version: null, purpose: 'x',
+    install: [{ command: 'x', requires: null, note: null }],
     doctor: null, detail: 'x',
   };
 }

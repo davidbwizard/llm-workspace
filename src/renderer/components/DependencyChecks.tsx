@@ -12,7 +12,7 @@
 // The app installs nothing (§5): every missing dependency shows its exact
 // command as copyable text, and that command is never executed by anything.
 import { useState } from 'react';
-import type { CheckState, DependencyCheck, Readiness } from '../../main/checks.ts';
+import { HOMEBREW_URL, type CheckState, type DependencyCheck, type InstallRoute, type Readiness } from '../../main/checks.ts';
 import type { ChecksStatus } from '../state/useChecks.ts';
 import './DependencyChecks.css';
 
@@ -57,7 +57,45 @@ function CopyCommand({ command }: { command: string }) {
   );
 }
 
-function CheckRow({ check }: { check: DependencyCheck }) {
+/** How to get this, given what the machine actually has.
+ *
+ *  A `brew install ...` line is useless to someone without Homebrew, and
+ *  printing it as though it would work is the kind of small dishonesty that
+ *  makes a first-run screen untrustworthy. So:
+ *
+ *  - Routes this machine can run are shown as commands, best first.
+ *  - When none of them can run, the routes are still SHOWN -- hiding them
+ *    teaches nothing -- but under a line saying what they need first, with
+ *    a link to Homebrew rather than Homebrew's own pipe-to-shell command.
+ *
+ *  The app installs nothing either way (§5): every command here is text
+ *  with a copy button, and no channel exists that would run one. */
+function InstallRoutes({ routes, homebrew }: { routes: InstallRoute[]; homebrew: boolean }) {
+  const canRun = (route: InstallRoute) => route.requires === null || homebrew;
+  const usable = routes.filter(canRun);
+  // Nothing this machine can run: show everything, captioned honestly.
+  const shown = usable.length > 0 ? usable : routes;
+
+  return (
+    <div className="checkinstall">
+      {usable.length === 0 && (
+        <p className="checkneeds">
+          {shown.length === 1 ? 'This needs' : 'These need'} Homebrew, which this Mac
+          does not have. You can get it from{' '}
+          <a href={HOMEBREW_URL} target="_blank" rel="noreferrer">{HOMEBREW_URL}</a>.
+        </p>
+      )}
+      {shown.map(route => (
+        <div key={route.command}>
+          <CopyCommand command={route.command} />
+          {route.note !== null && <p className="checknote">{route.note}</p>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CheckRow({ check, homebrew }: { check: DependencyCheck; homebrew: boolean }) {
   const [showDoctor, setShowDoctor] = useState(false);
   const needsInstalling = check.state === 'missing';
   return (
@@ -73,7 +111,9 @@ function CheckRow({ check }: { check: DependencyCheck }) {
           command, copyable. Shown for "no answer" too -- a person whose tmux
           does not respond is equally stuck, and the command is the same one
           that reinstalls it. */}
-      {(needsInstalling || check.state === 'timeout') && <CopyCommand command={check.install} />}
+      {(needsInstalling || check.state === 'timeout') && (
+        <InstallRoutes routes={check.install} homebrew={homebrew} />
+      )}
       {/* doctor's own words, verbatim, for the person to read. The app does
           not interpret them (design §3) -- it just hands them over. */}
       {check.doctor !== null && check.doctor.output.length > 0 && check.state !== 'ok' && (
@@ -139,7 +179,9 @@ export function DependencyChecks({ status, readiness, recheck, rechecking }: {
         : (
           <>
             <ul className="checklist">
-              {readiness.checks.map(c => <CheckRow key={c.id} check={c} />)}
+              {readiness.checks.map(c => (
+                <CheckRow key={c.id} check={c} homebrew={readiness.homebrew} />
+              ))}
             </ul>
             <Consequences readiness={readiness} />
             <p className="checkswhen">

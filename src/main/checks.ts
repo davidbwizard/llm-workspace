@@ -91,6 +91,33 @@ export interface DoctorReport {
   output: string;
 }
 
+/** Where to get Homebrew, for a Mac that has not got it. Shown as a link,
+ *  never as a command: Homebrew's own install line is a pipe-to-shell, and
+ *  this app does not put one of those in front of anyone. Sending someone
+ *  to the project's own page lets them read it first. */
+export const HOMEBREW_URL = 'https://brew.sh';
+
+/** One confirmed way to install a dependency.
+ *
+ *  A list, in preference order, rather than a single string, because
+ *  "`brew install x`" is useless advice on a Mac without Homebrew -- and
+ *  telling someone to install a package manager is a bigger ask than this
+ *  app should make casually. `requires` is what makes that visible: the UI
+ *  shows a route whose requirement is met as a command to run, and one
+ *  whose requirement is missing as a command that needs something first.
+ *
+ *  Every command here is verified (see DEFINITIONS below), and none of them
+ *  is a pipe-to-shell. An unverified `curl ... | sh` is the worst kind of
+ *  command to get wrong, so this app ships none. */
+export interface InstallRoute {
+  command: string;
+  /** What must already be on the machine. null when it stands on its own. */
+  requires: 'homebrew' | null;
+  /** One line of context -- a prerequisite, or which one the vendor
+   *  recommends. null when the command needs no explaining. */
+  note: string | null;
+}
+
 export interface DependencyCheck {
   id: DependencyId;
   /** What a person calls it. */
@@ -102,9 +129,9 @@ export interface DependencyCheck {
   version: string | null;
   /** One line on what the app needs it for. */
   purpose: string;
-  /** The exact command that installs it. SHOWN, with a copy button, and
-   *  never executed -- the app installs nothing (design §5). */
-  install: string;
+  /** Confirmed ways to install it, best first. SHOWN, with a copy button,
+   *  and never executed -- the app installs nothing (design §5). */
+  install: InstallRoute[];
   doctor: DoctorReport | null;
   /** This state, as one sentence a person can read. Also what a disabled
    *  control shows as its reason, so the two can never disagree. */
@@ -138,6 +165,13 @@ export interface Readiness {
    *  anything: it is sqlite and files on disk, and it is what makes a
    *  machine with no tmux open read-only instead of refusing to run. */
   history: Capability;
+  /** Whether Homebrew is on the resolved PATH. NOT a dependency of this
+   *  app -- a dependency of the ADVICE it gives, so the pre-check can
+   *  avoid printing a `brew` command to a Mac that has no brew as though
+   *  it would work. False when the probe could not confirm it, which is
+   *  the conservative direction: being told about a prerequisite you
+   *  already have costs a sentence, the other way round costs a dead end. */
+  homebrew: boolean;
 }
 
 interface Definition {
@@ -145,7 +179,7 @@ interface Definition {
   bin: string;
   name: string;
   purpose: string;
-  install: string;
+  install: InstallRoute[];
   /** null where the tool has no doctor. For tmux this is not an omission:
    *  inventing a health check for it would mean starting a tmux SERVER on a
    *  machine that has none, which is the opposite of a read-only probe. */
@@ -153,40 +187,53 @@ interface Definition {
   versionArgs: string[];
 }
 
-/** The install commands shown (never run) for anything missing.
+/** The install routes shown (never run) for anything missing.
  *
- *  Homebrew for all three, deliberately. tmux realistically needs Homebrew
- *  on macOS anyway, so one package manager for the whole list is one thing
- *  to have installed rather than three different routes -- and it avoids
- *  putting a `curl ... | bash` in front of someone in a GUI, which is a bad
- *  habit to teach even when the vendor documents it.
+ *  Homebrew first for all three, deliberately: it is one idiom rather than
+ *  three, and it is the route confirmed working on this machine. Where a
+ *  vendor documents a second route that does NOT need Homebrew, it is
+ *  offered as well, so a Mac without brew is not simply stuck.
  *
- *  Each one verified 2026-09-21 rather than recalled:
- *  - `tmux` is a Homebrew formula (`brew info --formula tmux`).
- *  - `claude-code` is the cask documented at code.claude.com/docs/en/setup
- *    under Homebrew. (The vendor's recommended route is the native
- *    installer, `curl -fsSL https://claude.ai/install.sh | bash`, which
- *    also auto-updates; the cask does not. Worth revisiting if the
- *    difference ever matters to someone.)
- *  - `codex` is a cask, confirmed against the copy installed on this
- *    machine: /opt/homebrew/Caskroom/codex/0.155.1. */
+ *  Every command verified 2026-09-21 rather than recalled:
+ *  - `tmux` is a Homebrew formula (`brew info --formula tmux` -> 3.7c).
+ *  - `claude-code` is the cask documented at code.claude.com/docs/en/setup,
+ *    alongside the npm package and the native `curl | bash` installer. The
+ *    vendor recommends the native installer (it auto-updates; the cask does
+ *    not), but this app does not put a pipe-to-shell in front of anyone, so
+ *    the two non-piping routes are what is offered.
+ *  - `codex` is a cask, confirmed against the copy installed here:
+ *    /opt/homebrew/Caskroom/codex/0.155.1, from github.com/openai/codex. A
+ *    sub-agent reported this as unconfirmed and guessed the project might
+ *    not be maintained; that was wrong, and the cask was checked directly.
+ *    No `curl | sh` route is offered for Codex because none was verified.
+ *
+ *  Nothing goes in this list that has not been confirmed. A first-run
+ *  screen that prints a command which does not work is worse than one that
+ *  says plainly that it does not know. */
 const DEFINITIONS: Record<DependencyId, Definition> = {
   tmux: {
     id: 'tmux', bin: 'tmux', name: 'tmux',
     purpose: 'Runs every session this app starts, and is how it attaches to one.',
-    install: 'brew install tmux',
+    install: [{ command: 'brew install tmux', requires: 'homebrew', note: null }],
     versionArgs: ['-V'], doctorArgs: null,
   },
   claude: {
     id: 'claude', bin: 'claude', name: 'Claude Code',
     purpose: 'The Claude agent this app launches and talks to.',
-    install: 'brew install --cask claude-code',
+    install: [
+      { command: 'brew install --cask claude-code', requires: 'homebrew', note: null },
+      {
+        command: 'npm install -g @anthropic-ai/claude-code',
+        requires: null,
+        note: 'Needs Node.js 22 or later.',
+      },
+    ],
     versionArgs: ['--version'], doctorArgs: ['doctor'],
   },
   codex: {
     id: 'codex', bin: 'codex', name: 'Codex',
     purpose: 'The Codex agent this app launches and talks to.',
-    install: 'brew install --cask codex',
+    install: [{ command: 'brew install --cask codex', requires: 'homebrew', note: null }],
     versionArgs: ['--version'], doctorArgs: ['doctor'],
   },
 };
@@ -349,7 +396,7 @@ function capabilityFrom(required: DependencyCheck[]): Capability {
 
 /** Capabilities from the checks alone -- no second probe, so what the UI
  *  disables can never disagree with what the screen says is missing. */
-export function capabilitiesFor(checks: DependencyCheck[]): Omit<Readiness, 'checkedAt' | 'checks'> {
+export function capabilitiesFor(checks: DependencyCheck[]): Omit<Readiness, 'checkedAt' | 'checks' | 'homebrew'> {
   const find = (id: DependencyId) => checks.find(c => c.id === id)!;
   const tmux = find('tmux');
   return {
@@ -375,16 +422,33 @@ export type CheckDeps = {
   now?: () => Date;
 };
 
-/** One full pass. Awaits the PATH repair FIRST, then probes all three
- *  concurrently: `codex doctor` alone is ~11s, and running the three in
- *  series would make that the floor for the whole screen. */
+/** Is Homebrew on the resolved PATH? Its own probe, not a DependencyCheck:
+ *  this app does not need Homebrew, it only needs to know whether the
+ *  advice it is about to give is advice this machine can act on.
+ *
+ *  `brew --version` measured 20ms here -- local, free, and nowhere near
+ *  worth its own timeout constant. Anything but a clean exit reads as "not
+ *  there", including a timeout: see Readiness.homebrew for why that
+ *  direction is the safe one. */
+async function probeHomebrew(exec: ProbeExec): Promise<boolean> {
+  const run = await exec('brew', ['--version'], VERSION_TIMEOUT_MS);
+  return run.status === 'exited' && run.code === 0;
+}
+
+/** One full pass. Awaits the PATH repair FIRST, then probes everything
+ *  concurrently: `codex doctor` alone is ~11s, and running these in series
+ *  would make that the floor for the whole screen. */
 export async function runChecks(deps: CheckDeps = {}): Promise<Readiness> {
   await (deps.pathReady ?? whenLoginPathApplied)();
   const exec = deps.exec ?? defaultProbeExec;
-  const checks = await Promise.all(DEPENDENCIES.map(id => probeDependency(id, exec)));
+  const [checks, homebrew] = await Promise.all([
+    Promise.all(DEPENDENCIES.map(id => probeDependency(id, exec))),
+    probeHomebrew(exec),
+  ]);
   return {
     checkedAt: (deps.now ?? (() => new Date()))().toISOString(),
     checks,
     ...capabilitiesFor(checks),
+    homebrew,
   };
 }

@@ -12,7 +12,7 @@ function check(id: 'tmux' | 'claude' | 'codex', state: CheckState, over: Partial
     id, name, state,
     version: state === 'ok' ? '1.2.3' : null,
     purpose: `What ${name} is for.`,
-    install: `brew install ${id}`,
+    install: [{ command: `brew install ${id}`, requires: 'homebrew', note: null }],
     doctor: null,
     detail: `${name} detail for ${state}.`,
     ...over,
@@ -27,6 +27,7 @@ function readiness(checks: DependencyCheck[], over: Partial<Readiness> = {}): Re
     launch: { claude: cap(true), codex: cap(true) },
     attach: cap(true),
     history: cap(true),
+    homebrew: true,
     ...over,
   };
 }
@@ -88,6 +89,62 @@ describe('the app installs nothing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
     // The command itself is still on screen to select by hand.
     expect(screen.getByText('brew install tmux')).toBeTruthy();
+  });
+});
+
+// A command starting `brew` is useless to someone without Homebrew, and
+// printing it as though it would work is the kind of small dishonesty that
+// makes a first-run screen untrustworthy.
+describe('advice a machine can actually act on', () => {
+  it('shows the brew command plainly when the Mac has Homebrew', () => {
+    panel(readiness([check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')]));
+    expect(screen.getByText('brew install tmux')).toBeTruthy();
+    expect(screen.queryByText(/does not have/)).toBeNull();
+  });
+
+  it('says what is needed first when the Mac has no Homebrew', () => {
+    panel(readiness(
+      [check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')],
+      { homebrew: false },
+    ));
+    expect(screen.getByText(/needs Homebrew, which this Mac[\s\S]*does not have/)).toBeTruthy();
+    // The command is still shown -- hiding it teaches nothing -- just
+    // captioned with what it needs first.
+    expect(screen.getByText('brew install tmux')).toBeTruthy();
+  });
+
+  it('links to Homebrew rather than printing its pipe-to-shell installer', () => {
+    panel(readiness(
+      [check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')],
+      { homebrew: false },
+    ));
+    const link = screen.getByRole('link', { name: /brew\.sh/ });
+    expect(link.getAttribute('href')).toBe('https://brew.sh');
+    // Nothing on screen pipes a download into a shell.
+    expect(document.body.textContent).not.toMatch(/\|\s*(ba)?sh\b/);
+  });
+
+  it('prefers the route that works, when one of them does not need Homebrew', () => {
+    const claude = check('claude', 'missing', {
+      install: [
+        { command: 'brew install --cask claude-code', requires: 'homebrew', note: null },
+        { command: 'npm install -g @anthropic-ai/claude-code', requires: null, note: 'Needs Node.js 22 or later.' },
+      ],
+    });
+    panel(readiness([check('tmux', 'ok'), claude, check('codex', 'ok')], { homebrew: false }));
+    // The npm route stands on its own, so it is shown and the brew one is
+    // not -- and there is no caveat, because there is nothing to caveat.
+    expect(screen.getByText('npm install -g @anthropic-ai/claude-code')).toBeTruthy();
+    expect(screen.queryByText('brew install --cask claude-code')).toBeNull();
+    expect(screen.queryByText(/does not have/)).toBeNull();
+  });
+
+  it('shows a route\'s prerequisite note', () => {
+    const claude = check('claude', 'missing', {
+      install: [{ command: 'npm install -g @anthropic-ai/claude-code', requires: null, note: 'Needs Node.js 22 or later.' }],
+    });
+    panel(readiness([check('tmux', 'ok'), claude, check('codex', 'ok')]));
+    expect(screen.getByText('Needs Node.js 22 or later.')).toBeTruthy();
   });
 });
 
