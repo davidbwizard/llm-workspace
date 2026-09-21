@@ -62,6 +62,35 @@
 .rail .crow-meta { min-width:0; }
 .rail .host, .rail .procmeta { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
 
+/* Bug (reported as "the scrollbar clips the status word"): the metrics row
+   ran off the card's right edge in the rail's narrow width, so "idle" /
+   "working" was cut mid-word and the "..." menu was pushed out of sight
+   entirely. The scrollbar was not doing the cutting -- it only looked that
+   way, because .railcards clips at exactly the edge macOS floats its
+   overlay scrollbar over. Measured in Electron at the 180px default:
+   .metrics wanted 200px of a 121px card, overflowing by 79px, which is
+   what pushed .state 25px past the card's own content box and underneath
+   the bar.
+
+   The third instance of this same narrow-rail class of bug (see the two
+   above), and it arrived with the usage chip -- ddb29a4 put a ~120px
+   nowrap .ctxchip into a row that had ~121px to spend, beside .state, the
+   menu and .cmdnum. Without the chip the same row measures 0 overflow at
+   this width, which is why nothing was wrong here before.
+
+   Wrapping rather than truncating: every item in this row is already as
+   short as it can be ("idle", a dot, "..."), so shrinking them just trades
+   a clipped word for an ellipsised one, and squeezing the chip alone
+   crushes it to a few pixels (measured). A second line is the only
+   treatment that keeps the usage chip AND the status word whole. Costs one
+   line of card height below ~260px and nothing at or above it -- .metrics
+   still never wraps outside .rail, so OpenSessionCard.css's .cmdnum note
+   and the full grid's cards are untouched. min-width:0 + ellipsis on the
+   chip is the floor for the 140px minimum width, where even its own line
+   is too narrow for it. */
+.rail .metrics { flex-wrap:wrap; row-gap:6px; }
+.rail .ctxchip { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+
 /* The reply trigger for a card that is waiting on you. A sibling of
    OpenSessionCard's own <article>, not something nested inside it -- the
    card's onOpen already means "select this session"; this needs an
