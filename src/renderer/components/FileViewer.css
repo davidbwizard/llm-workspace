@@ -1,0 +1,73 @@
+/* The file viewer. Styling follows the approved mockup
+   (claude.ai/artifact/UghQJAoTY7TnveuFjLmiGi), which is itself written
+   against this app's tokens -- so every colour, radius and family below is a
+   var(), never a literal. The viewer looks identical in both placements;
+   only .side / .sheet differ, which is the whole point of the mockup's two
+   options sharing one .viewer block. */
+.fileviewer { display:flex; flex-direction:column; min-height:0; background:var(--ground); }
+
+/* A: beside the conversation. 46% and min-width from the mockup. The
+   breakpoint in MainPane.tsx (SIDE_PANEL_MIN_PX) is what guarantees both
+   halves stay usable -- the min-width is the backstop, not the rule. */
+.fileviewer.side { flex:none; width:46%; min-width:260px; border-left:1px solid var(--line); }
+
+/* B: over the conversation. The scrim covers the pane's body, not its
+   header, so "All sessions" and the Conversation/Terminal toggle stay
+   reachable -- the one deliberate departure from the mockup, which dims the
+   whole pane. */
+.fvscrim { position:absolute; inset:0; z-index:5; display:grid; place-items:center; padding:20px;
+  /* The same backdrop SettingsModal.css already uses, so the app has one
+     dimmed-background look rather than two. */
+  background:rgb(0 0 0 / 46%); }
+.fileviewer.sheet { width:min(560px,100%); max-height:100%;
+  border:1px solid var(--line); border-radius:var(--r-md); box-shadow:var(--shadow-pop); overflow:hidden; }
+
+.fvhead { display:flex; align-items:center; gap:8px; flex:none;
+  padding:9px 12px; border-bottom:1px solid var(--line-soft); }
+/* The file's name, not its path: the path is the title attribute. Same
+   shrink rule as MainPane's .panetitle -- this is the only child in the row
+   that gives up space, so the buttons never clip. */
+.fvname { font-family:var(--f-mono); font-size:12px; color:var(--ink);
+  flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fvsize { font-family:var(--f-mono); font-size:10.5px; color:var(--faint); flex:none; }
+.fvspacer { flex:none; }
+.fvbtn { font-family:var(--f-body); font-size:11.5px; color:var(--muted); background:none;
+  border:1px solid var(--line); border-radius:var(--r-sm); padding:3px 9px; cursor:pointer; flex:none; }
+.fvbtn:hover { color:var(--ink); }
+.fvclose { font-size:17px; line-height:1; border-color:transparent; padding:1px 7px; }
+
+/* overscroll-behavior:contain so scrolling past the end of the document
+   does not start scrolling the conversation behind it. */
+.fvbody { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain;
+  padding:14px 18px 20px; font-size:14.5px; line-height:1.6; color:var(--ink-2); }
+.fvbody > :first-child { margin-top:0; }
+.fvbody > :last-child { margin-bottom:0; }
+.fvbody p, .fvbody li { margin:0 0 8px; }
+.fvbody ul, .fvbody ol { margin:0 0 8px; padding-left:20px; }
+.fvbody h1 { font-family:var(--f-display); font-variation-settings:var(--f-display-fx);
+  font-weight:600; font-size:21px; color:var(--ink); margin:0 0 8px; }
+.fvbody h2, .fvbody h3, .fvbody h4, .fvbody h5, .fvbody h6 {
+  font-size:15px; font-weight:700; color:var(--ink); margin:16px 0 6px; }
+.fvbody a { color:var(--accent); }
+.fvbody blockquote { margin:0 0 8px; padding-left:8px;
+  border-left:2px solid var(--line); color:var(--muted); }
+.fvbody code { font-family:var(--f-mono); font-size:.86em;
+  background:var(--raised); border-radius:4px; padding:1px 5px; color:var(--ink); }
+.fvbody pre { font-family:var(--f-mono); font-size:12.5px; line-height:1.45; margin:0 0 10px;
+  background:var(--raised); border:1px solid var(--line-soft); border-radius:var(--r-sm);
+  padding:9px 11px; overflow-x:auto; }
+.fvbody pre code { background:none; border-radius:0; padding:0; font-size:inherit; }
+/* display:block + overflow-x so a wide table scrolls itself instead of
+   widening the whole panel, the same rule ConversationView.css uses. */
+.fvbody table { display:block; max-width:100%; overflow-x:auto;
+  border-collapse:collapse; font-size:13.5px; margin:0 0 10px; }
+.fvbody th, .fvbody td { border:1px solid var(--line); padding:3px 9px;
+  text-align:left; vertical-align:top; }
+.fvbody th { background:var(--raised); color:var(--ink); font-weight:600; }
+.fvbody .md-image { font-style:italic; color:var(--muted); }
+.fvtoobig { color:var(--ink-2); }
+
+/* The viewer's own markdown never linkifies paths (nothing provides
+   FileLinkContext around it), so an .fp inside .fvbody is not reachable --
+   but the conversation's own .fp is styled in ConversationView.css, beside
+   the markdown rules it belongs with. */

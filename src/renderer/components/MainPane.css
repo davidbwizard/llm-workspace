@@ -14,6 +14,16 @@
    something: without it a flex child's implicit min-height:auto lets the
    conversation grow the pane instead of scrolling inside it. */
 .pane { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; order:1; }
+/* The row the conversation and the file viewer share. position:relative is
+   what the sheet placement's scrim (FileViewer.css) is positioned against,
+   so it dims the conversation and not the header above it. min-width:0 for
+   the same reason .pane has it: without it a flex child's implicit
+   min-width:auto lets an over-wide terminal canvas push the row instead of
+   scrolling inside it. */
+.panebody { display:flex; flex:1; min-height:0; min-width:0; position:relative; }
+/* The conversation gives up the width the side panel takes; the panel's own
+   width is fixed by FileViewer.css. */
+.panebody > .convwrap, .panebody > .term-wrap { flex:1; min-width:0; }
 .panehead { display:flex; gap:10px; align-items:center; padding:7px 12px;
   border-bottom:1px solid var(--line); background:var(--surface); }
 /* A path, not a name: mono, quiet. This is the ONLY child in the header row
