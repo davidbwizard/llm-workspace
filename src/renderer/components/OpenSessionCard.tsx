@@ -51,16 +51,24 @@ const ACTIVITY_WORD: Record<Activity, string> = {
   waiting_input:'waiting on you', idle:'idle', error:'error',
 };
 
-/* A note for whoever tunes the status row next, because it cost a
-   measurement to learn: "waiting on you" is 14 characters where every
-   other word here is at most 7, and it is the single widest thing the row
-   can contain. It alone sets both breakpoints in SessionRail.css -- with
-   it, the token count needs a 313px rail to survive; with the mockup's
-   shorter "waiting" it needs 269px, against a 420px maximum.
-
-   Left at the full phrasing deliberately. This map also feeds the FLEET
-   view's grid cards, which this redesign is scoped not to change, and
-   "waiting on you" is the wording that says the thing worth saying. */
+/** What the status ROW prints, as opposed to what the card is NAMED.
+ *  "waiting", David's choice, rather than the map above's "waiting on you".
+ *
+ *  The two differ deliberately, and not only as a matter of taste.
+ *  "waiting on you" is 14 characters where every other word here is at
+ *  most 7, which made it the single widest thing the row could contain --
+ *  measured, it alone decided both of SessionRail.css's breakpoints for
+ *  all four states. Shortening it is what lets the other three keep their
+ *  text at widths where they previously lost it.
+ *
+ *  Nothing is lost to a screen reader: `label` below still builds the
+ *  card's accessible name from ACTIVITY_WORD, so the card is still
+ *  announced as "waiting on you". This shortens only the visible word
+ *  inside it -- where the badge, the tinted border and the filled icon are
+ *  all already saying "on you". */
+const ACTIVITY_WORD_ROW: Record<Activity, string> = {
+  ...ACTIVITY_WORD, waiting_permission:'waiting', waiting_input:'waiting',
+};
 
 /** Formats a running process's elapsed time for a human ("9d", not
  *  "777600s"). Coarsest unit that keeps at least one significant digit --
@@ -465,21 +473,22 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
             hidden entirely when there is no count yet (ContextChip's own
             null check). */}
         <ContextChip context={state.context} />
-        {/* Status row, variant A: the icon carries the state once the rail
-            is too narrow for the word, so both are rendered at every width
-            and CSS decides which is SEEN. The word is never removed from
-            the DOM and never `display:none` -- SessionRail.css hides it
+        {/* Status row, variant A. The icon is the status everywhere now --
+            rail AND fleet grid (David: "Keep it consistent. Both fleet and
+            cards.") -- so the colour-only .dot this used to render is gone
+            rather than hidden.
+
+            The word is never removed from the DOM and never `display:none`.
+            Once the rail is too narrow to show it, SessionRail.css hides it
             with the same clip-path technique ConversationView.css's
-            .wholabel uses, which leaves it in the accessibility tree. An
+            .wholabel uses, which leaves it in the accessibility tree: an
             icon with no name would make the state unreadable to a screen
-            reader exactly where it is already unreadable without colour
-            vision. .dot stays for the fleet view's grid cards, which this
-            redesign is deliberately not changing (see SessionRail.css). */}
+            reader at exactly the width where it is already unreadable
+            without colour vision. */}
         {activityWord && state.activity && (
           <span className={`state ${state.activity}`}>
-            <span className="dot" aria-hidden="true" />
             <StatusIcon activity={state.activity} />
-            <span className="state-word">{activityWord}</span>
+            <span className="state-word">{ACTIVITY_WORD_ROW[state.activity]}</span>
           </span>
         )}
         {/* Un-gated from `compact` (David's addition): a full card gets this

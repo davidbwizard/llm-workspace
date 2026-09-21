@@ -36,15 +36,36 @@
         overflow:hidden; }
 .said.wait { color:var(--critical); }
 .shared { font-size:12px; color:var(--signal); margin:0; }
-.metrics { display:flex; align-items:center; gap:13px; margin-top:3px;
+/* flex-wrap is the FLOOR, and it belongs here rather than under .rail
+   because every surface that renders this row can overflow its card.
+   Measured at the fleet grid's narrowest column (280px, the minmax floor):
+   the open-session card's row overflowed by 27px and the history card's by
+   23px -- both BEFORE the status icon replaced the dot, which adds 4px.
+   Wrapping is what turns that overflow into a second line. Each surface
+   then avoids reaching for it by its own means: the rail drops text at
+   measured widths (SessionRail.css), the fleet grid drops the token count
+   (FleetView.css). */
+.metrics { display:flex; flex-wrap:wrap; align-items:center; gap:6px 13px;
+           margin-top:3px;
            font-family:var(--f-mono); font-size:11px; color:var(--muted);
            font-variant-numeric:tabular-nums; }
 .dial { flex:none; }
 .state { margin-left:auto; display:flex; align-items:center; gap:6px; font-size:10.5px; }
-.state .dot { width:7px; height:7px; border-radius:50%; flex:none; background:var(--faint); }
-.state.working .dot { background:var(--accent); }
-.state.waiting_permission .dot, .state.waiting_input .dot { background:var(--critical); }
-.state.error .dot { background:var(--signal); }
+/* The status shape (StatusIcon.tsx), which replaced the colour-only dot
+   that used to live on this line. It sits HERE, with .state itself, rather
+   than in OpenSessionCard.css: both cards that show a status render it --
+   the rail's and the fleet view's alike (David: "Keep it consistent. Both
+   fleet and cards.") -- and this file is the one they already share (see
+   the note at the top of OpenSessionCard.css).
+
+   The hues are the dot's own former mapping, unchanged, so nothing about
+   what a state looks like moved except the geometry. Colour is the SECOND
+   channel here and never the only one -- the shapes differ too, which is
+   the whole point (see StatusIcon.tsx). */
+.stateicon { display:block; flex:none; color:var(--faint); }
+.state.working .stateicon { color:var(--accent); }
+.state.waiting_permission .stateicon, .state.waiting_input .stateicon { color:var(--critical); }
+.state.error .stateicon { color:var(--signal); }
 .badge { position:absolute; top:13px; right:15px; background:var(--critical);
          color:var(--ground); font-family:var(--f-mono); font-size:10.5px;
          border-radius:11px; padding:2px 8px; }

@@ -28,29 +28,17 @@
    David's own placement, seen against the real, running window: to the
    RIGHT of the "…" menu button, in the bottom-right corner of the card
    (.metrics is the last row), not a corner badge. A plain flex child, not
-   absolutely positioned -- .metrics never wraps (see its own rule,
-   SessionCard.css), so this can never push .cardmenu out of place or force
-   a second line. Muted and small: a hint for a keyboard-driven user, not a
-   status signal, so it never competes with --signal/--critical. */
+   absolutely positioned, so it rides after .cardmenu's own margin-left:auto
+   rather than needing position maths.
+
+   .metrics DOES wrap now (SessionCard.css), which this note used to rely on
+   it never doing -- but the thing that note was protecting still holds: a
+   wrap only ever moves this digit onto a line WITH .cardmenu, never on top
+   of it, because both are plain in-flow children. Muted and small: a hint
+   for a keyboard-driven user, not a status signal, so it never competes
+   with --signal/--critical. */
 .cmdnum { font-family:var(--f-mono); font-size:10px; color:var(--faint); line-height:1; }
 
-/* The status shape (StatusIcon.tsx), for the rail's cards. Hidden HERE, by
-   default, and switched on only under .rail (SessionRail.css) -- the fleet
-   view's grid cards keep the plain .dot they have always had, because this
-   redesign is scoped to the rail and a grid card is never narrow enough to
-   lose its word. Costs one unpainted <svg> per grid card; deleting .dot
-   and this one `display:none` is all it takes to promote the icon
-   everywhere, if David wants that after seeing it.
-
-   Each hue matches the dot's own existing mapping in SessionCard.css
-   exactly, so the two treatments never disagree about what a state looks
-   like. Colour is the SECOND channel here, never the only one -- the
-   shapes differ too (see StatusIcon.tsx). */
-.stateicon { display:none; flex:none; }
-.state .stateicon { color:var(--faint); }
-.state.working .stateicon { color:var(--accent); }
-.state.waiting_permission .stateicon, .state.waiting_input .stateicon { color:var(--critical); }
-.state.error .stateicon { color:var(--signal); }
 
 /* The whole-card unread treatment David asked for beyond the dot alone
    ("maybe the box color should be different until I click on it") --

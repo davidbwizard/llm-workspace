@@ -133,12 +133,20 @@ describe('SessionRail.css: the status row drops text by the RAIL\'s width', () =
     expect(wordBlock!).not.toMatch(/visibility:\s*hidden/);
   });
 
-  it('keeps the wrap floor underneath both breakpoints', () => {
-    expect(blockAfter('.rail .metrics')).toMatch(/flex-wrap:\s*wrap/);
+  // The floor itself now lives on the base .metrics rule (SessionCard.css)
+  // -- the same overflow was measured on the fleet grid's cards, so it is
+  // not a rail-specific concern any more. What stays here is the tighter
+  // column gap, which is what makes the one-line row reachable at all at
+  // the rail's widths.
+  it('keeps the rail\'s tighter column gap', () => {
+    expect(blockAfter('.rail .metrics')).toMatch(/column-gap:\s*7px/);
   });
 
-  it('swaps the colour-only dot for the shape, in the rail only', () => {
-    expect(css).toMatch(/\.rail \.state \.dot\s*\{[^}]*display:\s*none/);
-    expect(css).toMatch(/\.rail \.state \.stateicon\s*\{[^}]*display:\s*block/);
+  // The icon is no longer rail-only (David: "Keep it consistent. Both
+  // fleet and cards."), so this file should no longer be switching it on
+  // or hiding a dot -- SessionCard.css owns the shape for every card now.
+  it('no longer scopes the status shape to the rail', () => {
+    expect(css).not.toMatch(/\.rail \.state \.dot/);
+    expect(css).not.toMatch(/\.rail \.state \.stateicon/);
   });
 });

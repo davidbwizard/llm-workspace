@@ -97,25 +97,25 @@
    crushes it to a few pixels (measured). A second line is the only
    treatment that keeps the usage chip AND the status word whole. Costs one
    line of card height below ~260px and nothing at or above it -- .metrics
-   still never wraps outside .rail, so OpenSessionCard.css's .cmdnum note
-   and the full grid's cards are untouched. min-width:0 + ellipsis on the
-   chip is the floor for the 140px minimum width, where even its own line
-   is too narrow for it. */
-.rail .metrics { flex-wrap:wrap; row-gap:6px; }
+   line of card height below ~200px and nothing above it. The flex-wrap
+   itself has since moved to the base .metrics rule (SessionCard.css) --
+   the same overflow was measured on the fleet grid's cards too, so the
+   floor is no longer rail-specific. min-width:0 + ellipsis on the chip is
+   what carries the 140px minimum width, where even the chip's own line is
+   too narrow for it. */
 .rail .ctxchip { min-width:0; overflow:hidden; text-overflow:ellipsis; }
 
 /* ---- Status row, variant A (David's approved mockup) ------------------
-   Text while it fits, an icon when it does not. The rail's cards only: the
-   fleet view's grid cards keep their dot and their word (.stateicon is
-   display:none by default, in OpenSessionCard.css), because a grid card is
-   never narrow enough to lose either.
+   Text while it fits, an icon when it does not. The ICON itself is not
+   rail-only any more (OpenSessionCard.css owns it, and every card shows
+   it); what belongs to the rail is the DROPPING -- the fleet grid's cards
+   are a fixed 280px minimum and never get narrow enough to need it, which
+   was measured rather than assumed.
 
-   The shape replaces the dot here, and .state becomes the one item in
+   .state becomes the one item in
    .metrics that may give way -- so a row that is slightly too wide
    ellipsises the word rather than immediately wrapping to a second line.
    The wrap above is still the floor underneath all of it. */
-.rail .state .dot { display:none; }
-.rail .state .stateicon { display:block; }
 .rail .state { min-width:0; gap:5px; }
 .rail .state-word { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* The mockup's spacing, which is tighter than the grid card's 13px: at
@@ -126,38 +126,36 @@
    and stays at 6px. */
 .rail .metrics { column-gap:7px; }
 
-/* The two breakpoints, MEASURED rather than chosen (see this file's git
-   history for the harness numbers). Each is the container width one pixel
-   below where that row last fit on a single line without squeezing
-   anything, using the widest real string for every slot: "778k" (the
-   4-char cap on formatContextShort), "100% left" (the widest percent) and
-   the longest status word the row can show -- see
-   ACTIVITY_WORD_ROW in OpenSessionCard.tsx).
+/* The two breakpoints, MEASURED rather than chosen. Each is one pixel
+   below the width where that row last fit on a single line without
+   squeezing anything, using the widest real string for every slot: "778k"
+   (the 4-char cap on formatContextShort), "100% left" (the widest
+   percent), and the longest word the row prints -- 7 characters, now that
+   ACTIVITY_WORD_ROW (OpenSessionCard.tsx) says "waiting".
 
-     query width >= 305px   778k · 100% left  (icon) waiting on you  ... 1
-     261-304px                     100% left  (icon) waiting on you  ... 1
-     < 261px                       100% left  (icon)                 ... 1
+     query width >= 261px   778k · 100% left  (icon) working  ...  1
+     217-260px                     100% left  (icon) working  ...  1
+     < 217px                       100% left  (icon)          ...  1
 
-   Both are set by the widest STATUS WORD, "waiting on you" -- 14
-   characters where every other word is at most 7. Shortening it to the
-   mockup's "waiting" would move the first breakpoint down by a 44px rail
-   (313px -> 269px); it is left long on purpose, because the same string
-   feeds the fleet view's cards. See OpenSessionCard.tsx's note.
+   RE-MEASURED after the wording changed, not derived from the old numbers.
+   The fit widths moved 290/246 -> 246/202: "waiting on you" was 14
+   characters against every other word's 7, and had been setting both
+   breakpoints for all four states single-handedly. Three states were
+   paying for one state's phrasing.
 
    Both numbers carry 15px of headroom over what was measured, and that is
    not padding-for-luck. A container query is evaluated against the content
    box INCLUDING the scrollbar gutter, so a classic macOS scrollbar takes
    15px of usable width that the query cannot see: measured, the word
-   appeared at the same query width (246px) in both scrollbar modes, but in
-   the classic one only 231px of it was actually available and the row
-   wrapped. The headroom is what makes one rule correct in both states.
+   appeared at the same query width in both scrollbar modes, but in the
+   classic one 15px less of it was actually available and the row wrapped. The headroom is what makes one rule correct in both states.
    Its cost is that with overlay scrollbars the text drops up to a 15px
    rail width earlier than it strictly must, which is the cheaper mistake:
    the wrap floor above catches everything below these widths anyway. */
-@container rail (max-width: 304px) {
+@container rail (max-width: 260px) {
   .rail .ctxchip-tok, .rail .ctxchip-sep { display:none; }
 }
-@container rail (max-width: 260px) {
+@container rail (max-width: 216px) {
   /* NOT display:none -- the word has to stay in the accessibility tree
      once the icon is the only thing left showing the state, or the card
      loses its status entirely for a screen reader at exactly the width

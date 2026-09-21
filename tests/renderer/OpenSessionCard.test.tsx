@@ -205,11 +205,16 @@ describe('OpenSessionCard', () => {
       expect(screen.getByText('working')).toBeTruthy();
     });
 
+    // The visible row says "waiting" (it is the widest word in the row and
+    // was setting both of the rail's breakpoints on its own); the card's
+    // accessible NAME still says "waiting on you". Both halves asserted,
+    // because dropping either would be the regression.
     it('shows the blocked badge and wording when the matched session is waiting on the user', () => {
       const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
         onReattach={neverReattach()} onResume={neverResume()} state={{ ...enriched, activity: 'waiting_permission' }} />);
       expect(container.querySelector('.badge')).not.toBeNull();
-      expect(screen.getByText(/waiting on you/)).toBeTruthy();
+      expect(container.querySelector('.state-word')!.textContent).toBe('waiting');
+      expect(container.querySelector('.card')!.getAttribute('aria-label')).toContain('waiting on you');
     });
 
     it('includes project, provider, activity and last prose in the accessible name, and no pid', () => {
@@ -794,7 +799,8 @@ describe('OpenSessionCard', () => {
     it('keeps the blocked badge and its wording', () => {
       const { container } = renderCompact({ activity: 'waiting_permission' });
       expect(container.querySelector('.badge')).not.toBeNull();
-      expect(screen.getByText(/waiting on you/)).toBeTruthy();
+      expect(container.querySelector('.state-word')!.textContent).toBe('waiting');
+      expect(container.querySelector('.card')!.getAttribute('aria-label')).toContain('waiting on you');
     });
 
     it('offers no bare Close or Reattach button -- they live in the menu', () => {
@@ -976,11 +982,11 @@ describe('the status row', () => {
 
   it.each<[NonNullable<OpenSession['activity']>, string]>([
     ['working', 'working'], ['idle', 'idle'], ['error', 'error'],
-    // Kept at the full phrasing: this same string feeds the fleet view's
-    // cards, which this redesign is scoped not to change. It is also the
-    // widest word the row can hold, so it alone sets both breakpoints --
-    // see SessionRail.css.
-    ['waiting_permission', 'waiting on you'], ['waiting_input', 'waiting on you'],
+    // Shortened for the row alone (ACTIVITY_WORD_ROW): it was the widest
+    // word the row could hold and set both of the rail's breakpoints for
+    // every other state. The card's NAME keeps the full phrase -- asserted
+    // separately below.
+    ['waiting_permission', 'waiting'], ['waiting_input', 'waiting'],
   ])('renders %s with its word in the DOM, never an icon alone', (activity, word) => {
     const { container } = render1(activity);
     expect(container.querySelector('.state-word')!.textContent).toBe(word);
@@ -1003,11 +1009,13 @@ describe('the status row', () => {
     expect(container.querySelector('.stateicon')!.getAttribute('aria-hidden')).toBe('true');
   });
 
-  // The fleet view's grid cards are out of scope for this redesign and
-  // keep the dot they have always had -- it is still rendered, and CSS
-  // (not this component) decides which of the two is seen.
-  it('still renders the dot, which the fleet view grid keeps', () => {
+  // The colour-only dot is retired everywhere, not merely hidden in the
+  // rail: David asked for one treatment across the rail and the fleet
+  // view, and a dot left in the markup would be a second one waiting to
+  // come back.
+  it('no longer renders the colour-only dot anywhere', () => {
     const { container } = render1('idle');
-    expect(container.querySelector('.state .dot')).toBeTruthy();
+    expect(container.querySelector('.state .dot')).toBeNull();
+    expect(container.querySelector('.state .stateicon')).toBeTruthy();
   });
 });
