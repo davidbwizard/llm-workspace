@@ -12,7 +12,11 @@
 // The app installs nothing (§5): every missing dependency shows its exact
 // command as copyable text, and that command is never executed by anything.
 import { useState } from 'react';
-import { HOMEBREW_URL, type CheckState, type DependencyCheck, type InstallRoute, type Readiness } from '../../main/checks.ts';
+import type { CheckState, DependencyCheck, Readiness } from '../../main/checks.ts';
+// Values, so they come from the node-free core module -- importing a
+// value out of src/main/checks.ts pulls node:child_process into this
+// bundle, which only `npm run dist:mac` catches. See src/core/install.ts.
+import { HOMEBREW_URL, routeIsRunnable, type InstallRoute } from '../../core/install.ts';
 import type { ChecksStatus } from '../state/useChecks.ts';
 import './DependencyChecks.css';
 
@@ -71,8 +75,7 @@ function CopyCommand({ command }: { command: string }) {
  *  The app installs nothing either way (§5): every command here is text
  *  with a copy button, and no channel exists that would run one. */
 function InstallRoutes({ routes, homebrew }: { routes: InstallRoute[]; homebrew: boolean }) {
-  const canRun = (route: InstallRoute) => route.requires === null || homebrew;
-  const usable = routes.filter(canRun);
+  const usable = routes.filter(route => routeIsRunnable(route, homebrew));
   // Nothing this machine can run: show everything, captioned honestly.
   const shown = usable.length > 0 ? usable : routes;
 

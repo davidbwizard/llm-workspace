@@ -23,7 +23,12 @@
 //     silently on the next release of a tool it does not own.
 import { execFile } from 'node:child_process';
 import type { Provider } from '../core/types.ts';
+// Shared with the renderer, which needs HOMEBREW_URL as a runtime value
+// and cannot import one out of this module -- see src/core/install.ts.
+import { HOMEBREW_URL, type InstallRoute } from '../core/install.ts';
 import { whenLoginPathApplied } from './loginPath.ts';
+
+export { HOMEBREW_URL, type InstallRoute };
 
 export const DEPENDENCIES = ['tmux', 'claude', 'codex'] as const;
 export type DependencyId = typeof DEPENDENCIES[number];
@@ -89,33 +94,6 @@ export interface DoctorReport {
   exitCode: number | null;
   /** Verbatim, capped, never parsed -- see this file's header. */
   output: string;
-}
-
-/** Where to get Homebrew, for a Mac that has not got it. Shown as a link,
- *  never as a command: Homebrew's own install line is a pipe-to-shell, and
- *  this app does not put one of those in front of anyone. Sending someone
- *  to the project's own page lets them read it first. */
-export const HOMEBREW_URL = 'https://brew.sh';
-
-/** One confirmed way to install a dependency.
- *
- *  A list, in preference order, rather than a single string, because
- *  "`brew install x`" is useless advice on a Mac without Homebrew -- and
- *  telling someone to install a package manager is a bigger ask than this
- *  app should make casually. `requires` is what makes that visible: the UI
- *  shows a route whose requirement is met as a command to run, and one
- *  whose requirement is missing as a command that needs something first.
- *
- *  Every command here is verified (see DEFINITIONS below), and none of them
- *  is a pipe-to-shell. An unverified `curl ... | sh` is the worst kind of
- *  command to get wrong, so this app ships none. */
-export interface InstallRoute {
-  command: string;
-  /** What must already be on the machine. null when it stands on its own. */
-  requires: 'homebrew' | null;
-  /** One line of context -- a prerequisite, or which one the vendor
-   *  recommends. null when the command needs no explaining. */
-  note: string | null;
 }
 
 export interface DependencyCheck {
