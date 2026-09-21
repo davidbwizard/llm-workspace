@@ -150,8 +150,15 @@ function doInstall(settingsPath: string, stable: string, helperSource: string): 
 }
 
 /** The command string is fixed (the stable path never changes), so no
- *  stored manifest is needed to reconstruct it -- spec §4 "Off". */
-function doUninstall(settingsPath: string, stable: string): string | null {
+ *  stored manifest is needed to reconstruct it -- spec §4 "Off".
+ *
+ *  Exported so the consent flow's own uninstall (src/hooks/consent.ts)
+ *  removes entries through THIS function rather than growing a second
+ *  notion of what this app owns. One implementation of "ours", the same
+ *  discipline isOwnedHookCommand's own doc comment asks for: a second one
+ *  is how the promise never to touch someone else's hooks quietly stops
+ *  being true. */
+export function doUninstall(settingsPath: string, stable: string): string | null {
   const manifest: Manifest = { owned: [], command: stableCommand(stable) };
   try {
     uninstall(settingsPath, manifest);

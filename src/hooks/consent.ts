@@ -31,7 +31,7 @@ import type { Paths } from '../config.ts';
 import { buildHookFragments, planInstall, entryFor, type InstallPlan } from './install.ts';
 import {
   stableHelperPath, homeOf, hooksState, ensureBinDir, copyHelperAtomic,
-  ensureSettingsDir, readSettingsForEdit, writeSettingsEdit, type HooksResult,
+  ensureSettingsDir, readSettingsForEdit, writeSettingsEdit, doUninstall, type HooksResult,
 } from './switch.ts';
 
 export const CONSENT_REQUIRED =
@@ -214,53 +214,22 @@ export function commitHooksInstall(paths: Paths, token: unknown, helperSource: s
   return { installed, error };
 }
 
-/** The clean uninstall design §6 requires. Removes only entries whose
- *  command exactly equals the one this app writes (install.ts's
- *  removeByCommand), so a hook the person wrote -- even one that merely
- *  mentions our helper's path as an argument -- is left alone.
+/** The clean uninstall design §6 requires. Delegates to the Quick answers
+ *  switch's own removal (doUninstall, src/hooks/switch.ts), which removes
+ *  only entries whose command exactly equals the one this app writes
+ *  (install.ts's removeByCommand). Delegated rather than reimplemented: a
+ *  second notion of what this app owns is exactly how "never rewrite
+ *  entries the app did not put there" stops being true without anyone
+ *  noticing.
  *
  *  No token: showing someone what you are about to REMOVE from your own
- *  footprint is not a thing they need to be protected from, and a consent
- *  gate on the exit is a gate on leaving. */
+ *  footprint is not a thing they need protecting from, and a consent gate
+ *  on the exit is a gate on leaving. */
 export function uninstallHooks(paths: Paths): HooksResult {
-  const read = readSettingsForEdit(paths.claudeSettings);
-  if (!read.ok) return { installed: hooksState(paths).installed, error: read.error };
-
-  const command = buildHookFragments(stableHelperPath(homeOf(paths)))[0]!.command;
-  let next: unknown;
-  let changed: boolean;
-  try {
-    ({ next, changed } = removeOurs(read.parsed, command));
-  } catch (e) {
-    return { installed: hooksState(paths).installed, error: `Could not update settings.json: ${(e as Error).message}` };
-  }
-
-  const error = changed
-    ? writeSettingsEdit(paths.claudeSettings, { next, changed, baseText: read.baseText })
-    : null;
+  const error = doUninstall(paths.claudeSettings, stableHelperPath(homeOf(paths)));
   const installed = hooksState(paths).installed;
   // Turning it off IS an answer, and it is a no. Recorded so the app does
   // not turn round and ask again on the next launch.
   if (error === null && !installed) recordConsent(paths.consent, 'declined');
   return { installed, error };
-}
-
-/** A copy of `settings` with every hook entry running exactly `command`
- *  removed, plus whether anything actually went. Works on a deep copy, so a
- *  failure part-way through cannot leave the caller's object half-edited. */
-function removeOurs(settings: unknown, command: string): { next: unknown; changed: boolean } {
-  const next: any = JSON.parse(JSON.stringify(settings ?? {}));
-  const hooks = next?.hooks;
-  if (!isRecord(hooks)) return { next, changed: false };
-  let changed = false;
-  for (const event of Object.keys(hooks)) {
-    const entries = hooks[event];
-    if (!Array.isArray(entries)) continue;
-    const kept = entries.filter((entry: any) =>
-      !(Array.isArray(entry?.hooks) && entry.hooks.some((h: any) => h?.command === command)));
-    if (kept.length !== entries.length) changed = true;
-    if (kept.length === 0) delete hooks[event];
-    else hooks[event] = kept;
-  }
-  return { next, changed };
 }
