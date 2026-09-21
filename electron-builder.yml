@@ -7,6 +7,16 @@ files:
   - out/**/*
   - package.json
   - NOTICE
+  # The hook scripts are DATA, not build output: electron-vite never sees
+  # them, so nothing under out/ ever contains them. Main reads them at
+  # runtime (src/main/index.ts's startup refresh, src/main/ipc.ts's
+  # hooks:set) from app.getAppPath() + 'src/hooks/<name>.sh' and copies the
+  # bytes into ~/.llm-workspace/bin/. Shipping them here at their own source
+  # path is what makes that one resolution work packaged as well as in dev;
+  # without it Quick answers and the usage status line are broken in every
+  # packaged build. A glob, not two filenames, so a third script added
+  # alongside them is packaged too.
+  - src/hooks/*.sh
 asarUnpack:
   - "**/node_modules/better-sqlite3/**"
 mac:

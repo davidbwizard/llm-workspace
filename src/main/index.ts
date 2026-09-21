@@ -15,6 +15,7 @@ import { adoptRunningSessions } from './sessions.ts';
 import { readStoredTheme } from './appearance.ts';
 import { notifySessionChanged, pushSessionLive, watchSessionFor, type WatchDeps } from './sessionLive.ts';
 import { contextMenuTemplate } from './contextMenu.ts';
+import { applyLoginPath } from './loginPath.ts';
 
 // The release-only shape of watchSessionFor's deps -- window close and
 // before-quit only ever call it with pid: null (stop watching), which
@@ -184,7 +185,31 @@ function startBackgroundWork(): void {
   pruneSnapshots(paths.statusLineDir, { maxAgeDays: 7 });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // FIRST, and awaited, because everything after it can shell out. A GUI
+  // launch (Finder, Dock, Spotlight) hands this process a minimal PATH
+  // that has no tmux, claude or codex on it -- see src/main/loginPath.ts.
+  // One assignment to process.env.PATH here is what makes every later
+  // spawn in the process see the real one, rather than each call site
+  // growing its own env. Measured 2026-09-21 on this machine: ~470ms for a
+  // real zsh profile, bounded at execFileSoft's 2s, and a failure leaves
+  // the inherited PATH alone rather than blocking startup. That delay
+  // before the first frame is the price of never spawning against a PATH
+  // we already know is wrong.
+  const pathResult = await applyLoginPath();
+  if (pathResult.status === 'failed') {
+    console.error('PATH: could not ask the login shell, using the inherited PATH:', pathResult.error);
+  } else if (pathResult.status === 'applied') {
+    // The one line that makes this visible. A GUI-launched app's failure
+    // mode here is silent by construction -- the PATH is simply short and
+    // every Launch fails later, somewhere else -- so what was added is
+    // worth stating outright rather than inferring from a failure. The
+    // ADDED directories, not the whole PATH: that is the part that was not
+    // there before, and it stays one readable line. Silent under
+    // `npm run dev`, where there is never anything to add.
+    console.log('PATH: added from the login shell:', pathResult.added.join(' '));
+  }
+
   mkdirSync(join(homedir(), '.llm-workspace'), { recursive: true });
 
   // Quick answers, spec §4 "Spool privacy": the spool now holds commands
@@ -198,11 +223,12 @@ app.whenReady().then(() => {
   try { chmodSync(paths.spool, 0o700); } catch (e) { console.error('Quick answers: could not tighten the spool folder to 0700:', e); }
 
   // Quick answers, spec §4: "On every app start with hooks installed,
-  // refresh the copy if its content differs." src/hooks/helper.sh is not
-  // part of the bundled build output today (electron-builder.yml ships
-  // only out/**), so app.getAppPath() -- the project root in dev, the
-  // asar/app root when packaged -- is the one resolution that works in
-  // both without a packaging change of its own.
+  // refresh the copy if its content differs." app.getAppPath() is the
+  // project root in dev and the asar/app root when packaged, and
+  // electron-builder.yml ships src/hooks/*.sh at that same relative path,
+  // so this one resolution works in both. Reading it back out of the asar
+  // is fine: Electron's fs is asar-aware, and refreshStableCopy only ever
+  // READS the source before writing its own copy to ~/.llm-workspace/bin.
   refreshHelperIfInstalled(paths, join(app.getAppPath(), 'src/hooks/helper.sh'));
   // Same rule for the "Usage and context" status line script.
   refreshStatusLineIfInstalled(paths, join(app.getAppPath(), 'src/hooks/statusline.sh'));
