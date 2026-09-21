@@ -213,3 +213,14 @@ message in the same form as an unsent one). What worked, all day:
   Auto / Full Access plus a Custom state, so the menu is built per provider.
   Two things still to measure on a live pane: whether Claude's Auto is in the
   Shift+Tab cycle at all, and Codex's exact cycle order.
+- **SHIPPED 2026-09-21 (509e71e): questions with previews answer from the
+  card.** The blanket `hasPreview` refusal now fires only for
+  multi-select-with-previews (no measured layout). Verified by eye: three
+  answered from the card, proven by `session:answer sent`. Two unexplained
+  refusals right after an app restart are in `KNOWN_ISSUES.md`.
+  **Tabled at David's call:** rendering the preview text on the card itself
+  (he answered "Show them" once and "Leave it as is" on a throwaway re-run, so
+  confirm which before building). Also established, so nobody re-researches it:
+  there is no supported non-keystroke way to answer a Claude Code prompt --
+  hooks observe, the SDK covers tool permissions, Remote Control has no
+  programmatic surface.

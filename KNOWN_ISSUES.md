@@ -254,3 +254,27 @@ pane to change before sending Enter, which closed a race against Claude Code.
 It does not verify submission, and deliberately never refuses on timeout -- a
 false refusal on a paste that did land would make the user resend and duplicate
 a message in a live session.
+
+## A preview question refused twice right after the app restarted (2026-09-21)
+
+Unexplained, not reproduced. The first AskUserQuestion carrying previews after
+a dev-app restart was refused twice with `reason: 'unconfirmed'` -- the card
+was clickable, David clicked, and nothing happened. The same question, word for
+word, was answered from the card minutes later, as were two others (one needing
+two `Down` presses, one with long wrapping labels). So it is not previews, not
+label length, and not moving the focus: all three are covered by passing tests
+and were re-verified by hand.
+
+`unconfirmed` means the answer path never got a pane read proving the wanted
+option was focused, so it pressed nothing. The guard behaved correctly; the
+cost was a click that did nothing, with no explanation offered to the person.
+
+**Suspect, unproven:** on startup the app attaches a pty client to each tmux
+session and tmux resizes the pane to that client. A prompt drawn before the
+resize and read after it would be laid out at one width and matched at another.
+Captures taken during all three later tests show a steady 297-column pane, but
+none of those windows covers the failure, so this neither confirms nor kills it.
+
+Worth a look if it recurs: log the captured pane text on `unconfirmed` so the
+next occurrence carries its own evidence, and tell the person the click was
+refused rather than letting it look inert.
