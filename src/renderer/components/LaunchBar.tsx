@@ -4,6 +4,7 @@ import { Icon } from './Icon.tsx';
 import { SettingsModal } from './SettingsModal.tsx';
 import { UsagePopover } from './UsagePopover.tsx';
 import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES, lastSegment } from '../state/favourites.ts';
+import { useChecks } from '../state/useChecks.ts';
 import './LaunchBar.css';
 
 // A live terminal only exists once TerminalView actually mounts, and it
@@ -25,6 +26,15 @@ const DEFAULT_ROWS = 40;
  *  tree that reaches window.fleet directly but takes no fleet-state props. */
 export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void }) {
   const [provider, setProvider] = useState<'claude' | 'codex'>('claude');
+  // Design §4: a missing dependency costs exactly one capability, and the
+  // control it costs is DISABLED WITH THE REASON ATTACHED, never hidden. A
+  // control that vanished teaches the person nothing; one that is visible
+  // and explains itself teaches them what to install. Until the first sweep
+  // lands, `readiness` is null and nothing is disabled -- the app assumes it
+  // works rather than locking its own controls on no evidence.
+  const { readiness } = useChecks();
+  const launchable = readiness?.launch[provider] ?? null;
+  const blocked = launchable !== null && !launchable.available;
   const [cwd, setCwd] = useState('');
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -99,6 +109,7 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
    *  comes from the `provider` state below, currently-selected either way. */
   async function launch(targetDir?: string): Promise<void> {
     const dir = (targetDir ?? cwd).trim();
+    if (blocked) { setMessage(launchable!.reason ?? 'That provider is not available right now.'); return; }
     if (dir === '') { setMessage('Choose a working directory first.'); return; }
     setPending(true);
     setMessage(null);
@@ -124,10 +135,18 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
   return (
     <>
     <form className="launchbar" onSubmit={e => { e.preventDefault(); void launch(); }}>
+      {/* Both options stay in the list whatever is installed. A provider
+          that cannot run is still selectable, so choosing it shows the
+          reason rather than silently doing nothing -- which is the whole
+          point of disabled-with-a-reason over hidden. */}
       <select className="launchprovider" aria-label="Provider" value={provider}
         onChange={e => setProvider(e.target.value === 'codex' ? 'codex' : 'claude')}>
-        <option value="claude">Claude</option>
-        <option value="codex">Codex</option>
+        <option value="claude">
+          Claude{readiness && !readiness.launch.claude.available ? ' (unavailable)' : ''}
+        </option>
+        <option value="codex">
+          Codex{readiness && !readiness.launch.codex.available ? ' (unavailable)' : ''}
+        </option>
       </select>
       <input className="launchcwd" type="text" aria-label="Working directory"
         placeholder="/path/to/project" value={cwd} onChange={e => setCwd(e.target.value)} />
@@ -149,7 +168,8 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
         disabled={pending} onClick={() => { void chooseDirectory(); }}>
         Choose…
       </button>
-      <button type="submit" className="launchgo" disabled={pending}>
+      <button type="submit" className="launchgo" disabled={pending || blocked}
+        title={blocked ? launchable!.reason ?? undefined : undefined}>
         {pending ? 'Launching…' : 'Launch'}
       </button>
       {/* Next to the gear (usage design, Part B). A wrapping div, not the
@@ -179,6 +199,11 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
         gearRef.current?.focus();
       }} />
       {message && <p className="launchmsg" role="status">{message}</p>}
+      {/* The reason itself, readable without hovering: a tooltip is not an
+          explanation for anyone on a keyboard or a screen reader. */}
+      {blocked && message === null && (
+        <p className="launchmsg" role="status">{launchable!.reason}</p>
+      )}
     </form>
     {/* Only rendered once there is at least one favourite -- an empty row
         would just be dead space under the bar. A sibling of the form, not
@@ -188,7 +213,7 @@ export function LaunchBar({ onLaunched }: { onLaunched: (pid: number) => void })
       <div className="favrow" role="group" aria-label="Favourite folders">
         {favourites.map(path => (
           <span className="favchip" key={path} title={path}>
-            <button type="button" className="favchip-name" disabled={pending}
+            <button type="button" className="favchip-name" disabled={pending || blocked}
               onClick={() => { void launch(path); }}>
               {lastSegment(path)}
             </button>

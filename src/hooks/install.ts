@@ -20,8 +20,17 @@ export const PRE_TOOL_MATCHER = 'AskUserQuestion|ExitPlanMode';
 export interface Fragment { event: string; matcher: string | null; id: string; command: string }
 export interface Manifest { owned: string[]; command: string }
 /** `changed` is false when every fragment was already present (and nothing
- *  was reconciled away), so applyInstall has nothing to write. */
-export interface InstallPlan { next: any; manifest: Manifest; changed: boolean; baseText?: string }
+ *  was reconciled away), so applyInstall has nothing to write.
+ *
+ *  `added` is the fragments this plan would actually ADD -- the ones not
+ *  already in the file. It comes out of the same pass that builds `next`,
+ *  rather than being recomputed by whatever wants to describe the plan,
+ *  precisely so the consent screen and the write can never disagree about
+ *  what is about to happen (design §6: "Show exactly what will be written,
+ *  and to which file, before writing it"). */
+export interface InstallPlan {
+  next: any; manifest: Manifest; changed: boolean; added: Fragment[]; baseText?: string;
+}
 
 /** applyInstall's changed-since-read refusal -- its own class so a caller
  *  can tell it apart from a read or write failure (final review I5). */
@@ -59,7 +68,7 @@ export function buildHookFragments(helperPath: string): Fragment[] {
  *  the user's live config. Ownership is tracked by the `command` string
  *  instead (see planInstall/uninstall below), which is already a real,
  *  unambiguous schema field: our helper's absolute path. */
-function entryFor(f: Fragment) {
+export function entryFor(f: Fragment) {
   return {
     ...(f.matcher ? { matcher: f.matcher } : {}),
     hooks: [{ type: 'command', command: f.command, timeout: 5 }],
@@ -144,16 +153,17 @@ export function planInstall(existing: any, fragments: Fragment[], previousManife
   let changed = previousManifest ? removeByCommand(next.hooks, previousManifest.command) > 0 : false;
 
   const owned: string[] = [];
+  const added: Fragment[] = [];
   for (const f of fragments) {
     next.hooks[f.event] ??= [];
     const list: any[] = next.hooks[f.event];
     const already = list.some(e =>
       Array.isArray(e?.hooks) && e.hooks.some((h: any) => h?.command === f.command));
-    if (!already) { list.push(entryFor(f)); changed = true; }
+    if (!already) { list.push(entryFor(f)); changed = true; added.push(f); }
     owned.push(f.id);
   }
 
-  return { next, manifest: { owned, command: fragments[0]!.command }, changed };
+  return { next, manifest: { owned, command: fragments[0]!.command }, changed, added };
 }
 
 /** Spec §5.3: re-read before write, then replace atomically. If another tool

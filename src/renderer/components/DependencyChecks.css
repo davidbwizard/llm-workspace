@@ -1,0 +1,201 @@
+/* Deliberately plain -- see DependencyChecks.tsx's header. Everything here
+   is the app's existing tokens (theme.css); no new colours are invented,
+   so a designed screen can replace this file without unpicking anything. */
+
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.checkstop {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.checksintro {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.checksagain {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.checksagain:hover:not(:disabled) { background: var(--faint); }
+.checksagain:disabled { opacity: 0.6; cursor: default; }
+
+.checksloading,
+.checkswhen {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.checkserror {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--raised);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.checkrow {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+}
+
+.checkhead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.checkname {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.checkstate {
+  font-size: 12px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+
+/* Colour is the redundant cue; the word inside carries the state. */
+.checkstate.ok { color: var(--ok); }
+.checkstate.warn { color: var(--signal); }
+.checkstate.bad { color: var(--critical); }
+
+.checkversion {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.checkdetail {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.checkpurpose {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.checkcmd {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkcmd code {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--ground);
+  border: 1px solid var(--line);
+  font-family: var(--f-mono);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre;
+  /* Selectable by hand, so a failed clipboard write costs nothing. */
+  user-select: text;
+}
+
+.checkcopy {
+  flex: none;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.checkdoctor { margin-top: 8px; }
+
+.checkdoctorbtn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.checkdoctorout {
+  margin: 6px 0 0;
+  padding: 8px;
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--ground);
+  border: 1px solid var(--line);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.checkoff {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+}
+
+.checkofftitle {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.checkoff ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.checkoffnote {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}

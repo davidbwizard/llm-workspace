@@ -1,0 +1,44 @@
+/* Plain, on the app's existing tokens -- see FirstRun.tsx's header. */
+
+.firstrun {
+  margin: 0 16px 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.firstrunhead {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.firstrunhead h2 {
+  flex: 1;
+  margin: 0;
+  font-family: var(--f-display);
+  font-size: 16px;
+}
+
+.firstrundismiss {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.firstrunwhere {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}

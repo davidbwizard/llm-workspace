@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   loginShell, parseLoginPath, mergePath, resolveLoginPath, applyLoginPath,
+  applyLoginPathOnce, whenLoginPathApplied, resetLoginPathOnce,
 } from '../../src/main/loginPath.ts';
 
 /** Frames a PATH exactly as src/main/loginPath.ts's probe does, so these
@@ -211,4 +212,68 @@ describe('against this machine\'s real login shell', () => {
     expect(entries.slice(0, 4)).toEqual(['/usr/bin', '/bin', '/usr/sbin', '/sbin']);
     expect(merged!.added.length).toBeGreaterThan(0);
   }, 10_000);
+});
+
+// The ordering the whole first-run feature rests on. Without the repaired
+// PATH, every dependency probe reports "missing" on a machine where all
+// three are installed -- and reports it confidently, in a screen whose only
+// job is to be believed. So it is a dependency callers STATE, not an order
+// two statements in app.whenReady happen to be in.
+describe('the PATH repair as a stated dependency', () => {
+  beforeEach(() => { resetLoginPathOnce(); });
+  afterEach(() => { resetLoginPathOnce(); });
+
+  it('throws when nothing has started the repair yet', () => {
+    // A caller that gets here first has an ordering bug, and the honest
+    // moment to find that is in a test, not in a stranger's first launch.
+    expect(() => whenLoginPathApplied()).toThrow(/PATH/i);
+  });
+
+  it('runs the repair exactly once, however many callers ask', async () => {
+    const exec = vi.fn(async () => '');
+    const env: NodeJS.ProcessEnv = { PATH: '/usr/bin', SHELL: '/bin/zsh' };
+    const deps = { exec, env, shell: () => '/bin/zsh' };
+
+    const a = applyLoginPathOnce(deps);
+    const b = applyLoginPathOnce(deps);
+    expect(a).toBe(b);
+    await a;
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands every later caller the same settled result', async () => {
+    const env: NodeJS.ProcessEnv = { PATH: '/usr/bin', SHELL: '/bin/zsh' };
+    const exec = async () => `\n__LLMWS_PATH_BEGIN__/opt/homebrew/bin:/usr/bin__LLMWS_PATH_END__\n`;
+    await applyLoginPathOnce({ exec, env, shell: () => '/bin/zsh' });
+
+    const result = await whenLoginPathApplied();
+    expect(result.status).toBe('applied');
+    expect(env.PATH).toBe('/usr/bin:/opt/homebrew/bin');
+  });
+
+  it('waits for a repair still in flight rather than resolving early', async () => {
+    let release!: (v: string) => void;
+    const env: NodeJS.ProcessEnv = { PATH: '/usr/bin', SHELL: '/bin/zsh' };
+    const exec = () => new Promise<string>(r => { release = r; });
+
+    applyLoginPathOnce({ exec, env, shell: () => '/bin/zsh' });
+    let settled = false;
+    const waiting = whenLoginPathApplied().then(r => { settled = true; return r; });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    release(`\n__LLMWS_PATH_BEGIN__/opt/homebrew/bin__LLMWS_PATH_END__\n`);
+    expect((await waiting).status).toBe('applied');
+  });
+
+  it('resolves rather than throwing when the repair itself failed', async () => {
+    // applyLoginPath never throws -- it reports 'failed' and leaves the
+    // inherited PATH alone. A probe must then run against that shorter
+    // PATH and report honestly, not refuse to run at all.
+    const exec = async () => { throw new Error('no shell'); };
+    const result = await applyLoginPathOnce({ exec, env: { PATH: '/usr/bin' }, shell: () => '/bin/zsh' });
+    expect(result.status).toBe('failed');
+    expect((await whenLoginPathApplied()).status).toBe('failed');
+  });
 });

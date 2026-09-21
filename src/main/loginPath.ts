@@ -159,6 +159,55 @@ export async function resolveLoginPath(
   return { path: merged, added: entries.filter(e => !had.has(e)) };
 }
 
+/** The one in-flight (or finished) applyLoginPath call for this process.
+ *  Module scope, not a parameter, because the thing it guards is a property
+ *  of the PROCESS -- process.env.PATH has either been repaired or it has
+ *  not -- and every later spawn reads that same single variable. */
+let applied: Promise<ApplyResult> | null = null;
+
+export type ApplyResult =
+  | { status: 'applied'; path: string; added: string[] }
+  | { status: 'unchanged' }
+  | { status: 'failed'; error: string };
+
+/** applyLoginPath, memoised. Startup calls this once; anything that needs
+ *  the repaired PATH awaits whenLoginPathApplied() below rather than
+ *  trusting that startup got there first. */
+export function applyLoginPathOnce(deps: LoginPathDeps = {}): Promise<ApplyResult> {
+  return applied ??= applyLoginPath(deps);
+}
+
+/** The PATH repair, as something to await -- the explicit form of a
+ *  dependency that was previously only true because of the order of two
+ *  statements in app.whenReady.
+ *
+ *  This matters more than it looks. A GUI launch hands this process a PATH
+ *  with no tmux, claude or codex on it (see this file's header), so a probe
+ *  that runs before the repair reports every dependency as MISSING on a
+ *  machine where all three are installed -- and it reports it confidently,
+ *  in a first-run screen whose entire job is to be believed. There is no
+ *  failure visible at the call site; the answer is just wrong.
+ *
+ *  Throws rather than silently resolving when the repair was never started,
+ *  because a caller that got here first has an ordering bug, and the honest
+ *  moment to find that is in a test, not in a stranger's first launch. */
+export function whenLoginPathApplied(): Promise<ApplyResult> {
+  if (applied === null) {
+    throw new Error(
+      'the login shell PATH has not been resolved yet -- call applyLoginPathOnce() '
+      + 'during startup before probing for any binary',
+    );
+  }
+  return applied;
+}
+
+/** Drops the memo, so a test can exercise the not-yet-started case and the
+ *  in-flight case independently. Nothing in the app calls this: one repair
+ *  per process is the whole point. */
+export function resetLoginPathOnce(): void {
+  applied = null;
+}
+
 /** Sets process.env.PATH for the rest of this process's life, which is
  *  what makes every later spawn benefit without each one growing its own
  *  env-building code: execFileSync('tmux'), discovery's execFile calls,
@@ -168,11 +217,7 @@ export async function resolveLoginPath(
  *
  *  Returns what it did, for the caller's log line. Never throws: a startup
  *  step that can abort startup is not an improvement over a short PATH. */
-export async function applyLoginPath(deps: LoginPathDeps = {}): Promise<
-  { status: 'applied'; path: string; added: string[] }
-  | { status: 'unchanged' }
-  | { status: 'failed'; error: string }
-> {
+export async function applyLoginPath(deps: LoginPathDeps = {}): Promise<ApplyResult> {
   try {
     const resolved = await resolveLoginPath(deps);
     if (resolved === null) return { status: 'unchanged' };

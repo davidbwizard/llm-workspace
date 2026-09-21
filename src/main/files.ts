@@ -29,7 +29,7 @@ import { basename, extname, isAbsolute, resolve } from 'node:path';
 // The same separator-aware containment check session:image already uses.
 // Reused rather than restated: one implementation, one set of tests, and no
 // chance of the two drifting into disagreeing about what "inside" means.
-import { within } from './images.ts';
+import { within, isPermissionError } from './images.ts';
 
 /** Past this the viewer says so and offers Finder instead of trying. A
  *  multi-megabyte document turns into tens of thousands of DOM nodes;
@@ -54,7 +54,12 @@ export type FileKind = 'markdown' | 'other';
 
 export type FileRefusal =
   | 'invalid' | 'no_session' | 'outside_root' | 'not_found'
-  | 'too_large' | 'read_failed' | 'reveal_failed';
+  | 'too_large' | 'read_failed' | 'reveal_failed'
+  /** The file is there and inside the project, and the OS refused the read.
+   *  Kept apart from 'not_found' and 'read_failed' because it is the one
+   *  refusal with a way forward the person can actually take -- see
+   *  isPermissionError below. */
+  | 'permission_denied';
 
 export type FileProbeResult =
   | { ok: true; kinds: (FileKind | null)[] }
@@ -63,10 +68,13 @@ export type FileProbeResult =
 export type FileOpenResult =
   | { ok: true; action: 'markdown'; path: string; name: string; size: number; text: string }
   | { ok: true; action: 'revealed'; path: string; name: string }
-  /** `name`/`size` ride along only with 'too_large', which is the one
-   *  refusal the viewer shows rather than swallows -- it names the file and
-   *  offers Finder. */
-  | { ok: false; reason: FileRefusal; name?: string; size?: number };
+  /** `name`/`size`/`path` ride along with the refusals the viewer SHOWS
+   *  rather than swallows -- 'too_large' and 'permission_denied'. Both name
+   *  the file and hand over a route that still works; the rest stay bare,
+   *  since a refusal about a path the person never chose has nothing useful
+   *  to say to them and every extra field is one more thing a compromised
+   *  renderer learns. */
+  | { ok: false; reason: FileRefusal; name?: string; size?: number; path?: string };
 
 export type FileDeps = {
   /** The session's working folder from the app's OWN fleet state, keyed by
@@ -80,6 +88,11 @@ export type FileDeps = {
 };
 
 const refuse = (reason: FileRefusal): { ok: false; reason: FileRefusal } => ({ ok: false, reason });
+
+/** Re-exported so every caller that deals in FileRefusal has one obvious
+ *  place to find it; the implementation lives beside `within` in
+ *  src/main/images.ts, which this module already depends on. */
+export { isPermissionError };
 
 export function stripLineSuffix(raw: string): string {
   return raw.replace(LINE_SUFFIX, '');
@@ -184,7 +197,17 @@ export async function openSessionFile(
 
   if (res.size > MAX_MARKDOWN_BYTES) return { ok: false, reason: 'too_large', name, size: res.size };
   let text: string;
-  try { text = await readFile(res.real, 'utf8'); } catch { return refuse('read_failed'); }
+  try {
+    text = await readFile(res.real, 'utf8');
+  } catch (e) {
+    // Containment was proven above (resolveIn), so naming the file here
+    // tells the renderer nothing it did not already propose. A permission
+    // refusal is the one the viewer can offer a way forward for.
+    if (isPermissionError(e)) {
+      return { ok: false, reason: 'permission_denied', name, path: res.real, size: res.size };
+    }
+    return refuse('read_failed');
+  }
   // The size was checked before the read; a file that grew in between is
   // still refused rather than sent.
   const bytes = Buffer.byteLength(text);

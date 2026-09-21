@@ -138,7 +138,28 @@ const api = {
   // this typing narrows nothing at the trust boundary, same as every other
   // channel here.
   hooksGet: () => ipcRenderer.invoke('hooks:get'),
-  hooksSet: (on: boolean) => ipcRenderer.invoke('hooks:set', on),
+  // Design §6. hooksPreview shows the file, the script and every entry that
+  // WOULD be written, and writes nothing; the token it returns is what
+  // hooksSet(true, token) needs to write at all. Main refuses an install
+  // with no token, so the app cannot edit ~/.claude/settings.json without
+  // having just shown the person what it would put there. Turning it off
+  // takes no token. hooksDecline records a no so the asking stops.
+  hooksPreview: () => ipcRenderer.invoke('hooks:preview'),
+  hooksSet: (on: boolean, token?: string) => ipcRenderer.invoke('hooks:set', on, token),
+  hooksDecline: () => ipcRenderer.invoke('hooks:decline'),
+  consentGet: () => ipcRenderer.invoke('consent:get'),
+  // The dependency checks (design §3-§5). checksGet answers from main's
+  // cached sweep, so opening the panel is instant; checksRun is the Check
+  // again button and re-probes for real -- a person can fix something in a
+  // terminal and carry on without relaunching. The push covers the startup
+  // sweep landing after the window is already open.
+  checksGet: () => ipcRenderer.invoke('checks:get'),
+  checksRun: () => ipcRenderer.invoke('checks:run'),
+  onChecks: (cb: (payload: unknown) => void) => {
+    const handler = (_e: unknown, payload: unknown) => cb(payload);
+    ipcRenderer.on('checks:update', handler);
+    return () => ipcRenderer.off('checks:update', handler);
+  },
   // Usage and context (Settings switch, Usage button). The switch is
   // re-read from settings.json on every call, like Quick answers -- this
   // typing narrows nothing at the trust boundary.

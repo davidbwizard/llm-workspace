@@ -16,6 +16,9 @@ export interface Paths {
   codexHistoryDb: string;
   spool: string;
   appearance: string;
+  /** What the person has agreed to let this app write into files they own
+   *  (src/hooks/consent.ts). Design §6: ask once, and take no for an answer. */
+  consent: string;
   /** "Usage and context": the status line snapshots (src/hooks/statusline.sh). */
   statusLineDir: string;
   db: string;
@@ -31,6 +34,7 @@ export function resolvePaths(home: string): Paths {
     codexHistoryDb: join(home, '.codex/thread_history_1.sqlite'),
     spool: join(home, '.llm-workspace/spool'),
     appearance: join(home, '.llm-workspace/appearance.json'),
+    consent: join(home, '.llm-workspace/consent.json'),
     statusLineDir: join(home, '.llm-workspace/statusline'),
     db: join(home, '.llm-workspace/index.sqlite'),
   };

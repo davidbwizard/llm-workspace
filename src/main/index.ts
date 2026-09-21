@@ -9,13 +9,13 @@ import { refreshHelperIfInstalled } from '../hooks/switch.ts';
 import { refreshStatusLineIfInstalled } from '../hooks/usageSwitch.ts';
 import { pruneSnapshots } from '../providers/claude/statusLine.ts';
 import { resolvePaths } from '../config.ts';
-import { registerIpc, pushFleet, refreshPushEnrichment } from './ipc.ts';
+import { registerIpc, pushFleet, refreshPushEnrichment, refreshChecks } from './ipc.ts';
 import { refreshLiveProcesses } from '../discovery/live.ts';
 import { adoptRunningSessions } from './sessions.ts';
 import { readStoredTheme } from './appearance.ts';
 import { notifySessionChanged, pushSessionLive, watchSessionFor, type WatchDeps } from './sessionLive.ts';
 import { contextMenuTemplate } from './contextMenu.ts';
-import { applyLoginPath } from './loginPath.ts';
+import { applyLoginPathOnce } from './loginPath.ts';
 
 // The release-only shape of watchSessionFor's deps -- window close and
 // before-quit only ever call it with pid: null (stop watching), which
@@ -196,7 +196,7 @@ app.whenReady().then(async () => {
   // the inherited PATH alone rather than blocking startup. That delay
   // before the first frame is the price of never spawning against a PATH
   // we already know is wrong.
-  const pathResult = await applyLoginPath();
+  const pathResult = await applyLoginPathOnce();
   if (pathResult.status === 'failed') {
     console.error('PATH: could not ask the login shell, using the inherited PATH:', pathResult.error);
   } else if (pathResult.status === 'applied') {
@@ -299,6 +299,30 @@ app.whenReady().then(async () => {
   };
   pushAfterDiscoverySweep();
   discoveryTimer = setInterval(pushAfterDiscoverySweep, 5000);
+
+  // The dependency sweep (design §3). Deliberately NOT awaited: a full pass
+  // is ~11s on this machine, almost all of it `codex doctor`, and nothing
+  // about opening a window or reading indexed history depends on it. The
+  // result is cached in ipc.ts and pushed to the window when it lands, so
+  // the panel shows "checking" for as long as it really is checking rather
+  // than the app holding its first frame back for eleven seconds.
+  //
+  // Safe to start here and only here: applyLoginPathOnce was awaited at the
+  // top of this function, so runChecks' own whenLoginPathApplied() gate is
+  // already satisfied. That gate is what makes the ordering a stated
+  // dependency rather than a property of these two statements' order --
+  // without the repaired PATH, every probe reports "missing" on a machine
+  // where all three are installed (src/main/loginPath.ts).
+  // The one line that makes the sweep's outcome visible, for the same
+  // reason the PATH line above exists: on a packaged, Finder-launched
+  // build there is no terminal to watch, and "every dependency reports
+  // missing" is a failure whose only other symptom is a screen that
+  // quietly says the wrong thing. One line, one state per dependency,
+  // never the doctor output (which can run to thousands of characters and
+  // is for the person on screen, not the log).
+  void refreshChecks(mainWindow).then(r => {
+    if (r) console.log('checks:', r.checks.map(c => `${c.id}=${c.state}`).join(' '));
+  });
 
   // Fallback trigger for startBackgroundWork -- see its doc comment.
   // did-finish-load fires once the window has actually finished loading

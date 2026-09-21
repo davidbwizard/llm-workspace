@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { mkdtemp, mkdir, writeFile, symlink, rm, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, symlink, rm, realpath, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import {
   probeSessionFiles, openSessionFile, stripLineSuffix, MAX_MARKDOWN_BYTES,
-  MAX_PROBE_CANDIDATES, MAX_CANDIDATE_CHARS, type FileDeps,
+  MAX_PROBE_CANDIDATES, MAX_CANDIDATE_CHARS, isPermissionError, type FileDeps,
 } from '../../src/main/files.ts';
 import { within } from '../../src/main/images.ts';
 
@@ -195,6 +195,65 @@ describe('openSessionFile: what it actually does', () => {
   it('reports a failed reveal rather than claiming success', async () => {
     const d = deps({ reveal: () => { throw new Error('no Finder'); } });
     expect(await openSessionFile(PID, 'run.command', undefined, d)).toEqual({ ok: false, reason: 'reveal_failed' });
+  });
+});
+
+// macOS gates ~/Documents, ~/Desktop and ~/Downloads per-application. This
+// never bites in dev, because the app runs under the terminal's identity and
+// iTerm already holds the grant; a packaged Fleet.app is a new identity, so
+// the first read either prompts or, if the person has denied it, fails. And
+// David's own projects live under ~/Documents.
+//
+// Measured on this machine, 2026-09-21, against real TCC-protected paths
+// (~/Library/Safari/Bookmarks.plist, ~/Library/Messages/chat.db):
+//
+//   realpath  OK      stat  OK      access  OK      readFile  EPERM
+//
+// So a denied read does NOT look like a missing file at any earlier stage:
+// every check passes and only the read itself fails, with EPERM. That is
+// what makes "file not found" the wrong sentence and a silently empty
+// viewer the wrong outcome.
+describe('a read the OS refuses is a permission problem, not a missing file', () => {
+  it('knows the two errnos a denied read actually produces', () => {
+    // EPERM is what macOS TCC returns (measured above). EACCES is the
+    // ordinary Unix mode bits. Both mean "it is there, you may not read it".
+    expect(isPermissionError({ code: 'EPERM' })).toBe(true);
+    expect(isPermissionError({ code: 'EACCES' })).toBe(true);
+    // The one it must never swallow: a genuinely absent file.
+    expect(isPermissionError({ code: 'ENOENT' })).toBe(false);
+    expect(isPermissionError(new Error('nope'))).toBe(false);
+    expect(isPermissionError(null)).toBe(false);
+  });
+
+  it('refuses an unreadable markdown file as permission_denied, not read_failed', async () => {
+    const locked = join(root, 'locked.md');
+    await writeFile(locked, '# Secret\n');
+    await chmod(locked, 0o000);
+    try {
+      const result = await openSessionFile(PID, 'locked.md', undefined, deps());
+      expect(result).toMatchObject({ ok: false, reason: 'permission_denied', name: 'locked.md' });
+    } finally {
+      await chmod(locked, 0o600);
+      await rm(locked, { force: true });
+    }
+  });
+
+  it('names the file it could not read, so the message can say which', async () => {
+    const locked = join(root, 'locked2.md');
+    await writeFile(locked, '# Secret\n');
+    await chmod(locked, 0o000);
+    try {
+      const result = await openSessionFile(PID, 'locked2.md', undefined, deps());
+      expect(result).toMatchObject({ ok: false, name: 'locked2.md' });
+      expect((result as { path?: string }).path).toBe(join(root, 'locked2.md'));
+    } finally {
+      await chmod(locked, 0o600);
+      await rm(locked, { force: true });
+    }
+  });
+
+  it('still says not_found for a file that genuinely is not there', async () => {
+    expect(await openOne('absent.md')).toEqual({ ok: false, reason: 'not_found' });
   });
 });
 

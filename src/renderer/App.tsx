@@ -1,6 +1,7 @@
 import { Component, useEffect, useMemo, useRef, type ErrorInfo, type ReactNode } from 'react';
 import { MainPane } from './components/MainPane.tsx';
 import { LaunchBar } from './components/LaunchBar.tsx';
+import { FirstRun } from './components/FirstRun.tsx';
 import { useFleet } from './state/useFleet.ts';
 import { useSettings } from './state/settings.ts';
 
@@ -172,6 +173,10 @@ export function App() {
   return (
     <main className="shell">
       <LaunchBar onLaunched={openInTerminal} />
+      {/* Design §5. Renders nothing at all when every dependency is fine,
+          and never blocks what is below it -- the app degrades per
+          capability rather than refusing to start (§4). */}
+      <FirstRun />
       <ErrorBoundary>
         <MainPane
           selection={selection}
