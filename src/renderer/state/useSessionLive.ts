@@ -8,6 +8,10 @@ import type { PromptView } from '../../core/prompt.ts';
 // PromptView import above (src/core/** carries no node import, unlike
 // src/main/**, so a type-only pull from it is safe here).
 import type { SessionContext } from '../../core/usage.ts';
+// Type-only, from src/core/** -- same rule and same reasoning as the two
+// imports above.
+import type { Mode, ModeTone } from '../../core/mode.ts';
+import type { Provider } from '../../core/types.ts';
 
 /** One session's live state for the conversation pane -- mirrors
  *  src/main/sessionLive.ts's SessionLivePayload, minus the pid/sessionId/
@@ -31,7 +35,25 @@ export type SessionLive = {
    *  the freshest source: main recomputes it on every push, ahead of the
    *  5s fleet sweep that keeps OpenSession.context. */
   context: SessionContext | null;
+  /** The permission-mode chip's state (mode-switcher design §2), or null
+   *  when there is no chip at all -- a session this app did not launch has
+   *  no pane to read one from. Redeclared here for the same reason as the
+   *  rest of this type: src/renderer/** must never import from src/main/**. */
+  mode: SessionMode | null;
 };
+
+export type SessionMode = {
+  provider: Provider;
+  /** null means main's reader could not identify the mode. The chip then
+   *  shows NOTHING rather than a guess (§5). */
+  mode: Mode | null;
+  /** Why the chip cannot be clicked right now, or null when it can. */
+  blocked: 'session_gone' | 'busy' | 'prompt_open' | 'unreadable' | null;
+};
+
+/** Re-exported so the chip can take its colour from the shared table
+ *  without a second import path for it. */
+export type { Mode, ModeTone };
 
 /** Subscribes the open conversation pane to one pid's live push (Task 6:
  *  src/main/sessionLive.ts's watchSessionFor/notifySessionChanged), which
@@ -102,6 +124,7 @@ export function useSessionLive(pid: number | null): SessionLive | null {
       setState({
         activity: payload.activity, since: payload.since, events: payload.events,
         prompt: payload.prompt ?? null, context: payload.context ?? null,
+        mode: payload.mode ?? null,
       });
     });
 

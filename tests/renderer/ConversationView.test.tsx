@@ -2642,3 +2642,64 @@ describe('ConversationView -- the prompt card (Task 5)', () => {
     }
   });
 });
+
+// Mode-switcher design §2, layout C: the chip sits in the composer's foot,
+// under the message box, NOT in the pane header. These tests prove the pane
+// actually mounts it there off the live push -- ModeChip.test.tsx covers
+// the chip's own behaviour.
+describe('ConversationView -- the permission-mode chip', () => {
+  function withLive() {
+    let pushLive: (payload: unknown) => void = () => {};
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      conversation: async () => ({ turns, nextCursor: null }),
+      watchSession: vi.fn().mockResolvedValue(true),
+      onSessionLive: (cb: (payload: unknown) => void) => { pushLive = cb; return () => {}; },
+      setMode: vi.fn().mockResolvedValue({ status: 'set', mode: 'plan' }),
+    };
+    return { push: (p: unknown) => act(() => pushLive(p)) };
+  }
+
+  const payload = (mode: unknown) => ({
+    version: 1, pid: 4821, sessionId: 's1', activity: 'idle', since: null,
+    events: 0, prompt: null, context: null, mode,
+  });
+
+  it('draws the chip in the composer foot, not the pane header', async () => {
+    const live = withLive();
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelector('.convbox')).toBeTruthy());
+    live.push(payload({ provider: 'claude', mode: 'plan', blocked: null }));
+    const chip = container.querySelector('.modechip');
+    expect(chip).toBeTruthy();
+    expect(container.querySelector('.convbox .convfoot .modechip')).toBe(chip);
+    expect(container.querySelector('.panehead .modechip')).toBeNull();
+    expect(chip!.textContent).toContain('Plan');
+  });
+
+  it('draws no chip at all until the push carries one', async () => {
+    const live = withLive();
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelector('.convbox')).toBeTruthy());
+    expect(container.querySelector('.modechip')).toBeNull();
+    live.push(payload(null));
+    expect(container.querySelector('.modechip')).toBeNull();
+  });
+
+  it('draws no chip for a mode the reader could not identify', async () => {
+    const live = withLive();
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelector('.convbox')).toBeTruthy());
+    live.push(payload({ provider: 'claude', mode: null, blocked: 'unreadable' }));
+    expect(container.querySelector('.modechip')).toBeNull();
+  });
+
+  it("builds the Codex menu for a Codex session, not Claude's", async () => {
+    const live = withLive();
+    const { container } = renderConv({ provider: 'codex' });
+    await waitFor(() => expect(container.querySelector('.convbox')).toBeTruthy());
+    live.push(payload({ provider: 'codex', mode: 'default', blocked: null }));
+    fireEvent.click(container.querySelector('.modechip > button')!);
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(2);
+    expect(screen.getByRole('menuitem').textContent).toContain('Permissions');
+  });
+});

@@ -11,6 +11,7 @@ import { resolvePaths } from '../config.ts';
 import type { Provider } from '../core/types.ts';
 import type { PromptView } from '../core/prompt.ts';
 import { buildPromptView, type AnswerDeps } from './answer.ts';
+import { readModeFor, type ModeState } from './mode.ts';
 import { tmuxNameForPid } from './sessions.ts';
 import { contextForSession, defaultContextOpts } from './usage.ts';
 import type { SessionContext } from '../core/usage.ts';
@@ -44,6 +45,13 @@ export type SessionLivePayload = {
    *  A) -- the same { usedTokens, windowTokens, leftPct } the session's
    *  card carries, or null (no session, or no count yet). */
   context: SessionContext | null;
+  /** The permission mode the pane is reporting, and whether the chip may
+   *  switch it right now (mode-switcher design §2, §4.1). null means there
+   *  is no chip to show at all -- a session this app did not launch has no
+   *  pane to read. `mode: null` inside a non-null state means the reader
+   *  could not identify the mode: the chip then shows NOTHING rather than
+   *  a guess (§5). */
+  mode: ModeState | null;
 };
 
 /** The pid's live session file, re-read now, trusted only if its startedAt
@@ -142,6 +150,15 @@ export interface SessionLiveDeps {
    *  src/main/usage.ts's contextForSession with the real status line and
    *  Codex folders; tests inject it so they never read the real home. */
   context?: (sessionId: string, provider: Provider) => SessionContext | null;
+  /** The chip's state (mode-switcher design §2). Defaults to readModeFor
+   *  (src/main/mode.ts), which is at most ONE capture-pane per push and
+   *  none at all for a session this app did not launch.
+   *
+   *  Injectable so tests never run a real tmux -- and so the ONE caller
+   *  that builds a payload purely to reach `.prompt` (session:answer's
+   *  currentPrompt closure, src/main/ipc.ts) can pass `() => null` and skip
+   *  the capture entirely: it is answering a prompt, not drawing a chip. */
+  mode?: (pid: number) => ModeState | null;
 }
 
 /** Wraps `read` so a single buildSessionLive call never opens the same
@@ -189,8 +206,36 @@ export function buildSessionLive(
   // override exists at all.
   const resolveTarget = deps.resolveReattachTarget ?? resolveReattachTarget;
   const target = resolveTarget(pid, { cached: deps.cached ?? [], processes, read });
+  // The chip's state (mode-switcher design §2). Built here rather than
+  // inside readModeFor's own defaults because this function already holds
+  // both things that decide it: `proc.provider` (which menu, which reader)
+  // and, below, the activity the whole pane is already drawn from.
+  //
+  // Blocking the chip off `activity` keeps it agreeing with what the pane
+  // is showing: working means the strip is up, waiting means a prompt card
+  // or the waiting fallback is. `waiting` blocks as well as `working`
+  // because a wait without an identified prompt card is exactly the case
+  // where the pane may be showing a question -- §4.1's "Shift+Tab into a
+  // question does something else entirely". A null activity (the app
+  // genuinely cannot tell) does not block, the same way a null `busy` does
+  // not in sendKeysFor: a check that cannot answer must not become a new
+  // way to refuse something that would have worked. main re-checks all of
+  // this independently before it presses anything (setModeFor), so the
+  // chip's state is a hint, never the authority.
+  const readMode = (activity: LiveActivity | null): ModeState | null => (deps.mode ?? ((p: number) => readModeFor(p, {
+    provider: () => proc.provider,
+    busy: () => activity === 'working',
+    promptOpen: () => activity === 'waiting',
+  })))(pid);
+
+  // The chip belongs to the PANE, not to a matched session, so a live
+  // process this app launched but cannot resolve to any recorded session
+  // still has a readable, switchable mode.
   if (!target) {
-    return { version: 1, pid, sessionId: null, activity: null, since: null, events: 0, prompt: null, context: null };
+    return {
+      version: 1, pid, sessionId: null, activity: null, since: null, events: 0,
+      prompt: null, context: null, mode: readMode(null),
+    };
   }
 
   // `last_kind`/`events` deliberately read every row for this session_id,
@@ -306,7 +351,10 @@ export function buildSessionLive(
     ? deps.context(target.sessionId, target.provider)
     : contextForSession(db, target.sessionId, target.provider, defaultContextOpts());
 
-  return { version: 1, pid, sessionId: target.sessionId, activity, since, events: row.events ?? 0, prompt, context };
+  return {
+    version: 1, pid, sessionId: target.sessionId, activity, since,
+    events: row.events ?? 0, prompt, context, mode: readMode(activity),
+  };
 }
 
 // ---------------------------------------------------------------------

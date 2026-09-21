@@ -1,0 +1,74 @@
+/* src/renderer/components/ModeChip.css */
+/* Ported from the approved mockup's own `.modechip` / `.modemenu`
+   (Permission Mode Switcher, 2026-09-21, layout C), which was written
+   against this app's tokens -- so the values below are the mockup's,
+   not re-derived from the picture. Two deliberate differences, both
+   noted at their rule:
+   - `data-mode` sits on `.modechip` itself here, not on a mock `.pane`
+     wrapper the real app has no equivalent of.
+   - the menu's `kbd` column is gone: the mockup filled it with placeholder
+     key hints ("default", "shift+tab", "flag?") that were guesses at the
+     time and are not facts now -- every mode moves on Shift+Tab. */
+
+/* Colour by mode, so the state reads without the word (spec §2): neutral
+   --muted for the ask-first mode, --accent for edits, --ag-purple for
+   plan/read-only, --critical for the unrestricted one. Codex's `default`
+   maps to the `manual` tone in src/core/mode.ts -- both are their
+   provider's ask-first mode, which is what the colour is saying. */
+.modechip[data-mode="manual"] { --m:var(--muted); --m-soft:transparent; }
+.modechip[data-mode="edits"] { --m:var(--accent); --m-soft:var(--accent-soft); }
+.modechip[data-mode="plan"] { --m:var(--ag-purple); --m-soft:var(--ag-purple-soft); }
+.modechip[data-mode="auto"] { --m:var(--critical); --m-soft:var(--critical-soft); }
+
+.modechip { position:relative; flex:none; }
+.modechip > button { font:inherit; font-family:var(--f-mono); font-size:11.5px; color:var(--m);
+  background:var(--m-soft); border:1px solid color-mix(in srgb, var(--m) 45%, transparent);
+  border-radius:999px; padding:3px 10px 3px 8px; cursor:pointer;
+  display:inline-flex; align-items:center; gap:6px; }
+.modechip > button:hover:not(:disabled) { border-color:var(--m); }
+.modechip > button:disabled { opacity:.55; cursor:default; }
+.modechip > button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.modechip .dot { width:7px; height:7px; border-radius:50%; background:var(--m); flex:none; }
+/* Drawn, not typed -- see the note in ModeChip.tsx. Sized in px rather
+   than em so it cannot inherit its way to the wrong size, and `display:
+   block` so the inline baseline gap does not push it off centre in the
+   flex row. */
+.modechip .caret { width:9px; height:6px; display:block; flex:none; color:var(--muted); }
+
+/* Layout C puts the chip in the composer's foot, so the menu opens UPWARD
+   (the mockup's `.modechip.up`). The `.down` variant it also carried was
+   for layout B's header chip, which David did not pick, so it is not
+   ported -- there is nowhere in this app that would use it. */
+.modemenu { position:absolute; z-index:10; min-width:230px; background:var(--surface);
+  border:1px solid var(--line); border-radius:var(--r-sm); box-shadow:var(--shadow-pop);
+  padding:4px; display:flex; flex-direction:column;
+  bottom:calc(100% + 6px); left:0; }
+.modemenu button { font:inherit; font-size:13px; text-align:left; color:var(--ink); background:none;
+  border:0; border-radius:6px; padding:6px 10px; cursor:pointer; display:grid;
+  grid-template-columns:auto 1fr; gap:2px 9px; align-items:center; }
+.modemenu button:hover, .modemenu button:focus-visible { background:var(--raised); outline:none; }
+.modemenu button i { width:7px; height:7px; border-radius:50%; display:block; }
+.modemenu button small { grid-column:2 / -1; font-size:12px; color:var(--muted); }
+.modemenu button[aria-checked="true"] { background:var(--raised); font-weight:600; }
+
+/* The menu's own dots, one per tone. A class rather than the mockup's
+   inline `style="background:..."`: this window runs under a CSP with no
+   'unsafe-inline', so an inline style is not a thing this app can ship. */
+.modemenu button i[data-tone="manual"] { background:var(--muted); }
+.modemenu button i[data-tone="edits"] { background:var(--accent); }
+.modemenu button i[data-tone="plan"] { background:var(--ag-purple); }
+.modemenu button i[data-tone="auto"] { background:var(--critical); }
+/* The Permissions… row is a link out, not a mode, so it gets no colour
+   dot at all -- only the space one would have taken, so its label lines
+   up with the modes above it. */
+.modemenu button i[data-tone="none"] { background:none; }
+
+/* The row this chip sits in, `.convfoot`, belongs to the composer, so it
+   lives in ConversationView.css with the rest of the composer's layout --
+   this stylesheet owns only the chip itself and the one message the chip
+   can produce. */
+/* A refusal the switch came back with, in the same quiet treatment as the
+   composer's own .convmsg. --signal, not --critical: --critical is this
+   app's "waiting on you" colour (OpenSessionCard.css) and must stay
+   unambiguous; a mode that did not switch is a warning, not a summons. */
+.modemsg { margin:0; font-size:11px; color:var(--signal); }

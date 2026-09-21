@@ -8,7 +8,9 @@ import type { FileProbeResult, FileOpenResult } from '../main/files.ts';
 import type { StageResult } from '../main/staging.ts';
 import type { SessionLivePayload } from '../main/sessionLive.ts';
 import type { AnswerResult } from '../main/answer.ts';
+import type { ModeSetResult } from '../main/mode.ts';
 import type { Answer } from '../core/prompt.ts';
+import type { Mode } from '../core/mode.ts';
 import type { HooksResult } from '../hooks/switch.ts';
 import type { UsageSwitchResult } from '../hooks/usageSwitch.ts';
 import type { UsagePayload } from '../core/usage.ts';
@@ -34,6 +36,12 @@ declare global {
       // and checks the answer and the pane itself; this typing narrows
       // nothing at the trust boundary.
       answerPrompt: (pid: number, promptId: string, answer: Answer) => Promise<AnswerResult>;
+      // Switches the session's permission mode. Main resolves the provider,
+      // validates the mode against that provider's own list and re-checks
+      // every guard itself; this typing narrows nothing at the trust
+      // boundary. `mode` is typed as the shared Mode union for the
+      // renderer's own benefit only.
+      setMode: (pid: number, mode: Mode) => Promise<ModeSetResult>;
       // An image's bytes, checked and held by main until sent.
       stageImage: (bytes: ArrayBuffer) => Promise<StageResult>;
       // Any other file's bytes and name, held by main until sent.

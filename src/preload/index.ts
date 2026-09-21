@@ -32,6 +32,14 @@ const api = {
   // presses nothing it cannot confirm; this typing narrows nothing.
   answerPrompt: (pid: number, promptId: string, answer: Answer) =>
     ipcRenderer.invoke('session:answer', pid, promptId, answer),
+  // Switches the session's permission mode (mode-switcher design §4). The
+  // pid and the mode name are the renderer's whole say: main resolves the
+  // provider itself, checks the mode against that provider's own list,
+  // refuses mid-turn or with a prompt card up, and presses only BTab. This
+  // typing narrows nothing at the trust boundary. There is no matching
+  // getter -- the chip's state rides the session:live push instead, so it
+  // follows a mode changed in the terminal as well as one changed here.
+  setMode: (pid: number, mode: string) => ipcRenderer.invoke('session:mode:set', pid, mode),
   // An image's bytes, for main to check and hold until sent; returns an id.
   stageImage: (bytes: ArrayBuffer) => ipcRenderer.invoke('session:stage-image', bytes),
   // Any other file's bytes and name, held the same way.
