@@ -206,3 +206,10 @@ message in the same form as an unsent one). What worked, all day:
   answers. Still open: switch permission mode from the Conversation view (mockup
   first); the agent graph view (worktree `../llm-workspace-agent-graph`, branch
   `agent-graph`); Part 3 (iTerm, with a Terminal.app fallback).
+- **Mode switcher specced 2026-09-21:**
+  `docs/superpowers/specs/2026-09-21-mode-switcher-design.md`. Layout C (chip
+  beside the composer hint) picked from the mockup. **Codex is in the spec**,
+  not deferred: it cycles on Shift+Tab too, but its presets are Read Only /
+  Auto / Full Access plus a Custom state, so the menu is built per provider.
+  Two things still to measure on a live pane: whether Claude's Auto is in the
+  Shift+Tab cycle at all, and Codex's exact cycle order.
