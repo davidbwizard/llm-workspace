@@ -37,6 +37,13 @@ export type ScreenExpect =
 export type ScreenRead =
   | { match: true; kind: 'permission' | 'plan'; choices: PromptChoice[]; cursor: string | null; textRow: string | null }
   // headerOnly: read from the one-question layout (a header line, no tab row)
-  | { match: true; kind: 'question'; current: number; answered: boolean[]; options: string[]; headerOnly?: true }
+  // preview: read from the preview layout (options in a narrow left column
+  // beside a bordered preview panel). Only there is `cursor` set: the index
+  // in `options` of the focused row, which that layout is answered by
+  // walking to with Down rather than by pressing a digit.
+  | {
+    match: true; kind: 'question'; current: number; answered: boolean[]; options: string[];
+    headerOnly?: true; preview?: true; cursor?: number;
+  }
   | { match: true; kind: 'review'; answers: { question: string; answer: string }[] }
   | { match: false; why: string };

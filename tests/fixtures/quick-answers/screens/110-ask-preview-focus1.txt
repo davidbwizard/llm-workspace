@@ -1,0 +1,37 @@
+  Claude Code draws.
+
+⏺ Bash(D=/private/tmp/claude-000/-Users-user-Documents-ExampleOrg-workspace/00000000-0000-4
+      000-0000-000000000000/scratchpad/caps; mkdir -p "$D"; for i in $(seq…)
+  ⎿  Running in the background (↓ to manage)
+  ⎿  Allowed by auto mode classifier
+
+⏺ Background capture running. Now the live specimen — this is a real question I need answered, and
+  it carries previews on purpose:
+
+───────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Preview UI
+
+│ When the card can answer preview questions, how should the preview itself appear on it?
+
+❯ 1. Inline, expandable           ┌───────────────────────────────────────────────────────┐
+  2. Side by side, like the       │ ( ) Data layer now, page later        [Recommended]   │
+    terminal                      │       Ship the tables and API; no teacher UI yet.     │
+  3. Labels only, previews in     │       + show preview                                  │
+    the terminal                  │                                                       │
+                                  │   ( ) Include a minimal teacher list                  │
+                                  │       One unstyled list behind a flag.                │
+                                  │       - hide preview                                  │
+                                  │       +-------------------------------------+         │
+                                  │       | game_tiers    T1 | T2 | T3          |         │
+                                  │       | games.tier_code  FK -> game_tiers   |         │
+                                  │       +-------------------------------------+         │
+                                  ├─── ✂ ─── 3 lines hidden ──────────────────────────────┤
+                                  └───────────────────────────────────────────────────────┘
+
+                                  Notes: press n to add notes
+
+───────────────────────────────────────────────────────────────────────────────────────────────────
+  Chat about this
+
+Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel
+

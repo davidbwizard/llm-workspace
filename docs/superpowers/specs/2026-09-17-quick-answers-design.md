@@ -316,8 +316,16 @@ from `capturePane`.
     tools: the tool name (looser; tightening is a follow-up).
   - **Ambiguity guard:** two or more PermissionRequests in the same wait make
     the prompt read-only (`multiple_prompts`); the pane is never read.
-- **Questions with previews** are read-only (`unsupported_layout`); long question
-  titles are drawn with a `│ ` border, which is stripped before matching.
+- **Questions with previews** are drawn in a second layout: the options in a
+  narrow left column with a bordered preview panel on the same rows to their
+  right, no `Type something.` row, and an unnumbered `Chat about this`
+  (measured 2026-09-21, fixture 110). Single-select is read and answered by
+  walking the caret with `Down` and pressing `Enter` -- the keys that layout's
+  own footer advertises, never the drawn-but-unadvertised digits.
+  **Multi-select** with previews has never been captured and stays read-only
+  (`unsupported_layout`), as does `Chat about this` on the preview layout.
+  Long question titles are drawn with a `│ ` border, which is stripped before
+  matching.
 - **Plan:** `Would you like to proceed?` with numbered options.
 - **Question:** the tab row with the same headers in order, the current
   question's text, and its option labels. State = which question is current and

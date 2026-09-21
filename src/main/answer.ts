@@ -92,13 +92,21 @@ function kindFor(toolName: string): PromptKind {
   return 'permission';
 }
 
-/** True when any option in the raw questions payload carries a `preview`
- *  field. Claude Code then draws a side-by-side layout this app has never
- *  measured, so such a prompt must never be marked answerable. */
-function hasPreview(raw: unknown): boolean {
+/** True when a MULTI-SELECT question in the raw questions payload carries a
+ *  `preview` field. An option with a preview makes Claude Code draw the
+ *  side-by-side layout (options in a narrow left column, a bordered preview
+ *  panel beside them); the SINGLE-select form of it was measured 2026-09-21
+ *  and is read by promptScreen.ts, but the multi-select form -- where the
+ *  toggles and the Submit row would sit beside the panel -- never has been,
+ *  so it stays read-only rather than being guessed at.
+ *
+ *  One such question makes the WHOLE prompt read-only: the answer path walks
+ *  every question in turn, so it cannot stop half way through. */
+function hasMultiSelectPreview(raw: unknown): boolean {
   if (!Array.isArray(raw)) return false;
   return raw.some((q) => {
     const o = record(q) ?? {};
+    if (o.multiSelect !== true) return false;
     return Array.isArray(o.options) && o.options.some((opt) => record(opt)?.preview !== undefined);
   });
 }
@@ -180,7 +188,7 @@ export function buildPromptView(
   if (tmuxName === null) return { ...view, reason: 'not_tmux' };
   // Question choices are the hook's own options; no screen read needed.
   if (view.kind === 'question') {
-    if (hasPreview(input.questions)) return { ...view, reason: 'unsupported_layout' };
+    if (hasMultiSelectPreview(input.questions)) return { ...view, reason: 'unsupported_layout' };
     return { ...view, answerable: true };
   }
 
@@ -525,6 +533,10 @@ class Run {
     if (!isQuestion(first)) return 'unconfirmed';
     const q = qs[first.read.current];
     if (!q || !sameOptions(first.read.options, q)) return 'unconfirmed';
+    // The preview layout draws "Chat about this" with NO number of its own
+    // and its footer advertises no key for it (fixture 110), so there is
+    // nothing to press: refused here rather than guessed at.
+    if (first.read.preview) return 'unconfirmed';
     // "Chat about this" is digit n+2 of the current question.
     const key = digitFor(q.options.length + 1);
     if (!key) return 'unconfirmed';
@@ -550,7 +562,22 @@ class Run {
       const onThis = (s: Shot) => isQuestion(s) && s.read.current === i;
 
       let next: Shot | null;
-      if (!q.multiSelect) {
+      if ((cur.read as QuestionRead).preview) {
+        // The preview layout (fixture 110): no "Type something." row at
+        // all, and its footer advertises only Enter, up/down, n and Esc.
+        // The digits ARE drawn beside the labels but are not advertised
+        // here, and an unbound key risks landing in the notes editor, so
+        // the cursor is walked with Down and the pick taken with Enter.
+        if (q.multiSelect || pick.other !== undefined) return this.fail();
+        const focused = await this.focusPreviewOption(cur, i, pick.options[0]!, q);
+        if (!focused) return this.fail();
+        if (!this.press('Enter')) return this.fail();
+        let goneReads = 0;
+        next = await this.settle((s) => {
+          goneReads = isGone(s) ? goneReads + 1 : 0;
+          return this.advanced(s, i, last) || (qs.length === 1 && goneReads >= 2);
+        });
+      } else if (!q.multiSelect) {
         if (pick.other === undefined) {
           // A digit picks and advances.
           if (!this.press(digitFor(pick.options[0]!)!)) return this.fail();
@@ -598,6 +625,32 @@ class Run {
     // Only a review that matches the card, line for line, is submitted.
     if (!isReview(cur) || !this.reviewMatches(cur.read, picks)) return this.fail();
     return this.press('1') ? null : this.fail();
+  }
+
+  /** Walks the preview layout's caret down to option `target`, re-reading
+   *  the pane after every press. Returns the shot that PROVES the caret is
+   *  on `target` -- the caller presses Enter only on that -- or null.
+   *
+   *  At most one Down per option: if the caret stalls (the list does not
+   *  wrap at the bottom) or keeps moving without ever reaching the target,
+   *  this stops and the answer is refused, rather than pressing on into a
+   *  screen it cannot account for. Every read is checked whole -- still
+   *  this question, still the preview layout, still the card's own labels
+   *  -- so a redraw into some other prompt cannot be walked through. */
+  private async focusPreviewOption(
+    from: Shot, i: number, target: number, q: PromptQuestion,
+  ): Promise<Shot | null> {
+    let cur = from;
+    for (let downs = 0; (cur.read as QuestionRead).cursor !== target; downs++) {
+      if (downs >= q.options.length) return null;
+      const before = (cur.read as QuestionRead).cursor;
+      if (!this.press('Down')) return null;
+      const next = await this.settle(s => isQuestion(s) && s.read.current === i && s.read.preview === true
+        && sameOptions(s.read.options, q) && s.read.cursor !== before);
+      if (!next) return null;
+      cur = next;
+    }
+    return cur;
   }
 
   /** Question i is done: the next one is current and the tab row shows i
