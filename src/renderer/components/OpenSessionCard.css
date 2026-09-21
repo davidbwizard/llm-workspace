@@ -28,11 +28,17 @@
    David's own placement, seen against the real, running window: to the
    RIGHT of the "…" menu button, in the bottom-right corner of the card
    (.metrics is the last row), not a corner badge. A plain flex child, not
-   absolutely positioned -- .metrics never wraps (see its own rule,
-   SessionCard.css), so this can never push .cardmenu out of place or force
-   a second line. Muted and small: a hint for a keyboard-driven user, not a
-   status signal, so it never competes with --signal/--critical. */
+   absolutely positioned, so it rides after .cardmenu's own margin-left:auto
+   rather than needing position maths.
+
+   .metrics DOES wrap now (SessionCard.css), which this note used to rely on
+   it never doing -- but the thing that note was protecting still holds: a
+   wrap only ever moves this digit onto a line WITH .cardmenu, never on top
+   of it, because both are plain in-flow children. Muted and small: a hint
+   for a keyboard-driven user, not a status signal, so it never competes
+   with --signal/--critical. */
 .cmdnum { font-family:var(--f-mono); font-size:10px; color:var(--faint); line-height:1; }
+
 
 /* The whole-card unread treatment David asked for beyond the dot alone
    ("maybe the box color should be different until I click on it") --

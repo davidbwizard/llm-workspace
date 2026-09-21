@@ -4,6 +4,7 @@ import type { KillResult, KillRefusalReason } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { ContextChip } from './ContextChip.tsx';
+import { StatusIcon } from './StatusIcon.tsx';
 import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES } from '../state/favourites.ts';
 import './OpenSessionCard.css';
 
@@ -48,6 +49,25 @@ type Activity = NonNullable<OpenSession['activity']>;
 const ACTIVITY_WORD: Record<Activity, string> = {
   working:'working', waiting_permission:'waiting on you',
   waiting_input:'waiting on you', idle:'idle', error:'error',
+};
+
+/** What the status ROW prints, as opposed to what the card is NAMED.
+ *  "waiting", David's choice, rather than the map above's "waiting on you".
+ *
+ *  The two differ deliberately, and not only as a matter of taste.
+ *  "waiting on you" is 14 characters where every other word here is at
+ *  most 7, which made it the single widest thing the row could contain --
+ *  measured, it alone decided both of SessionRail.css's breakpoints for
+ *  all four states. Shortening it is what lets the other three keep their
+ *  text at widths where they previously lost it.
+ *
+ *  Nothing is lost to a screen reader: `label` below still builds the
+ *  card's accessible name from ACTIVITY_WORD, so the card is still
+ *  announced as "waiting on you". This shortens only the visible word
+ *  inside it -- where the badge, the tinted border and the filled icon are
+ *  all already saying "on you". */
+const ACTIVITY_WORD_ROW: Record<Activity, string> = {
+  ...ACTIVITY_WORD, waiting_permission:'waiting', waiting_input:'waiting',
 };
 
 /** Formats a running process's elapsed time for a human ("9d", not
@@ -453,10 +473,22 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
             hidden entirely when there is no count yet (ContextChip's own
             null check). */}
         <ContextChip context={state.context} />
-        {activityWord && (
+        {/* Status row, variant A. The icon is the status everywhere now --
+            rail AND fleet grid (David: "Keep it consistent. Both fleet and
+            cards.") -- so the colour-only .dot this used to render is gone
+            rather than hidden.
+
+            The word is never removed from the DOM and never `display:none`.
+            Once the rail is too narrow to show it, SessionRail.css hides it
+            with the same clip-path technique ConversationView.css's
+            .wholabel uses, which leaves it in the accessibility tree: an
+            icon with no name would make the state unreadable to a screen
+            reader at exactly the width where it is already unreadable
+            without colour vision. */}
+        {activityWord && state.activity && (
           <span className={`state ${state.activity}`}>
-            <span className="dot" aria-hidden="true" />
-            {activityWord}
+            <StatusIcon activity={state.activity} />
+            <span className="state-word">{ACTIVITY_WORD_ROW[state.activity]}</span>
           </span>
         )}
         {/* Un-gated from `compact` (David's addition): a full card gets this

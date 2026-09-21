@@ -1,4 +1,5 @@
 import type { SessionState } from '../../fleet/state.ts';
+import { StatusIcon } from './StatusIcon.tsx';
 import { ProviderMark } from './ProviderMark.tsx';
 import './SessionCard.css';
 
@@ -19,6 +20,15 @@ const HOST_LABEL: Record<Host, string> = {
 const ACTIVITY_WORD: Record<SessionState['activity'], string> = {
   working:'working', waiting_permission:'waiting on you',
   waiting_input:'waiting on you', idle:'idle', error:'error',
+};
+
+/** The shorter visible wording, matching OpenSessionCard's own row (see
+ *  ACTIVITY_WORD_ROW there). Deliberately a second small literal rather
+ *  than a shared import: these two components are independent files by
+ *  design -- the same reason ACTIVITY_WORD and HOST_LABEL are already
+ *  duplicated here -- and this is one differing key. */
+const ACTIVITY_WORD_ROW: Record<SessionState['activity'], string> = {
+  ...ACTIVITY_WORD, waiting_permission:'waiting', waiting_input:'waiting',
 };
 
 /** Formats a running process's elapsed time for a human ("9d", not
@@ -81,6 +91,10 @@ export function SessionCard({ state, onOpen, showProcessMeta }: {
   const pips = Math.min(state.agents, 10);
   const activityWord = ACTIVITY_WORD[state.activity];
   const stateWord = `${activityWord}${state.stale ? ' (stale)' : ''}`;
+  // The accessible name above keeps "waiting on you"; the visible row says
+  // "waiting" -- see OpenSessionCard.tsx's ACTIVITY_WORD_ROW for why the
+  // two differ.
+  const stateWordRow = `${ACTIVITY_WORD_ROW[state.activity]}${state.stale ? ' (stale)' : ''}`;
   const providerLabel = state.provider === 'claude' ? 'Claude' : 'Codex';
   // The card's whole job is surfacing the last meaningful thing an agent
   // said -- the noise problem this app exists to fix. Unconditional: a
@@ -167,9 +181,16 @@ export function SessionCard({ state, onOpen, showProcessMeta }: {
         </svg>
         <span>{state.liveAgents}/{state.agents}</span>
         <span>{state.events.toLocaleString()}</span>
+        {/* Same status treatment as OpenSessionCard, so the one fleet
+            view does not show two different marks for the same thing
+            (David: "Keep it consistent. Both fleet and cards."). The
+            colour-only dot is gone; shape carries the state now. No
+            container query applies to this card -- it lives in the history
+            list, not the rail -- so the word is always visible here, but
+            the markup is identical on purpose. */}
         <span className={`state ${state.activity}`}>
-          <span className="dot" aria-hidden="true" />
-          {stateWord}
+          <StatusIcon activity={state.activity} />
+          <span className="state-word">{stateWordRow}</span>
         </span>
       </div>
     </article>
