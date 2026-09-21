@@ -63,8 +63,47 @@
    channel here and never the only one -- the shapes differ too, which is
    the whole point (see StatusIcon.tsx). */
 .stateicon { display:block; flex:none; color:var(--faint); }
-.state.working .stateicon { color:var(--accent); }
-.state.waiting_permission .stateicon, .state.waiting_input .stateicon { color:var(--critical); }
+
+/* Working turns (David, 2026-09-21). The ring's stroke gap is what makes
+   the rotation legible -- a solid ring would spin invisibly -- so this
+   depends on the broken-ring geometry in StatusIcon.tsx and would become a
+   no-op if that shape were ever closed up.
+   Working SPINS and waiting PULSES -- two motions, two meanings. A turning
+   ring reads as progress, which is true of working and the opposite of
+   true for waiting: nothing moves there until the person answers. Waiting
+   pulses instead, which reads as attention rather than progress. Idle and
+   error are resting states and never animate.
+   transform on the svg box, which the compositor handles without laying
+   out or repainting the card -- this runs on every working card at once. */
+@keyframes stateicon-spin { to { transform:rotate(360deg); } }
+.state.working .stateicon {
+  color:var(--accent);
+  transform-origin:50% 50%;
+  animation:stateicon-spin 1.6s linear infinite;
+}
+/* theme.css carries a blanket `* { animation:none !important }` under this
+   same query, so this is belt and braces -- kept, as WorkingStrip.css does,
+   so the component is correct on its own rather than by a rule defined
+   elsewhere. The arrested broken ring still reads as "working". */
+@media (prefers-reduced-motion: reduce) {
+  .state.working .stateicon { animation:none; }
+  .state.waiting_permission .stateicon, .state.waiting_input .stateicon { animation:none; opacity:1; }
+}
+/* Its own name, not WorkingStrip.css's `pulse`: @keyframes are global, so
+   reusing that name here would mean two files racing to define one
+   animation. The 1 -> .3 range is David's (2026-09-21), and it matches the
+   depth the strip's dot already pulses through, so the app has one pulse
+   depth rather than two. Slower than the spin: attention, not activity.
+   Colour and shape still carry the state at the dim end of the cycle --
+   the opacity is a third channel, never the only one. */
+@keyframes stateicon-pulse {
+  0%, 100% { opacity:1; }
+  50% { opacity:.3; }
+}
+.state.waiting_permission .stateicon, .state.waiting_input .stateicon {
+  color:var(--critical);
+  animation:stateicon-pulse 1.8s ease-in-out infinite;
+}
 .state.error .stateicon { color:var(--signal); }
 .badge { position:absolute; top:13px; right:15px; background:var(--critical);
          color:var(--ground); font-family:var(--f-mono); font-size:10.5px;
