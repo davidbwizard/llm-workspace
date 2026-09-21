@@ -1,10 +1,10 @@
 # Design: switch the agent's permission mode from the conversation
 
-Status: approved, not yet built. §7's questions are answered; the only things
-still open are the two live-pane measurements in §3. David picked layout **C**
-from
+Status: approved and fully measured, not yet built. Nothing is open. David
+picked layout **C** from
 https://claude.ai/artifact/PhGP95ikmcor75D6KnZar3 (2026-09-21) and asked that
-Codex be specced in the same pass rather than deferred.
+Codex be specced in the same pass rather than deferred; §3's measurements were
+then taken against live panes, and §3.2's first draft turned out to be wrong.
 
 ## 1. The problem
 
@@ -38,44 +38,72 @@ than re-deriving it from the picture.
 
 ## 3. Both providers
 
-Neither CLI has a "set mode X" command. Both **cycle** on Shift+Tab, so the app
-presses and re-reads until the pane reports the requested mode.
+Neither CLI has a "set mode X" command; both move on Shift+Tab, so the app
+presses and re-reads until the pane reports the requested mode. They do not
+move the same way, and the difference is measured, not assumed: **Claude cycles
+four states, Codex toggles two.** One press is always enough for Codex; Claude
+may need up to three.
 
-### 3.1 Claude Code
+### 3.1 Claude Code -- MEASURED 2026-09-21
 
-Modes as David named them: Manual, Accept edits, Plan, Auto.
+Against a live throwaway pane, Claude Code v2.1.278, pressing Shift+Tab six
+times from a fresh session:
 
-**Unverified, and it changes the UI:** whether Auto (bypass permissions) is in
-the Shift+Tab cycle at all, or only reachable when the session was started with
-`--dangerously-skip-permissions`. Measure against a live pane before building
-the menu. If it is not in the cycle, the menu shows three modes and Auto is
-disabled with the reason.
+```
+auto mode on  ->  manual mode on  ->  accept edits on  ->  plan mode on  ->  auto mode on  -> ...
+```
 
-### 3.2 Codex
+**Auto is in the cycle.** The open question is closed: the menu carries all
+four of David's modes and nothing is disabled.
 
-Measured 2026-09-21 against the installed `codex-cli 0.154.0`
-(`/opt/homebrew/Caskroom/codex/0.154.0/bin/codex`):
+Two things the detector must respect, both measured, not assumed:
 
-- Its TUI carries the strings `to change mode` and `shift+tab to cycle`, so the
-  same cycle-and-read approach applies. Shortcuts are user-remappable there
-  (`/keymap`), which the failure path below already covers.
-- Preset labels in the binary: **Read Only**, **Auto**, **Full Access**, plus
-  **Custom permissions** and "with network access" variants.
-- Underneath, Codex has two axes, not one: `--sandbox` (`read-only`,
-  `workspace-write`, `danger-full-access`, `external-sandbox`) and
-  `--ask-for-approval` (`on-failure`, `on-request`, `never`, `granular`). The
-  presets are combinations of the two.
+- **`manual mode on` prints WITHOUT the `(shift+tab to cycle)` hint** the other
+  three carry. Match the mode name; never key on the hint being present.
+- The leading glyph splits the states into pairs, not four: `auto` and `accept
+  edits` show a double play mark, `manual` and `plan` a pause mark. The glyph
+  alone identifies nothing, so it is not the thing to read either.
 
-Consequences for the chip:
+### 3.2 Codex -- MEASURED 2026-09-21, and this section's first draft was wrong
 
-- Codex gets **three** entries, not four: Read Only, Auto, Full Access. The
-  menu is built per provider, never one shared list of four.
-- A session in a combination that matches no preset reads **Custom**. The chip
-  shows it, the menu marks nothing as current, and switching from it is still
-  allowed. The app must never silently relabel a custom state as a preset.
-- Still to measure on a live Codex pane: the exact cycle order, whether the
-  cycle passes through Custom, and the exact on-screen text the detector keys
-  on.
+The earlier draft read Read Only / Auto / Full Access out of the binary's
+strings and assumed Shift+Tab cycled them. A live `codex-cli 0.154.0` pane says
+otherwise. Six presses produced exactly three round trips of:
+
+```
+Default mode  <->  Plan mode
+```
+
+**Shift+Tab in Codex is a two-state toggle, not a cycle through the permission
+presets.** The presets are real, but they live behind `/permissions` ("choose
+what Codex is allowed to do") -- a typed command that opens a menu. `/approvals`
+does not exist in this version; the binary carries that string for other
+reasons. This is the standing lesson about strings in a binary: they prove a
+word exists somewhere, never that it is a command, a label, or reachable.
+
+**Second measured surprise: the toggle also changes the model.** Every switch
+into Plan printed `Model changed to gpt-5.6-sol medium for Plan mode`, and
+every switch back restored `xhigh`. A Codex mode switch is not only about
+permissions -- it silently changes reasoning effort, and so cost and output
+quality.
+
+**Decision (David, 2026-09-21): option B.**
+
+- The Codex chip shows **Default** or **Plan** and flips it with one Shift+Tab.
+  Same mechanism as Claude, same reliability, same guards.
+- The menu carries a **Permissions...** item that does nothing more than open
+  the session in the terminal, for the person to run `/permissions` themselves.
+  The app does not type that command and does not drive that menu.
+- The menu states, in words, that Plan also lowers the model's effort. A person
+  who is never told will only notice it in the bill or in weaker output.
+
+Rejected, and why: driving `/permissions` means typing a command and navigating
+a menu by screen-scraping. That is the most fragile surface in a feature whose
+class of bug has already bitten four times. The escape hatch is honest; a
+brittle menu driver pretending to be reliable is not.
+
+Consequence for the UI: the menu is built per provider and the two providers
+do not share a list. Claude has four modes; Codex has two plus a link out.
 
 ## 4. How the switch runs
 
@@ -101,14 +129,15 @@ it. Add `'BTab'` to both `KeyName` and `ALLOWED_KEY_NAMES`, nothing else.
 The mode is screen-scraped, so the standing rule applies: a check that matches
 on every mode proves nothing. Before this ships, the reader must be shown to
 return a *different* answer for each mode of each provider, from real captures
-of a real pane -- one fixture per mode, per provider, Custom included.
+of a real pane -- one fixture per mode per provider: Claude's four, Codex's
+two.
 
 Fixtures go in the repo with usernames and project names redacted
 (`Bluewizard` -> `ExampleOrg`), as the rest of the fixtures are.
 
 A mode the reader cannot identify is reported as unknown. The chip then shows
 nothing rather than a guess: claiming "Manual" on a session that is actually on
-Full Access is the worst failure this feature has.
+Auto is the worst failure this feature has.
 
 ## 6. Verification
 
@@ -153,14 +182,18 @@ Measure the real cost before picking the interval.
 
 ### 7.2 No confirmation before the unrestricted mode
 
-Switching into Claude's Auto or Codex's Full Access happens on the click, with
-no "are you sure".
+Switching into Claude's Auto happens on the click, with no "are you sure".
 
-What carries the weight instead: the chip is `--critical` coloured in that
-mode, the menu entry says what it means in plain words, and 7.1's badge makes
-it visible from the fleet for app-launched sessions. The switch is also one
-click to reverse. If it turns out a session gets left on Full Access without
-anyone noticing, revisit -- that is the signal, not a hypothetical.
+This now applies to Claude alone. §3.2's measurement means the Codex chip never
+switches into Full Access at all -- Shift+Tab there only toggles Default and
+Plan, and the permission presets are reached by the person in the terminal, not
+by the app.
+
+What carries the weight instead: the chip is `--critical` coloured in Auto, the
+menu entry says what it means in plain words, and 7.1's badge makes it visible
+from the fleet for app-launched sessions. The switch is also one click to
+reverse. If it turns out a session gets left on Auto without anyone noticing,
+revisit -- that is the signal, not a hypothetical.
 
 ### 7.3 No remembered mode per folder
 
