@@ -1,6 +1,8 @@
 # Design: switch the agent's permission mode from the conversation
 
-Status: approved shape, not yet built. David picked layout **C** from
+Status: approved, not yet built. §7's questions are answered; the only things
+still open are the two live-pane measurements in §3. David picked layout **C**
+from
 https://claude.ai/artifact/PhGP95ikmcor75D6KnZar3 (2026-09-21) and asked that
 Codex be specced in the same pass rather than deferred.
 
@@ -28,9 +30,8 @@ sixth control wraps it at a narrow window.
   `--critical` for the unrestricted one.
 - Escape and an outside click close it; focus returns to the chip.
 
-Cost, accepted: the mode is not visible from the Fleet screen or a session
-card, so a session left unrestricted is only obvious once opened. Revisit after
-use, not before.
+C on its own leaves the mode invisible from the Fleet screen and the session
+cards. §7.1 answers that with an optional badge; read it with this section.
 
 The mockup's CSS is the source for `.modechip` / `.modemenu`; port it rather
 than re-deriving it from the picture.
@@ -119,11 +120,49 @@ Full Access is the worst failure this feature has.
   Claude session and a live Codex session, and confirm the terminal view shows
   the same mode the chip claims.
 
-## 7. Open questions for David
+## 7. Decisions (David, 2026-09-21)
 
-1. Show the mode on session cards and in the Fleet screen too, or only in the
-   conversation? (C's accepted cost.)
-2. Confirm before switching into Claude's Auto / Codex's Full Access, or switch
-   straight away?
-3. Should the app remember a preferred mode per folder and offer it at launch,
-   or is this strictly a live control?
+### 7.1 The card badge is a setting
+
+Show the mode on session cards and in the Fleet screen, behind a setting.
+
+The control follows "Compact cards" exactly -- same four-way segment, same
+section of the settings modal: **Off / Sidebar / Fleet / Both**. No new
+pattern, and the two settings answer the same question about the same two
+surfaces. The chip in the conversation is not affected by it and always shows.
+
+**Default: Off.** Two reasons, both worth re-testing once it is real:
+
+- *It cannot cover every card.* The mode is read from a tmux pane, so it exists
+  only for sessions the app launched. Sessions discovered running in iTerm,
+  VS Code or a plain terminal have no pane to capture, and their cards can show
+  nothing. On by default would look broken on exactly the sessions the fleet
+  view exists to surface. A card with no reading shows no badge -- never a
+  guess, and never "Manual" as a stand-in for "not known".
+- *It costs reads the app does not currently make.* The fleet sweep is built
+  from the sqlite index, process enumeration and one `lsof`; it never captures
+  a pane. `capture-pane` today runs only on demand (answering a prompt, the
+  paste settle).
+
+So the badge does **not** go in the fleet refresh loop. It reads on its own
+slower cadence, app-owned sessions only, plus an immediate read after any
+switch the app itself makes. A mode changed by typing Shift+Tab directly in the
+terminal is therefore stale until the next slow read; that is the accepted
+trade for not spawning a `capture-pane` per session several times a second.
+Measure the real cost before picking the interval.
+
+### 7.2 No confirmation before the unrestricted mode
+
+Switching into Claude's Auto or Codex's Full Access happens on the click, with
+no "are you sure".
+
+What carries the weight instead: the chip is `--critical` coloured in that
+mode, the menu entry says what it means in plain words, and 7.1's badge makes
+it visible from the fleet for app-launched sessions. The switch is also one
+click to reverse. If it turns out a session gets left on Full Access without
+anyone noticing, revisit -- that is the signal, not a hypothetical.
+
+### 7.3 No remembered mode per folder
+
+Strictly a live control. The app does not store a preferred mode per folder and
+does not offer one at launch.
