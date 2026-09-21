@@ -1,0 +1,20 @@
+❯ echo hello from a plain shell
+hello from a plain shell
+/private/tm/cl/-Users-user000000000-Documents-David-llm-workspace/c/s/modeprobe ❯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

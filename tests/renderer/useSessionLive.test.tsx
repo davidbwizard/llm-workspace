@@ -47,7 +47,7 @@ describe('useSessionLive', () => {
     (globalThis as any).window.fleet = { watchSession, onSessionLive };
     const { result } = renderHook(() => useSessionLive(4821));
     act(() => { push(payload({ pid: 4821, activity: 'working', since: 111, events: 3 })); });
-    expect(result.current).toEqual({ activity: 'working', since: 111, events: 3, prompt: null, context: null });
+    expect(result.current).toEqual({ activity: 'working', since: 111, events: 3, prompt: null, context: null, mode: null });
     delete (globalThis as any).window.fleet;
   });
 
@@ -124,7 +124,7 @@ describe('useSessionLive', () => {
     (globalThis as any).window.fleet = { watchSession, onSessionLive };
     const { result, rerender } = renderHook(({ pid }) => useSessionLive(pid), { initialProps: { pid: 4821 } });
     act(() => { push(payload({ pid: 4821, events: 3 })); });
-    expect(result.current).toEqual({ activity: 'working', since: 1_700_000_000_000, events: 3, prompt: null, context: null });
+    expect(result.current).toEqual({ activity: 'working', since: 1_700_000_000_000, events: 3, prompt: null, context: null, mode: null });
 
     rerender({ pid: 5555 });
     expect(result.current).toBeNull();

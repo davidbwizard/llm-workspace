@@ -59,7 +59,15 @@ describe('renderer security posture', () => {
       // the call itself is shell.showItemInFolder -- asserted below.
       'session:file:open', 'session:file:probe',
       'session:image', 'session:keys',
-      'session:kill', 'session:launch', 'session:raw', 'session:reattach',
+      'session:kill', 'session:launch',
+      // The mode switcher: the renderer names a pid and a mode name and
+      // nothing else. Main resolves the provider itself, checks the mode
+      // against THAT provider's list, refuses mid-turn or with a prompt
+      // card up, reads the pane before pressing, and sends only BTab --
+      // the single constant the tmux key allowlist gained for it. See
+      // tests/main/mode.test.ts's guards and tests/main/tmux.test.ts.
+      'session:mode:set',
+      'session:raw', 'session:reattach',
       'session:resize', 'session:resume', 'session:reveal',
       // Bytes only; checked and written by src/main/staging.ts.
       'session:stage-file', 'session:stage-image',

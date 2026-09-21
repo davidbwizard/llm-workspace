@@ -67,6 +67,29 @@ describe('tmux argv construction', () => {
     expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-codex-abc:', 'Tab']);
   });
 
+  // BTab is tmux's name for Shift+Tab -- the third real caller, setModeFor
+  // (src/main/mode.ts), which is the only key either CLI moves its
+  // permission mode on (mode-switcher design §4).
+  it('sends BTab without -l, in its own call', () => {
+    const s = spy();
+    sendKeyName('llmws-claude-abc', 'BTab', s.exec);
+    expect(s.calls[0]).toEqual(['send-keys', '-t', '=llmws-claude-abc:', 'BTab']);
+  });
+
+  // The allowlist gained exactly ONE constant, and it is a constant this
+  // app chooses, never one a caller supplies. Every near-miss spelling of
+  // Shift+Tab that an IPC caller might try is still refused, which is the
+  // property that makes adding a name to the list safe where widening the
+  // function to accept caller-supplied names would not be.
+  it('allows BTab and still refuses every other spelling of Shift+Tab', () => {
+    const s = spy();
+    sendKeyName('llmws-claude-abc', 'BTab', s.exec);
+    for (const key of ['S-Tab', 'Shift-Tab', 'BTAB', 'btab', 'Backtab', 'BTab Enter']) {
+      expect(() => sendKeyName('llmws-claude-abc', key as unknown as KeyName, s.exec)).toThrow();
+    }
+    expect(s.calls).toHaveLength(1);
+  });
+
   // The `KeyName` union stops this at compile time; this test proves the
   // allowlist ALSO holds at runtime, for a caller reached through a
   // boundary (e.g. IPC) that has already widened the type back to string.
