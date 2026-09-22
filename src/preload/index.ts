@@ -96,13 +96,19 @@ const api = {
   // whatever comes back through isAbsolutePath in session:launch, same as
   // every other channel here.
   chooseDirectory: () => ipcRenderer.invoke('dialog:directory'),
-  // provider/cwd/cols/rows are the renderer's whole say in what starts --
-  // main (src/main/launch.ts) generates the tmux session name and reads the
-  // pid itself, the same "renderer names a pid or an explicit directory,
-  // main re-derives everything else" boundary every other channel here
-  // keeps.
-  launch: (provider: string, cwd: string, cols: number, rows: number) =>
-    ipcRenderer.invoke('session:launch', provider, cwd, cols, rows),
+  // provider/cwd/cols/rows/name are the renderer's whole say in what starts
+  // -- main (src/main/launch.ts) generates the tmux session name and reads
+  // the pid itself, the same "renderer names a pid or an explicit
+  // directory, main re-derives everything else" boundary every other
+  // channel here keeps.
+  //
+  // `name` is the display name the launch bar's dropdown collects, and it
+  // is passed straight through UNVALIDATED on purpose: nothing in a preload
+  // is a trust boundary (this whole bridge is callable by any renderer
+  // code), so the only check that counts is main's own, in session:launch
+  // via launchCommand. Absent means an ordinary unnamed launch.
+  launch: (provider: string, cwd: string, cols: number, rows: number, name?: string | null) =>
+    ipcRenderer.invoke('session:launch', provider, cwd, cols, rows, name ?? null),
   // pid is the only session-identifying argument -- main resolves which
   // session it is, ends it, and relaunches it under `claude --resume`
   // itself, as one call (src/main/launch.ts's reattachSession). A

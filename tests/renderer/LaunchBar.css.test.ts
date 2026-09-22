@@ -34,3 +34,34 @@ describe('LaunchBar.css: the Usage popover opens leftward, inside the window', (
     expect(rule).not.toMatch(/left:\s*0\b/);
   });
 });
+
+// The launch-options panel is the Launch split button's own dropdown. It
+// opens from the far right of the bar, so it has exactly the off-window
+// problem the Usage popover above was reported for -- pinned the same way,
+// here rather than after a second bug report.
+describe('LaunchBar.css: the launch-options panel', () => {
+  it('opens leftward, inside the window, like the Usage popover', () => {
+    const rule = blockAfter('.launchdrop {');
+    expect(rule).toMatch(/right:\s*0\b/);
+    expect(rule).not.toMatch(/left:\s*0\b/);
+    expect(rule).toMatch(/position:\s*absolute/);
+  });
+
+  it('hangs off a positioned wrapper, which is also the outside-click boundary', () => {
+    expect(blockAfter('.launchsplit {')).toMatch(/position:\s*relative/);
+  });
+
+  // .metrics on the cards has overflowed three times this week for want of
+  // exactly this: the panel is a fixed 290px and its field must scroll its
+  // own text rather than stretch. Without min-width:0 a long typed name
+  // grows the input, the panel, and the bar behind it.
+  it('keeps a long typed name inside the field instead of widening the bar', () => {
+    expect(blockAfter('.launchdrop input {')).toMatch(/min-width:\s*0\b/);
+  });
+
+  // The two halves have to read as one control, not two buttons touching.
+  it('squares the seam between the two halves of the split button', () => {
+    expect(blockAfter('.launchsplit .launchgo {')).toMatch(/border-radius:\s*6px 0 0 6px/);
+    expect(blockAfter('.launchmore {')).toMatch(/border-radius:\s*0 6px 6px 0/);
+  });
+});

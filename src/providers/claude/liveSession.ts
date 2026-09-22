@@ -54,7 +54,41 @@ export type LiveSessionFile = {
    *  procStart never rejects the file, it only leaves startTimeAgrees
    *  without its fallback. */
   procStartMs?: number | null;
+  /** The session's own display name, as Claude Code records it: what
+   *  `claude -n <name>` set at launch, or what `/rename` changed it to, or
+   *  the one Claude derived for itself ("server-new-20"). null when absent,
+   *  not a string, or blank -- a blank name is no name, never a blank card
+   *  title. Optional for the same reason statusUpdatedAtMs and waitingFor
+   *  are: every LiveSessionFile literal already in the codebase predates
+   *  this field. An unrecognised shape never rejects the file.
+   *
+   *  NOT length-capped here, matching waitingFor and cwd beside it: the
+   *  64 KB whole-file cap is this reader's bound, and the surfaces that
+   *  show a name truncate in CSS rather than this parser deciding what a
+   *  session is "really" called. */
+  name?: string | null;
+  /** Who chose `name`. `"derived"` is Claude naming itself; `"user"` is the
+   *  person, via `/rename`. Kept VERBATIM rather than narrowed to a union:
+   *  chosenName below only has to tell "derived" from everything else, and
+   *  a value this app has not seen (a future source, or `-n`'s own) must
+   *  read as a deliberate choice, not as an unrecognised one to discard.
+   *  null when absent or not a string. */
+  nameSource?: string | null;
 };
+
+/** The one rule the session card and the conversation header both follow:
+ *  a `derived` name is Claude naming itself, and the folder is the better
+ *  label for it; anything else -- a person's `/rename`, or the name this
+ *  app launched with -- is a deliberate choice and wins.
+ *
+ *  A MISSING nameSource reads as chosen, deliberately: the name is still
+ *  the session's real name, and showing it is a smaller error than hiding
+ *  a name somebody set. In practice Claude Code always writes the field
+ *  (measured 2026-09-22 across ten live session files). */
+export function chosenName(file: LiveSessionFile): string | null {
+  if (file.nameSource === 'derived') return null;
+  return file.name ?? null;
+}
 
 export type LiveSessionReadFailure =
   | 'missing' | 'missing_dir' | 'not_regular_file' | 'too_large' | 'invalid' | 'read_error';
@@ -132,8 +166,11 @@ export function parseLiveSessionFile(text: string, pid: number): LiveSessionFile
     typeof r.statusUpdatedAt === 'number' && Number.isFinite(r.statusUpdatedAt) ? r.statusUpdatedAt : null;
   const waitingFor = typeof r.waitingFor === 'string' ? r.waitingFor : null;
   const procStartMs = parseProcStart(r.procStart);
+  const name = typeof r.name === 'string' && r.name.trim() !== '' ? r.name : null;
+  const nameSource = typeof r.nameSource === 'string' ? r.nameSource : null;
   return {
     sessionId: r.sessionId, cwd: r.cwd, startedAtMs: r.startedAt, status, statusUpdatedAtMs, waitingFor, procStartMs,
+    name, nameSource,
   };
 }
 

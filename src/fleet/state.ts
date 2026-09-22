@@ -11,7 +11,7 @@ import {
   classifyMatch, applyExactMatches, rolloutSessionIds, type MatchQuality, type MatchResult, type RolloutThread,
 } from '../discovery/match.ts';
 import type { LiveProcess } from '../discovery/parse.ts';
-import type { LiveSessionStatus } from '../providers/claude/liveSession.ts';
+import { chosenName, type LiveSessionStatus } from '../providers/claude/liveSession.ts';
 
 /** Is this run reachable? (spec §9.2) */
 export type Lifecycle = 'active' | 'disconnected' | 'ended';
@@ -595,6 +595,18 @@ export interface OpenSession {
   host: LiveProcess['host'];
   cwd: string | null;
   project: string;
+  /** The session's own display name, when a PERSON chose it -- from
+   *  `claude -n` at launch or `/rename` later, read out of Claude Code's
+   *  live session file. null when the name was derived by Claude itself
+   *  (the folder is the better label then), when there is no name, and for
+   *  every Codex process, which writes no such file at all.
+   *
+   *  Same "always attributable" category as provider/ageSeconds above, NOT
+   *  enrichment: it comes from this pid's OWN live session file, so an
+   *  ambiguous transcript match never suppresses it. chosenName
+   *  (src/providers/claude/liveSession.ts) owns the derived-vs-chosen
+   *  rule, so the card and the conversation header cannot disagree. */
+  name: string | null;
   /** Seconds this process has been running. Unlike SessionState's
    *  processAgeSeconds, this is never gated on match quality -- the card
    *  IS the process, so its own age is attributable regardless of whether
@@ -701,6 +713,10 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
     host: p.host,
     cwd: p.cwd,
     project: projectName(p.cwd),
+    // From this process's own live session file, never from a matched
+    // session -- see OpenSession.name above for why that makes it
+    // attributable on an ambiguous match, unlike lastProse/events below.
+    name: p.liveSession ? chosenName(p.liveSession) : null,
     ageSeconds: p.ageSeconds ?? null,
     rssBytes: p.rssBytes ?? null,
     match: m.quality,

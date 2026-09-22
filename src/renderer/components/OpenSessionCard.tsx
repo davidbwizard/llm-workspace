@@ -399,8 +399,18 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   // NESTED controls (Close, Reattach, the compact menu) do keep it, and
   // must: those are otherwise-identical buttons repeated once per card,
   // and two open sessions can share a project name.
+  // The card's own label (session-names design). OpenSession.name is
+  // already only ever a name a PERSON chose -- fleet/state.ts drops one
+  // Claude derived for itself, because "server-new-20" is no better a
+  // label than the folder. So the rule here is simply: a chosen name wins,
+  // otherwise the folder. Deliberately REPLACES the project name rather
+  // than joining it: a second line would cost width on the compact rail
+  // card, which is the surface that can least afford it, and the full
+  // card still prints the cwd below regardless.
+  const title = state.name ?? state.project;
+
   const label = [
-    `Open ${state.project} (${providerLabel})`,
+    `Open ${title} (${providerLabel})`,
     activityWord,
     // Placed right after activityWord, before lastProse -- "there is new
     // output" is a fact about the session's state, the same category as
@@ -449,7 +459,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
             name anyway (the grid), so it's set unconditionally rather
             than threading a second "am I in the rail" prop through just
             for this. */}
-        <p className="proj display" title={state.project}>{state.project}</p>
+        <p className={`proj display${state.name === null ? '' : ' named'}`} title={title}>{title}</p>
         {!compact && <p className="path">{state.cwd ?? 'no working directory'}</p>}
       </div>
 

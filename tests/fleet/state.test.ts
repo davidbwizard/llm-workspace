@@ -531,7 +531,38 @@ describe('openSessions', () => {
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
       sessionId:null, lastProse:null, events:null, agents:null, liveAgents:null, activity:null, tmux:false, junk:false, context:null,
+      name:null,
     }]);
+  });
+
+  // The session's own name, straight from its live session file -- and
+  // only when a PERSON chose it. A name Claude derived for itself
+  // ("server-new-20") is no better a label than the folder, so the card
+  // keeps the folder. chosenName (src/providers/claude/liveSession.ts)
+  // owns that rule; this proves buildOpenSession actually applies it.
+  it('carries a session name a person chose, and ignores one Claude derived for itself', () => {
+    const chosen = openSessions([], [proc({
+      pid:8, cwd:'/repo/x', ageSeconds:5,
+      liveSession: {
+        sessionId:'exact-1', cwd:'/repo/x', startedAtMs:0, status:null,
+        name:'FLEET STUFF', nameSource:'user',
+      },
+    })]);
+    expect(chosen[0]!.name).toBe('FLEET STUFF');
+
+    const derived = openSessions([], [proc({
+      pid:9, cwd:'/repo/x', ageSeconds:5,
+      liveSession: {
+        sessionId:'exact-2', cwd:'/repo/x', startedAtMs:0, status:null,
+        name:'server-new-20', nameSource:'derived',
+      },
+    })]);
+    expect(derived[0]!.name).toBeNull();
+  });
+
+  it('has no name for a process with no live session file at all -- Codex included', () => {
+    const open = openSessions([], [proc({ pid:10, provider:'codex', cwd:'/repo/x', ageSeconds:5 })]);
+    expect(open[0]!.name).toBeNull();
   });
 
   // provider is not enrichment: it is the one field discovery already knows
@@ -1014,7 +1045,23 @@ describe('openSessionsLive', () => {
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
       sessionId:null, lastProse:null, events:null, agents:null, liveAgents:null, activity:null, tmux:false, junk:false, context:null,
+      name:null,
     }]);
+  });
+
+  // The DB-targeted builder shares buildOpenSession with openSessions
+  // above, so the name rule must hold identically here -- the two
+  // deliberately cannot drift on what a card shows.
+  it('carries a chosen session name on the DB-targeted path too', () => {
+    const db = openDb(':memory:');
+    const open = openSessionsLive(db, [proc({
+      pid:8, cwd:'/repo/x', ageSeconds:5,
+      liveSession: {
+        sessionId:'exact-1', cwd:'/repo/x', startedAtMs:0, status:null,
+        name:'FLEET STUFF', nameSource:'user',
+      },
+    })], NOW);
+    expect(open[0]!.name).toBe('FLEET STUFF');
   });
 
   it("reports provider from the process's own discovery, not from a matched session of a different provider", () => {
@@ -1708,7 +1755,7 @@ describe('compareOpenSessions', () => {
     return {
       provider:'claude', host:'unknown', cwd:'/repo/x', project:'x', ageSeconds:null, rssBytes:null,
       match:'unknown', sessionId:null, lastProse:null, events:null, activity:null, tmux:false,
-      junk:false, context:null, agents:null, liveAgents:null, ...o,
+      junk:false, context:null, agents:null, liveAgents:null, name:null, ...o,
     };
   }
 

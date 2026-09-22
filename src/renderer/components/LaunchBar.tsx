@@ -5,6 +5,13 @@ import { SettingsModal } from './SettingsModal.tsx';
 import { UsagePopover } from './UsagePopover.tsx';
 import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES, lastSegment } from '../state/favourites.ts';
 import { useChecks } from '../state/useChecks.ts';
+// Runtime values, so they come from a node-free module under src/core --
+// NOT from identity.ts beside SESSION_ID_SAFE, which imports node:crypto
+// (tests/renderer/bundle.test.ts).
+import {
+  SESSION_NAME_SAFE, SESSION_NAME_MAX, SESSION_NAME_HELP,
+  SESSION_NAME_CODEX_REASON, SESSION_NAME_PLACEHOLDER,
+} from '../../core/sessionName.ts';
 import './LaunchBar.css';
 
 // A live terminal only exists once TerminalView actually mounts, and it
@@ -62,6 +69,19 @@ export function LaunchBar({ onLaunched, disabled = false }: {
   const usageWrapRef = useRef<HTMLDivElement | null>(null);
   const usageBtnRef = useRef<HTMLButtonElement | null>(null);
 
+  // The Launch split button's own dropdown (session-names design): the main
+  // half launches exactly as it did before, unnamed and in one click; this
+  // holds the options. Same Escape/outside-click/focus-return shape as the
+  // Usage popover above and OpenSessionCard's compact menu -- non-modal,
+  // with no background scroll lock, because it is small and local.
+  const [nameOpen, setNameOpen] = useState(false);
+  const [name, setName] = useState('');
+  const nameWrapRef = useRef<HTMLSpanElement | null>(null);
+  const nameBtnRef = useRef<HTMLButtonElement | null>(null);
+  // Claude only: `codex --help` carries no launch-time name flag, so the
+  // field is disabled WITH THE REASON rather than hidden.
+  const nameable = provider === 'claude';
+
   // Favourite folders: state/favourites.ts is the one shared store
   // LaunchBar, MainPane's header star and OpenSessionCard's own menu item
   // all read and write -- adding one from the header or a card shows up
@@ -111,21 +131,74 @@ export function LaunchBar({ onLaunched, disabled = false }: {
     return () => { usageBtnRef.current?.focus(); };
   }, [usageOpen]);
 
+  // Same two effects for the launch-options dropdown, and deliberately not
+  // factored into a shared hook with the pair above: the two popovers are
+  // independent, and one closing must never close the other.
+  useEffect(() => {
+    if (!nameOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') cancelOptions(); };
+    // mousedown, not click -- see the Usage effect above for why.
+    const onDown = (e: MouseEvent) => {
+      if (!nameWrapRef.current?.contains(e.target as Node)) cancelOptions();
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('mousedown', onDown);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onDown);
+    };
+  }, [nameOpen]);
+
+  useEffect(() => {
+    if (!nameOpen) return;
+    return () => { nameBtnRef.current?.focus(); };
+  }, [nameOpen]);
+
   /** The one path anything in this component starts a session through --
    *  the Launch button (no argument, the typed/chosen folder field) AND a
    *  favourite chip (its own stored path) both call this, rather than the
    *  chip duplicating launch's own pending/error handling. Provider always
    *  comes from the `provider` state below, currently-selected either way. */
-  async function launch(targetDir?: string): Promise<void> {
+  /** Closes the launch-options dropdown and throws away whatever was typed
+   *  in it -- the ordinary "cancel discards" of any small panel, and the
+   *  reason the main Launch half can stay unnamed without ever silently
+   *  dropping a name: once this panel is shut, there is no typed name left
+   *  to drop. */
+  function cancelOptions(): void {
+    setNameOpen(false);
+    setName('');
+  }
+
+  async function launch(targetDir?: string, useName = false): Promise<void> {
     const dir = (targetDir ?? cwd).trim();
     if (blocked) { setMessage(launchable?.reason ?? 'That provider is not available right now.'); return; }
     if (dir === '') { setMessage('Choose a working directory first.'); return; }
+    // Only the dropdown's own two launch paths carry a name, and only for a
+    // provider that can take one. Trimmed first: surrounding spaces are a
+    // typing artefact, not part of the name, and trimming them is the one
+    // thing done TO the text -- everything else is accepted or refused as
+    // typed. SESSION_NAME_SAFE would reject them, and refusing "  proj  "
+    // as malformed would be pedantic rather than protective.
+    const wanted = useName && nameable ? name.trim() : '';
+    if (wanted !== '') {
+      // The same two rules main enforces (launchCommand, src/main/launch.ts),
+      // checked here for immediate feedback. This is an affordance, not the
+      // enforcement: a name that got past it is still refused at the IPC
+      // boundary, and its reason lands in `message` the same way.
+      if (wanted.length > SESSION_NAME_MAX) {
+        setMessage(`That name is too long -- keep it to ${SESSION_NAME_MAX} characters.`);
+        return;
+      }
+      if (!SESSION_NAME_SAFE.test(wanted)) { setMessage(SESSION_NAME_HELP); return; }
+    }
     setPending(true);
     setMessage(null);
     try {
-      const r = (await window.fleet?.launch(provider, dir, DEFAULT_COLS, DEFAULT_ROWS)) as LaunchResult | undefined;
+      const r = (await window.fleet?.launch(
+        provider, dir, DEFAULT_COLS, DEFAULT_ROWS, wanted === '' ? null : wanted,
+      )) as LaunchResult | undefined;
       if (!r) { setMessage('Could not reach the app.'); return; }
-      if (r.status === 'launched') { setCwd(''); onLaunched(r.pid); return; }
+      if (r.status === 'launched') { setCwd(''); cancelOptions(); onLaunched(r.pid); return; }
       setMessage(r.reason);
     } finally {
       setPending(false);
@@ -149,8 +222,12 @@ export function LaunchBar({ onLaunched, disabled = false }: {
           that cannot run is still selectable, so choosing it shows the
           reason rather than silently doing nothing -- which is the whole
           point of disabled-with-a-reason over hidden. */}
+      {/* Switching provider clears any typed name, so a name meant for
+          Claude can never be carried into a Codex launch -- and so the
+          disabled Codex field is never showing text that will be thrown
+          away anyway. */}
       <select className="launchprovider" aria-label="Provider" value={provider} disabled={disabled}
-        onChange={e => setProvider(e.target.value === 'codex' ? 'codex' : 'claude')}>
+        onChange={e => { setProvider(e.target.value === 'codex' ? 'codex' : 'claude'); setName(''); }}>
         <option value="claude">
           Claude{readiness && !readiness.launch.claude.available ? ' (unavailable)' : ''}
         </option>
@@ -183,10 +260,69 @@ export function LaunchBar({ onLaunched, disabled = false }: {
           screen sets it from App's sweep -- so the reason must be read
           optionally. Asserting it non-null here threw on the very render
           the takeover puts up. */}
-      <button type="submit" className="launchgo" disabled={pending || blocked}
-        title={blocked ? launchable?.reason ?? undefined : undefined}>
-        {pending ? 'Launching…' : 'Launch'}
-      </button>
+      {/* The split button (session-names design). The main half is the same
+          submit button it always was -- one click, unnamed, nothing new in
+          its path. The attached chevron opens the options beside it. A
+          wrapping span, not the button itself, is the positioned ancestor
+          and the outside-click boundary, same shape as .usagewrap below and
+          OpenSessionCard's .cardmenu: a click on the chevron while the
+          panel is open must not read as an outside click. */}
+      <span className="launchsplit" ref={nameWrapRef}>
+        <button type="submit" className="launchgo" disabled={pending || blocked}
+          title={blocked ? launchable?.reason ?? undefined : undefined}>
+          {pending ? 'Launching…' : 'Launch'}
+        </button>
+        {/* Chevron, not a tag or an ellipsis (David's own pick): the
+            universal split-button mark for "more ways to do this", which
+            says nothing about naming -- so a worktree or a model option can
+            join this panel later without the icon becoming a lie. */}
+        <button type="button" className="launchmore" ref={nameBtnRef} aria-label="Launch options"
+          aria-haspopup="true" aria-expanded={nameOpen} disabled={pending || blocked}
+          onClick={() => { if (nameOpen) cancelOptions(); else setNameOpen(true); }}>
+          <Icon name="chevron-down" size={11} weight="bold" />
+        </button>
+        {nameOpen && (
+          <div className="launchdrop" role="dialog" aria-label="Launch options">
+            <label className={nameable ? undefined : 'off'}>
+              Session name
+              {/* The placeholder is the kind of name Claude derives on its
+                  own, so the field explains itself without help text.
+                  Enter launches: this is not a <form> of its own (it sits
+                  inside the bar's form, and a nested form is invalid HTML),
+                  so Enter is handled here rather than by a submit. */}
+              <input type="text" value={name} disabled={!nameable || pending}
+                placeholder={nameable ? SESSION_NAME_PLACEHOLDER : 'Not available for Codex'}
+                autoFocus
+                onChange={e => setName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  void launch(undefined, true);
+                }} />
+            </label>
+            {/* Disabled WITH THE REASON, never hidden -- the same call this
+                app already makes for a missing dependency and for the mode
+                chip on a session it did not launch. Readable without
+                hovering: a tooltip explains nothing to anyone on a keyboard
+                or a screen reader. */}
+            {nameable
+              ? <small>Leave blank and Claude names it for you.</small>
+              : <small className="warn">{SESSION_NAME_CODEX_REASON}</small>}
+            <div className="launchdrop-row">
+              {/* "Launch with this name" rather than a second button called
+                  "Launch": two controls with the same accessible name in one
+                  form is ambiguous to a screen reader, and the visible word
+                  is still contained in the name, so speech input still
+                  works. */}
+              <button type="button" className="launchgo" disabled={pending || blocked}
+                aria-label="Launch with this name" onClick={() => { void launch(undefined, true); }}>
+                Launch
+              </button>
+              {nameable && <small>Enter to launch</small>}
+            </div>
+          </div>
+        )}
+      </span>
       {/* Next to the gear (usage design, Part B). A wrapping div, not the
           button itself, is the positioned ancestor and the outside-click
           boundary -- same shape as OpenSessionCard.tsx's own cardmenu, so a

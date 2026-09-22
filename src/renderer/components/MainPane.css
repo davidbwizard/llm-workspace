@@ -58,6 +58,19 @@
 .panetitle:hover:not(:disabled) { color:var(--ink); text-decoration:underline;
   text-underline-offset:3px; }
 .panetitle:disabled { cursor:default; }
+/* The session's own name, when a person chose one (session-names design).
+   Sits beside .panetitle rather than replacing it, in the display face so
+   it reads as a name and not as another path.
+
+   It is the second element in this row allowed to shrink (.panetitle is
+   the other), and it is capped: a session name is free text up to
+   SESSION_NAME_MAX (src/core/sessionName.ts), and without a cap a long one
+   would eat the folder path -- which is the thing this header exists to
+   carry -- before giving any width back itself. max-width in ch, so the cap
+   tracks the font rather than a guessed pixel count. */
+.panename { font-family:var(--f-display); font-weight:600; font-size:12px; color:var(--ink);
+  flex:0 1 auto; min-width:0; max-width:22ch;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .paneback { background:none; border:0; color:var(--muted); font-size:11px; cursor:pointer; flex:none; }
 .seg { flex:none; margin-left:auto; display:inline-flex; border:1px solid var(--line);
   border-radius:6px; overflow:hidden; }

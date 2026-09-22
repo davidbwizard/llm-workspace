@@ -178,6 +178,35 @@ describe('MainPane', () => {
     expect(fileOpen).toHaveBeenCalledWith(1, '/a', true);
   });
 
+  // The session's own name (session-names design). OpenSession.name is
+  // already filtered to names a PERSON chose, so the header's job is just
+  // to show it -- beside the folder path, never instead of it: the path is
+  // the one thing the rail cannot fit, and it is what this header exists
+  // to carry (spec §3.7).
+  describe('a session the person named', () => {
+    const named = [{ ...(sessions[0] as unknown as object), name: 'FLEET STUFF' }] as never[];
+
+    it('shows the chosen name in the conversation header', () => {
+      const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={named} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      expect(container.querySelector('.panename')!.textContent).toBe('FLEET STUFF');
+    });
+
+    it('keeps the folder path beside it, which is what this header is for', () => {
+      const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={named} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      expect(container.querySelector('.panetitle')!.textContent).toBe('/a');
+    });
+
+    it('renders nothing at all when the session has no chosen name', () => {
+      const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      expect(container.querySelector('.panename')).toBeNull();
+    });
+
+    it('keeps the full name reachable on hover, since the header truncates', () => {
+      const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={named} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+      expect(container.querySelector('.panename')!.getAttribute('title')).toBe('FLEET STUFF');
+    });
+  });
+
   // Nothing to reveal is a disabled control, not a button that looks live
   // and does nothing -- the failure mode this app keeps running into.
   it('disables the header path when the session has no folder', () => {

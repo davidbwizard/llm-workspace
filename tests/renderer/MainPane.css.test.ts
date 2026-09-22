@@ -45,3 +45,23 @@ describe('MainPane.css: only the header path shrinks', () => {
     expect(blockAfter('.panehead .ctxchip {')).toMatch(/flex:\s*none\b/);
   });
 });
+
+// A session name is free text up to SESSION_NAME_MAX. The header's whole
+// job is carrying the folder path the rail cannot fit (spec §3.7), so a
+// long name must give way rather than crowd it out. jsdom computes no
+// layout, so the stylesheet is the only place this can be pinned.
+describe('MainPane.css: a long session name never crowds out the folder path', () => {
+  const rule = blockAfter('.panename {');
+
+  it('truncates instead of pushing the row wider', () => {
+    expect(rule).toMatch(/overflow:\s*hidden\b/);
+    expect(rule).toMatch(/text-overflow:\s*ellipsis\b/);
+    expect(rule).toMatch(/white-space:\s*nowrap\b/);
+  });
+
+  it('is allowed to shrink, and is capped so it cannot eat the path', () => {
+    expect(rule).toMatch(/min-width:\s*0\b/);
+    expect(rule).toMatch(/max-width:\s*\d/);
+    expect(rule).not.toMatch(/flex:\s*none\b/);
+  });
+});

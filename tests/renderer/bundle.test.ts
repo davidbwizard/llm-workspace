@@ -94,4 +94,14 @@ describe('the renderer bundle stays free of main-process modules', () => {
     const src = readFileSync('src/core/install.ts', 'utf8');
     expect(src).not.toMatch(/from\s+['"]node:/);
   });
+
+  // The session-name rules exist as their own module for exactly this
+  // reason: LaunchBar needs SESSION_NAME_SAFE as a runtime value, and the
+  // obvious home for it -- identity.ts, beside SESSION_ID_SAFE -- imports
+  // node:crypto. Folding these constants back in there would break the
+  // renderer build and nothing else would say so.
+  it('keeps src/core/sessionName.ts free of node imports', () => {
+    const src = readFileSync('src/core/sessionName.ts', 'utf8');
+    expect(src).not.toMatch(/from\s+['"]node:/);
+  });
 });

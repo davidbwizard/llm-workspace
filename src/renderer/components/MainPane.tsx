@@ -249,6 +249,18 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
       <section className="pane">
         <header className="panehead">
           <button type="button" className="paneback" onClick={onClear}>All sessions</button>
+          {/* The session's own name (session-names design), when a PERSON
+              chose it -- fleet/state.ts has already dropped one Claude
+              derived for itself. BESIDE the folder path, not instead of
+              it: the path is the one thing the rail cannot fit, and
+              carrying it is why this header exists (spec §3.7).
+              `title` keeps the untruncated name reachable on hover once
+              MainPane.css's ellipsis bites; not a button, because unlike
+              the path there is nothing to click a name for (renaming from
+              the app is a separate job). */}
+          {session?.name != null && (
+            <span className="panename" title={session.name}>{session.name}</span>
+          )}
           {/* The rail already names the project, so this carries the thing
               the rail cannot fit: the session's full working directory
               (spec §3.7). `title` keeps the untruncated, un-abbreviated
