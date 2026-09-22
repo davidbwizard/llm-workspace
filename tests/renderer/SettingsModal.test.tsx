@@ -169,6 +169,18 @@ describe('SettingsModal', () => {
     });
   });
 
+  it('offers a control for grouping sessions by folder', () => {
+    render(<SettingsModal open={true} onClose={() => {}} />);
+    const control = screen.getByRole('checkbox', { name: /group sessions by folder/i });
+    expect((control as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('writes the setting when toggled off', () => {
+    render(<SettingsModal open={true} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: /group sessions by folder/i }));
+    expect(getSettings().groupSessions).toBe('off');
+  });
+
   // Design §4/§9: a switch (not a segmented control) that reads and writes
   // the app's real hooks state through window.fleet.hooksGet/hooksSet,
   // re-reading fresh every time the modal opens.

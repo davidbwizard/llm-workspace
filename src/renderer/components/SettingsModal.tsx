@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import {
-  APPEARANCES, COMPACT_CARDS, DEFAULT_SETTINGS, MESSAGE_STYLES, TEXT_SIZES, setSettings, useSettings,
-  type Appearance, type CompactCards, type MessageStyle, type TextSize,
+  APPEARANCES, COMPACT_CARDS, DEFAULT_SETTINGS, MESSAGE_STYLES, TEXT_SIZES, GROUP_SESSIONS, setSettings, useSettings,
+  type Appearance, type CompactCards, type MessageStyle, type TextSize, type GroupSessions,
 } from '../state/settings.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { DependencyChecks, CheckAgain } from './DependencyChecks.tsx';
@@ -371,6 +371,16 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               onChange={compactCards => setSettings({ compactCards })}
             />
             <p className="settingshelp">{COMPACT_HELP}</p>
+          </div>
+          <div className="settingsfield">
+            <label className="setrow">
+              <input
+                type="checkbox"
+                checked={settings.groupSessions === 'on'}
+                onChange={e => setSettings({ groupSessions: e.target.checked ? 'on' : 'off' })}
+              />
+              <span>Group sessions by folder</span>
+            </label>
           </div>
         </section>
 
