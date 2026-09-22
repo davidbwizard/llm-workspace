@@ -342,6 +342,149 @@ describe('ancestry filtering (session vs. helper subprocess)', () => {
   });
 });
 
+// The npm-install bug, confirmed on the first outside user's machine
+// (2026-09-22). His Codex came from npm, so every session's process is
+// called `node` and the executable-name match never found it: sessions
+// worked while the app stayed open, then could not be typed into after a
+// restart, because the pid->tmux map is rebuilt from tmux on restart and
+// discovery had no matching process to meet it. His own tmux panes:
+//
+//   llmws-codex-021c073b 99310  99310 node
+//   llmws-codex-78dc464b  4612   4612 node
+//   llmws-codex-a6edb3e1 63054  63054 node
+//
+// The per-argv precision rules are pinned in tests/discovery/parse.test.ts
+// (nodeHostedProvider); these pin the sweep that uses them.
+describe('node-hosted provider CLIs (an npm install, not a Homebrew cask)', () => {
+  it("finds the outside user's three npm-installed Codex sessions, all of them called node", async () => {
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '99310 node\n4612 node\n63054 node\n',
+      'ps -axo pid=,args=':
+        '99310 node /Users/u/.nvm/versions/node/v22.13.0/bin/codex\n'
+        + '4612 node /Users/u/.nvm/versions/node/v22.13.0/bin/codex\n'
+        + '63054 node /Users/u/.nvm/versions/node/v22.13.0/bin/codex\n',
+      'ps -o ppid=,comm= -p 99310': '1 node\n',
+      'ps -o ppid=,comm= -p 4612': '1 node\n',
+      'ps -o ppid=,comm= -p 63054': '1 node\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(procs.map(p => p.pid).sort((a, b) => a - b)).toEqual([4612, 63054, 99310]);
+    expect(procs.every(p => p.provider === 'codex')).toBe(true);
+  });
+
+  it('finds a Homebrew-cask install and an npm install side by side in one sweep', async () => {
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '100 claude\n200 node\n',
+      'ps -axo pid=,args=': '100 claude\n200 node /usr/local/bin/codex\n',
+      'ps -o ppid=,comm= -p 100': '1 zsh\n',
+      'ps -o ppid=,comm= -p 200': '1 zsh\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(procs.map(p => ({ pid: p.pid, provider: p.provider })).sort((a, b) => a.pid - b.pid))
+      .toEqual([{ pid: 100, provider: 'claude' }, { pid: 200, provider: 'codex' }]);
+  });
+
+  // The false-positive set, all present on the dev machine at once. Showing
+  // any of these as a live agent session is worse than missing a real one:
+  // the app would offer to type into it.
+  it('reports none of the unrelated Node processes running beside the real session', async () => {
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '100 node\n201 node\n202 node\n203 node\n204 node\n205 Electron\n206 node\n',
+      'ps -axo pid=,args=':
+        '100 node /usr/local/bin/claude\n'
+        + '201 node server.js\n'
+        + '202 node /Users/u/Documents/educational-farm/node_modules/.bin/vite preview --host 127.0.0.1 --port 4176\n'
+        + '203 node /Users/u/Documents/trello-mcp-enhanced/build/index.js\n'
+        + '204 /Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node /Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/@oai/cua-repl/bin/cua-repl\n'
+        // This app itself, both the way it runs packaged and the way it runs
+        // in development.
+        + '205 /Users/u/Documents/llm-workspace/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /Users/u/Documents/llm-workspace\n'
+        + '206 node /Users/u/Documents/llm-workspace/node_modules/.bin/electron .\n',
+      'ps -o ppid=,comm= -p 100': '1 zsh\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(procs.map(p => p.pid)).toEqual([100]);
+  });
+
+  // The ancestry rule (above) is what tells a session from a helper it
+  // spawned. A node-hosted match must take part in that rule, on both sides.
+  it("drops a node-hosted session's own node-hosted helper, keeping only the session", async () => {
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '100 node\n101 node\n',
+      'ps -axo pid=,args=':
+        '100 node /usr/local/bin/codex\n'
+        + '101 node /usr/local/bin/codex --app-server\n',
+      'ps -o ppid=,comm= -p 100': '99 node\n',
+      'ps -o ppid=,comm= -p 99': '1 zsh\n',
+      // 101 reaches 100 through an unmatched intermediate, as the real
+      // machine's helper tree does.
+      'ps -o ppid=,comm= -p 101': '150 node\n',
+      'ps -o ppid=,comm= -p 150': '100 node_repl\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(procs.map(p => p.pid)).toEqual([100]);
+  });
+
+  it("never matches a node-hosted session's ordinary node children, so they need no ancestry rule at all", async () => {
+    // An MCP server the session spawned. It is `node`, it is a child, and it
+    // must simply never enter the matched set.
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '100 node\n101 node\n',
+      'ps -axo pid=,args=':
+        '100 node /usr/local/bin/claude\n'
+        + '101 node /Users/u/Documents/trello-mcp-enhanced/build/index.js\n',
+      'ps -o ppid=,comm= -p 100': '1 zsh\n',
+      'ps -o ppid=,comm= -p 101': '100 node\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(procs.map(p => p.pid)).toEqual([100]);
+  });
+
+  it('a node-hosted session is itself an ancestor the rule honours, dropping a cask helper beneath it', async () => {
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '100 node\n101 codex\n',
+      'ps -axo pid=,args=': '100 node /usr/local/bin/codex\n101 codex\n',
+      'ps -o ppid=,comm= -p 100': '1 zsh\n',
+      'ps -o ppid=,comm= -p 101': '100 node\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(procs.map(p => p.pid)).toEqual([100]);
+  });
+
+  it('falls back to executable-name matching alone when the argv listing fails (ps missing, timed out, or over maxBuffer)', async () => {
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '100 claude\n200 node\n',
+      // 'ps -axo pid=,args=' deliberately absent -- exec's fail-soft ''.
+      'ps -o ppid=,comm= -p 100': '1 zsh\n',
+    });
+
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(procs.map(p => p.pid)).toEqual([100]);
+  });
+
+  it('reads the argv listing once for the whole machine, never once per pid', async () => {
+    const calls: string[][] = [];
+    const exec: ExecFn = async (bin, args) => {
+      calls.push([bin, ...args]);
+      if (bin === 'ps' && args.join(' ') === '-axo pid=,comm=') return '100 node\n101 node\n';
+      if (bin === 'ps' && args.join(' ') === '-axo pid=,args=') {
+        return '100 node /usr/local/bin/claude\n101 node server.js\n';
+      }
+      return '';
+    };
+
+    await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(calls.filter(c => c.join(' ') === 'ps -axo pid=,args=')).toHaveLength(1);
+    expect(calls.some(c => c.includes('args=') && c.includes('-p'))).toBe(false);
+  });
+});
+
 // The module-scope cache (getCachedLiveProcesses/refreshLiveProcesses) is
 // reset between these tests via vi.resetModules() + a fresh dynamic import,
 // since it is shared, mutable state across the whole test file otherwise.
@@ -466,10 +609,13 @@ describe('refreshLiveProcesses — in-flight sweep guard', () => {
     vi.resetModules();
     const mod = await import('../../src/discovery/live.ts');
 
-    let resolveList: ((v: string) => void) | undefined;
+    // A sweep opens with more than one `-axo` listing (executable names and
+    // argv, concurrently), so every one of them has to be released -- holding
+    // a single resolver would just hang the sweep it is meant to join.
+    const resolvers: Array<(v: string) => void> = [];
     const exec: ExecFn = async (bin, args) => {
       if (bin === 'ps' && args[0] === '-axo') {
-        return new Promise<string>(resolve => { resolveList = resolve; });
+        return new Promise<string>(resolve => { resolvers.push(resolve); });
       }
       return '';
     };
@@ -478,7 +624,8 @@ describe('refreshLiveProcesses — in-flight sweep guard', () => {
     await new Promise(resolve => setImmediate(resolve));
     const second = mod.refreshLiveProcesses(exec, NO_SESSION_FILE);
 
-    resolveList!('100 claude\n');
+    expect(resolvers.length).toBeGreaterThan(0);
+    resolvers.forEach(resolve => resolve('100 claude\n'));
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult).toEqual(secondResult);
     expect(firstResult.map(p => p.pid)).toEqual([100]);

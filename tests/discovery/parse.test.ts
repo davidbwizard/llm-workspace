@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   parseProcessList, parseTty, parseLsofCwd, parseEtime, parseRss, classifyHost, parseLsofNames,
+  nodeHostedProvider,
 } from '../../src/discovery/parse.ts';
 
 describe('parseProcessList', () => {
@@ -122,5 +123,121 @@ describe('parseLsofNames', () => {
   it('returns nothing for empty or garbage output', () => {
     expect(parseLsofNames('', new Set([1]))).toEqual(new Map());
     expect(parseLsofNames('lsof: WARNING\n<html>\npnot-a-pid\nn/x\n', new Set([1]))).toEqual(new Map());
+  });
+});
+
+// The npm-install bug (2026-09-22, found on the first outside user's
+// machine): an npm-installed provider CLI is a JavaScript entry point with a
+// `#!/usr/bin/env node` shebang, so the kernel runs NODE and the process's
+// comm is `node`. Matching on comm alone never found it, and that user's
+// sessions became untypeable after every app restart.
+//
+// Every fixture below is a real argv shape, captured 2026-09-22 with
+// `ps -axo pid=,args=` (43 node processes on the dev machine). The
+// false-positive cases are as load-bearing as the matches: reporting an
+// unrelated Node process as a live agent session means the app would offer
+// to type into it.
+describe('nodeHostedProvider', () => {
+  describe('matches a node-hosted provider CLI', () => {
+    it('matches the npm global bin entry, the shape an npm install produces', () => {
+      expect(nodeHostedProvider('node /Users/u/.nvm/versions/node/v22.13.0/bin/claude')).toBe('claude');
+      expect(nodeHostedProvider('node /usr/local/bin/codex')).toBe('codex');
+    });
+
+    it('matches when argv[0] is a full path to node rather than the bare name', () => {
+      expect(nodeHostedProvider('/Users/u/.nvm/versions/node/v20.20.2/bin/node /opt/homebrew/bin/claude'))
+        .toBe('claude');
+    });
+
+    it('matches through a prefix with no /bin/ segment (pnpm, bun and volta global dirs vary)', () => {
+      expect(nodeHostedProvider('node /Users/u/Library/pnpm/codex')).toBe('codex');
+    });
+
+    it('matches the package entry point run directly, by its node_modules scope and name', () => {
+      expect(nodeHostedProvider('node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js'))
+        .toBe('claude');
+      expect(nodeHostedProvider('node /Users/u/.npm-global/lib/node_modules/@openai/codex/bin/codex.js'))
+        .toBe('codex');
+    });
+
+    it('skips node option flags to find the script', () => {
+      expect(nodeHostedProvider('node --enable-source-maps --max-old-space-size=8192 /usr/local/bin/claude'))
+        .toBe('claude');
+      expect(nodeHostedProvider('node --experimental-vm-modules /usr/local/bin/codex')).toBe('codex');
+    });
+
+    it('keeps the match when the CLI has arguments of its own', () => {
+      expect(nodeHostedProvider('node /usr/local/bin/claude --resume abc-123')).toBe('claude');
+      expect(nodeHostedProvider('node /usr/local/bin/codex resume --last')).toBe('codex');
+    });
+  });
+
+  // Each of these is a real process class that was running on the dev machine
+  // while this was written. A match here is a live agent session the app
+  // would offer to type into.
+  describe('does not match an unrelated Node process', () => {
+    it('does not match a plain node server', () => {
+      expect(nodeHostedProvider('node server.js')).toBeNull();
+      expect(nodeHostedProvider('node /Users/u/Documents/claude-sessions-viewer/src/server/index.js')).toBeNull();
+    });
+
+    it('does not match a Vite dev server or preview server', () => {
+      expect(nodeHostedProvider('node /Users/u/Documents/educational-farm/node_modules/.bin/vite preview --host 127.0.0.1 --port 4176'))
+        .toBeNull();
+      expect(nodeHostedProvider('node /Users/u/Documents/cocoa-grid/node_modules/.bin/vite')).toBeNull();
+    });
+
+    it('does not match an Electron main process, nor this app itself', () => {
+      // Electron's comm is never `node`, so live.ts would not even ask --
+      // but the argv is rejected on its own merits too.
+      expect(nodeHostedProvider('/Users/u/Documents/llm-workspace/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /Users/u/Documents/llm-workspace'))
+        .toBeNull();
+      expect(nodeHostedProvider('node /Users/u/Documents/llm-workspace/node_modules/.bin/electron .')).toBeNull();
+    });
+
+    it('does not match an MCP server or another node_modules tool, including OpenAI\'s own node-hosted ones', () => {
+      expect(nodeHostedProvider('node /Users/u/Documents/trello-mcp-enhanced/build/index.js')).toBeNull();
+      // ChatGPT.app ships its own node and runs a scoped package under it.
+      // `@oai/cua-repl` is not `@openai/codex`, and `cua-repl` is not `codex`.
+      expect(nodeHostedProvider('/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node /Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/@oai/cua-repl/bin/cua-repl'))
+        .toBeNull();
+    });
+
+    it('does not match node with no script at all', () => {
+      expect(nodeHostedProvider('node')).toBeNull();
+      expect(nodeHostedProvider('')).toBeNull();
+      expect(nodeHostedProvider('node --version')).toBeNull();
+    });
+
+    it('bails out on eval and check modes rather than reading the code as a path', () => {
+      expect(nodeHostedProvider('node -e /usr/local/bin/claude')).toBeNull();
+      expect(nodeHostedProvider('node --eval /usr/local/bin/codex')).toBeNull();
+      expect(nodeHostedProvider('node -p /usr/local/bin/claude')).toBeNull();
+      expect(nodeHostedProvider('node --check /usr/local/bin/claude')).toBeNull();
+      expect(nodeHostedProvider('node --input-type=module -e /usr/local/bin/claude')).toBeNull();
+    });
+
+    // Deliberate: reach traded for precision. A relative path cannot be
+    // resolved from a process listing (it is relative to THAT process's cwd,
+    // not ours), and an installed CLI's path is always absolute.
+    it('does not match a relative script path, even one named exactly like a provider', () => {
+      expect(nodeHostedProvider('node ./claude')).toBeNull();
+      expect(nodeHostedProvider('node bin/codex')).toBeNull();
+      expect(nodeHostedProvider('node scripts/playtest-game.mjs --game dig-or-dash')).toBeNull();
+    });
+
+    // Deliberate: a project file named claude.js is far likelier than an
+    // executable named exactly `claude`, so only the extensionless name --
+    // which is what an npm bin entry is -- counts.
+    it('does not match a same-named script with a file extension', () => {
+      expect(nodeHostedProvider('node /Users/u/Documents/my-app/claude.js')).toBeNull();
+      expect(nodeHostedProvider('node /Users/u/Documents/my-app/src/codex.mjs')).toBeNull();
+    });
+
+    it('does not match a lookalike scope or package directory', () => {
+      expect(nodeHostedProvider('node /usr/local/lib/node_modules/@anthropic-ai/sdk/bin/run.js')).toBeNull();
+      expect(nodeHostedProvider('node /usr/local/lib/node_modules/@openai/agents/bin/run.js')).toBeNull();
+      expect(nodeHostedProvider('node /Users/u/claude-code/cli.js')).toBeNull();
+    });
   });
 });
