@@ -206,9 +206,13 @@ describe('pruning assignments against the live sessions', () => {
 
   it('does not write when every assignment is already live', () => {
     assignCategory('s1', 'Fleet');
-    const before = localStorage.getItem(GROUPS_STORAGE_KEY);
+    // A before/after string comparison would pass even without the guard --
+    // the reconstructed object is content-identical either way. A spy on
+    // the write itself is what actually proves the early return fires.
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
     pruneAssignments(['s1']);
-    expect(localStorage.getItem(GROUPS_STORAGE_KEY)).toBe(before);
+    expect(setItem).not.toHaveBeenCalled();
+    setItem.mockRestore();
   });
 });
 
@@ -262,9 +266,13 @@ describe('row order', () => {
 
   it('does not write when nothing is added and nothing is dropped', () => {
     rememberKeys(['/a']);
-    const before = localStorage.getItem(GROUPS_STORAGE_KEY);
+    // Same reasoning as pruneAssignments' own no-write test just above:
+    // a string comparison can't tell a skipped write from an identical one,
+    // so this spies on the write itself.
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
     rememberKeys(['/a']);
-    expect(localStorage.getItem(GROUPS_STORAGE_KEY)).toBe(before);
+    expect(setItem).not.toHaveBeenCalled();
+    setItem.mockRestore();
   });
 });
 
