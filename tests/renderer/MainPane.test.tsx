@@ -162,6 +162,30 @@ describe('MainPane', () => {
     expect(title.getAttribute('title')).toBe('/Users/davidbrabbins/Documents/David/llm-workspace');
   });
 
+  // David, 2026-09-22: clicking the header path should show the folder in
+  // Finder. It goes through the same fileOpen channel the conversation's
+  // path links use, with reveal forced, so main re-validates the candidate
+  // -- the renderer never names a root and never reaches the OS itself.
+  it('reveals the session folder in Finder when the header path is clicked', async () => {
+    const fileOpen = vi.fn().mockResolvedValue({ ok: true, action: 'reveal' });
+    (window as unknown as { fleet: Record<string, unknown> }).fleet.fileOpen = fileOpen;
+    const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    const title = container.querySelector('.panetitle') as HTMLButtonElement;
+    expect(title.tagName).toBe('BUTTON');
+    fireEvent.click(title);
+    // The UNABBREVIATED path, and reveal forced: an abbreviated "~/..." is
+    // for reading, and main would refuse it.
+    expect(fileOpen).toHaveBeenCalledWith(1, '/a', true);
+  });
+
+  // Nothing to reveal is a disabled control, not a button that looks live
+  // and does nothing -- the failure mode this app keeps running into.
+  it('disables the header path when the session has no folder', () => {
+    const noCwd = [{ ...(sessions[0] as unknown as object), cwd: null }] as never[];
+    const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={noCwd} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
+    expect((container.querySelector('.panetitle') as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('hands the conversation the session provider, so the agent glyph is that session\'s own', () => {
     const codex = [{ ...(sessions[0] as unknown as object), provider: 'codex' }] as never[];
     (window as unknown as { fleet: { conversation: ReturnType<typeof vi.fn> } }).fleet.conversation =

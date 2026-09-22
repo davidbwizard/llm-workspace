@@ -255,9 +255,34 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
               value reachable on hover and to assistive tech once the CSS
               ellipsis bites -- only the VISIBLE text is shortened, with
               abbreviateHome's own "~" and the CSS start-truncation below. */}
-          <span className="panetitle" title={session?.cwd ?? undefined}>
+          {/* Clicking it reveals the folder in Finder (David, 2026-09-22).
+              It goes through the same `fileOpen` channel the conversation's
+              path links use, with reveal forced -- so main re-validates the
+              candidate and it is still shell.showItemInFolder, never
+              openPath. A button rather than a span so it is tabbable and
+              announced as a control; when there is no cwd there is nothing
+              to reveal, and it is disabled rather than silently inert. */}
+          <button type="button" className="panetitle" title={session?.cwd ?? undefined}
+            disabled={!session?.cwd}
+            aria-label={session?.cwd ? `Show ${session.cwd} in Finder` : undefined}
+            onClick={() => {
+              // `cwd` is `string | null`, so a falsy check, not a null one:
+              // a session the app has not resolved a folder for has nothing
+              // to reveal, which is the same case the button is disabled for.
+              const cwd = session?.cwd;
+              if (!cwd || selection.pid === null) return;
+              // Optional-chained like FilePath's own call: the bridge is
+              // absent under test and in a preload that failed to load.
+              const answer = window.fleet?.fileOpen?.(selection.pid, cwd, true);
+              // Never a silent no-op: a refusal is logged with its reason
+              // rather than leaving a click that appears to do nothing.
+              void answer?.then(
+                r => { if (!r.ok) console.error('revealing the session folder was refused:', r.reason); },
+                (err: unknown) => console.error('revealing the session folder failed:', err),
+              );
+            }}>
             {session?.cwd ? abbreviateHome(session.cwd) : 'session'}
-          </span>
+          </button>
           {/* Favourite folders: the same star as LaunchBar's, on the same
               shared store (state/favourites.ts) -- adding or removing here
               shows up as a chip under the launch bar with no reload. `flex:

@@ -45,9 +45,19 @@
    (LTR) content rather than inheriting rtl from the box, so the slash-
    delimited segments are never visually reordered -- only where the
    ellipsis lands changes. */
+/* A button since 2026-09-22 (it reveals the folder in Finder), so the
+   button defaults are reset back to the span it used to be -- the layout
+   rules below are unchanged. The affordance is the hover, not a permanent
+   underline: this line is read far more often than it is clicked, and
+   underlining a path that is already ellipsised adds noise to the one
+   element in this row that has to stay legible. */
 .panetitle { font-family:var(--f-mono); font-size:11px; color:var(--muted);
+  background:none; border:0; padding:0; text-align:left; cursor:pointer;
   flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-  direction:rtl; text-align:left; unicode-bidi:plaintext; }
+  direction:rtl; unicode-bidi:plaintext; }
+.panetitle:hover:not(:disabled) { color:var(--ink); text-decoration:underline;
+  text-underline-offset:3px; }
+.panetitle:disabled { cursor:default; }
 .paneback { background:none; border:0; color:var(--muted); font-size:11px; cursor:pointer; flex:none; }
 .seg { flex:none; margin-left:auto; display:inline-flex; border:1px solid var(--line);
   border-radius:6px; overflow:hidden; }
