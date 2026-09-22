@@ -297,3 +297,21 @@
 .turn-chip img { display:block; width:40px; height:30px; object-fit:cover; border-radius:5px; }
 .turn-chip svg { display:block; flex:none; width:22px; height:22px; margin:4px 9px; color:var(--muted); }
 .turn-chip span { font-size:12px; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+/* A path inside a fenced code block. The block is still one run of text for
+   selection and for the Copy button (which reads textContent, so these
+   contribute their own characters and the copy stays verbatim) -- these
+   rules are what keep that true: the button must not become a block, must
+   not add or trim whitespace, and must let a drag select straight through
+   it. Only the underline says it is clickable. */
+pre .fp {
+  all: unset;
+  user-select: text;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--faint);
+}
+
+pre .fp:hover { text-decoration-color: var(--accent); color: var(--accent); }
