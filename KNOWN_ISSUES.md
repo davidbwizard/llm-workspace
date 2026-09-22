@@ -278,3 +278,31 @@ none of those windows covers the failure, so this neither confirms nor kills it.
 Worth a look if it recurs: log the captured pane text on `unconfirmed` so the
 next occurrence carries its own evidence, and tell the person the click was
 refused rather than letting it look inert.
+
+## A `!` bash-mode command sticks in the conversation forever (2026-09-21)
+
+Send `! open .` from the app and the message never resolves: it sits in the
+conversation labelled "Not seen by Claude", indefinitely.
+
+**Root cause, confirmed against the transcript.** Claude Code records bash mode
+as `<bash-input> open .</bash-input>` -- the `!` stripped, the text wrapped.
+`NON_HUMAN_PREFIXES` in `src/providers/claude/parse.ts` lists `<bash-input>`
+alongside `<bash-stdout>` and `<bash-stderr>`, so `isHumanPrompt` returns false
+and the record never becomes a user turn. The pending matcher looks for a user
+turn containing the sent text, never finds one, and the entry sticks.
+
+The classification is wrong for that one entry. stdout and stderr genuinely are
+not human -- they are output. `<bash-input>` is the exact characters the person
+typed. It was grouped with its own output by name rather than by nature.
+
+**Slash commands are NOT affected.** `<command-name>` is deliberately absent
+from that list and `store/conversation.ts` unwraps it for display, which is the
+precedent the fix should follow.
+
+**Fix:** treat `<bash-input>` as human and unwrap it for display, as
+`<command-name>` already is. Keep `<bash-stdout>` / `<bash-stderr>` non-human.
+Consequence to weigh first: bash-mode commands would then appear in the
+conversation view, where today they are invisible. That is arguably correct --
+the person typed them -- but it is a visible change and David has not ruled on
+it. A narrower fix that only resolves the pending entry would leave the message
+vanishing rather than showing as sent, which is its own oddity.
