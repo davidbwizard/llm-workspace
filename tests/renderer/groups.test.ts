@@ -3,7 +3,7 @@ import {
   GROUPS_STORAGE_KEY, MAX_CATEGORY_LENGTH, MAX_CATEGORIES, DEFAULT_GROUPS, normalizeGroups,
   getGroups, categoryNames, categoryOfSession, assignCategory, renameCategory, deleteCategory,
   categoryInUse, pruneAssignments, isStackOpen, toggleStack, orderIndex, rememberKeys, moveRow,
-  subscribeGroups, reloadGroups,
+  subscribeGroups, reloadGroups, categoryForRow,
 } from '../../src/renderer/state/groups.ts';
 
 // A module-scoped singleton, the same shape settings.ts and favourites.ts
@@ -103,6 +103,24 @@ describe('category names and assignments', () => {
     reloadGroups();
     expect(categoryOfSession('s1')).toBe('Fleet');
     expect(categoryNames()).toEqual(['Fleet']);
+  });
+
+  it('reports the row category of an assigned session', () => {
+    assignCategory('s1', 'Fleet');
+    expect(categoryForRow({ pid: 1, sessionId: 's1' })).toBe('Fleet');
+  });
+
+  it('reports none for a session that has no id to be assigned by', () => {
+    expect(categoryForRow({ pid: 1, sessionId: null })).toBeNull();
+  });
+
+  // Sharing a folder is not a barrier: applyExactMatches gives each pid its
+  // own session id from its live session file, so each files separately.
+  it('keeps two sessions in one folder on their own categories', () => {
+    assignCategory('s1', 'Review');
+    assignCategory('s2', 'Shipping');
+    expect(categoryForRow({ pid: 101, sessionId: 's1' })).toBe('Review');
+    expect(categoryForRow({ pid: 102, sessionId: 's2' })).toBe('Shipping');
   });
 });
 

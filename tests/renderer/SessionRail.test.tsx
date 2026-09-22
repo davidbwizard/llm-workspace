@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SessionRail } from '../../src/renderer/components/SessionRail.tsx';
 import { setSettings, reloadSettings } from '../../src/renderer/state/settings.ts';
-import { reloadGroups } from '../../src/renderer/state/groups.ts';
+import { reloadGroups, assignCategory, categoryOfSession } from '../../src/renderer/state/groups.ts';
 
 // @testing-library/user-event is not a dependency of this project (every
 // other renderer test file drives interaction through fireEvent, and
@@ -600,6 +600,52 @@ describe('SessionRail', () => {
           onReattach={noopReattach} onResume={noopResume} side="left" />,
       );
       expect(namesOf()).toEqual(before);
+    });
+
+    it('heads a categorised session with its category name', () => {
+      assignCategory('s1', 'Fleet');
+      renderRail();
+      expect(screen.getByRole('heading', { name: 'Fleet' })).toBeTruthy();
+    });
+
+    it('gives uncategorised rows no header at all, not an Other bucket', () => {
+      renderRail();
+      expect(screen.queryByRole('heading', { name: /other/i })).toBeNull();
+    });
+
+    it('pulls the categorised session out, leaving its folder-mate as a plain card', () => {
+      // Full cards, not compact: the Close button this asserts on lives
+      // behind the compact card's "..." menu (OpenSessionCard.tsx,
+      // `phase === 'idle' && !compact`), so no "Close, pid N" label exists
+      // under the default compact setting -- same reasoning as "does not
+      // group when the setting is off" above (deviation from the brief,
+      // which omitted this override).
+      setSettings({ compactCards: 'fleet' });
+      assignCategory('s1', 'Fleet');
+      renderRail();
+      expect(screen.queryByText(/\d+ sessions/)).toBeNull();
+      expect(screen.getByLabelText(/Close, pid 1/)).toBeTruthy();
+      expect(screen.getByLabelText(/Close, pid 2/)).toBeTruthy();
+    });
+
+    // The setting is folder stacking only. A category David set must not
+    // disappear because he turned stacking off.
+    it('still heads a categorised session when stacking is off', () => {
+      assignCategory('s1', 'Fleet');
+      setSettings({ groupSessions: 'off' });
+      renderRail();
+      expect(screen.getByRole('heading', { name: 'Fleet' })).toBeTruthy();
+      expect(screen.queryByText('2 sessions')).toBeNull();
+    });
+
+    // An assignment for a session that is not in the fleet is not the rail's
+    // problem to clean up (Task 8 prunes it on the fleet push) -- but it must
+    // never PAINT anything, because a header with no card under it would be a
+    // category David cannot get rid of.
+    it('renders nothing for an assignment whose session is not in the fleet', () => {
+      assignCategory('gone', 'Ghosts');
+      renderRail();
+      expect(screen.queryByRole('heading', { name: 'Ghosts' })).toBeNull();
     });
   });
 });

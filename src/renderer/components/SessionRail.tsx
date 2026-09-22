@@ -6,13 +6,15 @@ import { useEffect, useState } from 'react';
 // compareOpenSessions from state.ts threw at module load and rendered the
 // whole window blank -- see order.ts's comment.
 import type { OpenSession } from '../../fleet/state.ts';
-import { compareOpenSessions, groupByFolder, applyStableOrder } from '../../fleet/order.ts';
+import { compareOpenSessions, railSections } from '../../fleet/order.ts';
 import type { KillResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
 import { StackCard } from './StackCard.tsx';
 import { compactIn, useSettings } from '../state/settings.ts';
-import { useGroups, isStackOpen, toggleStack, orderIndex, rememberKeys } from '../state/groups.ts';
+import {
+  useGroups, isStackOpen, toggleStack, orderIndex, rememberKeys, categoryForRow,
+} from '../state/groups.ts';
 import './SessionRail.css';
 
 // Sensible bounds for a drag-resized rail: narrow enough to reclaim real
@@ -257,22 +259,24 @@ export function SessionRail({
     );
   }
 
-  // Grouping OFF is the pre-grouping rail exactly: the transform does not
-  // run at all, rather than running and being flattened, so nothing about
-  // the old path -- Cmd+N numbers, unread promotion, junk-last -- can
-  // regress behind a setting most people leave on.
-  const rows = grouping
-    ? applyStableOrder(groupByFolder(displaySessions), orderIndex)
-    : null;
+  // The transform ALWAYS runs. `grouping` is folder stacking and nothing
+  // else -- sections and David's own row order apply either way, because
+  // "not auto movement for the cards" was stated unconditionally and a
+  // category he set must not vanish because he turned stacking off. This
+  // replaces Task 5's `rows === null` branch, which switched off too much.
+  const sections = railSections(displaySessions, categoryForRow, orderIndex, grouping);
 
-  // Appending happens in an effect, not during render: rememberKeys writes
-  // localStorage and notifies subscribers, and doing that mid-render would
-  // re-enter this component while it is still rendering (groups.ts's own
-  // doc comment). The join/split is how a stable STRING dependency stands in
-  // for an array one -- useEffect compares deps by identity, and
-  // `rows.map(...)` would be a fresh array every render, firing this effect
-  // (and its write) on every single fleet push forever.
-  const rowKeys = rows?.map(r => r.key).join('\n') ?? '';
+  // Pruning a dead assignment is NOT done here. It belongs on the fleet push
+  // itself, which useFleet owns (Task 8) -- this component is not mounted in
+  // every view, and an assignment's lifetime must not depend on which pane
+  // happens to be on screen. Until Task 8 lands, an assignment simply
+  // outlives its session; nothing renders for it, because rows are built
+  // from the live sessions, not from the map.
+  //
+  // The join/split below is how a string dependency stands in for an array
+  // one: useEffect compares deps by identity, and a fresh array each render
+  // would fire it forever.
+  const rowKeys = sections.flatMap(sec => sec.rows.map(r => r.key)).join('\n');
   useEffect(() => {
     if (rowKeys !== '') rememberKeys(rowKeys.split('\n'));
   }, [rowKeys]);
@@ -281,9 +285,13 @@ export function SessionRail({
     <nav className={`rail ${side}`} style={{ width }} aria-label="Open sessions">
       {side === 'right' && handle}
       <div className="railcards">
-        {rows === null
-          ? displaySessions.map(renderSession)
-          : rows.map(row => (
+        {sections.map(section => (
+          // The key for the unnamed section cannot collide with a real name,
+          // which normalizeGroups guarantees is trimmed and non-empty -- a
+          // leading space is therefore unreachable.
+          <div className="railsection" key={section.name ?? ' uncategorised'}>
+            {section.name !== null && <h2 className="railsectionname">{section.name}</h2>}
+            {section.rows.map(row => (
               row.kind === 'session'
                 ? renderSession(row.session)
                 : <StackCard key={row.key} cwd={row.cwd} members={row.members}
@@ -291,6 +299,8 @@ export function SessionRail({
                     selectedPid={selectedPid} renderMember={renderSession}
                     onAnswer={onAnswer} />
             ))}
+          </div>
+        ))}
       </div>
       {side === 'left' && handle}
     </nav>

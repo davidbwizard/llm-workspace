@@ -161,6 +161,20 @@ export function categoryOfSession(sessionId: string): string | null {
   return current.assignments[sessionId] ?? null;
 }
 
+/** The category a ROW shows, as opposed to the one a session is assigned.
+ *
+ *  The two are the same today, and this function exists so that they can
+ *  stop being the same in Task 8 without any other file learning about it:
+ *  a category chosen at launch is held against a pid until discovery
+ *  resolves a session id, and this is the one place that fallback will be
+ *  added. Everything that renders a row asks here.
+ *
+ *  Takes the session rather than a session id precisely so that the pid is
+ *  available when that day comes. */
+export function categoryForRow(session: { pid: number; sessionId: string | null }): string | null {
+  return session.sessionId === null ? null : categoryOfSession(session.sessionId);
+}
+
 /** One category per session: assigning replaces whatever was there. A null
  *  or blank name CLEARS the assignment and leaves the name standing, which
  *  is the one place that rule lives, so the card menu cannot disagree with

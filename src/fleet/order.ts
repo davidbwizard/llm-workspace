@@ -164,3 +164,125 @@ export function applyStableOrder<T>(
 ): RailRow<T>[] {
   return [...rows].sort((a, b) => indexOf(a.key) - indexOf(b.key));
 }
+
+/** The row key for a session pulled out of its folder by a category.
+ *
+ *  It CANNOT be the folder path: the folder key already belongs to whatever
+ *  is left behind there, and two rows sharing a key would collide both in
+ *  React's reconciler and in the stored order.
+ *
+ *  It is the PID rather than the session id, and that is load-bearing rather
+ *  than arbitrary. A launch-time category is held against a pid and upgrades
+ *  to a session-id assignment when discovery resolves it (Task 8). Keying
+ *  this row by the session id would change the key at the exact moment of
+ *  that upgrade -- React would unmount the card and mount a new one, and the
+ *  row would lose its stored slot and jump to the end. The pid is the one
+ *  handle that is the same on both sides of that transition.
+ *
+ *  It is still ephemeral, exactly as a `sid:` key would have been: rememberKeys
+ *  forgets a `pid:` key once its row is gone, so a categorised row's position
+ *  lasts the sitting and not a restart. That is correct -- the assignment it
+ *  belongs to does not survive a restart either. */
+export function pidRowKey(pid: number): string {
+  return `pid:${pid}`;
+}
+
+/** A run of rows under one category name, or under none. */
+export type RailSection<T> = { name: string | null; rows: RailRow<T>[] };
+
+/** Every row of a folder stack, as its own row. What "stacking off" means:
+ *  no collapsing, but sections and manual order still apply -- the setting
+ *  governs folder stacking and nothing else.
+ *
+ *  A member CANNOT keep the folder key: its siblings would all claim the
+ *  same one, and two rows with one key collide both in React's reconciler
+ *  and in the stored order. pidRowKey is therefore the key -- the same
+ *  helper a categorised row uses, so there is one answer to "what is a row
+ *  that is not a folder called" rather than two that could drift.
+ *
+ *  That prefix is what makes groups.ts treat it as ephemeral, so an
+ *  un-stacked folder's row positions last the sitting and not a restart.
+ *  Inherent rather than a shortcut: once co-located sessions are not
+ *  collapsed, there is no stable per-row identity left to store. A folder
+ *  holding ONE session was never a stack, so it keeps its folder key and its
+ *  position survives as it always did. */
+function unstack<T extends Groupable>(row: RailRow<T>): RailRow<T>[] {
+  if (row.kind === 'session') return [row];
+  return row.members.map(m => ({ kind: 'session' as const, key: pidRowKey(m.pid), session: m }));
+}
+
+/** The whole rail layout, in one pure pass: pull out the categorised
+ *  sessions, fold what is left by folder (unless stacking is off), put every
+ *  row where the user has it, then split into sections.
+ *
+ *  CATEGORISING PULLS A SESSION OUT OF ITS STACK. A folder with three
+ *  sessions, one of them filed under "Review", becomes a Review section
+ *  holding that one card, plus a stack of the remaining two -- and if only
+ *  one is left, a plain card, because groupByFolder never makes a stack of
+ *  one. The rejected alternative was heading the whole stack with a category
+ *  any member carries, which puts one row in two places at once.
+ *
+ *  Whether a session HAS a category is entirely `categoryOf`'s business --
+ *  this function never reads a session id. That keeps the "which handle does
+ *  a category hang off" question in one place (groups.ts's categoryForRow),
+ *  which is what lets Task 8 add the pending-binding fallback without
+ *  touching this transform at all.
+ *
+ *  The UNCATEGORISED section is always LAST and always unnamed. It is not an
+ *  "Other" group: having no category is the normal state, and those rows must
+ *  look exactly like the rail did before categories existed. It is omitted
+ *  entirely when empty, so a fully filed rail shows no stray divider.
+ *
+ *  Pulled rows are ordered ahead of folder rows before applyStableOrder runs.
+ *  That only decides where a BRAND-NEW key lands (every known key has a
+ *  stored index), and the answer it gives is the right one: a section always
+ *  sorts above the uncategorised rows, which is where it renders anyway.
+ *
+ *  `categoryOf` and `indexOf` are passed IN rather than read from the store,
+ *  for the same reason junk-ness is passed into compareOpenSessions: this
+ *  module must stay free of anything the renderer cannot import, and it keeps
+ *  the function testable without a DOM or localStorage. */
+export function railSections<T extends Groupable>(
+  sessions: T[],
+  categoryOf: (session: T) => string | null,
+  indexOf: (key: string) => number,
+  stacking: boolean,
+): RailSection<T>[] {
+  const pulled: RailRow<T>[] = [];
+  const nameByKey = new Map<string, string>();
+  const rest: T[] = [];
+
+  for (const s of sessions) {
+    const name = categoryOf(s);
+    if (name === null || name === '') { rest.push(s); continue; }
+    const key = pidRowKey(s.pid);
+    pulled.push({ kind: 'session', key, session: s });
+    nameByKey.set(key, name);
+  }
+
+  // groupByFolder runs either way, and its result is expanded afterwards
+  // when stacking is off. That is not a detour: it is what gives "a folder
+  // with one session" its folder key for free in both modes, with no second
+  // pass counting how many sessions each cwd holds.
+  const folderRows = groupByFolder(rest);
+  const bodyRows = stacking ? folderRows : folderRows.flatMap(unstack);
+
+  const rows = applyStableOrder([...pulled, ...bodyRows], indexOf);
+
+  // Map preserves insertion order, which is what puts each section where its
+  // first row sat -- the same trick groupByFolder uses for rows.
+  const named = new Map<string, RailRow<T>[]>();
+  const loose: RailRow<T>[] = [];
+  for (const row of rows) {
+    const name = nameByKey.get(row.key);
+    if (name === undefined) { loose.push(row); continue; }
+    const bucket = named.get(name);
+    if (bucket) bucket.push(row);
+    else named.set(name, [row]);
+  }
+
+  const sections: RailSection<T>[] = [];
+  for (const [name, sectionRows] of named) sections.push({ name, rows: sectionRows });
+  if (loose.length > 0) sections.push({ name: null, rows: loose });
+  return sections;
+}
