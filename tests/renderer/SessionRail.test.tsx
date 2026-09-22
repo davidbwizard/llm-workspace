@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SessionRail } from '../../src/renderer/components/SessionRail.tsx';
 import { setSettings, reloadSettings } from '../../src/renderer/state/settings.ts';
-import { reloadGroups, assignCategory, categoryOfSession } from '../../src/renderer/state/groups.ts';
+import {
+  reloadGroups, assignCategory, categoryOfSession, bindPendingCategory, resolvePendingCategories,
+} from '../../src/renderer/state/groups.ts';
 
 // @testing-library/user-event is not a dependency of this project (every
 // other renderer test file drives interaction through fireEvent, and
@@ -646,6 +648,41 @@ describe('SessionRail', () => {
       assignCategory('gone', 'Ghosts');
       renderRail();
       expect(screen.queryByRole('heading', { name: 'Ghosts' })).toBeNull();
+    });
+
+    it('heads a launched session with its category before any session id exists', () => {
+      bindPendingCategory(1, 'Fleet');
+      // noUncheckedIndexedAccess types `twoInOneFolder[0]` as possibly
+      // undefined -- `!` narrows it, and the cast goes through `unknown`
+      // first for the same reason the "keeps a row where it first appeared"
+      // test above does: a bare `never` cannot be spread directly.
+      renderRail([{ ...(twoInOneFolder[0]! as unknown as object), sessionId: null }] as never[]);
+      expect(screen.getByRole('heading', { name: 'Fleet' })).toBeTruthy();
+    });
+
+    it('upgrades to the stored assignment without remounting the card or doubling the header', () => {
+      bindPendingCategory(1, 'Fleet');
+      const pending = [{ ...(twoInOneFolder[0]! as unknown as object), sessionId: null }] as never[];
+      const { container, rerender } = render(
+        <SessionRail sessions={pending} selectedPid={null} onSelect={() => {}} onKill={noopKill}
+          onReattach={noopReattach} onResume={noopResume} side="left" />,
+      );
+      const cardBefore = container.querySelector('.card');
+
+      // Discovery names the pid, exactly as useFleet's own effect would.
+      const named = [{ ...(twoInOneFolder[0]! as unknown as object), sessionId: 's1' }] as never[];
+      resolvePendingCategories([{ pid: 1, sessionId: 's1' }]);
+      rerender(
+        <SessionRail sessions={named} selectedPid={null} onSelect={() => {}} onKill={noopKill}
+          onReattach={noopReattach} onResume={noopResume} side="left" />,
+      );
+
+      expect(screen.getAllByRole('heading', { name: 'Fleet' })).toHaveLength(1);
+      expect(container.querySelectorAll('.card')).toHaveLength(1);
+      // The SAME DOM node: React only reuses it when the row key is unchanged,
+      // so this is what proves the pid key survives the upgrade. A session-id
+      // key would fail here, and the card would visibly flash and lose its slot.
+      expect(container.querySelector('.card')).toBe(cardBefore);
     });
   });
 });

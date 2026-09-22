@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { LaunchBar } from '../../src/renderer/components/LaunchBar.tsx';
 import { reloadFavourites } from '../../src/renderer/state/favourites.ts';
+import {
+  reloadGroups, assignCategory, categoryNames, categoryOfSession, getGroups, resolvePendingCategories,
+} from '../../src/renderer/state/groups.ts';
 
 // @testing-library/user-event is not a project dependency (see
 // tests/renderer/SessionRail.test.tsx) -- fireEvent substitutes for it,
@@ -9,6 +12,11 @@ import { reloadFavourites } from '../../src/renderer/state/favourites.ts';
 let launch: ReturnType<typeof vi.fn>;
 let chooseDirectory: ReturnType<typeof vi.fn>;
 beforeEach(() => {
+  // groups.ts is a module-scoped singleton (same shape as favourites.ts
+  // below) -- clearing localStorage alone leaves its in-memory `current`
+  // untouched, so every test in this file also reloads it.
+  localStorage.clear();
+  reloadGroups();
   launch = vi.fn(async () => ({ status: 'launched', pid: 4821 }));
   chooseDirectory = vi.fn(async () => null);
   // LaunchBar's settings gear mounts the real SettingsModal (below), which
@@ -346,6 +354,90 @@ describe('LaunchBar: naming a session at launch', () => {
   function openOptions() {
     fireEvent.click(screen.getByRole('button', { name: 'Launch options' }));
   }
+
+  it('offers a category field in the dropdown, alongside the name', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    openOptions();
+    expect(screen.getByLabelText('Category')).toBeTruthy();
+  });
+
+  // The name field is disabled for Codex because the CLI has no name flag.
+  // A category never touches the CLI, so that reason does not carry over.
+  it('keeps the category field usable for Codex, where the name field is not', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    openOptions();
+    expect((screen.getByLabelText('Session name') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Category') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('offers the categories that already exist, without forcing one', () => {
+    assignCategory('somewhere', 'Fleet');
+    const { container } = render(<LaunchBar onLaunched={() => {}} />);
+    openOptions();
+    const field = screen.getByLabelText('Category') as HTMLInputElement;
+    const list = container.querySelector(`datalist#${field.getAttribute('list')}`);
+    expect([...list!.querySelectorAll('option')].map(o => o.getAttribute('value'))).toEqual(['Fleet']);
+  });
+
+  it('files the new session under the typed category once discovery names it', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'Fleet' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+    await waitFor(() => expect(launch).toHaveBeenCalled());
+    // The NAME exists at once -- typing it was the creation act. The
+    // ASSIGNMENT does not, because there is no session id at spawn.
+    expect(categoryNames()).toEqual(['Fleet']);
+    expect(getGroups().assignments).toEqual({});
+    // The push that finally resolves pid 4821 is what files it.
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryOfSession('s9')).toBe('Fleet');
+  });
+
+  // The picker, rendered: a name typed for one launch is immediately on
+  // offer for the next one, with nothing resolved in between.
+  it('offers a just-launched category in the dropdown for the next launch', async () => {
+    const { container } = render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'Fleet' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+    await waitFor(() => expect(launch).toHaveBeenCalled());
+
+    openOptions();
+    const field = screen.getByLabelText('Category') as HTMLInputElement;
+    expect(field.value).toBe(''); // the panel was cleared, as it always is
+    const list = container.querySelector(`datalist#${field.getAttribute('list')}`);
+    expect([...list!.querySelectorAll('option')].map(o => o.getAttribute('value'))).toEqual(['Fleet']);
+  });
+
+  it('carries no category from the main Launch half, which opens no panel', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+    await waitFor(() => expect(launch).toHaveBeenCalled());
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryOfSession('s9')).toBeNull();
+  });
+
+  it('discards a typed category when the panel is closed without launching', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'Fleet' } });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    openOptions();
+    expect((screen.getByLabelText('Category') as HTMLInputElement).value).toBe('');
+  });
+
+  it('keeps a typed category when the provider is switched, since it never reaches the CLI', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'Fleet' } });
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    expect((screen.getByLabelText('Category') as HTMLInputElement).value).toBe('Fleet');
+  });
 
   it('leaves the main half exactly as it was -- one click, no name', async () => {
     render(<LaunchBar onLaunched={() => {}} />);

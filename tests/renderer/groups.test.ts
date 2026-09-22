@@ -3,7 +3,7 @@ import {
   GROUPS_STORAGE_KEY, MAX_CATEGORY_LENGTH, MAX_CATEGORIES, DEFAULT_GROUPS, normalizeGroups,
   getGroups, categoryNames, categoryOfSession, assignCategory, renameCategory, deleteCategory,
   categoryInUse, pruneAssignments, isStackOpen, toggleStack, orderIndex, rememberKeys, moveRow,
-  subscribeGroups, reloadGroups, categoryForRow,
+  subscribeGroups, reloadGroups, categoryForRow, bindPendingCategory, resolvePendingCategories,
 } from '../../src/renderer/state/groups.ts';
 
 // A module-scoped singleton, the same shape settings.ts and favourites.ts
@@ -375,5 +375,211 @@ describe('the store singleton', () => {
     unsubscribe();
     assignCategory('s2', 'Fleet');
     expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('pending launch-time categories', () => {
+  it('transfers the binding to the session id discovery resolves the pid to', () => {
+    bindPendingCategory(4821, 'Fleet');
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryOfSession('s9')).toBe('Fleet');
+  });
+
+  // Typing a name into the launch field IS the name-creation act; it is not
+  // the assignment. So the name exists at once, trimmed and capped like any
+  // other, and is offered to every other session straight away.
+  it('creates the name at once, before anything resolves', () => {
+    bindPendingCategory(4821, '  Fleet  ');
+    expect(categoryNames()).toEqual(['Fleet']);
+    expect(getGroups().assignments).toEqual({});
+  });
+
+  it('offers that name to a SECOND session while the first is still pending', () => {
+    bindPendingCategory(4821, 'Fleet');
+    // Nothing has resolved, and yet another session can already be filed
+    // under it -- the gap this ruling closes.
+    assignCategory('s2', 'Fleet');
+    expect(categoryNames()).toEqual(['Fleet']);
+    expect(categoryOfSession('s2')).toBe('Fleet');
+  });
+
+  it('reuses an existing name rather than duplicating it', () => {
+    assignCategory('s1', 'Fleet');
+    bindPendingCategory(4821, 'Fleet');
+    expect(categoryNames()).toEqual(['Fleet']);
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryNames()).toEqual(['Fleet']);
+    expect(categoryOfSession('s9')).toBe('Fleet');
+  });
+
+  it('refuses a brand-new name at the cap, and binds nothing', () => {
+    // The setup loop uses s0..s(MAX_CATEGORIES-1), so the id resolved below
+    // has to be one the loop never touches -- otherwise the assertion would
+    // be reading that session's OWN pre-existing assignment (c9, made by
+    // the loop) rather than proving the refused binding assigned nothing.
+    for (let i = 0; i < MAX_CATEGORIES; i++) assignCategory(`s${i}`, `c${i}`);
+    bindPendingCategory(4821, 'one more');
+    expect(categoryNames()).toHaveLength(MAX_CATEGORIES);
+    resolvePendingCategories([{ pid: 4821, sessionId: 'unbound' }]);
+    expect(categoryOfSession('unbound')).toBeNull();
+  });
+
+  it('holds the binding while the session id is still unknown', () => {
+    bindPendingCategory(4821, 'Fleet');
+    resolvePendingCategories([{ pid: 4821, sessionId: null }]);
+    expect(getGroups().assignments).toEqual({});
+    // Still pending, so the SAME binding lands once the id appears -- which
+    // can be minutes later, and is unbounded if nobody ever prompts.
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryOfSession('s9')).toBe('Fleet');
+  });
+
+  it('holds the binding while the pid has not been discovered yet', () => {
+    bindPendingCategory(4821, 'Fleet');
+    // Discovery sweeps on a timer, so the first push after a launch can
+    // easily not contain the pid the app just spawned. Dropping there would
+    // lose the binding of every fast launch.
+    resolvePendingCategories([{ pid: 999, sessionId: 'other' }]);
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryOfSession('s9')).toBe('Fleet');
+  });
+
+  it('two concurrent launches never cross their bindings', () => {
+    bindPendingCategory(4821, 'Fleet');
+    bindPendingCategory(4822, 'Review');
+    resolvePendingCategories([
+      { pid: 4821, sessionId: 'sa' },
+      { pid: 4822, sessionId: 'sb' },
+    ]);
+    expect(categoryOfSession('sa')).toBe('Fleet');
+    expect(categoryOfSession('sb')).toBe('Review');
+  });
+
+  it('resolves one of two launches without disturbing the one still waiting', () => {
+    bindPendingCategory(4821, 'Fleet');
+    bindPendingCategory(4822, 'Review');
+    resolvePendingCategories([
+      { pid: 4821, sessionId: 'sa' },
+      { pid: 4822, sessionId: null },
+    ]);
+    expect(categoryOfSession('sa')).toBe('Fleet');
+    resolvePendingCategories([{ pid: 4822, sessionId: 'sb' }]);
+    expect(categoryOfSession('sb')).toBe('Review');
+  });
+
+  it('drops a binding whose process died before any session id was known', () => {
+    bindPendingCategory(4821, 'Fleet');
+    resolvePendingCategories([{ pid: 4821, sessionId: null }]); // seen, still nameless
+    resolvePendingCategories([{ pid: 999, sessionId: 'other' }]); // gone
+    // Proof it is gone rather than merely unresolved: a later push carrying
+    // that very pid assigns nothing.
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryOfSession('s9')).toBeNull();
+  });
+
+  // The two halves have different lifetimes, and this is where that shows:
+  // the assignment is gone, the name David typed is not. A leftover name
+  // attached to nothing is exactly the state his delete rule was written
+  // for -- one click removes it.
+  it('leaves the NAME behind when a binding dies, attached to nothing and deletable', () => {
+    bindPendingCategory(4821, 'Fleet');
+    resolvePendingCategories([{ pid: 4821, sessionId: null }]);
+    resolvePendingCategories([{ pid: 999, sessionId: 'other' }]);
+    expect(categoryNames()).toEqual(['Fleet']);
+    expect(getGroups().assignments).toEqual({});
+    expect(categoryInUse('Fleet')).toBe(false);
+    expect(deleteCategory('Fleet')).toBe(true);
+  });
+
+  // The BINDING is the handoff, and it is what may never be persisted. The
+  // name is not a binding, and names were always persisted.
+  it('writes the name but never the binding', () => {
+    bindPendingCategory(4821, 'Fleet');
+    const stored = JSON.parse(localStorage.getItem(GROUPS_STORAGE_KEY)!);
+    expect(stored.categories).toEqual(['Fleet']);
+    expect(stored.assignments).toEqual({});
+    // Nothing anywhere in the serialized blob names the pid.
+    expect(JSON.stringify(stored)).not.toContain('4821');
+  });
+
+  it('is forgotten entirely on a reload, the way an app restart forgets it', () => {
+    bindPendingCategory(4821, 'Fleet');
+    reloadGroups();
+    expect(categoryForRow({ pid: 4821, sessionId: null })).toBeNull();
+    // The name survives the restart; only the binding does not.
+    expect(categoryNames()).toEqual(['Fleet']);
+  });
+
+  it('ignores a blank name rather than binding an unlabelled category', () => {
+    bindPendingCategory(4821, '   ');
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryNames()).toEqual([]);
+  });
+
+  it('ignores an empty live list, which also means "not discovered yet"', () => {
+    bindPendingCategory(4821, 'Fleet');
+    resolvePendingCategories([]);
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryOfSession('s9')).toBe('Fleet');
+  });
+});
+
+// What a row SHOWS, which is not the same question as what is stored.
+describe('categoryForRow with a pending binding', () => {
+  it('shows a launch-time category before any session id exists', () => {
+    bindPendingCategory(4821, 'Fleet');
+    expect(categoryForRow({ pid: 4821, sessionId: null })).toBe('Fleet');
+  });
+
+  it('keeps showing it on the fallback path, where no session id ever arrives', () => {
+    bindPendingCategory(4821, 'Fleet');
+    resolvePendingCategories([{ pid: 4821, sessionId: null }]);
+    expect(categoryForRow({ pid: 4821, sessionId: null })).toBe('Fleet');
+  });
+
+  it('shows the stored assignment once discovery resolves the pid', () => {
+    bindPendingCategory(4821, 'Fleet');
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryForRow({ pid: 4821, sessionId: 's9' })).toBe('Fleet');
+  });
+
+  // The assignment wins, so a category changed from the card menu takes
+  // effect at once rather than being masked by a stale pending entry.
+  it('prefers the assignment over a binding that somehow outlived it', () => {
+    bindPendingCategory(4821, 'Fleet');
+    assignCategory('s9', 'Review');
+    expect(categoryForRow({ pid: 4821, sessionId: 's9' })).toBe('Review');
+  });
+
+  it('shows nothing for a row with neither', () => {
+    expect(categoryForRow({ pid: 4821, sessionId: null })).toBeNull();
+  });
+
+  it('shows nothing once the binding is dropped', () => {
+    bindPendingCategory(4821, 'Fleet');
+    resolvePendingCategories([{ pid: 4821, sessionId: null }]); // seen
+    resolvePendingCategories([{ pid: 999, sessionId: 'other' }]); // gone
+    expect(categoryForRow({ pid: 4821, sessionId: null })).toBeNull();
+  });
+
+  // The map lives outside `current`, so nothing else can tell a subscriber
+  // that a row's category changed. Without these the rail would only catch
+  // up on an unrelated re-render.
+  it('notifies subscribers on a bind, so the header appears at once', () => {
+    const cb = vi.fn();
+    const unsubscribe = subscribeGroups(cb);
+    bindPendingCategory(4821, 'Fleet');
+    expect(cb).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('notifies subscribers when a binding is dropped with nothing assigned', () => {
+    bindPendingCategory(4821, 'Fleet');
+    resolvePendingCategories([{ pid: 4821, sessionId: null }]);
+    const cb = vi.fn();
+    const unsubscribe = subscribeGroups(cb);
+    resolvePendingCategories([{ pid: 999, sessionId: 'other' }]);
+    expect(cb).toHaveBeenCalledTimes(1);
+    unsubscribe();
   });
 });

@@ -12,6 +12,7 @@ import {
   SESSION_NAME_SAFE, SESSION_NAME_MAX, SESSION_NAME_HELP,
   SESSION_NAME_CODEX_REASON, SESSION_NAME_PLACEHOLDER,
 } from '../../core/sessionName.ts';
+import { bindPendingCategory, categoryNames, MAX_CATEGORY_LENGTH } from '../state/groups.ts';
 import './LaunchBar.css';
 
 // A live terminal only exists once TerminalView actually mounts, and it
@@ -81,6 +82,11 @@ export function LaunchBar({ onLaunched, disabled = false }: {
   // Claude only: `codex --help` carries no launch-time name flag, so the
   // field is disabled WITH THE REASON rather than hidden.
   const nameable = provider === 'claude';
+  // A category set as the session starts -- the second of the two entry
+  // points the launch control was built as a dropdown for. Unlike `name`
+  // above, this NEVER reaches the CLI: it is app-side only, which is why it
+  // stays usable for Codex, where the name field cannot be.
+  const [category, setCategory] = useState('');
 
   // Favourite folders: state/favourites.ts is the one shared store
   // LaunchBar, MainPane's header star and OpenSessionCard's own menu item
@@ -167,9 +173,10 @@ export function LaunchBar({ onLaunched, disabled = false }: {
   function cancelOptions(): void {
     setNameOpen(false);
     setName('');
+    setCategory('');
   }
 
-  async function launch(targetDir?: string, useName = false): Promise<void> {
+  async function launch(targetDir?: string, fromOptions = false): Promise<void> {
     const dir = (targetDir ?? cwd).trim();
     if (blocked) { setMessage(launchable?.reason ?? 'That provider is not available right now.'); return; }
     if (dir === '') { setMessage('Choose a working directory first.'); return; }
@@ -179,7 +186,10 @@ export function LaunchBar({ onLaunched, disabled = false }: {
     // thing done TO the text -- everything else is accepted or refused as
     // typed. SESSION_NAME_SAFE would reject them, and refusing "  proj  "
     // as malformed would be pedantic rather than protective.
-    const wanted = useName && nameable ? name.trim() : '';
+    const wanted = fromOptions && nameable ? name.trim() : '';
+    // Read BEFORE the await: cancelOptions below clears the field, and the
+    // binding has to be made from what was typed, not from what is left.
+    const wantedCategory = fromOptions ? category.trim() : '';
     if (wanted !== '') {
       // The same two rules main enforces (launchCommand, src/main/launch.ts),
       // checked here for immediate feedback. This is an affordance, not the
@@ -198,7 +208,17 @@ export function LaunchBar({ onLaunched, disabled = false }: {
         provider, dir, DEFAULT_COLS, DEFAULT_ROWS, wanted === '' ? null : wanted,
       )) as LaunchResult | undefined;
       if (!r) { setMessage('Could not reach the app.'); return; }
-      if (r.status === 'launched') { setCwd(''); cancelOptions(); onLaunched(r.pid); return; }
+      if (r.status === 'launched') {
+        // Held against the PID, because there is no session id yet and will
+        // not be until the first prompt. useFleet transfers it the moment
+        // discovery resolves this pid to one; if the process dies first, the
+        // binding is dropped and nothing is shown for it.
+        if (wantedCategory !== '') bindPendingCategory(r.pid, wantedCategory);
+        setCwd('');
+        cancelOptions();
+        onLaunched(r.pid);
+        return;
+      }
       setMessage(r.reason);
     } finally {
       setPending(false);
@@ -308,6 +328,26 @@ export function LaunchBar({ onLaunched, disabled = false }: {
             {nameable
               ? <small>Leave blank and Claude names it for you.</small>
               : <small className="warn">{SESSION_NAME_CODEX_REASON}</small>}
+            <label>
+              Category
+              {/* A text field with a datalist rather than a select: one
+                  control both picks an existing category and creates a new
+                  one, which is what the card menu needs two controls for.
+                  Native, so it needs no popover, no focus management and no
+                  new component. NOT disabled for Codex -- see above. */}
+              <input type="text" list="launchcats" value={category} disabled={pending}
+                maxLength={MAX_CATEGORY_LENGTH} placeholder="None"
+                onChange={e => setCategory(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  void launch(undefined, true);
+                }} />
+              <datalist id="launchcats">
+                {categoryNames().map(n => <option key={n} value={n} />)}
+              </datalist>
+            </label>
+            <small>Filed in the app only, and dropped if the session is cleared or ends.</small>
             <div className="launchdrop-row">
               {/* "Launch with this name" rather than a second button called
                   "Launch": two controls with the same accessible name in one

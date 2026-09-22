@@ -1,6 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useFleet } from '../../src/renderer/state/useFleet.ts';
+import {
+  reloadGroups, assignCategory, categoryOfSession, bindPendingCategory,
+} from '../../src/renderer/state/groups.ts';
 
 describe('useFleet selection', () => {
   it('starts with nothing selected, so the grid renders full width', () => {
@@ -150,5 +153,48 @@ describe('useFleet orderedSessions', () => {
     push(onFleet, [session({ pid: 1, events: 15 }), session({ pid: 2 })]);
     expect(result.current.orderedSessions.map(s => s.pid)).toEqual([1, 2]);
     delete (globalThis as any).window.fleet;
+  });
+});
+
+describe('useFleet category bookkeeping', () => {
+  const session = (pid: number, sessionId: string | null) => ({
+    pid, sessionId, provider: 'claude', host: 'iterm2', cwd: '/a', project: 'a',
+    name: null, ageSeconds: 1, rssBytes: 1, match: 'unique', lastProse: null,
+    events: null, agents: null, liveAgents: null, activity: 'idle', tmux: false,
+    junk: false, context: null,
+  });
+
+  function pushFleet(openSessions: unknown[]) {
+    const listFleet = vi.fn().mockResolvedValue({ version: 1, generatedAt: 't', openSessions });
+    (globalThis as any).window.fleet = { listFleet, onFleet: vi.fn().mockReturnValue(() => {}) };
+    return renderHook(() => useFleet());
+  }
+
+  beforeEach(() => { localStorage.clear(); reloadGroups(); });
+  afterEach(() => { delete (globalThis as any).window.fleet; });
+
+  it('transfers a launch-time binding the first time the push carries a session id', async () => {
+    bindPendingCategory(4821, 'Fleet');
+    const { result } = pushFleet([session(4821, 's9')]);
+    await waitFor(() => expect(result.current.payload).not.toBeNull());
+    await waitFor(() => expect(categoryOfSession('s9')).toBe('Fleet'));
+  });
+
+  // The whole of "it can be temp": /clear mints an id that was never
+  // assigned, and an exited session stops appearing in the push.
+  it('prunes an assignment whose session is no longer in the push', async () => {
+    assignCategory('gone', 'Fleet');
+    assignCategory('s9', 'Fleet');
+    const { result } = pushFleet([session(4821, 's9')]);
+    await waitFor(() => expect(result.current.payload).not.toBeNull());
+    await waitFor(() => expect(categoryOfSession('gone')).toBeNull());
+    expect(categoryOfSession('s9')).toBe('Fleet');
+  });
+
+  it('prunes nothing on an empty push, which is also what "not discovered yet" looks like', async () => {
+    assignCategory('s9', 'Fleet');
+    const { result } = pushFleet([]);
+    await waitFor(() => expect(result.current.payload).not.toBeNull());
+    expect(categoryOfSession('s9')).toBe('Fleet');
   });
 });

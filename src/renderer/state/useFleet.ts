@@ -12,6 +12,9 @@ import type { FleetListPayload } from '../../main/ipc.ts';
 // of state.ts in the first place.
 import type { OpenSession } from '../../fleet/state.ts';
 import { compareOpenSessions } from '../../fleet/order.ts';
+// groups.ts imports nothing but react -- safe from the renderer, unlike
+// fleet/state.ts, which reaches node:os and the database.
+import { pruneAssignments, resolvePendingCategories } from './groups.ts';
 
 export type PaneView = 'conversation' | 'terminal';
 export type Selection = { pid: number; view: PaneView } | null;
@@ -78,6 +81,22 @@ export function useFleet() {
       return next ?? prev;
     });
   }, [payload, selection?.pid]);
+
+  // Category bookkeeping belongs on the fleet push, and this hook is the
+  // single subscriber to fleet:update -- SessionRail is not mounted in every
+  // view, and neither of these may depend on which pane is on screen.
+  //
+  // Resolve first, then prune: resolve only ever assigns a session id that
+  // is in THIS push, so the prune below can never undo what it just did.
+  useEffect(() => {
+    if (!payload) return;
+    const open = payload.openSessions;
+    if (open.length === 0) return;
+    resolvePendingCategories(open);
+    pruneAssignments(
+      open.map(s => s.sessionId).filter((id): id is string => id !== null && id !== ''),
+    );
+  }, [payload]);
 
   const orderedSessions = useMemo<OpenSession[]>(() => {
     if (!payload) return [];

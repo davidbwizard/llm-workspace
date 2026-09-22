@@ -163,16 +163,29 @@ export function categoryOfSession(sessionId: string): string | null {
 
 /** The category a ROW shows, as opposed to the one a session is assigned.
  *
- *  The two are the same today, and this function exists so that they can
- *  stop being the same in Task 8 without any other file learning about it:
- *  a category chosen at launch is held against a pid until discovery
- *  resolves a session id, and this is the one place that fallback will be
- *  added. Everything that renders a row asks here.
+ *  `assignments[sessionId] ?? pendingByPid[pid]`, in that order. A category
+ *  chosen at launch therefore heads its row IMMEDIATELY and upgrades to the
+ *  stored assignment the moment discovery resolves the session id. Without
+ *  the fallback it would be invisible for as long as the first prompt takes
+ *  -- 11 seconds once and 11 minutes another time on David's machine -- and
+ *  on the fallback path, where no live session file or open rollout ever
+ *  resolves the pid, it would be invisible for good.
  *
- *  Takes the session rather than a session id precisely so that the pid is
- *  available when that day comes. */
+ *  The upgrade changes nothing else: the row is keyed by PID (order.ts's
+ *  pidRowKey), so the same card stays mounted in the same slot and there is
+ *  no flicker and no second row.
+ *
+ *  The assignment WINS over the binding rather than the other way round, so
+ *  re-filing the session from the card menu takes effect at once instead of
+ *  being masked by a pending entry that outlived its usefulness. In practice
+ *  the two never coexist -- resolvePendingCategories deletes and assigns in
+ *  the same call -- but the order makes that safe rather than lucky. */
 export function categoryForRow(session: { pid: number; sessionId: string | null }): string | null {
-  return session.sessionId === null ? null : categoryOfSession(session.sessionId);
+  if (session.sessionId !== null) {
+    const assigned = current.assignments[session.sessionId];
+    if (assigned !== undefined) return assigned;
+  }
+  return pendingByPid.get(session.pid)?.name ?? null;
 }
 
 /** One category per session: assigning replaces whatever was there. A null
@@ -283,6 +296,106 @@ export function pruneAssignments(liveSessionIds: string[]): void {
   commit({ ...current, assignments });
 }
 
+/** A category chosen at LAUNCH time, waiting for a session id to attach to.
+ *
+ *  This is the one place a pid is an acceptable key, and the two reasons do
+ *  not hold anywhere else in this feature: the app spawned this exact
+ *  process and holds its pid directly, and the binding lives seconds to
+ *  minutes, where the pid-recycling problem in the spec's identity ruling
+ *  needs hours.
+ *
+ *  It is a HANDOFF, NOT STORAGE. It is deliberately not a field of
+ *  GroupsState, so it can never be serialized: nothing about it survives a
+ *  restart, which is exactly what the spec asks for. `seen` is what tells a
+ *  process that has DIED apart from one that discovery has simply not swept
+ *  up yet -- discovery runs on a timer, so the first push after a launch
+ *  routinely does not contain the pid the app just spawned, and dropping
+ *  there would lose the binding of every fast launch. */
+type PendingCategory = { name: string; seen: boolean };
+const pendingByPid = new Map<number, PendingCategory>();
+
+/** Holds `name` against a pid the app has just spawned, and CREATES the name
+ *  if it is new.
+ *
+ *  Creating it is not a side effect -- it is David's own two-things model
+ *  applied literally. A name and an assignment are separate, with separate
+ *  lifetimes, which is the entire basis of "deletable if not attached to a
+ *  session". Typing "Fleet" into the launch field IS the name-creation act;
+ *  it is not the assignment. So the NAME lands in `categories` at once,
+ *  persisted, exactly as if it had been created from a card menu, and is
+ *  offered to every other session immediately. The ASSIGNMENT stays pending,
+ *  in memory, unpersisted, and dies with the pid.
+ *
+ *  A name that already exists is reused, never duplicated. The cap is
+ *  enforced here as it is in assignCategory, and for the same reason: a new
+ *  name is refused rather than silently displacing one David is using.
+ *
+ *  An existing name still NOTIFIES even though it writes nothing, and that
+ *  is not optional: this map is deliberately outside `current`, so
+ *  useSyncExternalStore has no way to learn that a row's category just
+ *  changed. Without it the new session's header would appear only when
+ *  something unrelated happened to re-render the rail -- which it does
+ *  today, by coincidence, because onLaunched changes the selection. Relying
+ *  on that coincidence is how a feature breaks the day launch is touched.
+ *
+ *  This also makes the store's own invariant EASIER to hold, not harder:
+ *  every assignment value must be a name in the list, and now the name
+ *  exists before the assignment that will point at it ever does. */
+export function bindPendingCategory(pid: number, name: string): void {
+  const clean = cleanName(name);
+  if (clean === '') return;
+  const known = current.categories.includes(clean);
+  if (!known && current.categories.length >= MAX_CATEGORIES) return;
+  pendingByPid.set(pid, { name: clean, seen: false });
+  if (known) { for (const listener of listeners) listener(); return; }
+  commit({ ...current, categories: [...current.categories, clean] });
+}
+
+/** Transfers every pending binding whose pid discovery has now resolved to a
+ *  session id, and drops the ones whose process is gone. Called on every
+ *  fleet push (useFleet), beside pruneAssignments.
+ *
+ *  Three outcomes per binding, and the middle one is the whole point:
+ *  - the pid carries a session id  -> assign, and forget the binding;
+ *  - the pid is present with none  -> keep waiting. Claude Code writes
+ *    nothing indexable until the first prompt, measured at 11 seconds for
+ *    one session and 11 minutes for another, and unbounded if nobody ever
+ *    prompts;
+ *  - the pid is absent, having been seen before -> the process died before
+ *    it was ever nameable. Drop it. Nothing is retried and nothing is shown:
+ *    there is no session left to show it on.
+ *
+ *  An EMPTY live list is ignored for the same reason pruneAssignments
+ *  ignores it: "nothing running" and "nothing discovered yet" arrive here as
+ *  the same empty array, and treating the second as the first would throw
+ *  away a binding made moments earlier. */
+export function resolvePendingCategories(live: { pid: number; sessionId: string | null }[]): void {
+  if (pendingByPid.size === 0 || live.length === 0) return;
+  const sessionIdByPid = new Map(live.map(s => [s.pid, s.sessionId]));
+  // A binding dropped with nothing assigned changes what a row displays but
+  // writes nothing, so like bindPendingCategory it has to notify by hand --
+  // the assign path below notifies through commit() already.
+  let droppedWithoutAssigning = false;
+  // Snapshotted, because the loop deletes from the map it is reading.
+  for (const [pid, pending] of [...pendingByPid]) {
+    if (!sessionIdByPid.has(pid)) {
+      if (pending.seen) { pendingByPid.delete(pid); droppedWithoutAssigning = true; }
+      continue;
+    }
+    const sessionId = sessionIdByPid.get(pid) ?? null;
+    if (sessionId === null || sessionId === '') {
+      pending.seen = true;
+      continue;
+    }
+    pendingByPid.delete(pid);
+    // The same call the card menu makes, so a launch-time category and a
+    // menu-set one are the same thing in the store -- there is no second
+    // kind of assignment to keep in step. It commits, which notifies.
+    assignCategory(sessionId, pending.name);
+  }
+  if (droppedWithoutAssigning) for (const listener of listeners) listener();
+}
+
 export function isStackOpen(folder: string): boolean {
   return current.open.includes(folder);
 }
@@ -356,6 +469,9 @@ export function subscribeGroups(listener: () => void): () => void {
  *  reloadSettings); harmless in production, where nothing calls it. */
 export function reloadGroups(): void {
   current = read();
+  // Never called in production; in a test it must leave nothing behind,
+  // including a binding that would otherwise resolve into the next test.
+  pendingByPid.clear();
   for (const listener of listeners) listener();
 }
 
