@@ -1,10 +1,12 @@
 // A markdown file, read-only, beside the conversation or over it.
 //
 // Everything on screen here came back from src/main/files.ts, which decided
-// the path was inside the session's own folder, that it existed, and that it
-// was small enough to render. This component reads nothing and writes
-// nothing; the one action it offers besides closing is asking main to reveal
-// the same file in Finder, which goes back through the identical checks.
+// that the path existed, that it was markdown, and that it was small enough
+// to render. It does NOT have to be inside the session's own folder -- that
+// restriction was dropped deliberately on 2026-09-22, and files.ts's header
+// carries the reasoning. This component reads nothing and writes nothing;
+// the one action it offers besides closing is asking main to reveal the same
+// file in Finder, which goes back through the identical checks.
 //
 // The markdown is rendered with ConversationView's own exported
 // MarkdownText -- the renderer the conversation already uses, already
@@ -34,8 +36,8 @@ export type ViewerFile = {
 } & (
   { kind: 'file'; text: string }
   | { kind: 'too_large' }
-  /** The file is there, inside the session's folder, and macOS would not
-   *  let the app read it (src/main/files.ts's 'permission_denied'). Its own
+  /** The file is there and macOS would not let the app read it
+   *  (src/main/files.ts's 'permission_denied'). Its own
    *  kind rather than a silent no-op, because an empty viewer with no
    *  explanation is exactly the failure this case exists to avoid. */
   | { kind: 'no_permission' }

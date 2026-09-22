@@ -9,13 +9,10 @@
 //   - The renderer only PROPOSES the candidate string it saw in the
 //     transcript. It decides nothing.
 //   - The session's working directory comes from `cwdForPid` -- the app's
-//     own discovery data, keyed by pid -- and NEVER from the renderer. A pid
-//     the app does not currently know has no root, so nothing resolves.
-//   - realpath is taken of BOTH the root and the candidate before they are
-//     compared, so a symlink sitting inside the project that points out of
-//     it is refused (a lexical check alone cannot see that), and the
-//     comparison itself is separator-aware, so /foo/barbaz is not inside
-//     /foo/bar.
+//     own discovery data, keyed by pid -- and NEVER from the renderer. It
+//     is what a RELATIVE candidate resolves against, because that is what
+//     relative means. A pid the app does not currently know has no cwd, so
+//     nothing resolves for it.
 //   - Markdown is read, capped, and handed back as text for the app's own
 //     renderer. Everything else is REVEALED in Finder. Never shell.openPath:
 //     that launches the file's default application, which for a .command or
@@ -23,13 +20,39 @@
 //     module takes `reveal` as a dependency and imports nothing from
 //     electron, so there is no second, wronger call available to it.
 //   - Read only, throughout. Nothing here writes.
+//
+// WHAT THIS MODULE DELIBERATELY DOES NOT DO, since 2026-09-22.
+//
+// It used to refuse any path outside the session's own folder: realpath
+// both sides, compare separator-aware, reject anything not underneath.
+// That check is GONE, on David's decision, and this paragraph exists so
+// nobody restores it as a security fix.
+//
+// It was written when the risk model was `open` -- launching a file, where
+// a hostile path is code execution. It does not earn its keep for "display
+// a markdown file". This viewer renders markdown ONLY, is read-only, never
+// calls shell.openPath, and puts the text on the screen of the person
+// sitting at the machine -- not into a model's context, not off the box.
+// So the worst a hostile path in a transcript achieves is that David clicks
+// it and reads a file he already owns and could `cat` in a second.
+//
+// What it COST was real and measured: a design doc one directory above a
+// session's cwd could not be opened at all
+// (~/Documents/.../Chocabloc/docs/... from a session in
+// .../Chocabloc/server-new). Nested git repos rule out widening to a repo
+// root, since server-new is its own. That is a wall between someone and
+// their own documents, in exchange for nothing.
+//
+// Everything that actually prevents harm stayed, and each is pinned by a
+// test in tests/main/files.test.ts: markdown only, never openPath, read
+// only, the size cap re-checked after the read, permission_denied kept
+// apart from not_found, and the candidate hygiene below (type, emptiness,
+// NUL bytes, length) -- which is input validation and was never about
+// scope.
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, resolve } from 'node:path';
-// The same separator-aware containment check session:image already uses.
-// Reused rather than restated: one implementation, one set of tests, and no
-// chance of the two drifting into disagreeing about what "inside" means.
-import { within, isPermissionError } from './images.ts';
+import { isPermissionError } from './images.ts';
 
 /** Past this the viewer says so and offers Finder instead of trying. A
  *  multi-megabyte document turns into tens of thousands of DOM nodes;
@@ -53,7 +76,7 @@ const LINE_SUFFIX = /:\d+(?::\d+)?$/;
 export type FileKind = 'markdown' | 'other';
 
 export type FileRefusal =
-  | 'invalid' | 'no_session' | 'outside_root' | 'not_found'
+  | 'invalid' | 'no_session' | 'not_found'
   | 'too_large' | 'read_failed' | 'reveal_failed'
   /** The file is there and inside the project, and the OS refused the read.
    *  Kept apart from 'not_found' and 'read_failed' because it is the one
@@ -104,8 +127,15 @@ async function realOrNull(p: string): Promise<string | null> {
 
 type RootResult = { ok: true; root: string } | { ok: false; reason: FileRefusal };
 
-/** The session's real working directory, or a refusal. Everything else in
- *  this module resolves against what this returns and nothing else. */
+/** The session's real working directory -- what a RELATIVE candidate is
+ *  resolved against. It is no longer a boundary, only an origin: an
+ *  absolute candidate ignores it entirely (see this file's header).
+ *
+ *  Still required, and deliberately so: it is the app's own discovery data
+ *  keyed by pid, so the renderer never names a folder, and a pid the app
+ *  does not currently see as a live session resolves nothing at all. That
+ *  is cheap input validation on the channel, not a scope restriction --
+ *  every session someone is actually looking at has a cwd. */
 async function sessionRoot(rawPid: unknown, deps: FileDeps): Promise<RootResult> {
   if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) return refuse('invalid');
   const cwd = deps.cwdForPid(rawPid);
@@ -119,9 +149,10 @@ type Resolved =
   | { ok: true; real: string; kind: FileKind; size: number }
   | { ok: false; reason: FileRefusal };
 
-/** One candidate -> a real path inside `root`, or a refusal. This is the
- *  only place a renderer-supplied string becomes a path, and every check
- *  the module makes lives here. */
+/** One candidate -> a real path, or a refusal. This is the only place a
+ *  renderer-supplied string becomes a path, and every check the module
+ *  makes lives here. `root` is the origin for a relative candidate and is
+ *  otherwise unused -- it is not a fence (see this file's header). */
 async function resolveIn(root: string, candidate: unknown): Promise<Resolved> {
   if (typeof candidate !== 'string') return refuse('invalid');
   const raw = candidate.trim();
@@ -137,12 +168,11 @@ async function resolveIn(root: string, candidate: unknown): Promise<Resolved> {
   const real = await realOrNull(abs);
   // realpath fails for a path that does not exist, which is also the
   // "must exist" check -- there is no second, TOCTOU-widening stat before
-  // it.
+  // it. It also resolves symlinks, so `real` is the file actually read.
+  //
+  // No containment test follows this any more -- see this file's header for
+  // why that is deliberate and what it bought.
   if (!real) return refuse('not_found');
-  // Both sides are real paths by here: `root` was resolved in
-  // sessionRoot. A symlink inside the project pointing out of it fails
-  // exactly here, and so does /foo/barbaz against a /foo/bar root.
-  if (!within(real, root)) return refuse('outside_root');
 
   let info;
   try { info = await stat(real); } catch { return refuse('not_found'); }
@@ -152,15 +182,15 @@ async function resolveIn(root: string, candidate: unknown): Promise<Resolved> {
   return { ok: true, real, kind, size: info.size };
 }
 
-/** Which of these candidates are real files under this session's folder,
- *  and which of those are markdown. Read-only: nothing here opens, reads or
- *  reveals anything. The renderer asks this so a path that does not resolve
- *  can be left as plain text instead of becoming a link that does nothing.
+/** Which of these candidates are real files, and which of those are
+ *  markdown. Read-only: nothing here opens, reads or reveals anything. The
+ *  renderer asks this so a path that does not resolve can be left as plain
+ *  text instead of becoming a link that does nothing.
  *
  *  Answers positionally -- `kinds[i]` is `candidates[i]`'s -- with null for
  *  every candidate refused, for any reason. The renderer is told only
- *  "not a file here", never why: a per-candidate refusal reason would let
- *  a compromised renderer probe the filesystem's shape outside the root. */
+ *  "not a file", never why: a per-candidate refusal reason is more than it
+ *  needs, and "why not" is not a question a link needs answered. */
 export async function probeSessionFiles(
   rawPid: unknown, candidates: unknown, deps: FileDeps,
 ): Promise<FileProbeResult> {

@@ -1455,15 +1455,19 @@ export function registerIpc(
   });
   // A file an agent's reply names, clicked in the conversation. The
   // renderer only proposes the string it read off the transcript; every
-  // decision -- which folder it resolves against, whether it is really
-  // inside that folder once both sides are realpath'd, whether it exists,
-  // whether it is small enough to render, and whether it is read at all or
-  // merely shown in Finder -- is made in src/main/files.ts. The session's
-  // folder comes from this process's own discovery sweep, keyed by pid, so
-  // the renderer never names a root. shell.showItemInFolder, never
+  // decision -- which folder a relative one resolves against, whether it
+  // exists, whether it is small enough to render, and whether it is read at
+  // all or merely shown in Finder -- is made in src/main/files.ts. The
+  // session's folder comes from this process's own discovery sweep, keyed
+  // by pid, so the renderer never names a root.
+  //
+  // There is deliberately NO containment check: any markdown file that
+  // exists opens, including one above the session's folder. David's
+  // decision, 2026-09-22 -- src/main/files.ts's header has the reasoning
+  // and what the old restriction cost. shell.showItemInFolder, never
   // shell.openPath: openPath launches the file's default application,
   // which for a .command or a .app is code execution out of model-written
-  // text.
+  // text, and THAT is the guarantee that matters here.
   ipcMain.handle('session:file:probe', (_event, pid: unknown, candidates: unknown) =>
     probeSessionFiles(pid, candidates, fileDeps));
   ipcMain.handle('session:file:open', async (_event, pid: unknown, candidate: unknown, reveal: unknown) => {

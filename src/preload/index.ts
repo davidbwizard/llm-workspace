@@ -66,12 +66,14 @@ const api = {
   // a MODEL wrote reaches an OS call, so main decides everything: the pid
   // is the only session-identifying argument, and main looks the session's
   // working directory up in its own discovery data from it (the renderer
-  // never names a folder). fileProbe only stats -- it is what lets a path
-  // that does not resolve stay plain text instead of becoming a dead link.
-  // fileOpen reads a small markdown file back as text, or reveals anything
-  // else in Finder; `reveal` asks for Finder regardless. Nothing is ever
-  // handed to the OS default application. These typings narrow nothing at
-  // the trust boundary -- see src/main/files.ts for every actual check.
+  // never names a folder) to resolve a RELATIVE path. fileProbe only stats
+  // -- it is what lets a path that does not resolve stay plain text instead
+  // of becoming a dead link. fileOpen reads a small markdown file back as
+  // text, or reveals anything else in Finder; `reveal` asks for Finder
+  // regardless. Nothing is ever handed to the OS default application, which
+  // is the guarantee that matters -- a markdown file OUTSIDE the session's
+  // folder does open, deliberately (src/main/files.ts's header). These
+  // typings narrow nothing at the trust boundary.
   fileProbe: (pid: number, candidates: string[]) => ipcRenderer.invoke('session:file:probe', pid, candidates),
   fileOpen: (pid: number, candidate: string, reveal?: boolean) =>
     ipcRenderer.invoke('session:file:open', pid, candidate, reveal),

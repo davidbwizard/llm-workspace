@@ -56,10 +56,11 @@ declare global {
       // Images attached to one of your prompts, read back by main.
       attachments: (turnId: number) => Promise<AttachmentResult>;
       // A file an agent's reply names. Main owns every decision here --
-      // which folder the candidate resolves against (its own discovery
-      // data, keyed by pid), containment after realpath on both sides,
-      // existence, the size cap, and read-vs-reveal. These typings narrow
-      // nothing at the trust boundary itself.
+      // which folder a relative candidate resolves against (its own
+      // discovery data, keyed by pid), existence, the size cap, and
+      // read-vs-reveal. There is no containment check: any markdown file
+      // that exists opens (src/main/files.ts's header says why). These
+      // typings narrow nothing at the trust boundary itself.
       fileProbe: (pid: number, candidates: string[]) => Promise<FileProbeResult>;
       fileOpen: (pid: number, candidate: string, reveal?: boolean) => Promise<FileOpenResult>;
       // attach/detach/resize/sendRaw: Tasks 6b/10's streaming bridge. Left as
