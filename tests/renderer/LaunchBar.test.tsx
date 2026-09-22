@@ -422,6 +422,29 @@ describe('LaunchBar: naming a session at launch', () => {
     expect(categoryOfSession('s9')).toBeNull();
   });
 
+  // Review finding: the plain "Launch" half is a real, always-enabled
+  // `type="submit"` button that sits INSIDE the options panel's own
+  // outside-click boundary, so clicking it while the panel happens to be
+  // open does not read as closing the panel -- it launches, with
+  // `fromOptions` false. Before the fix, that silently discarded a category
+  // typed into the still-open panel with no message at all. The NAME stays
+  // unsent here too -- unchanged, since only the category-capture rule
+  // changed, not the name one.
+  it('still files a typed category when the plain Launch half is clicked while the panel is open', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'Fleet' } });
+    // The plain half, NOT "Launch with this name" -- its accessible name is
+    // exactly "Launch" (the dropdown's own button is labelled "Launch with
+    // this name"), so this is unambiguous even with the panel open.
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+    await waitFor(() =>
+      expect(launch).toHaveBeenCalledWith('claude', '/tmp/proj', expect.any(Number), expect.any(Number), null));
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryOfSession('s9')).toBe('Fleet');
+  });
+
   it('discards a typed category when the panel is closed without launching', () => {
     render(<LaunchBar onLaunched={() => {}} />);
     openOptions();

@@ -187,9 +187,24 @@ export function LaunchBar({ onLaunched, disabled = false }: {
     // typed. SESSION_NAME_SAFE would reject them, and refusing "  proj  "
     // as malformed would be pedantic rather than protective.
     const wanted = fromOptions && nameable ? name.trim() : '';
-    // Read BEFORE the await: cancelOptions below clears the field, and the
-    // binding has to be made from what was typed, not from what is left.
-    const wantedCategory = fromOptions ? category.trim() : '';
+    // Gated on `nameOpen`, deliberately NOT on `fromOptions` the way `wanted`
+    // above is. A category never reaches the CLI, so unlike the name it does
+    // not need to distinguish which of the split button's two halves was
+    // clicked -- only whether the panel was open with something typed in it.
+    // Review finding: the plain "Launch" half is a `type="submit"` button
+    // that sits INSIDE the panel's own outside-click boundary, so it stays
+    // clickable (and Enter in the working-directory field still submits the
+    // form) while the panel is open. Gating this on `fromOptions` alone
+    // meant opening the panel, typing a category, and clicking that plain
+    // half silently discarded it with no message -- the same silent-failure
+    // class already refused elsewhere in this app. `fromOptions` implies
+    // `nameOpen` (the two call sites that pass `true` only exist while the
+    // panel is rendered), so this only ADDS the plain-half-while-open case;
+    // it changes nothing about when a NAME is sent, which stays exactly as
+    // it was. Read BEFORE the await: cancelOptions below clears the field,
+    // and the binding has to be made from what was typed, not from what is
+    // left.
+    const wantedCategory = nameOpen ? category.trim() : '';
     if (wanted !== '') {
       // The same two rules main enforces (launchCommand, src/main/launch.ts),
       // checked here for immediate feedback. This is an affordance, not the

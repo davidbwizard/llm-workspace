@@ -4,6 +4,7 @@ import {
   getGroups, categoryNames, categoryOfSession, assignCategory, renameCategory, deleteCategory,
   categoryInUse, pruneAssignments, isStackOpen, toggleStack, orderIndex, rememberKeys, moveRow,
   subscribeGroups, reloadGroups, categoryForRow, bindPendingCategory, resolvePendingCategories,
+  PENDING_CATEGORY_PUSH_LIMIT,
 } from '../../src/renderer/state/groups.ts';
 
 // A module-scoped singleton, the same shape settings.ts and favourites.ts
@@ -475,6 +476,62 @@ describe('pending launch-time categories', () => {
     // that very pid assigns nothing.
     resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
     expect(categoryOfSession('s9')).toBeNull();
+  });
+
+  // Review finding: the test above only ever exercises the SEEN path (a
+  // push with `sessionId: null` marks `seen` before the pid vanishes). A pid
+  // that never appears in a single push -- a process that crashed before
+  // discovery's very first sweep, or was never really spawned -- used to
+  // wait FOREVER, because the drop above only fires once `seen` is true.
+  // PENDING_CATEGORY_PUSH_LIMIT bounds that wait.
+  it('drops a binding whose pid never appears in any push at all, once the missed-push bound elapses', () => {
+    bindPendingCategory(4821, 'Fleet');
+    // Every one of these pushes is non-empty (an empty push is ignored
+    // outright, per "ignores an empty live list" below) and carries some
+    // OTHER pid -- never 4821.
+    for (let i = 0; i < PENDING_CATEGORY_PUSH_LIMIT; i++) {
+      resolvePendingCategories([{ pid: 999, sessionId: 'other' }]);
+    }
+    // Proof it is gone rather than merely unresolved: a later push finally
+    // carrying that very pid assigns nothing.
+    resolvePendingCategories([{ pid: 4821, sessionId: 's9' }]);
+    expect(categoryOfSession('s9')).toBeNull();
+  });
+
+  // The specific failure the review proved on David's machine: 200 pushes
+  // without pid 4821, then one push carrying 4821 with an UNRELATED session
+  // id -- the shape of a pid the OS recycled for a different process hours
+  // later. Before the bound existed, categoryForRow painted the stale
+  // category onto that unrelated row, and this function PERSISTED the
+  // assignment to that session's id. Neither may happen once the binding
+  // has timed out.
+  it('never lets a pid recycled after the missed-push bound inherit a stale binding', () => {
+    bindPendingCategory(4821, 'Fleet');
+    for (let i = 0; i < PENDING_CATEGORY_PUSH_LIMIT; i++) {
+      resolvePendingCategories([{ pid: 999, sessionId: 'other' }]);
+    }
+    // A pid the OS reused for a completely different, unrelated session.
+    resolvePendingCategories([{ pid: 4821, sessionId: 'recycled-session' }]);
+    expect(categoryOfSession('recycled-session')).toBeNull();
+    expect(getGroups().assignments).toEqual({});
+    // Nothing is painted on the row either -- the fallback has nothing left
+    // to fall back to.
+    expect(categoryForRow({ pid: 4821, sessionId: null })).toBeNull();
+  });
+
+  it('notifies subscribers when a binding times out from never once being seen', () => {
+    bindPendingCategory(4821, 'Fleet');
+    // One push short of the bound, with no subscriber yet -- these pushes
+    // are not what this test is proving.
+    for (let i = 0; i < PENDING_CATEGORY_PUSH_LIMIT - 1; i++) {
+      resolvePendingCategories([{ pid: 999, sessionId: 'other' }]);
+    }
+    const cb = vi.fn();
+    const unsubscribe = subscribeGroups(cb);
+    // The push that finally crosses the bound.
+    resolvePendingCategories([{ pid: 999, sessionId: 'other' }]);
+    expect(cb).toHaveBeenCalledTimes(1);
+    unsubscribe();
   });
 
   // The two halves have different lifetimes, and this is where that shows:

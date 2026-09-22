@@ -41,6 +41,12 @@ export const MAX_CATEGORY_LENGTH = 32;
  *  but a hand-edited or older blob could carry any number, and this list is
  *  rendered in full inside a card menu. */
 export const MAX_CATEGORIES = 24;
+/** How many CONSECUTIVE fleet pushes a launch-time binding may go without its
+ *  pid EVER appearing in the live list, before it is dropped as unspawnable.
+ *  Counted in pushes, not wall-clock time, so the bound is deterministic and
+ *  testable without an injectable clock -- see resolvePendingCategories's own
+ *  doc comment for the bug this closes and the numbers behind it. */
+export const PENDING_CATEGORY_PUSH_LIMIT = 12;
 
 export type GroupsState = {
   /** Category names, in the order they were first created. Creation order,
@@ -310,8 +316,22 @@ export function pruneAssignments(liveSessionIds: string[]): void {
  *  process that has DIED apart from one that discovery has simply not swept
  *  up yet -- discovery runs on a timer, so the first push after a launch
  *  routinely does not contain the pid the app just spawned, and dropping
- *  there would lose the binding of every fast launch. */
-type PendingCategory = { name: string; seen: boolean };
+ *  there would lose the binding of every fast launch.
+ *
+ *  `missedPushes` bounds the case `seen` cannot: a pid that never appears in
+ *  ANY push at all, not even once -- a process that crashed before
+ *  discovery's first sweep, or was never really spawned. Left unbounded,
+ *  this is the exact failure the identity ruling exists to prevent,
+ *  reintroduced in the one place a pid is allowed to be a key: a pid the OS
+ *  recycles hours later for an unrelated process arrives in some later push
+ *  carrying a real, unrelated session id, and this binding -- having waited
+ *  forever, having never been told the original process was gone -- assigns
+ *  its name to that unrelated session and PERSISTS it. Counted only while
+ *  `!seen`: once a pid has been seen even once, it is a real, live process,
+ *  and the existing seen-then-vanished rule already drops it correctly
+ *  without any bound (Claude Code can legitimately take up to 11 minutes to
+ *  write anything indexable). */
+type PendingCategory = { name: string; seen: boolean; missedPushes: number };
 const pendingByPid = new Map<number, PendingCategory>();
 
 /** Holds `name` against a pid the app has just spawned, and CREATES the name
@@ -346,29 +366,50 @@ export function bindPendingCategory(pid: number, name: string): void {
   if (clean === '') return;
   const known = current.categories.includes(clean);
   if (!known && current.categories.length >= MAX_CATEGORIES) return;
-  pendingByPid.set(pid, { name: clean, seen: false });
+  pendingByPid.set(pid, { name: clean, seen: false, missedPushes: 0 });
   if (known) { for (const listener of listeners) listener(); return; }
   commit({ ...current, categories: [...current.categories, clean] });
 }
 
 /** Transfers every pending binding whose pid discovery has now resolved to a
- *  session id, and drops the ones whose process is gone. Called on every
- *  fleet push (useFleet), beside pruneAssignments.
+ *  session id, and drops the ones whose process is gone or never appeared.
+ *  Called on every fleet push (useFleet), beside pruneAssignments.
  *
- *  Three outcomes per binding, and the middle one is the whole point:
+ *  Four outcomes per binding, and the middle two are the whole point:
  *  - the pid carries a session id  -> assign, and forget the binding;
- *  - the pid is present with none  -> keep waiting. Claude Code writes
- *    nothing indexable until the first prompt, measured at 11 seconds for
- *    one session and 11 minutes for another, and unbounded if nobody ever
- *    prompts;
+ *  - the pid is present with none  -> keep waiting, unboundedly. Claude Code
+ *    writes nothing indexable until the first prompt, measured at 11 seconds
+ *    for one session and 11 minutes for another, and unbounded if nobody
+ *    ever prompts. `seen` is set so a later disappearance (below) reads as
+ *    confirmed death rather than "still starting up";
  *  - the pid is absent, having been seen before -> the process died before
- *    it was ever nameable. Drop it. Nothing is retried and nothing is shown:
- *    there is no session left to show it on.
+ *    it was ever nameable. Drop it immediately. Nothing is retried and
+ *    nothing is shown: there is no session left to show it on;
+ *  - the pid is absent and has NEVER been seen -> count a missed push, and
+ *    drop it once PENDING_CATEGORY_PUSH_LIMIT is reached. This is the fix
+ *    for the review-found bug this file used to have: a pid that crashed (or
+ *    was never really spawned) before discovery's very first sweep set
+ *    `seen` would otherwise wait FOREVER, and macOS reusing that exact pid
+ *    number for an unrelated process hours later (pids were measured at
+ *    99129 of a 99999 ceiling on this machine) would then have this binding
+ *    silently paint, and PERSIST, its name onto that unrelated session --
+ *    precisely the "a pid does not vanish, it silently transfers" failure
+ *    the spec's identity ruling exists to prevent, reintroduced in the one
+ *    place a pid is an allowed key. Sized in PUSHES rather than wall-clock
+ *    time so the bound is deterministic and testable with no injectable
+ *    clock: discovery sweeps roughly every 5s (src/main/index.ts's own
+ *    discoveryTimer), so PENDING_CATEGORY_PUSH_LIMIT pushes is roughly a
+ *    minute -- comfortably longer than the one or two sweeps a genuinely
+ *    spawned process needs to become visible to `pgrep`, and nowhere close
+ *    to the HOURS pid recycling needs, so a pid this binding finally sees
+ *    again after the bound has elapsed is never the same process.
  *
  *  An EMPTY live list is ignored for the same reason pruneAssignments
  *  ignores it: "nothing running" and "nothing discovered yet" arrive here as
  *  the same empty array, and treating the second as the first would throw
- *  away a binding made moments earlier. */
+ *  away a binding made moments earlier. It also means an empty push never
+ *  counts toward the missed-push bound above -- consistent with treating it
+ *  as "not discovered yet", not as evidence of anything. */
 export function resolvePendingCategories(live: { pid: number; sessionId: string | null }[]): void {
   if (pendingByPid.size === 0 || live.length === 0) return;
   const sessionIdByPid = new Map(live.map(s => [s.pid, s.sessionId]));
@@ -379,7 +420,13 @@ export function resolvePendingCategories(live: { pid: number; sessionId: string 
   // Snapshotted, because the loop deletes from the map it is reading.
   for (const [pid, pending] of [...pendingByPid]) {
     if (!sessionIdByPid.has(pid)) {
-      if (pending.seen) { pendingByPid.delete(pid); droppedWithoutAssigning = true; }
+      if (pending.seen) {
+        pendingByPid.delete(pid);
+        droppedWithoutAssigning = true;
+      } else if (++pending.missedPushes >= PENDING_CATEGORY_PUSH_LIMIT) {
+        pendingByPid.delete(pid);
+        droppedWithoutAssigning = true;
+      }
       continue;
     }
     const sessionId = sessionIdByPid.get(pid) ?? null;

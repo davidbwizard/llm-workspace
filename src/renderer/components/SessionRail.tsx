@@ -285,9 +285,9 @@ export function SessionRail({
   // Pruning a dead assignment is NOT done here. It belongs on the fleet push
   // itself, which useFleet owns (Task 8) -- this component is not mounted in
   // every view, and an assignment's lifetime must not depend on which pane
-  // happens to be on screen. Until Task 8 lands, an assignment simply
-  // outlives its session; nothing renders for it, because rows are built
-  // from the live sessions, not from the map.
+  // happens to be on screen. If a stale assignment were ever to outlive its
+  // session anyway, nothing would render for it, because rows are built from
+  // the live sessions, not from the map.
   //
   // The join/split below is how a string dependency stands in for an array
   // one: useEffect compares deps by identity, and a fresh array each render
