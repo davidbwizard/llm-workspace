@@ -166,6 +166,45 @@
     padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
 }
 
+/* The same drop order again, shifted wider, for a row that is also
+   carrying a sub-agent count. A container query cannot ask whether that
+   element is present, so OpenSessionCard marks the row `hasagents` and
+   these thresholds apply only to those -- a card without agents keeps the
+   narrower ones above and loses nothing for a feature it is not using.
+
+   MEASURED with a worst-case row (778k / 100% left / a 7-character status
+   word / 4 of 10 agents), then the same 15px classic-scrollbar headroom
+   the rules above carry:
+
+     query >= 295px   778k · 100% left  4/10  (icon) working  ...  1
+     251-294px               100% left  4/10  (icon) working  ...  1
+     201-250px               100% left  4/10  (icon)          ...  1
+     < 201px                 100% left        (icon)          ...  1
+
+   The agent count drops LAST, after the status word, which is the one
+   judgement call in this order. The word has the icon standing in for it
+   once it goes, so the state is still readable; the count has no such
+   fallback, and it is only ever on screen when there is something to
+   count. The token count goes first as before -- it is also on the
+   conversation header, so it is the one number this row is not the only
+   place to read. */
+@container rail (max-width: 294px) {
+  .rail .hasagents .ctxchip-tok, .rail .hasagents .ctxchip-sep { display:none; }
+}
+@container rail (max-width: 250px) {
+  /* Same clip-path, same reason, as the narrower rule above: hidden to
+     look at, still there to be read aloud. */
+  .rail .hasagents .state-word { position:absolute; width:1px; height:1px; margin:-1px;
+    padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+}
+@container rail (max-width: 200px) {
+  /* Dropped whole. .agents carries its own accessible name inside it, so
+     display:none takes the name with it -- which is right here: the count
+     is not being hidden, it is not being shown at all, and announcing a
+     number the card is not claiming would be worse than silence. */
+  .rail .agents { display:none; }
+}
+
 /* The reply trigger for a card that is waiting on you. A sibling of
    OpenSessionCard's own <article>, not something nested inside it -- the
    card's onOpen already means "select this session"; this needs an

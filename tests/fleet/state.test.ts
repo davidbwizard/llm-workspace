@@ -530,7 +530,7 @@ describe('openSessions', () => {
     expect(open).toEqual([{
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, lastProse:null, events:null, activity:null, tmux:false, junk:false, context:null,
+      sessionId:null, lastProse:null, events:null, agents:null, liveAgents:null, activity:null, tmux:false, junk:false, context:null,
     }]);
   });
 
@@ -1013,7 +1013,7 @@ describe('openSessionsLive', () => {
     expect(open).toEqual([{
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, lastProse:null, events:null, activity:null, tmux:false, junk:false, context:null,
+      sessionId:null, lastProse:null, events:null, agents:null, liveAgents:null, activity:null, tmux:false, junk:false, context:null,
     }]);
   });
 
@@ -1708,7 +1708,7 @@ describe('compareOpenSessions', () => {
     return {
       provider:'claude', host:'unknown', cwd:'/repo/x', project:'x', ageSeconds:null, rssBytes:null,
       match:'unknown', sessionId:null, lastProse:null, events:null, activity:null, tmux:false,
-      junk:false, context:null, ...o,
+      junk:false, context:null, agents:null, liveAgents:null, ...o,
     };
   }
 
@@ -1859,5 +1859,113 @@ describe('sessionCwd', () => {
     expect(sessionCwd(db, 's1')).toBe('/new');
     expect(sessionCwd(db, 's2')).toBeNull();
     expect(sessionCwd(db, 'nope')).toBeNull();
+  });
+});
+
+/* ---- sub-agent counts on open-session cards --------------------------
+   The history card has shown `liveAgents/agents` since the grid existed;
+   an open-session card had no agents data at all. What these pin is not
+   the number so much as the THREE-WAY distinction the card depends on:
+   null (this pid is not uniquely matched, so nothing can be attributed to
+   it), 0 (matched, and it really has spawned none), and n. Collapsing null
+   into 0 would have the card assert "no sub-agents" about a session it has
+   not identified. */
+describe('sub-agent counts on open sessions', () => {
+  function proc(o: Partial<LiveProcess> & { pid: number }): LiveProcess {
+    return { provider: 'claude', tty: null, cwd: null, host: 'unknown', ageSeconds: null, rssBytes: null, ...o };
+  }
+
+  /** A session at `cwd` that spawned `ids`, each agent's own latest event
+   *  `staleMin` minutes old. liveAgents is a recency heuristic over each
+   *  agent's OWN last event (see fleetState's note), so that age is what
+   *  decides live-vs-not, not the spawn itself. */
+  function dbWithAgents(ids: string[], opts: { cwd?: string; staleMin?: number; session?: string } = {}) {
+    const cwd = opts.cwd ?? '/repo/agents';
+    const sid = opts.session ?? 's1';
+    const staleMin = opts.staleMin ?? 0;
+    const db = openDb(':memory:');
+    const rows: NormalizedEvent[] = [
+      ev({ sessionId: sid, kind: 'session.started', payload: { cwd }, contentHash: `${sid}-start` }),
+      ev({ sessionId: sid, kind: 'prose', payload: { text: 'root turn' }, contentHash: `${sid}-prose`, subIndex: 1 }),
+    ];
+    ids.forEach((id, i) => {
+      rows.push(ev({ sessionId: sid, agentId: id, kind: 'agent.spawned', ts: at(staleMin + 1),
+        contentHash: `${sid}-${id}-spawn`, subIndex: 2 + i * 2 }));
+      rows.push(ev({ sessionId: sid, agentId: id, kind: 'prose', payload: { text: `from ${id}` },
+        ts: at(staleMin), contentHash: `${sid}-${id}-prose`, subIndex: 3 + i * 2 }));
+    });
+    insertEvents(db, rows);
+    return db;
+  }
+
+  it('counts every agent the matched session ever spawned', () => {
+    const db = dbWithAgents(['a1', 'a2', 'a3']);
+    const [o] = openSessionsLive(db, [proc({ pid: 1, cwd: '/repo/agents', ageSeconds: 600 })], NOW);
+    expect(o!.match).toBe('unique');
+    expect(o!.agents).toBe(3);
+  });
+
+  // Same WORKING_MS window the session itself uses to call itself
+  // `working`, applied per agent -- so an idle session reports agents
+  // spawned but none live, never a stale-but-nonzero count.
+  it('counts as live only the agents whose own last event is recent', () => {
+    const fresh = dbWithAgents(['a1', 'a2']);
+    const [live] = openSessionsLive(fresh, [proc({ pid: 1, cwd: '/repo/agents', ageSeconds: 600 })], NOW);
+    expect(live!.liveAgents).toBe(2);
+
+    const stale = dbWithAgents(['a1', 'a2'], { staleMin: 30 });
+    const [quiet] = openSessionsLive(stale, [proc({ pid: 1, cwd: '/repo/agents', ageSeconds: 600 })], NOW);
+    expect(quiet!.agents).toBe(2);
+    expect(quiet!.liveAgents).toBe(0);
+  });
+
+  it('reports 0, not null, for a matched session that spawned none', () => {
+    const db = dbWithAgents([]);
+    const [o] = openSessionsLive(db, [proc({ pid: 1, cwd: '/repo/agents', ageSeconds: 600 })], NOW);
+    expect(o!.match).toBe('unique');
+    expect(o!.agents).toBe(0);
+    expect(o!.liveAgents).toBe(0);
+  });
+
+  // The distinction the card is built on: "we cannot say" is not "none".
+  it('reports null, not 0, when the pid matches no session at all', () => {
+    const db = dbWithAgents(['a1']);
+    const [o] = openSessionsLive(db, [proc({ pid: 1, cwd: '/somewhere/else', ageSeconds: 600 })], NOW);
+    expect(o!.match).toBe('unknown');
+    expect(o!.agents).toBeNull();
+    expect(o!.liveAgents).toBeNull();
+  });
+
+  it('reports null, not 0, when several sessions share the cwd and none wins', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ sessionId:'s1', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+      ev({ sessionId:'s1', agentId:'a1', kind:'agent.spawned', contentHash:'b', subIndex:1 }),
+      ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'c', subIndex:2 }),
+    ]);
+    // Two live processes in the folder: neither disambiguation path can
+    // resolve either, so both stay ambiguous.
+    const open = openSessionsLive(db, [
+      proc({ pid:1, cwd:'/repo/shared', ageSeconds:600 }),
+      proc({ pid:2, cwd:'/repo/shared', ageSeconds:600 }),
+    ], NOW);
+    for (const o of open) {
+      expect(o.match).toBe('ambiguous');
+      expect(o.agents).toBeNull();
+      expect(o.liveAgents).toBeNull();
+    }
+  });
+
+  // openSessions (the session-array path) must agree with openSessionsLive
+  // (the bounded path) -- they are two routes to the same card, and the
+  // app has been bitten by them computing a field differently before.
+  it('agrees with the session-array path', () => {
+    const db = dbWithAgents(['a1', 'a2']);
+    const processes = [proc({ pid: 1, cwd: '/repo/agents', ageSeconds: 600 })];
+    const [viaLive] = openSessionsLive(db, processes, NOW);
+    const [viaArray] = openSessions(fleetState(db, { now: NOW, processes }), processes);
+    expect(viaArray!.agents).toBe(viaLive!.agents);
+    expect(viaArray!.liveAgents).toBe(viaLive!.liveAgents);
+    expect(viaArray!.agents).toBe(2);
   });
 });

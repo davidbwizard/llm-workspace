@@ -197,6 +197,12 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   // enrichment -- see openSessions' doc comment in src/fleet/state.ts.
   const providerLabel = state.provider === 'claude' ? 'Claude' : 'Codex';
   const blocked = state.activity === 'waiting_permission' || state.activity === 'waiting_input';
+  // Null unless there is genuinely something to show, so one test governs
+  // both the element and the card's own `hasagents` marker below -- they
+  // can never disagree about whether the row is carrying this.
+  const agentCount = state.agents != null && state.agents > 0 && state.liveAgents != null
+    ? `${state.liveAgents} of ${state.agents} sub-agents running`
+    : null;
   const activityWord = state.activity ? ACTIVITY_WORD[state.activity] : null;
   // A blocked card already shows its own badge (below) and its own
   // "waiting on you" wording -- a stronger, more specific signal than
@@ -466,8 +472,40 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
         <p className={`compact-said ${blocked ? 'wait' : ''}`}>{state.lastProse}</p>
       )}
 
-      <div className="metrics">
+      {/* `hasagents` on the ROW, not the card: in the fleet grid the query
+          container IS the card (FleetView.css), and an @container block can
+          only match DESCENDANTS of its container -- a class on the card
+          itself is invisible to its own query. .metrics is a descendant in
+          both the rail's container and the grid's, so one marker serves
+          both. A container query cannot ask "is this child present", so the
+          row has to say so for the width rules to budget for it. */}
+      <div className={`metrics${agentCount !== null ? ' hasagents' : ''}`}>
         {!compact && state.events != null && <span>{state.events.toLocaleString()}</span>}
+        {/* Sub-agents, as `live/total` -- the same notation the history
+            card prints beside its dial, so the two card kinds count the
+            same thing the same way.
+
+            WITHOUT the dial, and that was measured rather than chosen: the
+            dial is `5 + pips*10` px wide, so at ten agents it alone is
+            105px, and a rail card has 121px of content at the default
+            width. Carrying it here needed a 408px rail (the maximum is
+            420) and a 412px grid card (the minimum column is 280). The
+            label is nearly flat by comparison -- ~27px whatever the count.
+
+            Rendered only when there ARE agents: `agents > 0`, not
+            `!= null`. Null means this pid is not uniquely matched and 0
+            means it genuinely spawned none (see OpenSession's own note) --
+            both show nothing, because neither is worth a "0/0", and the
+            common card then pays no width at all for this. */}
+        {agentCount !== null && (
+          <span className="agents">
+            <span aria-hidden="true">{state.liveAgents}/{state.agents}</span>
+            {/* "2/3" is read as "two slash three", which names nothing.
+                The digits are the decoration; this is the accessible
+                name. */}
+            <span className="agents-name">{agentCount}</span>
+          </span>
+        )}
         {/* Usage design, Part B: shown on both the full and compact card
             (unlike events/procMeta above, which are full-card only) --
             hidden entirely when there is no count yet (ContextChip's own

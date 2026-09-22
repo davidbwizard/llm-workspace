@@ -29,7 +29,7 @@ const s = (o: Partial<SessionState>): SessionState => ({
 // never from a match, so it is never null.
 const o = (over: Partial<OpenSession>): OpenSession => ({
   pid:1, provider:'claude', host:'unknown', cwd:'/r', project:'proj', ageSeconds:60, rssBytes:null,
-  match:'unknown', sessionId:null, lastProse:null, events:null,
+  match:'unknown', sessionId:null, lastProse:null, events:null, agents:null, liveAgents:null,
   activity:null, tmux:false, junk:false, context:null, ...over,
 });
 
