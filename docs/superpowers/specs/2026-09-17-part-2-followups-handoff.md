@@ -224,3 +224,22 @@ message in the same form as an unsent one). What worked, all day:
   there is no supported non-keystroke way to answer a Claude Code prompt --
   hooks observe, the SDK covers tool permissions, Remote Control has no
   programmatic surface.
+- **Feature ideas (David, 2026-09-22), not specced, not built:**
+  1. **Stop the cards moving on their own.** Today the rail reorders itself as
+     sessions become active, so a card can move out from under the cursor
+     mid-click. David wants the order held still and reorderable by hand.
+     Questions before building: where does a NEW session land in a fixed
+     order, and what happens to the gap when one ends; drag-and-drop is
+     famously unusable by keyboard, so it needs a keyboard equivalent, not an
+     afterthought; the order is per-machine state, so it belongs with
+     favourites and settings; and Cmd+1-9 is defined by sidebar order, so a
+     hand-sorted rail silently redefines what Cmd+3 opens -- which is
+     probably what you want, but it should be a decision.
+  2. **A "needs attention" band when the waiting card is out of view.**
+     Scrolled past a session that is waiting on you, and the rail should say
+     so rather than letting it sit unseen -- which is the app's whole reason
+     for existing. The conversation's "Jump to latest" is the precedent for
+     both the look and the mechanics; it needs to know direction (above or
+     below), a count when more than one, and to take you there on click.
+     Waiting is already the only filled status mark, so the band should use
+     that same shape rather than inventing a third vocabulary.
