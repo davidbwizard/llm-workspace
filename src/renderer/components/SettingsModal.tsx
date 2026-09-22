@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import {
-  APPEARANCES, COMPACT_CARDS, DEFAULT_SETTINGS, MESSAGE_STYLES, TEXT_SIZES, GROUP_SESSIONS, setSettings, useSettings,
-  type Appearance, type CompactCards, type MessageStyle, type TextSize, type GroupSessions,
+  APPEARANCES, COMPACT_CARDS, DEFAULT_SETTINGS, MESSAGE_STYLES, TEXT_SIZES, setSettings, useSettings,
+  type Appearance, type CompactCards, type MessageStyle, type TextSize,
 } from '../state/settings.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { DependencyChecks, CheckAgain } from './DependencyChecks.tsx';
@@ -28,6 +28,8 @@ const MESSAGE_STYLE_LABEL: Record<MessageStyle, string> = {
 };
 const COMPACT_HELP =
   "Compact cards show the logo, name, status and terminal. The folder path always appears at the top of a session's conversation.";
+const GROUP_SESSIONS_HELP =
+  "Collapses sessions that share a folder into one row. Categories and your manual row order apply either way.";
 const FOOTER_CAPTION = 'Changes apply right away and are remembered.';
 
 /** Design §4's wording, with the consent step named. Turning this ON no
@@ -197,6 +199,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const compactLabelId = useId();
   const textSizeLabelId = useId();
   const styleLabelId = useId();
+  const groupSessionsLabelId = useId();
   const quickAnswersLabelId = useId();
   const usageLabelId = useId();
 
@@ -373,14 +376,16 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             <p className="settingshelp">{COMPACT_HELP}</p>
           </div>
           <div className="settingsfield">
-            <label className="setrow">
-              <input
-                type="checkbox"
+            <div className="settingsswitchrow">
+              <div className="settingslabel" id={groupSessionsLabelId}>Group sessions by folder</div>
+              <QuickAnswersSwitch
                 checked={settings.groupSessions === 'on'}
-                onChange={e => setSettings({ groupSessions: e.target.checked ? 'on' : 'off' })}
+                disabled={false}
+                labelId={groupSessionsLabelId}
+                onToggle={() => setSettings({ groupSessions: settings.groupSessions === 'on' ? 'off' : 'on' })}
               />
-              <span>Group sessions by folder</span>
-            </label>
+            </div>
+            <p className="settingshelp">{GROUP_SESSIONS_HELP}</p>
           </div>
         </section>
 

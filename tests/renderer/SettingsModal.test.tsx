@@ -171,13 +171,13 @@ describe('SettingsModal', () => {
 
   it('offers a control for grouping sessions by folder', () => {
     render(<SettingsModal open={true} onClose={() => {}} />);
-    const control = screen.getByRole('checkbox', { name: /group sessions by folder/i });
-    expect((control as HTMLInputElement).checked).toBe(true);
+    const control = screen.getByRole('switch', { name: /group sessions by folder/i });
+    expect(control.getAttribute('aria-checked')).toBe('true');
   });
 
   it('writes the setting when toggled off', () => {
     render(<SettingsModal open={true} onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('checkbox', { name: /group sessions by folder/i }));
+    fireEvent.click(screen.getByRole('switch', { name: /group sessions by folder/i }));
     expect(getSettings().groupSessions).toBe('off');
   });
 
