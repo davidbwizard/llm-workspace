@@ -491,8 +491,22 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
     expect(new Set(Object.keys(open))).toEqual(known);
   });
 
+  // The behaviour behind that classification, observed directly rather
+  // than inferred from the list: a session name comes out of a file any
+  // process running as this user can write, and it becomes the card's
+  // title. A bidi override in it would rewrite what the card appears to
+  // say, and React would happily render it.
+  it('strips bidi and zero-width characters out of a session name on the way to the renderer', () => {
+    const dirty = { cwd: '/a', project: 'a', lastProse: null, name: 'safe‮evil​' };
+    const clean = sanitizeFields(dirty, OPEN_SESSION_SANITISED_FIELDS as unknown as readonly (keyof typeof dirty)[]);
+    expect(clean.name).not.toMatch(/[‪-‮​-‏]/);
+    expect(clean.name).not.toBe(dirty.name);
+  });
+
   it('pins the open-session field classification exactly, not just its coverage', () => {
-    expect(OPEN_SESSION_SANITISED_FIELDS).toEqual(['cwd', 'project', 'lastProse']);
+    // `name` is sanitised, never structural: it is free text from a file
+    // outside this app and it becomes the card's title.
+    expect(OPEN_SESSION_SANITISED_FIELDS).toEqual(['cwd', 'project', 'lastProse', 'name']);
     expect(OPEN_SESSION_STRUCTURAL_FIELDS).toEqual([
       'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity', 'tmux',
       'junk', 'context', 'agents', 'liveAgents',
@@ -1731,6 +1745,27 @@ describe("session:launch / session:reattach -- Task 13's real handlers", () => {
     const reattachHandler = ipc.match(/ipcMain\.handle\(\s*'session:reattach',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
     expect(launchHandler).toMatch(/launchSession\(/);
     expect(reattachHandler).toMatch(/reattachSession\(/);
+  });
+
+  // The session name is user-typed free text that ends up inside the shell
+  // string tmux runs (src/main/launch.ts's own note), so the handler must
+  // put it through launchCommand -- which validates AND quotes -- rather
+  // than interpolating it, and must refuse rather than launch when that
+  // comes back not-ok. Source assertion for the same plain-node-vitest
+  // reason as the wiring tests above; launchCommand's own behaviour is
+  // tests/main/launch.test.ts's job.
+  it('session:launch puts the session name through launchCommand, and refuses when it is rejected', () => {
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
+    expect(ipc).toMatch(/import\s*\{[^}]*launchCommand[^}]*\}\s*from\s*'\.\/launch\.ts'/);
+    const launchHandler = ipc.match(/ipcMain\.handle\(\s*'session:launch',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
+    expect(launchHandler).toMatch(/launchCommand\(/);
+    // The refusal must come BEFORE launchSession is ever called.
+    const refusal = launchHandler.indexOf("status: 'failed', reason: command.reason");
+    expect(refusal).toBeGreaterThanOrEqual(0);
+    expect(refusal).toBeLessThan(launchHandler.indexOf('launchSession('));
+    // Never built by hand: a template literal carrying the name would
+    // bypass both the character set and the quoting.
+    expect(launchHandler).not.toMatch(/`[^`]*-n[^`]*\$\{/);
   });
 
   // Fix-wave item 5's recovery path: session:resume is what a retry after

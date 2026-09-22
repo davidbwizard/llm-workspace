@@ -42,6 +42,53 @@
   color:var(--ground); background:var(--accent); border:0; border-radius:6px;
   padding:6px 14px; cursor:pointer; }
 .launchgo:disabled { opacity:.6; cursor:default; }
+
+/* The split Launch button and its options dropdown (session-names design
+   artifact FYpoko2voK1xdg5AXenBjf). The wrapper is the positioned ancestor
+   for the panel AND the outside-click boundary its own effect checks --
+   same shape as .usagewrap below and OpenSessionCard.css's .cardmenu, so a
+   click on the chevron while the panel is open is never mistaken for an
+   outside click.
+
+   flex:none so the split never gives way when the bar wraps: .launchcwd is
+   the one control in this row that flexes. */
+.launchsplit { display:inline-flex; position:relative; flex:none; -webkit-app-region:no-drag; }
+/* The two halves read as one control: square the inner corners so the seam
+   between them is the only edge, not two rounded buttons sitting together. */
+.launchsplit .launchgo { border-radius:6px 0 0 6px; }
+.launchmore { display:inline-grid; place-items:center; width:26px; line-height:1;
+  color:var(--ground); background:var(--accent); border:0;
+  /* The seam. color-mix against --ground rather than a fixed colour so it
+     survives the light/dark swap with the button it divides. */
+  border-left:1px solid color-mix(in srgb, var(--ground) 28%, transparent);
+  border-radius:0 6px 6px 0; padding:0; cursor:pointer; }
+.launchgo:hover:not(:disabled), .launchmore:hover:not(:disabled) { filter:brightness(1.08); }
+.launchmore[aria-expanded="true"] { filter:brightness(.92); }
+.launchmore:disabled { opacity:.6; cursor:default; }
+
+/* right:0, never left:0 -- the panel's RIGHT edge lines up with the
+   button's and it grows leftward, inside the window. Same fix, and the same
+   reported bug, as .usagewrap .usagepop below. */
+.launchdrop { position:absolute; top:calc(100% + 6px); right:0; z-index:20; width:290px;
+  display:flex; flex-direction:column; gap:9px; padding:11px;
+  background:var(--surface); border:1px solid var(--line); border-radius:9px;
+  box-shadow:var(--shadow-pop); -webkit-app-region:no-drag; text-align:left; }
+.launchdrop label { display:flex; flex-direction:column; gap:5px;
+  font-size:12.5px; color:var(--ink-2); }
+/* Disabled with the reason attached, so the label dims with its field
+   rather than the field alone looking broken beside a live label. */
+.launchdrop label.off { opacity:.55; }
+.launchdrop input { font-family:var(--f-mono); font-size:12px; color:var(--ink);
+  background:var(--ground); border:1px solid var(--line); border-radius:6px; padding:7px 9px;
+  /* min-width:0 so a long typed name scrolls inside the field instead of
+     stretching the panel (and, through it, the launch bar) wider. */
+  min-width:0; }
+.launchdrop input::placeholder { color:var(--faint); }
+.launchdrop small { font-size:11.5px; color:var(--faint); }
+.launchdrop small.warn { color:var(--signal); }
+.launchdrop-row { display:flex; align-items:center; gap:8px; }
+/* Its own button again, not half of a split: square all four corners back. */
+.launchdrop .launchgo { border-radius:6px; padding:7px 14px; }
 .launchmsg { margin:0; font-size:11px; color:var(--signal); flex-basis:100%; }
 .launchgear { display:inline-flex; align-items:center; line-height:1; color:var(--muted);
   background:none; border:1px solid var(--line-soft); border-radius:6px;

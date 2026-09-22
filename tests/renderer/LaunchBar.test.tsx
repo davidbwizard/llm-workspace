@@ -26,30 +26,31 @@ describe('LaunchBar', () => {
     const onLaunched = vi.fn();
     render(<LaunchBar onLaunched={onLaunched} />);
     fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
-    fireEvent.click(screen.getByRole('button', { name: /launch/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
     await waitFor(() => expect(onLaunched).toHaveBeenCalledWith(4821));
-    expect(launch).toHaveBeenCalledWith('claude', '/tmp/proj', expect.any(Number), expect.any(Number));
+    expect(launch).toHaveBeenCalledWith('claude', '/tmp/proj', expect.any(Number), expect.any(Number), null);
   });
 
   it('sends the provider the user actually picked, not always the default', async () => {
     render(<LaunchBar onLaunched={() => {}} />);
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
     fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
-    fireEvent.click(screen.getByRole('button', { name: /launch/i }));
-    await waitFor(() => expect(launch).toHaveBeenCalledWith('codex', '/tmp/proj', expect.any(Number), expect.any(Number)));
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+    await waitFor(() =>
+      expect(launch).toHaveBeenCalledWith('codex', '/tmp/proj', expect.any(Number), expect.any(Number), null));
   });
 
   it('shows the failure reason instead of failing silently', async () => {
     launch.mockResolvedValue({ status: 'failed', reason: 'tmux: no server running' });
     render(<LaunchBar onLaunched={() => {}} />);
     fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
-    fireEvent.click(screen.getByRole('button', { name: /launch/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
     await waitFor(() => expect(screen.getByText(/no server running/i)).toBeTruthy());
   });
 
   it('refuses to launch with no directory chosen', () => {
     render(<LaunchBar onLaunched={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /launch/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
     expect(launch).not.toHaveBeenCalled();
     expect(screen.getByText(/choose a working directory/i)).toBeTruthy();
   });
@@ -187,7 +188,8 @@ describe('LaunchBar', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Add to favourites' }));
       fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '' } });
       fireEvent.click(screen.getByRole('button', { name: 'proj' }));
-      await waitFor(() => expect(launch).toHaveBeenCalledWith('codex', '/Users/me/proj', expect.any(Number), expect.any(Number)));
+      await waitFor(() =>
+        expect(launch).toHaveBeenCalledWith('codex', '/Users/me/proj', expect.any(Number), expect.any(Number), null));
     });
 
     it('removes a favourite from its own × button', () => {
@@ -334,5 +336,222 @@ describe('LaunchBar degrades per capability', () => {
     // evidence -- a wrongly disabled Launch is worse than a launch that
     // fails with a real message.
     expect((screen.getByRole('button', { name: 'Launch' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+// Naming a session as it launches (design artifact FYpoko2voK1xdg5AXenBjf).
+// Launch stays one click and launches unnamed; the attached chevron opens
+// the options -- today just a name.
+describe('LaunchBar: naming a session at launch', () => {
+  function openOptions() {
+    fireEvent.click(screen.getByRole('button', { name: 'Launch options' }));
+  }
+
+  it('leaves the main half exactly as it was -- one click, no name', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    // No dropdown is open, and none has to be.
+    expect(screen.queryByLabelText('Session name')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+    await waitFor(() =>
+      expect(launch).toHaveBeenCalledWith('claude', '/tmp/proj', expect.any(Number), expect.any(Number), null));
+  });
+
+  it('opens a name field from the chevron, with the kind of name Claude derives as its placeholder', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    openOptions();
+    const field = screen.getByLabelText('Session name') as HTMLInputElement;
+    expect(field.placeholder).toBe('llm-workspace-4a');
+    expect(field.disabled).toBe(false);
+  });
+
+  it("launches with the typed name from the dropdown's own Launch button", async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'FLEET STUFF' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+    await waitFor(() => expect(launch)
+      .toHaveBeenCalledWith('claude', '/tmp/proj', expect.any(Number), expect.any(Number), 'FLEET STUFF'));
+  });
+
+  it('launches on Enter in the name field', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    const field = screen.getByLabelText('Session name');
+    fireEvent.change(field, { target: { value: 'FLEET STUFF' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+    await waitFor(() => expect(launch)
+      .toHaveBeenCalledWith('claude', '/tmp/proj', expect.any(Number), expect.any(Number), 'FLEET STUFF'));
+  });
+
+  it('treats a blank name as an ordinary unnamed launch, not an error', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+    await waitFor(() =>
+      expect(launch).toHaveBeenCalledWith('claude', '/tmp/proj', expect.any(Number), expect.any(Number), null));
+  });
+
+  it('trims surrounding whitespace rather than refusing what looks like a fine name', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: '  FLEET STUFF  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+    await waitFor(() => expect(launch)
+      .toHaveBeenCalledWith('claude', '/tmp/proj', expect.any(Number), expect.any(Number), 'FLEET STUFF'));
+  });
+
+  it('closes the dropdown once a launch succeeds, and clears the name with it', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'FLEET STUFF' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+    await waitFor(() => expect(screen.queryByLabelText('Session name')).toBeNull());
+    openOptions();
+    expect((screen.getByLabelText('Session name') as HTMLInputElement).value).toBe('');
+  });
+
+  // The security point, from the UI side: a name a shell would act on is
+  // REFUSED with the reason, never quietly mangled into something else and
+  // never sent. Each case is named for the character that makes it
+  // dangerous, so a regression names itself in the test output. main
+  // refuses these again at the IPC boundary (tests/main/launch.test.ts) --
+  // this half is the immediate feedback, not the enforcement.
+  describe('refuses a name a shell would act on', () => {
+    const attacks: [label: string, name: string][] = [
+      ['a semicolon', 'proj; rm -rf ~'],
+      ['a command substitution $()', 'proj$(rm -rf ~)'],
+      ['backticks', 'proj`rm -rf ~`'],
+      ['a single quote', "proj' ; echo x ; '"],
+      ['a double quote', 'proj" ; echo x ; "'],
+      ['a tilde, which a shell expands to $HOME', 'proj ~'],
+      ['a pipe', 'proj | rm -rf ~'],
+      ['a leading dash, which claude would read as another flag', '--dangerously-skip-permissions'],
+    ];
+    for (const [label, name] of attacks) {
+      it(`rejects ${label}, saying why and sending nothing`, async () => {
+        render(<LaunchBar onLaunched={() => {}} />);
+        fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+        openOptions();
+        fireEvent.change(screen.getByLabelText('Session name'), { target: { value: name } });
+        fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+        expect(await screen.findByText(/letters, numbers/i)).toBeTruthy();
+        expect(launch).not.toHaveBeenCalled();
+        // The typed text is still there to correct -- refused, not mangled.
+        expect((screen.getByLabelText('Session name') as HTMLInputElement).value).toBe(name);
+      });
+    }
+  });
+
+  // A newline is NOT in the list above, and the reason is worth recording
+  // rather than leaving as a silent gap: an <input type="text"> strips CR
+  // and LF in the DOM's own value-sanitization algorithm, so a newline
+  // cannot reach this component from this field at all -- typed or pasted.
+  // The defence that actually matters for it is main's, which refuses a
+  // newline in the name outright (tests/main/launch.test.ts, "rejects a
+  // newline"); this only proves the field is not quietly carrying one.
+  it('cannot carry a newline at all -- the field strips it before this component sees it', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    openOptions();
+    const field = screen.getByLabelText('Session name') as HTMLInputElement;
+    fireEvent.change(field, { target: { value: 'proj\nsecond line' } });
+    expect(field.value).not.toContain('\n');
+  });
+
+  it('refuses a name past the length cap, and says the length is the problem', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'a'.repeat(65) } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+    expect(await screen.findByText(/too long/i)).toBeTruthy();
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  // Disabled WITH THE REASON, never hidden -- the same call this app
+  // already makes for a missing dependency and for the mode chip on a
+  // session it did not launch.
+  it('disables the field for Codex and says why, rather than hiding it', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    openOptions();
+    const field = screen.getByLabelText('Session name') as HTMLInputElement;
+    expect(field).toBeTruthy();
+    expect(field.disabled).toBe(true);
+    expect(screen.getByText(/Codex has no way to set a name when it starts/i)).toBeTruthy();
+  });
+
+  it('still launches Codex from the dropdown, just without a name', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+    await waitFor(() =>
+      expect(launch).toHaveBeenCalledWith('codex', '/tmp/proj', expect.any(Number), expect.any(Number), null));
+  });
+
+  // A name typed while Claude was selected must not be smuggled into a
+  // Codex launch by switching the provider afterwards.
+  it('drops a typed name when the provider is switched to Codex', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'FLEET STUFF' } });
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+    await waitFor(() =>
+      expect(launch).toHaveBeenCalledWith('codex', '/tmp/proj', expect.any(Number), expect.any(Number), null));
+  });
+
+  it('closes on Escape and returns focus to the chevron', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    openOptions();
+    expect(screen.getByLabelText('Session name')).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByLabelText('Session name')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Launch options' }));
+  });
+
+  it('closes on a click outside it', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    openOptions();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByLabelText('Session name')).toBeNull();
+  });
+
+  // This is what lets the main Launch half stay unnamed without ever
+  // silently discarding a name: closing the panel visibly throws the typed
+  // text away, so there is never an invisible name waiting to be dropped.
+  it('discards a typed name when the panel is closed without launching', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'FLEET STUFF' } });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    openOptions();
+    expect((screen.getByLabelText('Session name') as HTMLInputElement).value).toBe('');
+    // And the main half launches unnamed, as it always did.
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+    await waitFor(() =>
+      expect(launch).toHaveBeenCalledWith('claude', '/tmp/proj', expect.any(Number), expect.any(Number), null));
+  });
+
+  it('reports its expanded state, so the chevron is not a mystery to a screen reader', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    const chevron = screen.getByRole('button', { name: 'Launch options' });
+    expect(chevron.getAttribute('aria-expanded')).toBe('false');
+    openOptions();
+    expect(chevron.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('goes inert with the rest of the bar during the first-run takeover', () => {
+    render(<LaunchBar onLaunched={() => {}} disabled />);
+    expect((screen.getByRole('button', { name: 'Launch options' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

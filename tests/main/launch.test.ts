@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { launchSession, reattachSession, resumeSession } from '../../src/main/launch.ts';
+import { launchSession, reattachSession, resumeSession, launchCommand, shellQuote } from '../../src/main/launch.ts';
+import { SESSION_NAME_MAX } from '../../src/core/sessionName.ts';
 import { clearRegistry, tmuxNameForPid, registerSession, launchedAtForPid } from '../../src/main/sessions.ts';
 import { killSession } from '../../src/main/ipc.ts';
 import type { ExecFn } from '../../src/discovery/live.ts';
@@ -319,5 +320,108 @@ describe('resumeSession', () => {
       panePid: () => null,
     });
     expect(r).toEqual({ status: 'failed', reason: 'tmux: no server' });
+  });
+});
+
+// The session name is the one launch input a PERSON types free-hand, and
+// newSession (src/main/tmux.ts) hands its command to `tmux new-session` as
+// a single string, which tmux runs through a SHELL. So the name is a trust
+// boundary, not a label. Both halves of the defence are tested here: the
+// character set that rejects, and the quoting that would still hold if the
+// character set were ever loosened.
+describe('launchCommand', () => {
+  it('launches the bare provider when no name is given -- blank is normal', () => {
+    expect(launchCommand('claude', null)).toEqual({ ok: true, command: 'claude' });
+    expect(launchCommand('claude', '')).toEqual({ ok: true, command: 'claude' });
+    expect(launchCommand('codex', null)).toEqual({ ok: true, command: 'codex' });
+  });
+
+  it('runs `claude -n` with the name single-quoted', () => {
+    expect(launchCommand('claude', 'FLEET STUFF')).toEqual({ ok: true, command: "claude -n 'FLEET STUFF'" });
+  });
+
+  it('accepts the shape of a name Claude derives for itself', () => {
+    expect(launchCommand('claude', 'llm-workspace-4a')).toEqual({ ok: true, command: "claude -n 'llm-workspace-4a'" });
+  });
+
+  it('accepts a name at the length cap and rejects one past it', () => {
+    const atCap = 'a'.repeat(SESSION_NAME_MAX);
+    expect(launchCommand('claude', atCap).ok).toBe(true);
+    const overCap = launchCommand('claude', 'a'.repeat(SESSION_NAME_MAX + 1));
+    expect(overCap.ok).toBe(false);
+    if (!overCap.ok) expect(overCap.reason).toMatch(new RegExp(String(SESSION_NAME_MAX)));
+  });
+
+  it('refuses a name for Codex, and says why rather than dropping it silently', () => {
+    const r = launchCommand('codex', 'FLEET STUFF');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/Codex has no way to set a name when it starts/i);
+  });
+
+  // Each case is named for the character that makes it dangerous, so a
+  // regression names itself in the test output.
+  describe('refuses a name a shell would act on, rather than mangling it', () => {
+    const attacks: [label: string, name: string][] = [
+      ['a semicolon', 'proj; rm -rf ~'],
+      ['a command substitution $()', 'proj$(rm -rf ~)'],
+      ['a bare dollar', 'proj $HOME'],
+      ['backticks', 'proj`rm -rf ~`'],
+      ['a single quote', "proj' ; rm -rf ~ ; '"],
+      ['a double quote', 'proj" ; rm -rf ~ ; "'],
+      ['a newline', 'proj\nrm -rf ~'],
+      ['a carriage return', 'proj\rrm -rf ~'],
+      ['a pipe', 'proj | rm -rf ~'],
+      ['an ampersand', 'proj && rm -rf ~'],
+      ['a redirect', 'proj > /etc/passwd'],
+      ['a glob', 'proj/*'],
+      ['a backslash', 'proj\\x'],
+      ['a NUL byte', 'proj x'],
+      ['an escape byte', 'proj[2J'],
+    ];
+    for (const [label, name] of attacks) {
+      it(`rejects ${label}`, () => {
+        const r = launchCommand('claude', name);
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.reason).toMatch(/letters, numbers/i);
+      });
+    }
+  });
+
+  // A name starting with '-' would be read by `claude` itself as another
+  // FLAG, not as the value of -n. Nothing shell-special about it, which is
+  // exactly why it needs its own rule.
+  it('rejects a name that would read as a flag', () => {
+    expect(launchCommand('claude', '--dangerously-skip-permissions').ok).toBe(false);
+    expect(launchCommand('claude', '-p').ok).toBe(false);
+  });
+
+  it('rejects surrounding whitespace rather than silently trimming it', () => {
+    expect(launchCommand('claude', ' proj').ok).toBe(false);
+    expect(launchCommand('claude', 'proj ').ok).toBe(false);
+    expect(launchCommand('claude', '\tproj').ok).toBe(false);
+  });
+
+  // The quoting is the second half of the defence and is tested on its own,
+  // not only through the character set above: if SESSION_NAME_SAFE were
+  // ever widened, this is what still has to hold.
+  it('quotes any string safely, independently of what the character set lets through', () => {
+    expect(shellQuote("a'b")).toBe("'a'\\''b'");
+    expect(shellQuote('a;b')).toBe("'a;b'");
+    expect(shellQuote('$(x)')).toBe("'$(x)'");
+    expect(shellQuote('')).toBe("''");
+  });
+});
+
+describe('launchSession with a name', () => {
+  it('passes `claude -n <quoted name>` to tmux as the new session command', () => {
+    const calls: string[][] = [];
+    const cmd = launchCommand('claude', 'FLEET STUFF');
+    expect(cmd.ok).toBe(true);
+    if (!cmd.ok) return;
+    launchSession('claude', '/tmp/proj', 120, 40, {
+      exec: (a: string[]) => { calls.push(a); return { ok: true, stdout: '' }; },
+      panePid: () => 4821,
+    }, cmd.command);
+    expect(calls[0]?.at(-1)).toBe("claude -n 'FLEET STUFF'");
   });
 });

@@ -147,6 +147,22 @@
    an interactive control, since it isn't one. */
 .reattach-na { color:var(--faint); margin:2px 0 0; }
 
+/* A session the person named (session-names design): the chosen name takes
+   the .proj title's place, so it is subject to whatever that element's
+   surface does about width. In the RAIL that is already solved --
+   SessionRail.css truncates .proj with an ellipsis -- but the fleet GRID
+   sets no overflow rule at all, because a folder name is short and never
+   needed one. A session name is free text up to SESSION_NAME_MAX
+   (src/core/sessionName.ts) and can be 64 unbroken characters, which at the
+   grid's 280px minimum column would push the card wider than its track.
+
+   overflow-wrap:anywhere, not an ellipsis: in the grid there is vertical
+   room, so wrapping shows the whole name, and what matters is only that the
+   card never grows sideways. Scoped to .named so the History card's own
+   .proj, and an unnamed card's folder label, keep exactly today's
+   behaviour. */
+.proj.named { overflow-wrap:anywhere; }
+
 /* The compact card (spec §3.6). Additive only: every rule here is scoped
    to .card.compact, so SessionCard.css's base .card/.proj/.said rules --
    which this component and the History card BOTH rely on globally -- keep

@@ -41,7 +41,7 @@ import {
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
 import { conversationFor, turnSource, type ConversationCursor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
-import { launchSession, reattachSession, resumeSession, type LaunchResult } from './launch.ts';
+import { launchSession, reattachSession, resumeSession, launchCommand, type LaunchResult } from './launch.ts';
 import { isCodexBusy } from './codexBusy.ts';
 import {
   buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, notifySessionChanged, type WatchDeps,
@@ -165,8 +165,15 @@ export const BLOCKER_STRUCTURAL_FIELDS = [
 // matches against a transcript -- see its doc comment), display safety at
 // this boundary should not depend on that staying true. `pid` is
 // structural -- see the note on it below.
+// `name` is the session's own display name out of Claude Code's live
+// session file (src/providers/claude/liveSession.ts), which any process
+// running as this user can write -- and it becomes the card's TITLE, the
+// most prominent text on it. That makes it exactly the category cwd/project
+// are in: free text from outside this app, rendered. Bidi and zero-width
+// characters travel through JSX fine, so a name could otherwise rewrite
+// what the card appears to say.
 export const OPEN_SESSION_SANITISED_FIELDS =
-  ['cwd', 'project', 'lastProse'] as const satisfies readonly (keyof OpenSession)[];
+  ['cwd', 'project', 'lastProse', 'name'] as const satisfies readonly (keyof OpenSession)[];
 // `pid` is what makes the close action (a later task) possible and safe --
 // one card, one process, no guessing -- so it has to reach the renderer.
 export const OPEN_SESSION_STRUCTURAL_FIELDS = [
@@ -1677,13 +1684,31 @@ export function registerIpc(
   // and a size -- main re-derives the tmux session name, resolves the
   // existing session (reattach), and runs the actual tmux commands itself,
   // same trust boundary as every destructive channel above.
-  ipcMain.handle('session:launch', (_event, provider: unknown, cwd: unknown, cols: unknown, rows: unknown) => {
+  //
+  // `name` is the session name typed in the launch bar's dropdown, and it
+  // is the one input here a person writes free-hand. It reaches a SHELL:
+  // launchSession's command string is handed to `tmux new-session`, which
+  // runs it through one. launchCommand (src/main/launch.ts) is the only
+  // thing allowed to turn it into that command -- it validates the
+  // characters AND quotes the result, and this handler refuses on its
+  // reason rather than launching an unnamed session and pretending the
+  // name was applied. Absent/null is the ordinary unnamed launch.
+  ipcMain.handle('session:launch', (
+    _event, provider: unknown, cwd: unknown, cols: unknown, rows: unknown, name: unknown,
+  ) => {
     if (!isProvider(provider)) return { status: 'failed', reason: 'unrecognised provider' };
     if (typeof cwd !== 'string' || !isAbsolutePath(cwd)) {
       return { status: 'failed', reason: 'choose a working directory first' };
     }
     if (!validSize(cols) || !validSize(rows)) return { status: 'failed', reason: 'invalid terminal size' };
-    const result: LaunchResult = launchSession(provider, cwd, cols, rows);
+    // Anything that is not a string and not absent is a caller bug, not a
+    // name -- refused rather than coerced.
+    if (name !== undefined && name !== null && typeof name !== 'string') {
+      return { status: 'failed', reason: 'invalid session name' };
+    }
+    const command = launchCommand(provider, name ?? null);
+    if (!command.ok) return { status: 'failed', reason: command.reason };
+    const result: LaunchResult = launchSession(provider, cwd, cols, rows, {}, command.command);
     if (onSessionLaunch && result.status === 'launched') setImmediate(onSessionLaunch);
     return result;
   });

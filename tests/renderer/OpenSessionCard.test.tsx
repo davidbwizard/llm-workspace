@@ -25,7 +25,7 @@ const base: OpenSession = {
   pid: 4242, provider: 'claude', host: 'iterm2', cwd: '/Users/me/trellome', project: 'trellome',
   ageSeconds: 9 * 86_400, rssBytes: 206 * 1024 * 1024, match: 'unknown',
   sessionId: null, lastProse: null, events: null, agents: null, liveAgents: null,
-  activity: null, tmux: true, junk: false, context: null,
+  activity: null, tmux: true, junk: false, context: null, name: null,
 };
 
 // Every test below that isn't specifically about the kill flow needs SOME
@@ -250,6 +250,66 @@ describe('OpenSessionCard', () => {
   it('sets the full project name as a native title, so a truncated name is still readable on hover', () => {
     const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
     expect(container.querySelector('.proj')!.getAttribute('title')).toBe('trellome');
+  });
+
+  // The session's own name (session-names design). OpenSession.name is
+  // already filtered to names a PERSON chose -- fleet/state.ts drops a
+  // derived one -- so this component's whole job is: show it when it is
+  // there, show the folder when it is not.
+  describe('a session the person named', () => {
+    const named = { ...base, name: 'FLEET STUFF' };
+
+    it('shows the chosen name as the card title, in place of the folder name', () => {
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={named} />);
+      expect(screen.getByText('FLEET STUFF')).toBeTruthy();
+      expect(screen.queryByText('trellome')).toBeNull();
+    });
+
+    it('still shows the working directory, so the folder is never actually lost', () => {
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={named} />);
+      expect(screen.getByText('/Users/me/trellome')).toBeTruthy();
+    });
+
+    // role="button" replaces the element's content with its accessible
+    // name, so a name only rendered visually would be invisible to a
+    // screen reader -- the standard this card already holds itself to.
+    it('carries the chosen name in the accessible name too, not only on screen', () => {
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={named} />);
+      expect(screen.getByRole('button', { name: /FLEET STUFF/ })).toBeTruthy();
+    });
+
+    it('falls back to the folder name when there is no chosen name', () => {
+      render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
+      expect(screen.getByText('trellome')).toBeTruthy();
+    });
+
+    // Same hover fallback as the project name above, for the same reason:
+    // whichever label the card ends up showing is the one a truncation
+    // would cut off.
+    it('puts the chosen name in the native title, so a truncated one is readable on hover', () => {
+      const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={named} />);
+      expect(container.querySelector('.proj')!.getAttribute('title')).toBe('FLEET STUFF');
+    });
+
+    // The compact (rail) card drops the cwd line, so the name is all it has
+    // -- which is exactly the case where showing the chosen name matters
+    // most, and exactly the width the rail's truncation rule covers.
+    it('shows the chosen name on the compact rail card as well', () => {
+      render(<OpenSessionCard compact onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={named} />);
+      expect(screen.getByText('FLEET STUFF')).toBeTruthy();
+    });
+
+    // The metrics row has overflowed three times this week. Nothing new is
+    // added to it here, and this pins that: the name reuses the existing
+    // .proj title element rather than becoming another chip to budget
+    // width for.
+    it('adds no new element to the card, so the metrics row is unchanged', () => {
+      const plain = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={base} />);
+      const before = plain.container.querySelector('.metrics')!.childElementCount;
+      plain.unmount();
+      const withName = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()} onResume={neverResume()} state={named} />);
+      expect(withName.container.querySelector('.metrics')!.childElementCount).toBe(before);
+    });
   });
 
   // The unread indicator (SessionRail computes `unread`; this component

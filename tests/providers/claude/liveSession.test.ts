@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, symlinkSync, mkdirSync, rmSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  parseLiveSessionFile, readLiveSessionFile, startTimeAgrees,
+  parseLiveSessionFile, readLiveSessionFile, startTimeAgrees, chosenName,
   LIVE_SESSION_MAX_BYTES, LIVE_SESSION_START_TOLERANCE_MS, LIVE_SESSION_PROC_START_TOLERANCE_MS,
 } from '../../../src/providers/claude/liveSession.ts';
 
@@ -25,7 +25,59 @@ describe('parseLiveSessionFile', () => {
       sessionId: '00000000-0000-4000-8000-000000000001', cwd: '/Users/me/trellome',
       startedAtMs: 1789408337635, status: 'idle', statusUpdatedAtMs: 1789410297851,
       waitingFor: null, procStartMs: 1789408336000,
+      name: 'trellome-35', nameSource: 'derived',
     });
+  });
+
+  // Claude Code writes the session's own display name here -- the one
+  // `claude -n` sets at launch and `/rename` changes later. Same tolerance
+  // as every other optional field in this file: an unrecognised shape nulls
+  // the field, it never rejects the file.
+  it('reads name and nameSource, and nulls either without rejecting the file', () => {
+    const named = { ...REAL_SHAPE, name: 'FLEET STUFF', nameSource: 'user' };
+    expect(parseLiveSessionFile(text(named), 14041)?.name).toBe('FLEET STUFF');
+    expect(parseLiveSessionFile(text(named), 14041)?.nameSource).toBe('user');
+
+    const { name: _n, nameSource: _s, ...unnamed } = REAL_SHAPE;
+    const parsed = parseLiveSessionFile(text(unnamed), 14041);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.name).toBeNull();
+    expect(parsed?.nameSource).toBeNull();
+
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, name: 42 }), 14041)?.name).toBeNull();
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, nameSource: ['user'] }), 14041)?.nameSource).toBeNull();
+    // A blank name is no name -- never a blank card title.
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, name: '   ' }), 14041)?.name).toBeNull();
+    // An unrecognised nameSource is kept verbatim: chosenName below reads
+    // it as "not derived", which is the rule, not a shape to police here.
+    expect(parseLiveSessionFile(text({ ...REAL_SHAPE, nameSource: 'cli' }), 14041)?.nameSource).toBe('cli');
+  });
+});
+
+// The rule the card and the conversation header both follow, in one place:
+// `derived` means Claude invented the name for itself, and the folder is
+// the better label; anything else means a person chose it, and it wins.
+describe('chosenName', () => {
+  const file = (over: Record<string, unknown>) =>
+    parseLiveSessionFile(text({ ...REAL_SHAPE, ...over }), 14041)!;
+
+  it('ignores a name Claude derived for itself', () => {
+    expect(chosenName(file({ name: 'server-new-20', nameSource: 'derived' }))).toBeNull();
+  });
+
+  it('keeps a name a person chose with /rename', () => {
+    expect(chosenName(file({ name: 'FLEET STUFF', nameSource: 'user' }))).toBe('FLEET STUFF');
+  });
+
+  it('keeps a name from any source that is not "derived" -- including one this app has never seen', () => {
+    expect(chosenName(file({ name: 'FLEET STUFF', nameSource: 'cli' }))).toBe('FLEET STUFF');
+    const { nameSource: _drop, ...noSource } = REAL_SHAPE;
+    expect(chosenName(parseLiveSessionFile(text({ ...noSource, name: 'FLEET STUFF' }), 14041)!)).toBe('FLEET STUFF');
+  });
+
+  it('is null when there is no name at all', () => {
+    const { name: _n, ...unnamed } = REAL_SHAPE;
+    expect(chosenName(parseLiveSessionFile(text(unnamed), 14041)!)).toBeNull();
   });
 
   // KNOWN_ISSUES.md, "A slow trust-prompt accept can permanently hide a

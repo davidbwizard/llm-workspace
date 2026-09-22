@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { Provider } from '../core/types.ts';
-// Validated before any session id reaches tmux's shell string; see src/core/identity.ts.
+// Validated before any session id or name reaches tmux's shell string.
 import { SESSION_ID_SAFE } from '../core/identity.ts';
+import {
+  SESSION_NAME_SAFE, SESSION_NAME_MAX, SESSION_NAME_HELP, SESSION_NAME_CODEX_REASON,
+} from '../core/sessionName.ts';
 import type { KillResult } from './ipc.ts';
 import { newSession, setSessionOption, panePid as tmuxPanePid, type TmuxExec } from './tmux.ts';
 import { registerSession } from './sessions.ts';
@@ -25,6 +28,51 @@ type LaunchDeps = {
    *  reason FleetOpts.now (src/fleet/state.ts) is injectable. */
   now?: number;
 };
+
+/** POSIX single-quote escaping, correct for ANY string including one with
+ *  newlines: everything between single quotes is literal to a shell, and
+ *  the only character that cannot appear there -- the single quote itself
+ *  -- is emitted as `'\''` (close, escaped quote, reopen).
+ *
+ *  Deliberately independent of SESSION_NAME_SAFE rather than relying on it.
+ *  The character set already excludes every metacharacter, so today this is
+ *  belt to that braces; it is here so that widening the character set later
+ *  cannot silently turn a name back into executable text. */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export type LaunchCommandResult =
+  | { ok: true; command: string }
+  | { ok: false; reason: string };
+
+/** The command a named launch runs inside the new tmux pane -- the ONE
+ *  place a user-typed name is validated and quoted, so neither step can be
+ *  reached without the other.
+ *
+ *  A blank name is the ordinary case, not an error: it launches the bare
+ *  provider exactly as launchSession's own default does, and Claude derives
+ *  a name for itself.
+ *
+ *  Claude only. `codex --help` carries no launch-time name flag (checked
+ *  2026-09-22), so a name for Codex is REFUSED with the reason rather than
+ *  dropped silently -- the UI disables the field for the same reason, and
+ *  this is the boundary-side half of that, since the renderer's own
+ *  disabling is an affordance and not an enforcement. */
+export function launchCommand(provider: Provider, name: string | null | undefined): LaunchCommandResult {
+  if (name === null || name === undefined || name === '') return { ok: true, command: provider };
+  if (provider !== 'claude') {
+    return { ok: false, reason: SESSION_NAME_CODEX_REASON };
+  }
+  // Length is reported separately from shape: "too long" and "has a
+  // character that is not allowed" are different mistakes, and a person who
+  // typed 80 valid characters should not be told to use different ones.
+  if (name.length > SESSION_NAME_MAX) {
+    return { ok: false, reason: `That name is too long -- keep it to ${SESSION_NAME_MAX} characters.` };
+  }
+  if (!SESSION_NAME_SAFE.test(name)) return { ok: false, reason: SESSION_NAME_HELP };
+  return { ok: true, command: `claude -n ${shellQuote(name)}` };
+}
 
 /** Nothing spawns on its own: this is only ever reached from an explicit
  *  choice of provider and directory (LaunchBar), or from reattachSession

@@ -77,3 +77,15 @@ describe('OpenSessionCard.css: a card with its menu open outranks its siblings',
     expect(blockAfter('.card.menu-open {')).toMatch(/z-index:\s*\d+/);
   });
 });
+
+// A session name is free text up to SESSION_NAME_MAX and takes the .proj
+// title's place. The rail already truncates .proj; the fleet grid never
+// needed an overflow rule for a folder name and still has none, so a 64
+// unbroken-character name would push the card past its 280px track. jsdom
+// computes no layout, so the stylesheet is the only place this can be
+// pinned.
+describe('OpenSessionCard.css: a long chosen name never widens the card', () => {
+  it('lets the name break rather than stretch its card', () => {
+    expect(blockAfter('.proj.named {')).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+});

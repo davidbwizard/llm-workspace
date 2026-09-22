@@ -85,7 +85,11 @@ declare global {
       // launch/reattach (Task 13, src/main/launch.ts): real result shapes
       // now that main actually answers them instead of the not_implemented
       // stub.
-      launch: (provider: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
+      // `name` is optional and Claude-only -- main refuses it for Codex
+      // (launchCommand, src/main/launch.ts), and refuses any name outside
+      // SESSION_NAME_SAFE, with the reason in LaunchResult.reason.
+      launch: (provider: string, cwd: string, cols: number, rows: number, name?: string | null)
+        => Promise<LaunchResult>;
       reattach: (pid: number, cols: number, rows: number) => Promise<LaunchResult>;
       // The recovery path for reattach's 'killed_not_relaunched' state --
       // see preload/index.ts's own comment on it.
