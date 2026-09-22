@@ -32,7 +32,7 @@ export function stackSummary(members: OpenSession[]): string {
  *  plus its unread and cmdIndex state, and threading all of that through here
  *  would duplicate that wiring in a second place that could drift from it. */
 export function StackCard({
-  cwd, members, open, onToggle, selectedPid, renderMember, onAnswer,
+  cwd, members, open, onToggle, selectedPid, renderMember, onAnswer, onMoveUp, onMoveDown,
 }: {
   cwd: string;
   members: OpenSession[];
@@ -43,6 +43,14 @@ export function StackCard({
   /** Optional so tests that never click Answer need not wire it, matching
    *  SessionRail's own onAnswer convention. */
   onAnswer?: (pid: number) => void;
+  /** The keyboard half of dragging, exactly as OpenSessionCard's own pair.
+   *  Rendered as two small buttons on the face rather than behind a "..."
+   *  popover of their own: a two-item popover would need its own Escape and
+   *  click-outside handling -- machinery this app writes once per popover,
+   *  not a shared component -- to reach two controls that fit on the face as
+   *  they are. Absent when the row is at that end of its section. */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }): JSX.Element {
   const waiting = members.filter(isWaiting);
   const label = lastSegment(cwd);
@@ -92,6 +100,16 @@ export function StackCard({
           >
             Answer
           </button>
+        )}
+        {(onMoveUp || onMoveDown) && (
+          <div className="stackmove">
+            {onMoveUp && (
+              <button type="button" aria-label={`Move ${label} up`} onClick={onMoveUp}>Up</button>
+            )}
+            {onMoveDown && (
+              <button type="button" aria-label={`Move ${label} down`} onClick={onMoveDown}>Down</button>
+            )}
+          </div>
         )}
       </div>
       {/* ALWAYS rendered, never `{open && ...}`: a node that does not exist

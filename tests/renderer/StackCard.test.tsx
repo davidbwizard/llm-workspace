@@ -138,3 +138,34 @@ describe('StackCard', () => {
     expect(container.querySelector('.stack.attn')).toBeNull();
   });
 });
+
+describe('StackCard move controls', () => {
+  const members = [session(1, 'idle'), session(2, 'idle')];
+
+  it('offers nothing when the handlers are absent, so nothing else changes', () => {
+    render(<StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}
+      selectedPid={null} renderMember={() => null} />);
+    expect(screen.queryByRole('button', { name: /^Move repo/ })).toBeNull();
+  });
+
+  // Named with the folder for the same reason every other repeated control
+  // in this rail is: several stacks would otherwise offer identical buttons.
+  it('moves the row up and down through the handlers it is given', () => {
+    const onMoveUp = vi.fn();
+    const onMoveDown = vi.fn();
+    render(<StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}
+      selectedPid={null} renderMember={() => null} onMoveUp={onMoveUp} onMoveDown={onMoveDown} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Move repo up' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move repo down' }));
+    expect(onMoveUp).toHaveBeenCalledTimes(1);
+    expect(onMoveDown).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fold or unfold the stack when a move button is clicked', () => {
+    const onToggle = vi.fn();
+    render(<StackCard cwd="/repo" members={members} open={false} onToggle={onToggle}
+      selectedPid={null} renderMember={() => null} onMoveUp={vi.fn()} onMoveDown={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Move repo up' }));
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+});

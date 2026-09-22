@@ -4,7 +4,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SessionRail } from '../../src/renderer/components/SessionRail.tsx';
 import { setSettings, reloadSettings } from '../../src/renderer/state/settings.ts';
 import {
-  reloadGroups, assignCategory, categoryOfSession, bindPendingCategory, resolvePendingCategories,
+  reloadGroups, assignCategory, categoryOfSession, bindPendingCategory, resolvePendingCategories, getGroups,
 } from '../../src/renderer/state/groups.ts';
 
 // @testing-library/user-event is not a dependency of this project (every
@@ -684,5 +684,123 @@ describe('SessionRail', () => {
       // key would fail here, and the card would visibly flash and lose its slot.
       expect(container.querySelector('.card')).toBe(cardBefore);
     });
+  });
+});
+
+describe('reordering rows', () => {
+  const three = [
+    { pid: 1, project: 'a-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, sessionId: 'sa' },
+    { pid: 2, project: 'b-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, sessionId: 'sb' },
+    { pid: 3, project: 'c-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, sessionId: 'sc' },
+  ] as never[];
+
+  const renderThree = () => render(
+    <SessionRail sessions={three} selectedPid={null} onSelect={() => {}} onKill={noopKill}
+      onReattach={noopReattach} onResume={noopResume} side="left" />,
+  );
+
+  // jsdom implements no DataTransfer, and Chromium/Firefox both refuse to
+  // start a drag with nothing on the transfer -- so the component sets data
+  // and the test supplies the object it sets it on.
+  const transfer = () => ({ setData: vi.fn(), getData: () => '', effectAllowed: '', dropEffect: '' });
+
+  const namesOf = (container: HTMLElement) =>
+    [...container.querySelectorAll('.proj')].map(p => p.textContent);
+
+  beforeEach(() => {
+    localStorage.clear();
+    reloadGroups();
+    reloadSettings();
+  });
+
+  it('marks every row draggable', () => {
+    const { container } = renderThree();
+    expect(container.querySelectorAll('.railrow[draggable="true"]')).toHaveLength(3);
+  });
+
+  it('moves a dragged row into the slot it is dropped on', () => {
+    const { container } = renderThree();
+    const rows = container.querySelectorAll('.railrow');
+    const dt = transfer();
+    fireEvent.dragStart(rows[0]!, { dataTransfer: dt });
+    fireEvent.dragOver(rows[2]!, { dataTransfer: dt });
+    fireEvent.drop(rows[2]!, { dataTransfer: dt });
+    expect(namesOf(container)).toEqual(['b-proj', 'c-proj', 'a-proj']);
+  });
+
+  it('keeps the new order across a re-render, because it is the stored order', () => {
+    const { container, rerender } = renderThree();
+    const rows = container.querySelectorAll('.railrow');
+    const dt = transfer();
+    fireEvent.dragStart(rows[2]!, { dataTransfer: dt });
+    fireEvent.drop(rows[0]!, { dataTransfer: dt });
+    rerender(
+      <SessionRail sessions={three} selectedPid={null} onSelect={() => {}} onKill={noopKill}
+        onReattach={noopReattach} onResume={noopResume} side="left" />,
+    );
+    expect(namesOf(container)).toEqual(['c-proj', 'a-proj', 'b-proj']);
+  });
+
+  it('does nothing when a row is dropped on itself', () => {
+    const { container } = renderThree();
+    const rows = container.querySelectorAll('.railrow');
+    const dt = transfer();
+    fireEvent.dragStart(rows[1]!, { dataTransfer: dt });
+    fireEvent.drop(rows[1]!, { dataTransfer: dt });
+    expect(namesOf(container)).toEqual(['a-proj', 'b-proj', 'c-proj']);
+  });
+
+  // Ruled, not merely unimplemented: making this drop ASSIGN the category
+  // would work for a lone card and do nothing for a stack, which holds
+  // several sessions and cannot take one assignment. One gesture, two
+  // meanings, is worse than one gesture the user can see is refused.
+  it('refuses a drop into another category section', () => {
+    assignCategory('sa', 'Fleet');
+    const { container } = renderThree();
+    const rows = container.querySelectorAll('.railrow');
+    const dt = transfer();
+    // Captured before the drop, not just the rendered names after: Fleet
+    // holds exactly one row here, and a category section always renders
+    // wherever its own first row sits, regardless of that row's own numeric
+    // slot in the flat stored order -- so moving the Fleet row's slot alone,
+    // with nothing else in Fleet to reveal it, repaints identically to a
+    // genuine refusal. The DOM assertion below cannot tell those two apart;
+    // this pins the store itself, which can.
+    const orderBefore = getGroups().order;
+    fireEvent.dragStart(rows[0]!, { dataTransfer: dt }); // the Fleet row
+    fireEvent.drop(rows[2]!, { dataTransfer: dt });      // an uncategorised row
+    expect(namesOf(container)).toEqual(['a-proj', 'b-proj', 'c-proj']);
+    expect(getGroups().order).toEqual(orderBefore);
+  });
+
+  it('moves a row up from its own menu, the same way a drop would', () => {
+    const { container } = renderThree();
+    fireEvent.click(screen.getAllByRole('button', { name: /session actions/i })[1]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Move up' }));
+    expect(namesOf(container)).toEqual(['b-proj', 'a-proj', 'c-proj']);
+  });
+
+  it('moves a row down from its own menu', () => {
+    const { container } = renderThree();
+    fireEvent.click(screen.getAllByRole('button', { name: /session actions/i })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Move down' }));
+    expect(namesOf(container)).toEqual(['b-proj', 'a-proj', 'c-proj']);
+  });
+
+  it('offers no Move up on the first row of a section, and no Move down on the last', () => {
+    renderThree();
+    fireEvent.click(screen.getAllByRole('button', { name: /session actions/i })[0]!);
+    expect(screen.queryByRole('button', { name: 'Move up' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Move down' })).toBeTruthy();
+  });
+
+  // The setting is folder stacking only: order is David's either way.
+  it('still reorders when stacking is off', () => {
+    setSettings({ groupSessions: 'off' });
+    const { container } = renderThree();
+    expect(container.querySelectorAll('.railrow')).toHaveLength(3);
+    fireEvent.click(screen.getAllByRole('button', { name: /session actions/i })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Move down' }));
+    expect(namesOf(container)).toEqual(['b-proj', 'a-proj', 'c-proj']);
   });
 });

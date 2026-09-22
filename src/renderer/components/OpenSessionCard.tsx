@@ -133,7 +133,7 @@ const KILL_SETTLE_MS = 5_500;
 const REATTACH_COLS = 120;
 const REATTACH_ROWS = 40;
 
-export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume, unread, compact = false, cmdIndex }: {
+export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume, unread, compact = false, cmdIndex, onMoveUp, onMoveDown }: {
   state: OpenSession; onOpen: (pid: number) => void;
   /** Sends session:kill for this card's pid. Always resolves to a
    *  KillResult (src/main/ipc.ts), never throws by contract -- but this
@@ -184,6 +184,16 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
    *  keyboard-driven user. Omitted (no number shown) for anything past the
    *  ninth card, and for any caller that doesn't track this at all. */
   cmdIndex?: number;
+  /** Move this row one place up / down in the rail's own order, calling the
+   *  SAME store function a drop calls (groups.ts's moveRow) -- the keyboard
+   *  half of dragging, which is otherwise unreachable without a pointer.
+   *
+   *  Each is absent when the row is already at that end of its section, and
+   *  BOTH are absent for every caller that does not order rows at all (the
+   *  fleet grid, and the rail with grouping off), so no existing call site
+   *  grows a menu item it has no meaning for. */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }) {
   const hostLabel = hostLabelFor(state.host) ?? undefined;
   // Age and memory are NEVER gated on match quality here: the card IS the
@@ -635,6 +645,18 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
               its ordinary, fully-supported button semantics. */}
           {menuOpen && (
             <div className="cardmenu-list">
+              {onMoveUp && (
+                <button type="button" className="cardmenu-item"
+                  onClick={() => { setMenuOpen(false); onMoveUp(); }}>
+                  Move up
+                </button>
+              )}
+              {onMoveDown && (
+                <button type="button" className="cardmenu-item"
+                  onClick={() => { setMenuOpen(false); onMoveDown(); }}>
+                  Move down
+                </button>
+              )}
               {compact && hostLabel && onReveal && (
                 <button type="button" className="cardmenu-item"
                   onClick={() => { setMenuOpen(false); void onReveal(state.pid); }}>

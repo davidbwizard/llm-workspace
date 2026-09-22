@@ -236,3 +236,12 @@
 .railsectionname::after {
   content: ""; flex: 1 0 12px; height: 1px; background: var(--line-soft);
 }
+
+/* The drag wrapper. It carries no box of its own -- the card inside it still
+   draws every border and background -- so adding this layer changes nothing
+   visually until a drag is actually in progress. */
+.railrow { position: relative; }
+/* Feedback while dragging comes from opacity alone, not a transform: a
+   transform on an ancestor opens a stacking context, and OpenSessionCard.css
+   already documents at length what that does to an open card menu. */
+.railrow.dragging { opacity: .45; }

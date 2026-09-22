@@ -135,3 +135,14 @@
   .stackmember, .stack.open .stackmember,
   .stackchev { transition: none; }
 }
+
+/* A sibling of .stacktoggle, not a child: the toggle is a button, and a
+   button inside a button is invalid HTML that browsers silently un-nest,
+   which would drop these two controls out of the face entirely. */
+.stackmove { flex: none; display: flex; flex-direction: column; gap: 4px; }
+.stackmove button {
+  font-family: var(--f-mono); font-size: 10px; color: var(--muted);
+  background: none; border: 1px solid var(--line); border-radius: 5px;
+  padding: 3px 7px; cursor: pointer;
+}
+.stackmove button:hover { color: var(--ink); border-color: var(--accent); }

@@ -1257,6 +1257,49 @@ describe('the category menu item', () => {
   });
 });
 
+// The keyboard half of dragging (Task 9): Move up/Move down in the card's
+// own menu, calling the SAME store function (groups.ts's moveRow) a drop
+// calls -- see SessionRail.test.tsx's "reordering rows" describe for the
+// end-to-end proof that they do. This file only proves the wiring: the
+// items appear exactly when wired, call exactly what they're given, and
+// never touch onOpen or the fold/unfold state of anything else.
+describe('the move menu items', () => {
+  function renderMovable(props: Record<string, unknown> = {}) {
+    return render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
+      onResume={neverResume()} compact state={base} {...props} />);
+  }
+
+  // Absent unless wired, so every existing menu assertion in this file --
+  // which renders the card without them -- keeps its exact item list.
+  it('adds nothing to the menu when no move handlers are given', () => {
+    const { container } = renderMovable();
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
+      .not.toContain('Move up');
+  });
+
+  it('offers Move up and Move down, and closes the menu after one', () => {
+    const onMoveUp = vi.fn();
+    const onMoveDown = vi.fn();
+    const { container } = renderMovable({ onMoveUp, onMoveDown });
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move up' }));
+    expect(onMoveUp).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.cardmenu-list')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move down' }));
+    expect(onMoveDown).toHaveBeenCalledTimes(1);
+  });
+
+  it('never opens the session when a move item is clicked', () => {
+    const onOpen = vi.fn();
+    renderMovable({ onOpen, onMoveUp: vi.fn(), onMoveDown: vi.fn() });
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move up' }));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+});
+
 /* ---- Status row, variant A -------------------------------------------
    At the rail's narrowest widths the status word is hidden and the icon is
    the only thing left showing the state. Which width that happens at is

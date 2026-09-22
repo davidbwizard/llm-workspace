@@ -6,14 +6,14 @@ import { useEffect, useState } from 'react';
 // compareOpenSessions from state.ts threw at module load and rendered the
 // whole window blank -- see order.ts's comment.
 import type { OpenSession } from '../../fleet/state.ts';
-import { compareOpenSessions, railSections } from '../../fleet/order.ts';
+import { compareOpenSessions, railSections, type RailRow } from '../../fleet/order.ts';
 import type { KillResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
 import { StackCard } from './StackCard.tsx';
 import { compactIn, useSettings } from '../state/settings.ts';
 import {
-  useGroups, isStackOpen, toggleStack, orderIndex, rememberKeys, categoryForRow,
+  useGroups, isStackOpen, toggleStack, orderIndex, rememberKeys, categoryForRow, moveRow,
 } from '../state/groups.ts';
 import './SessionRail.css';
 
@@ -113,6 +113,11 @@ export function SessionRail({
 
   const [width, setWidth] = useState<number>(() => readStoredRailWidth() ?? RAIL_DEFAULT_WIDTH);
   useEffect(() => { writeStoredRailWidth(width); }, [width]);
+
+  // Which row is currently being dragged. Component state, not the store:
+  // it lasts for the length of one gesture and nothing outside this rail has
+  // any use for it.
+  const [dragKey, setDragKey] = useState<string | null>(null);
 
   // Unread tracking: `events` is the one counter OpenSession always grows
   // monotonically as new agent output arrives for a uniquely-matched
@@ -232,14 +237,25 @@ export function SessionRail({
   // seven handlers plus its own unread and cmdIndex state, and a second copy
   // of that wiring (one here, one in StackCard) could only ever drift from
   // this one.
-  function renderSession(s: OpenSession): JSX.Element {
+  //
+  // `move` is the keyboard half of dragging (Task 9): absent for a member
+  // rendered INSIDE a stack (StackCard's own renderMember callback below
+  // takes one argument, so a member always gets undefined here) -- a
+  // session inside a stack cannot be reordered on its own, because the drag
+  // unit is the whole row, never a member of it. No `key` here any more:
+  // the row wrapper added by the caller below now owns it, since that
+  // wrapper -- not this div -- is what the drag handlers attach to.
+  function renderSession(
+    s: OpenSession,
+    move?: { up?: () => void; down?: () => void },
+  ): JSX.Element {
     const waiting = s.activity === 'waiting_permission' || s.activity === 'waiting_input';
     const unread = isUnread(s);
     return (
-      <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
+      <div className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
         <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill} onReveal={onReveal}
           onReattach={onReattach} onResume={onResume} unread={unread} compact={compact}
-          cmdIndex={cmdIndexByPid?.get(s.pid)} />
+          cmdIndex={cmdIndexByPid?.get(s.pid)} onMoveUp={move?.up} onMoveDown={move?.down} />
         {waiting && (
           // Named with project and pid, matching the neighbouring Close
           // button's own convention (OpenSessionCard.tsx's
@@ -275,11 +291,71 @@ export function SessionRail({
   //
   // The join/split below is how a string dependency stands in for an array
   // one: useEffect compares deps by identity, and a fresh array each render
-  // would fire it forever.
-  const rowKeys = sections.flatMap(sec => sec.rows.map(r => r.key)).join('\n');
+  // would fire it forever. NUL (\0), not \n: a row key can be a raw
+  // filesystem cwd, and a newline is a legal byte inside a POSIX path -- two
+  // different key sets could then join to the same string and the effect
+  // would skip remembering the new one. NUL is the one byte a path can never
+  // contain, so it is the only separator this join can use safely.
+  const rowKeys = sections.flatMap(sec => sec.rows.map(r => r.key)).join('\0');
   useEffect(() => {
-    if (rowKeys !== '') rememberKeys(rowKeys.split('\n'));
+    if (rowKeys !== '') rememberKeys(rowKeys.split('\0'));
   }, [rowKeys]);
+
+  // Which section each row is in, so a drop can be refused across a section
+  // boundary. Built from the sections that were just computed rather than by
+  // asking the store again, so the map and the render can never disagree.
+  const sectionOfKey = new Map<string, string | null>();
+  for (const section of sections) {
+    for (const row of section.rows) sectionOfKey.set(row.key, section.name);
+  }
+
+  /** Moves `key` one place within its OWN section, using the neighbour as it
+   *  is rendered rather than the neighbour in storage -- the stored order
+   *  outlives the rows in it, so an adjacent stored key may be a folder with
+   *  nothing running in it and stepping onto that would look like a skip. */
+  function moveWithinSection(rows: RailRow<OpenSession>[], key: string, delta: -1 | 1): void {
+    const i = rows.findIndex(r => r.key === key);
+    const target = rows[i + delta];
+    if (target === undefined) return;
+    moveRow(key, target.key);
+  }
+
+  function dragProps(key: string): React.HTMLAttributes<HTMLDivElement> & { draggable: true } {
+    return {
+      draggable: true,
+      onDragStart: e => {
+        setDragKey(key);
+        // Chromium and Firefox both refuse to start a drag with nothing on
+        // the transfer, so this is required even though the payload is
+        // never read back -- dragKey above is the real handle.
+        e.dataTransfer.setData('text/plain', key);
+        e.dataTransfer.effectAllowed = 'move';
+      },
+      // preventDefault on dragover is what marks an element as a valid drop
+      // target. NOT calling it is therefore how a drop is refused, and the
+      // browser shows the "no drop" cursor for free.
+      onDragOver: e => {
+        if (dragKey === null || dragKey === key) return;
+        if (sectionOfKey.get(dragKey) !== sectionOfKey.get(key)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+      },
+      onDrop: e => {
+        e.preventDefault();
+        if (dragKey !== null && dragKey !== key
+          && sectionOfKey.get(dragKey) === sectionOfKey.get(key)) {
+          // The ONE function the menu items call too, so drag and keyboard
+          // can never drift into two different notions of "one place up".
+          moveRow(dragKey, key);
+        }
+        setDragKey(null);
+      },
+      // Fires whether the drag landed or was abandoned, so the handle is
+      // always cleared -- a stale dragKey would make the next click-drag
+      // start from the wrong row.
+      onDragEnd: () => setDragKey(null),
+    };
+  }
 
   return (
     <nav className={`rail ${side}`} style={{ width }} aria-label="Open sessions">
@@ -291,14 +367,27 @@ export function SessionRail({
           // leading space is therefore unreachable.
           <div className="railsection" key={section.name ?? ' uncategorised'}>
             {section.name !== null && <h2 className="railsectionname">{section.name}</h2>}
-            {section.rows.map(row => (
-              row.kind === 'session'
-                ? renderSession(row.session)
-                : <StackCard key={row.key} cwd={row.cwd} members={row.members}
-                    open={isStackOpen(row.cwd)} onToggle={toggleStack}
-                    selectedPid={selectedPid} renderMember={renderSession}
-                    onAnswer={onAnswer} />
-            ))}
+            {section.rows.map((row, i) => {
+              // Absent at each end of the section rather than present and
+              // disabled: a menu item that is always there and sometimes does
+              // nothing is worse than one that is only offered when it can act.
+              const move = {
+                up: i > 0 ? () => moveWithinSection(section.rows, row.key, -1) : undefined,
+                down: i < section.rows.length - 1
+                  ? () => moveWithinSection(section.rows, row.key, 1) : undefined,
+              };
+              return (
+                <div className={`railrow${dragKey === row.key ? ' dragging' : ''}`}
+                  key={row.key} {...dragProps(row.key)}>
+                  {row.kind === 'session'
+                    ? renderSession(row.session, move)
+                    : <StackCard cwd={row.cwd} members={row.members}
+                        open={isStackOpen(row.cwd)} onToggle={toggleStack}
+                        selectedPid={selectedPid} renderMember={renderSession}
+                        onAnswer={onAnswer} onMoveUp={move.up} onMoveDown={move.down} />}
+                </div>
+              );
+            })}
           </div>
         ))}
       </div>
