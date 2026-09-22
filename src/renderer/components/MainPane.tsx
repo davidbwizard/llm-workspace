@@ -348,6 +348,12 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
               // their own doc comments on ConversationView's props.
               context={session?.context ?? null}
               onContext={setLiveContext}
+              // The foot's sub-agent chip. Same swept source as `events`
+              // and `context` above; null whenever this process matches no
+              // session uniquely, which is what draws no chip rather than
+              // a "0 of 0".
+              agents={session?.agents ?? null}
+              liveAgents={session?.liveAgents ?? null}
               // The pid is already the selection, so this only has to flip
               // the view -- unlike the rail's Answer, which must select
               // first (see onOpenTerminal on SessionRail above).

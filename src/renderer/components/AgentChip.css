@@ -1,0 +1,38 @@
+/* src/renderer/components/AgentChip.css */
+/* Ported from the approved mockup's own `.agentchip` ("Naming the
+   sub-agent count", 2026-09-22), which was written against this app's
+   tokens -- so these values are the mockup's, not re-derived from the
+   picture. Same shape and metrics as ModeChip's own button beside it
+   (11.5px mono, 999px radius, 3px 10px 3px 8px, 6px gap), so the two read
+   as one row of chips rather than two unrelated things that happen to be
+   adjacent.
+
+   Quieter than the mode chip on purpose: --line and no tint, where the
+   mode chip colours itself by mode. This one reports, it does not warn --
+   and it must never compete with --critical, which this app reserves for
+   "waiting on you". */
+.agentchip { flex:none; font-family:var(--f-mono); font-size:11.5px; color:var(--muted);
+  border:1px solid var(--line); border-radius:999px; padding:3px 10px 3px 8px;
+  display:inline-flex; align-items:center; gap:6px; cursor:default; }
+
+/* --ag-purple, the same tone the provider mark and the plan mode already
+   use for "a thing the session is running". Sized in px rather than em so
+   it cannot inherit its way to the wrong size, and display:block so the
+   inline baseline gap does not push it off centre -- the same two reasons
+   ModeChip.css gives for its own caret. */
+.agentchip-ic { width:12px; height:12px; display:block; flex:none; color:var(--ag-purple); }
+
+/* The numbers carry the weight; the words between them stay quiet, so the
+   pair reads at a glance without the chip shouting. No flex gap here --
+   the spacing is real spaces in the markup, so the text reads correctly
+   when it is read rather than looked at (see AgentChip.tsx). */
+.agentchip-digits { white-space:nowrap; }
+.agentchip-digits b { font-weight:600; color:var(--ink-2); font-variant-numeric:tabular-nums; }
+.agentchip-of { color:var(--faint); }
+
+/* The accessible name. Not display:none -- that would drop it from the
+   accessibility tree along with the page, leaving a screen reader with
+   digits and no noun. Same clip-path technique as ConversationView.css's
+   own .wholabel and the cards' .agents-name. */
+.agentchip-name { position:absolute; width:1px; height:1px; margin:-1px; padding:0;
+  overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }

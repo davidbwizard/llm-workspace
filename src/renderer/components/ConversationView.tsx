@@ -16,6 +16,7 @@ import { WorkingStrip } from './WorkingStrip.tsx';
 import { WaitingFallback } from './WaitingCard.tsx';
 import { PromptCard } from './PromptCard.tsx';
 import { ModeChip } from './ModeChip.tsx';
+import { AgentChip } from './AgentChip.tsx';
 import { useSettings } from '../state/settings.ts';
 import { useCopy, COPY_LABEL } from '../state/useCopy.ts';
 import { useSessionLive, type SessionMode } from '../state/useSessionLive.ts';
@@ -414,8 +415,14 @@ function readFile(file: File, as: 'dataUrl' | 'bytes'): Promise<string | ArrayBu
 
 type Attachment = { id: string; name: string; kind: AttachKind; thumb: string | null };
 
-function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, onOpenTerminal, attachRef, onPendingChange, onPendingSent }: {
+function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liveAgents, onOpenTerminal, attachRef, onPendingChange, onPendingSent }: {
   pid: number | null;
+  /** The matched session's sub-agent pair, for the foot's chip. Both null
+   *  whenever the pane's pid matches no session uniquely -- which is what
+   *  draws no chip at all, rather than a "0 of 0" about a session the app
+   *  has not identified. */
+  agents: number | null;
+  liveAgents: number | null;
   /** Which recorded session this pid is, used ONLY to prove a stored draft
    *  belongs to the session now on screen. Null when the app cannot tell,
    *  which means no draft is kept -- see draftFor above. */
@@ -732,6 +739,14 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, onOpenTermi
           row is empty rather than half-drawn in those cases. */}
       <div className="convfoot">
         <ModeChip pid={pid} state={mode} onOpenTerminal={onOpenTerminal} />
+        {/* Beside the mode chip, not in the pane header: that row already
+            carries six controls and wraps at a narrow window, which is why
+            the mode chip came down here in the first place. Both chips
+            render nothing when they have nothing to say, and .convfoot
+            :empty collapses the row entirely in that case -- so a session
+            with no readable mode and no sub-agents looks exactly as it did
+            before either feature existed. */}
+        <AgentChip agents={agents} liveAgents={liveAgents} />
       </div>
       {counter && (
         <p className={`convcount${counter.warn ? ' convcount-warn' : ''}`}>{counter.label}</p>
@@ -778,7 +793,7 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, onOpenTermi
  *  in the moment right after it launches, before its first events are
  *  written and ingested; and no match info at all (match omitted) falls
  *  back to a neutral message rather than asserting either specific claim. */
-export function ConversationView({ sessionId, match, provider, events, pid, tmux, onOpenTerminal, context = null, onContext }: {
+export function ConversationView({ sessionId, match, provider, events, pid, tmux, onOpenTerminal, context = null, onContext, agents = null, liveAgents = null }: {
   sessionId: string | null;
   match?: MatchQuality;
   /** Which CLI this session is, so the agent's meta line carries that
@@ -799,6 +814,16 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   /** Switches the pane to the Terminal view -- the only way to answer a
    *  choice, which this box deliberately cannot do. */
   onOpenTerminal: () => void;
+  /** The matched session's sub-agent counts, straight off the same
+   *  fleet:update push `events` and `context` come from. Both default to
+   *  null so existing callers that do not care about the foot's chip need
+   *  not pass them -- and null is also the honest value for a pane whose
+   *  pid matches no session uniquely, which is exactly when AgentChip
+   *  draws nothing. Kept as the pair rather than a formatted string: the
+   *  chip owns its own wording, and the cards word the same numbers
+   *  differently. */
+  agents?: number | null;
+  liveAgents?: number | null;
   /** OpenSession.context, straight off the fleet:update push MainPane
    *  already receives -- same "5s sweep" source and shape as `events`
    *  above. Optional/defaulted to null: existing callers (tests, mainly)
@@ -1423,6 +1448,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           next one. */}
       <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux} provider={provider}
         waiting={live?.activity === 'waiting'} mode={live?.mode ?? null}
+        agents={agents} liveAgents={liveAgents}
         onOpenTerminal={onOpenTerminal} attachRef={attachRef}
         onPendingChange={() => retickPending(t => t + 1)}
         onPendingSent={() => { pendingSentRef.current = true; }} />
