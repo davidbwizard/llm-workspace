@@ -1,7 +1,8 @@
 import { Component, useEffect, useMemo, useRef, type ErrorInfo, type ReactNode } from 'react';
 import { MainPane } from './components/MainPane.tsx';
 import { LaunchBar } from './components/LaunchBar.tsx';
-import { FirstRun } from './components/FirstRun.tsx';
+import { FirstRun, useFirstRun } from './components/FirstRun.tsx';
+import { useChecks } from './state/useChecks.ts';
 import { useFleet } from './state/useFleet.ts';
 import { useSettings } from './state/settings.ts';
 
@@ -75,6 +76,11 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
 export function App() {
   const { payload, error, selection, select, setView, clear, orderedSessions } = useFleet();
   const settings = useSettings();
+  // One useChecks for the whole window: the launch bar's disabled state and
+  // the first-run screen read the same sweep, so Check again on that screen
+  // updates the bar behind it in the same commit.
+  const checks = useChecks();
+  const firstRun = useFirstRun(checks);
 
   // Cmd+1..9: the small hotkey number every open-session card shows (both
   // the grid and the rail) is looked up from this SAME map, so a card's own
@@ -170,24 +176,28 @@ export function App() {
     return <main className="shell"><p className="empty">Reading the index…</p></main>;
   }
 
+  // Layout A: the window opens to the first-run screen and nothing else
+  // until they continue, with the launch bar visible above it and inert.
+  // FirstRun.tsx's own header states when this is allowed to happen and
+  // why -- in particular, it is NOT every launch with something missing.
   return (
     <main className="shell">
-      <LaunchBar onLaunched={openInTerminal} />
-      {/* Design §5. Renders nothing at all when every dependency is fine,
-          and never blocks what is below it -- the app degrades per
-          capability rather than refusing to start (§4). */}
-      <FirstRun />
-      <ErrorBoundary>
-        <MainPane
-          selection={selection}
-          sessions={payload.openSessions}
-          onSelect={select}
-          onSetView={setView}
-          onClear={clear}
-          railSide="left"
-          cmdIndexByPid={cmdIndexByPid}
-        />
-      </ErrorBoundary>
+      <LaunchBar onLaunched={openInTerminal} disabled={firstRun.showing} />
+      {firstRun.showing
+        ? <FirstRun checks={checks} onContinue={firstRun.dismiss} />
+        : (
+          <ErrorBoundary>
+            <MainPane
+              selection={selection}
+              sessions={payload.openSessions}
+              onSelect={select}
+              onSetView={setView}
+              onClear={clear}
+              railSide="left"
+              cmdIndexByPid={cmdIndexByPid}
+            />
+          </ErrorBoundary>
+        )}
     </main>
   );
 }

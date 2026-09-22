@@ -4,7 +4,7 @@ import {
   type Appearance, type CompactCards, type MessageStyle, type TextSize,
 } from '../state/settings.ts';
 import { ProviderMark } from './ProviderMark.tsx';
-import { DependencyChecks } from './DependencyChecks.tsx';
+import { DependencyChecks, CheckAgain } from './DependencyChecks.tsx';
 import { HooksConsent } from './HooksConsent.tsx';
 import { useChecks } from '../state/useChecks.ts';
 import './SettingsModal.css';
@@ -461,7 +461,19 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         <section className="settingssection">
           <h3 className="settingssectitle">What this app needs</h3>
           <div className="settingsfield">
+            <p className="settingshelp">
+              This app runs agents in tmux and reads what they write. It never installs anything
+              for you &mdash; when something is missing it shows the command and you run it.
+            </p>
             <DependencyChecks {...checks} />
+            <div className="settingsrecheck">
+              <CheckAgain recheck={checks.recheck} rechecking={checks.rechecking} />
+              {checks.readiness !== null && (
+                <span className="settingscaption">
+                  Last checked {new Date(checks.readiness.checkedAt).toLocaleTimeString()}
+                </span>
+              )}
+            </div>
           </div>
         </section>
 

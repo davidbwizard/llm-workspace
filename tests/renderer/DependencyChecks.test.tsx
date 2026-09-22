@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
-import { DependencyChecks } from '../../src/renderer/components/DependencyChecks.tsx';
-import { FirstRun } from '../../src/renderer/components/FirstRun.tsx';
+import { DependencyChecks, CheckAgain } from '../../src/renderer/components/DependencyChecks.tsx';
+import { FirstRun, shouldTakeOver, continueLabel, headline } from '../../src/renderer/components/FirstRun.tsx';
+import type { ChecksStatus, ChecksView } from '../../src/renderer/state/useChecks.ts';
 import type { CheckState, DependencyCheck, Readiness } from '../../src/main/checks.ts';
 
 afterEach(cleanup);
@@ -33,21 +34,28 @@ function readiness(checks: DependencyCheck[], over: Partial<Readiness> = {}): Re
   };
 }
 
-const panel = (r: Readiness | null, over: Partial<Parameters<typeof DependencyChecks>[0]> = {}) =>
-  render(<DependencyChecks status={r ? 'ready' : 'running'} readiness={r} recheck={() => {}} rechecking={false} {...over} />);
+function panel(r: Readiness | null, over: Partial<Parameters<typeof DependencyChecks>[0]> = {}) {
+  const props = { status: (r ? 'ready' : 'running') as ChecksStatus, readiness: r, recheck: () => {}, rechecking: false, ...over };
+  return render(
+    <>
+      <DependencyChecks {...props} />
+      <CheckAgain recheck={props.recheck} rechecking={props.rechecking} />
+    </>,
+  );
+}
 
 describe('every state gets its own words', () => {
   // The four outcomes main keeps apart must stay apart on screen. A screen
   // that says "not installed" about a broken install sends someone to
   // install something they already have.
   it.each([
-    ['ok', 'Ready'],
+    ['ok', 'Found'],
     ['unhealthy', 'Needs attention'],
-    ['missing', 'Not installed'],
+    ['missing', 'Missing'],
     ['timeout', 'No answer'],
-  ] as const)('labels %s as "%s"', (state, label) => {
+  ] as const)('gives %s the accessible name "%s"', (state, name) => {
     panel(readiness([check('tmux', state), check('claude', 'ok'), check('codex', 'ok')]));
-    expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('img', { name }).length).toBeGreaterThan(0);
   });
 
   it('shows main\'s own sentence for the state, not one of its own', () => {
@@ -55,9 +63,30 @@ describe('every state gets its own words', () => {
     expect(screen.getByText('tmux detail for missing.')).toBeTruthy();
   });
 
+  it('says nothing about state on a row that is fine -- the mark already does', () => {
+    panel(readiness([check('tmux', 'ok'), check('claude', 'ok'), check('codex', 'ok')]));
+    expect(screen.queryByText('tmux detail for ok.')).toBeNull();
+    // But it still says what the thing is for.
+    expect(screen.getByText(/What tmux is for/)).toBeTruthy();
+  });
+
   it('shows a version when there is one', () => {
     panel(readiness([check('tmux', 'ok'), check('claude', 'ok'), check('codex', 'ok')]));
     expect(screen.getAllByText('1.2.3').length).toBe(3);
+  });
+
+  // Colour is the second carrier, never the only one: the marks differ in
+  // shape so the list still works in greyscale.
+  it('draws a different shape per mark, not just a different colour', () => {
+    const { container } = panel(readiness([
+      check('tmux', 'ok'), check('claude', 'missing'), check('codex', 'unhealthy'),
+    ]));
+    const marks = [...container.querySelectorAll('.mk')];
+    const shapes = marks.map(m => m.innerHTML);
+    expect(new Set(shapes).size).toBe(3);
+    // And each carries a real name, since a path tells a screen reader
+    // nothing.
+    for (const m of marks) expect(m.getAttribute('aria-label')).toBeTruthy();
   });
 });
 
@@ -75,7 +104,7 @@ describe('"no answer" never reads as "not installed"', () => {
   it('offers no install command for a tool that simply did not answer', () => {
     timedOut();
     expect(screen.queryByText('brew install tmux')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Copy / })).toBeNull();
   });
 
   it('says outright that it is not the same as missing', () => {
@@ -96,26 +125,29 @@ describe('"no answer" never reads as "not installed"', () => {
 
   // Nothing on screen may collapse the four into fewer. The labels, and the
   // sentences main writes, must all differ.
-  it('renders four distinct labels for the four states', () => {
-    const { container } = panel(readiness([
-      check('tmux', 'ok'), check('claude', 'unhealthy'), check('codex', 'missing'),
-    ]));
-    const labels = [...container.querySelectorAll('.checkstate')].map(el => el.textContent);
-    expect(new Set(labels).size).toBe(3);
-    expect(labels).toEqual(['Ready', 'Needs attention', 'Not installed']);
-    // And the fourth is its own word, not a synonym of any of them.
-    expect(labels).not.toContain('No answer');
+  it('names the four states four different things', () => {
+    const names = ['Found', 'Missing', 'Needs attention', 'No answer'];
+    expect(new Set(names).size).toBe(4);
+    panel(readiness([check('tmux', 'ok'), check('claude', 'unhealthy'), check('codex', 'missing')]));
+    for (const n of ['Found', 'Needs attention', 'Missing']) {
+      expect(screen.getAllByRole('img', { name: n }).length).toBeGreaterThan(0);
+    }
+    expect(screen.queryByRole('img', { name: 'No answer' })).toBeNull();
   });
 
-  it('marks missing and timeout with different emphasis, not the same one', () => {
+  // The critical-toned row is for MISSING alone. A timed-out tool is
+  // present, and dressing it as absent would undo the distinction.
+  it('gives the missing row the critical tone and the timed-out row none', () => {
     const { container } = panel(readiness([
       check('tmux', 'missing'), check('claude', 'timeout'), check('codex', 'ok'),
     ]));
-    const rows = [...container.querySelectorAll('.checkrow')];
-    expect(rows[0]!.getAttribute('data-state')).toBe('missing');
+    const rows = [...container.querySelectorAll('.dep')];
+    expect(rows[0]!.className).toContain('bad');
+    expect(rows[1]!.className).not.toContain('bad');
     expect(rows[1]!.getAttribute('data-state')).toBe('timeout');
-    const cls = rows.map(r => r.querySelector('.checkstate')!.className);
-    expect(cls[0]).not.toBe(cls[1]);
+    // And they wear different marks.
+    expect(rows[0]!.querySelector('.mk')!.getAttribute('class')).toContain('miss');
+    expect(rows[1]!.querySelector('.mk')!.getAttribute('class')).toContain('warn');
   });
 });
 
@@ -125,27 +157,33 @@ describe('the app installs nothing', () => {
   it('shows the exact command for something missing', () => {
     panel(readiness([check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')]));
     expect(screen.getByText('brew install tmux')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy brew install tmux' })).toBeTruthy();
   });
 
   it('shows no command for something that is already fine', () => {
     panel(readiness([check('tmux', 'ok'), check('claude', 'ok'), check('codex', 'ok')]));
-    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Copy / })).toBeNull();
   });
 
   it('copies the command to the clipboard, and nothing else happens', async () => {
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     panel(readiness([check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')]));
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
-    expect(writeText).toHaveBeenCalledWith('brew install tmux');
+    fireEvent.click(screen.getByRole('button', { name: 'Copy brew install tmux' }));
+    // The write is deferred by a microtask on purpose (state/useCopy.ts):
+    // a clipboard accessor that THROWS rather than rejecting has to land in
+    // the same failure path, so it is wrapped in a resolved promise.
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('brew install tmux'));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy());
   });
 
-  it('survives a clipboard that is absent or refuses', () => {
+  // Never a false "Copied": someone who believes the command is on their
+  // clipboard and pastes nothing is worse off than someone told plainly.
+  it('says it failed when the clipboard refuses, rather than claiming success', async () => {
     Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
     panel(readiness([check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')]));
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy brew install tmux' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copy failed' })).toBeTruthy());
     // The command itself is still on screen to select by hand.
     expect(screen.getByText('brew install tmux')).toBeTruthy();
   });
@@ -291,53 +329,117 @@ describe('Check again', () => {
   });
 });
 
-describe('the first-run surface', () => {
-  let checksGet: ReturnType<typeof vi.fn>;
+// The takeover rule. The mockup does not answer when this screen appears,
+// and getting it wrong means a wall between someone and the app they just
+// opened -- so the rule is a pure function and these are its statement.
+describe('when the first-run screen takes the window over', () => {
+  const problem = (over: Partial<Readiness> = {}) => readiness(
+    [check('tmux', 'ok'), check('claude', 'missing'), check('codex', 'ok')], over,
+  );
+  const allWell = () => readiness([check('tmux', 'ok'), check('claude', 'ok'), check('codex', 'ok')]);
+  const noTmux = () => readiness(
+    [check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')],
+    { attach: { available: false, reason: 'tmux is not installed.', warning: null } },
+  );
 
-  const mount = (r: Readiness) => {
-    checksGet = vi.fn(async () => ({ status: 'ready' as const, readiness: r }));
-    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      checksGet, checksRun: vi.fn(), onChecks: () => () => {},
-    };
-    return render(<FirstRun />);
-  };
-
-  beforeEach(() => {
-    (globalThis as never as { window: { fleet: unknown } }).window.fleet = undefined;
+  // Rule 4: there is no welcome step to click through on a machine where
+  // everything is already installed.
+  it('never appears when everything is installed, not even the first time', () => {
+    expect(shouldTakeOver(allWell(), false)).toBe(false);
+    expect(shouldTakeOver(allWell(), true)).toBe(false);
   });
 
-  // A machine where everything is installed must never see a "welcome"
-  // step to click through.
-  it('renders nothing at all when every dependency is fine', async () => {
-    const { container } = mount(readiness([check('tmux', 'ok'), check('claude', 'ok'), check('codex', 'ok')]));
-    await waitFor(() => expect(checksGet).toHaveBeenCalled());
-    expect(container.textContent).toBe('');
+  // Rule 1.
+  it('appears on the first run when something is wrong', () => {
+    expect(shouldTakeOver(problem(), false)).toBe(true);
   });
 
-  it('appears, and names the problem, when something is missing', async () => {
-    mount(readiness([check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')]));
-    await waitFor(() => expect(screen.getByText('tmux needs attention')).toBeTruthy());
+  // Rule 3, the one that follows from design §4 rather than the mockup: a
+  // missing tool costs one capability, not the app. Someone who chose to
+  // run without Codex must not be walled every launch for it.
+  it('does not appear again once they have continued past it', () => {
+    expect(shouldTakeOver(problem(), true)).toBe(false);
   });
 
-  it('counts them when more than one is wrong', async () => {
-    mount(readiness([check('tmux', 'missing'), check('claude', 'unhealthy'), check('codex', 'ok')]));
-    await waitFor(() => expect(screen.getByText('2 things need attention')).toBeTruthy());
+  // Rule 2: without tmux nothing can be launched or attached, so the
+  // normal window would be a set of controls that all refuse.
+  it('appears every launch when the core is gone, even after continuing', () => {
+    expect(shouldTakeOver(noTmux(), true)).toBe(true);
   });
 
-  it('can be hidden, and says where to find it again', async () => {
-    const { container } = mount(readiness([check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')]));
-    await waitFor(() => expect(screen.getByText(/What this app needs/)).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Hide for now' }));
-    expect(container.textContent).toBe('');
+  // While a sweep is running the app stays quiet rather than flashing a
+  // wall that vanishes a moment later -- a full sweep is ~11s.
+  it('stays out of the way until a sweep has actually finished', () => {
+    expect(shouldTakeOver(null, false)).toBe(false);
+    expect(shouldTakeOver(null, true)).toBe(false);
+  });
+});
+
+describe('what the first-run screen says', () => {
+  const withProblems = (...states: (CheckState | undefined)[]) => readiness([
+    check('tmux', states[0] ?? 'ok'),
+    check('claude', states[1] ?? 'ok'),
+    check('codex', states[2] ?? 'ok'),
+  ]);
+
+  it('counts rather than asserting, so the heading is never wrong', () => {
+    expect(headline(withProblems('missing'))).toBe('One thing to install first');
+    expect(headline(withProblems('missing', 'missing'))).toBe('Two things to install first');
   });
 
-  it('stays silent while the first sweep is still running', () => {
-    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
-      checksGet: vi.fn(async () => ({ status: 'running' as const })),
-      checksRun: vi.fn(),
-      onChecks: () => () => {},
-    };
-    const { container } = render(<FirstRun />);
+  it('does not say "install" about something that is installed but unwell', () => {
+    expect(headline(withProblems('unhealthy'))).toBe('One thing needs attention');
+    expect(headline(withProblems('missing', 'unhealthy'))).toBe('2 things need attention');
+  });
+
+  // The mockup's quiet button names what you are continuing without, which
+  // only works while there is one of them.
+  it('names the one thing you are continuing without', () => {
+    expect(continueLabel(withProblems(undefined, 'missing'))).toBe('Continue without Claude Code');
+  });
+
+  it('stops naming them once there are several', () => {
+    expect(continueLabel(withProblems('missing', 'missing'))).toBe('Continue anyway');
+  });
+});
+
+describe('the first-run screen, rendered', () => {
+  const view = (r: Readiness | null, over: Partial<ChecksView> = {}): ChecksView => ({
+    status: r ? 'ready' : 'running', readiness: r, recheck: () => {}, rechecking: false, ...over,
+  });
+
+  it('shows the list, the two actions and where to find it again', () => {
+    render(<FirstRun checks={view(readiness([
+      check('tmux', 'ok'), check('claude', 'missing'), check('codex', 'ok'),
+    ]))} onContinue={() => {}} />);
+    expect(screen.getByText('One thing to install first')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Continue without Claude Code' })).toBeTruthy();
+    expect(screen.getByText(/reopen this from Settings/)).toBeTruthy();
+    expect(screen.getByText('brew install claude')).toBeTruthy();
+  });
+
+  it('continues when asked, whatever is missing -- Continue always works', () => {
+    const onContinue = vi.fn();
+    render(<FirstRun checks={view(readiness(
+      [check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')],
+      { attach: { available: false, reason: 'tmux is not installed.', warning: null } },
+    ))} onContinue={onContinue} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue without tmux' }));
+    expect(onContinue).toHaveBeenCalled();
+  });
+
+  it('re-runs the checks from its own primary button', () => {
+    const recheck = vi.fn();
+    render(<FirstRun checks={view(readiness([
+      check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok'),
+    ]), { recheck })} onContinue={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    expect(recheck).toHaveBeenCalled();
+  });
+
+  it('renders nothing before a sweep has landed', () => {
+    const { container } = render(<FirstRun checks={view(null)} onContinue={() => {}} />);
     expect(container.textContent).toBe('');
   });
 });

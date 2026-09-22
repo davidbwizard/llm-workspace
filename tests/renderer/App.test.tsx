@@ -168,3 +168,122 @@ describe('App -- Cmd+1..9 session shortcuts', () => {
     expect(() => pressCmd('1')).not.toThrow();
   });
 });
+
+// Layout A, as David picked it: the window opens to the first-run screen
+// and nothing else until they continue, with the launch bar visible above
+// it and inert. When the rule says not to take over, the app opens normally
+// and this is invisible.
+describe('the first-run takeover (layout A)', () => {
+  const cap = (available: boolean, reason: string | null = null) => ({ available, reason, warning: null });
+
+  function dep(id: string, state: string, name: string) {
+    return {
+      id, name, state,
+      version: state === 'ok' ? '1.0' : null,
+      purpose: `What ${name} is for.`,
+      install: [{ command: `brew install ${id}`, requires: 'homebrew', note: null }],
+      probe: `${id} --version`,
+      doctor: null,
+      detail: `${name} detail.`,
+    };
+  }
+
+  function mount(checks: ReturnType<typeof dep>[], over: Record<string, unknown> = {}) {
+    const readiness = {
+      checkedAt: '2026-09-21T12:00:00.000Z',
+      checks,
+      launch: { claude: cap(true), codex: cap(true) },
+      attach: cap(true),
+      history: cap(true),
+      homebrew: true,
+      ...over,
+    };
+    (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+      listFleet: vi.fn().mockResolvedValue({ version: 1, generatedAt: '', openSessions: [] }),
+      listHistory: vi.fn().mockResolvedValue({ version: 1, generatedAt: '', sessions: [], total: 0 }),
+      onFleet: vi.fn(() => () => {}),
+      setTheme: vi.fn().mockResolvedValue({ status: 'set', theme: 'system' }),
+      hooksGet: vi.fn().mockResolvedValue({ installed: false, error: null }),
+      checksGet: vi.fn().mockResolvedValue({ status: 'ready', readiness }),
+      checksRun: vi.fn().mockResolvedValue(readiness),
+      onChecks: vi.fn(() => () => {}),
+    };
+    return render(<App />);
+  }
+
+  beforeEach(() => {
+    try { localStorage.clear(); } catch { /* jsdom always has it; belt and braces */ }
+  });
+
+  it('opens to the screen and nothing else when something is missing', async () => {
+    mount([dep('tmux', 'ok', 'tmux'), dep('claude', 'missing', 'Claude Code'), dep('codex', 'ok', 'Codex')]);
+    await waitFor(() => expect(screen.getByText('One thing to install first')).toBeTruthy());
+    // The pane behind it is not rendered at all -- this is a takeover, not
+    // a banner.
+    expect(document.querySelector('.mainpane')).toBeNull();
+  });
+
+  it('leaves the launch bar visible above it, and inert', async () => {
+    mount([dep('tmux', 'ok', 'tmux'), dep('claude', 'missing', 'Claude Code'), dep('codex', 'ok', 'Codex')]);
+    await waitFor(() => expect(screen.getByText('One thing to install first')).toBeTruthy());
+    const bar = document.querySelector('.launchbar')!;
+    // Visible: still in the document, so someone can see what they will get.
+    expect(bar).toBeTruthy();
+    expect(bar.getAttribute('aria-disabled')).toBe('true');
+    // And really disabled, not just faded -- a keyboard user meets the same
+    // wall a mouse user does.
+    expect((screen.getByRole('button', { name: 'Launch' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Working directory') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Provider') as HTMLSelectElement).disabled).toBe(true);
+  });
+
+  it('opens normally, with no screen at all, when everything is installed', async () => {
+    mount([dep('tmux', 'ok', 'tmux'), dep('claude', 'ok', 'Claude Code'), dep('codex', 'ok', 'Codex')]);
+    await waitFor(() => expect(document.querySelector('.mainpane')).toBeTruthy());
+    expect(screen.queryByText(/to install first/)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Launch' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('gets out of the way for good once they continue', async () => {
+    mount([dep('tmux', 'ok', 'tmux'), dep('claude', 'missing', 'Claude Code'), dep('codex', 'ok', 'Codex')]);
+    await waitFor(() => expect(screen.getByText('One thing to install first')).toBeTruthy());
+
+    act(() => { screen.getByRole('button', { name: 'Continue without Claude Code' }).click(); });
+
+    await waitFor(() => expect(document.querySelector('.mainpane')).toBeTruthy());
+    expect(screen.queryByText('One thing to install first')).toBeNull();
+    // The bar comes back to life with it.
+    expect(document.querySelector('.launchbar')!.getAttribute('aria-disabled')).toBeNull();
+  });
+
+  it('does not take over again on the next launch once they have continued', async () => {
+    const deps = [dep('tmux', 'ok', 'tmux'), dep('claude', 'missing', 'Claude Code'), dep('codex', 'ok', 'Codex')];
+    const first = mount(deps);
+    await waitFor(() => expect(screen.getByText('One thing to install first')).toBeTruthy());
+    act(() => { screen.getByRole('button', { name: 'Continue without Claude Code' }).click(); });
+    await waitFor(() => expect(document.querySelector('.mainpane')).toBeTruthy());
+    first.unmount();
+
+    // A fresh launch, same missing dependency. Design §4: a missing tool
+    // costs one capability, not the app -- walling someone every launch
+    // would punish exactly the person who made an informed choice.
+    mount(deps);
+    await waitFor(() => expect(document.querySelector('.mainpane')).toBeTruthy());
+    expect(screen.queryByText('One thing to install first')).toBeNull();
+  });
+
+  it('takes over again on the next launch when the core is gone', async () => {
+    const deps = [dep('tmux', 'missing', 'tmux'), dep('claude', 'ok', 'Claude Code'), dep('codex', 'ok', 'Codex')];
+    const noAttach = { attach: cap(false, 'tmux is not installed.') };
+    const first = mount(deps, noAttach);
+    await waitFor(() => expect(screen.getByText('One thing to install first')).toBeTruthy());
+    act(() => { screen.getByRole('button', { name: 'Continue without tmux' }).click(); });
+    await waitFor(() => expect(document.querySelector('.mainpane')).toBeTruthy());
+    first.unmount();
+
+    // Without tmux nothing can be launched or attached, so the normal
+    // window would be a set of controls that all refuse.
+    mount(deps, noAttach);
+    await waitFor(() => expect(screen.getByText('One thing to install first')).toBeTruthy());
+  });
+});

@@ -17,6 +17,7 @@ import { WaitingFallback } from './WaitingCard.tsx';
 import { PromptCard } from './PromptCard.tsx';
 import { ModeChip } from './ModeChip.tsx';
 import { useSettings } from '../state/settings.ts';
+import { useCopy, COPY_LABEL } from '../state/useCopy.ts';
 import { useSessionLive, type SessionMode } from '../state/useSessionLive.ts';
 import { addPending, pendingFor, dropPending, matchPending, markQueued, tickIdle, NOT_SEEN_AFTER_MS } from '../state/pending.ts';
 import './ConversationView.css';
@@ -38,39 +39,15 @@ import './ConversationView.css';
  *  mark, and neither hears nor sees the word "agent". */
 const PROVIDER_NAME: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
 
-const COPY_LABEL = { idle: 'Copy', copied: 'Copied', failed: 'Copy failed' } as const;
-
 /** One-click copy that reports what actually happened for a moment. A
  *  failed write says "Copy failed" and logs why -- never a false "Copied".
- *  The write is wrapped so a missing clipboard API (which throws rather
- *  than rejecting) lands in the same failure path. */
+ *  The state machine itself lives in state/useCopy.ts, shared with the
+ *  first-run screen's own Copy button so the two cannot drift apart; this
+ *  is only its presentation. */
 function CopyButton({ getText, what }: { getText: () => string; what: string }) {
-  const [state, setState] = useState<keyof typeof COPY_LABEL>('idle');
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const alive = useRef(true);
-  // Set on every mount, not just initialised: StrictMode (main.tsx) mounts,
-  // unmounts and remounts in dev, and a flag only ever cleared stayed false,
-  // so the copy ran but its result was never shown.
-  useEffect(() => {
-    alive.current = true;
-    return () => { alive.current = false; clearTimeout(timer.current); };
-  }, []);
-  const settle = (next: keyof typeof COPY_LABEL) => {
-    if (!alive.current) return;
-    setState(next);
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => { if (alive.current) setState('idle'); }, 2000);
-  };
-  const copy = () => {
-    Promise.resolve()
-      .then(() => navigator.clipboard.writeText(getText()))
-      .then(() => settle('copied'), (err: unknown) => {
-        console.error('clipboard write failed:', err);
-        settle('failed');
-      });
-  };
+  const { state, copy } = useCopy();
   return (
-    <button type="button" className="copy-btn" data-state={state} onClick={copy}
+    <button type="button" className="copy-btn" data-state={state} onClick={() => copy(getText())}
       title={COPY_LABEL[state]} aria-label={state === 'idle' ? `Copy ${what}` : COPY_LABEL[state]}>
       <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
         strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
