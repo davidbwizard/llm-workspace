@@ -167,3 +167,14 @@
 :root.modal-open .mainpane,
 :root.modal-open .conv,
 :root.modal-open .railcards { overflow:hidden; }
+
+/* "What this app needs": the Check again row under the dependency list.
+   The list itself is DependencyChecks.css; only its placement is here. */
+.settingsrecheck {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.settingsrecheck .settingscaption { margin: 0; }

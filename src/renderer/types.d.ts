@@ -12,6 +12,8 @@ import type { ModeSetResult } from '../main/mode.ts';
 import type { Answer } from '../core/prompt.ts';
 import type { Mode } from '../core/mode.ts';
 import type { HooksResult } from '../hooks/switch.ts';
+import type { HooksPreview, ConsentRecord } from '../hooks/consent.ts';
+import type { Readiness } from '../main/checks.ts';
 import type { UsageSwitchResult } from '../hooks/usageSwitch.ts';
 import type { UsagePayload } from '../core/usage.ts';
 
@@ -54,10 +56,11 @@ declare global {
       // Images attached to one of your prompts, read back by main.
       attachments: (turnId: number) => Promise<AttachmentResult>;
       // A file an agent's reply names. Main owns every decision here --
-      // which folder the candidate resolves against (its own discovery
-      // data, keyed by pid), containment after realpath on both sides,
-      // existence, the size cap, and read-vs-reveal. These typings narrow
-      // nothing at the trust boundary itself.
+      // which folder a relative candidate resolves against (its own
+      // discovery data, keyed by pid), existence, the size cap, and
+      // read-vs-reveal. There is no containment check: any markdown file
+      // that exists opens (src/main/files.ts's header says why). These
+      // typings narrow nothing at the trust boundary itself.
       fileProbe: (pid: number, candidates: string[]) => Promise<FileProbeResult>;
       fileOpen: (pid: number, candidate: string, reveal?: boolean) => Promise<FileOpenResult>;
       // attach/detach/resize/sendRaw: Tasks 6b/10's streaming bridge. Left as
@@ -97,7 +100,23 @@ declare global {
       // never trusts the renderer's own copy of `installed` -- this typing
       // narrows nothing at the trust boundary itself.
       hooksGet: () => Promise<HooksResult>;
-      hooksSet: (on: boolean) => Promise<HooksResult>;
+      // Consent before writing to a file the person owns (first-run design
+      // §6). hooksPreview writes NOTHING -- it reports the file, the
+      // script and every entry an install would add, and issues the token.
+      // hooksSet(true, token) is the only way to install, and main refuses
+      // without a token it has just issued; hooksSet(false) needs none.
+      // These typings narrow nothing at the trust boundary, same as every
+      // other channel here.
+      hooksPreview: () => Promise<HooksPreview>;
+      hooksSet: (on: boolean, token?: string) => Promise<HooksResult>;
+      hooksDecline: () => Promise<{ decision: string }>;
+      consentGet: () => Promise<ConsentRecord>;
+      // The dependency checks (first-run design §3-§5). checksGet answers
+      // from main's cached sweep; checksRun re-probes (the Check again
+      // button) and resolves to null if main could not probe at all.
+      checksGet: () => Promise<{ status: 'running' } | { status: 'ready'; readiness: Readiness }>;
+      checksRun: () => Promise<Readiness | null>;
+      onChecks: (cb: (readiness: Readiness) => void) => () => void;
       // Usage and context: the Settings switch (re-read from settings.json
       // on every call; `error` is the refusal to show, e.g. "You already
       // have a status line in settings.json -- not replaced."), and the

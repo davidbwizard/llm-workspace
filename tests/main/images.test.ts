@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { readSessionImage, MAX_IMAGE_BYTES } from '../../src/main/images.ts';
+import { join, sep } from 'node:path';
+import { readSessionImage, within, MAX_IMAGE_BYTES } from '../../src/main/images.ts';
 
 // A 1x1 PNG, and the leading bytes of the other accepted formats.
 const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000'
@@ -118,5 +118,26 @@ describe('readSessionImage', () => {
   it('expands ~ to the home directory, still subject to the roots', async () => {
     const rel = realpathSync(join(project, 'shots', 'a.png')).slice(realpathSync(homedir()).length);
     expect((await read(`~${rel}`)).ok).toBe(true);
+  });
+});
+
+// `within` used to be shared with the file viewer, which is why these lived
+// in tests/main/files.test.ts. That viewer dropped its containment check on
+// 2026-09-22 (see src/main/files.ts's header), so the function is now
+// images.ts's own -- used here and by src/main/attachments.ts -- and the
+// tests moved with it rather than being deleted along with the caller.
+describe('within: the separator-aware containment check', () => {
+  // The reason this is not `real.startsWith(root)`. A naive prefix test
+  // passes /foo/barbaz as inside /foo/bar, which is a different directory.
+  it('refuses a sibling whose name merely starts with the root', () => {
+    expect('/foo/barbaz'.startsWith('/foo/bar')).toBe(true);
+    expect(within('/foo/barbaz', '/foo/bar')).toBe(false);
+    expect(within(`/foo/barbaz${sep}x.md`, '/foo/bar')).toBe(false);
+  });
+
+  it('accepts the root itself and anything genuinely under it', () => {
+    expect(within('/foo/bar', '/foo/bar')).toBe(true);
+    expect(within(`/foo/bar${sep}x.md`, '/foo/bar')).toBe(true);
+    expect(within(`/foo/bar${sep}a${sep}b.md`, '/foo/bar')).toBe(true);
   });
 });

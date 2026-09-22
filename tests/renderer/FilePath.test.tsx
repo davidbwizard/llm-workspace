@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MarkdownText } from '../../src/renderer/components/ConversationView.tsx';
 import { FileLinkContext, findPaths, clearFileProbeCache } from '../../src/renderer/components/FilePath.tsx';
@@ -107,20 +108,96 @@ describe('paths in a reply', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'src/main/ipc.ts' })).toBeTruthy());
   });
 
-  it('leaves a fenced code block alone, so its Copy button still copies code', async () => {
+  // This replaces 'leaves a fenced code block alone, so its Copy button
+  // still copies code'. That behaviour is gone deliberately: measured over
+  // 400 real transcripts, 118 .md mentions sat in fenced blocks and none
+  // was clickable. The guarantee the old test really protected -- that the
+  // block still copies verbatim -- is asserted below rather than dropped
+  // with it.
+  it('makes a path inside a fenced code block clickable', async () => {
     const { fileProbe } = setProbe({ 'src/main/ipc.ts': 'markdown' });
     renderMd('```\nread src/main/ipc.ts\n```');
-    await waitFor(() => expect(screen.getByText(/read src\/main\/ipc\.ts/)).toBeTruthy());
-    // The reply's own Copy button is the only button in a fenced block.
-    expect(screen.queryByRole('button', { name: /src\/main\/ipc\.ts/ })).toBeNull();
-    expect(fileProbe).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'src/main/ipc.ts' })).toBeTruthy());
+    expect(fileProbe).toHaveBeenCalled();
   });
 
-  it('leaves the text of a markdown link alone', async () => {
+  // The constraint that had to hold for the above to be allowed at all.
+  it('still copies a fenced block verbatim, path text included', async () => {
+    setProbe({ 'src/main/ipc.ts': 'markdown' });
+    const source = 'read src/main/ipc.ts and then stop';
+    renderMd('```\n' + source + '\n```');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'src/main/ipc.ts' })).toBeTruthy());
+    // The Copy button reads textContent off the <pre>, which walks every
+    // descendant -- so the path button contributes its own characters and
+    // nothing is added, lost or reordered.
+    const pre = document.querySelector('pre')!;
+    expect(pre.textContent).toBe(source + '\n');
+  });
+
+  it('does not stop a drag selecting through a path in a block', async () => {
+    setProbe({ 'src/main/ipc.ts': 'markdown' });
+    renderMd('```\nread src/main/ipc.ts\n```');
+    const btn = await screen.findByRole('button', { name: 'src/main/ipc.ts' });
+    // `all: unset` plus an explicit user-select is what keeps the button
+    // from behaving like a control mid-sentence; assert the declaration is
+    // there rather than trusting the stylesheet by eye.
+    const css = readFileSync('src/renderer/components/ConversationView.css', 'utf8');
+    expect(css).toMatch(/pre \.fp \{[^}]*user-select:\s*text/s);
+    expect(btn.tagName).toBe('BUTTON');
+  });
+
+  // This replaces 'leaves the text of a markdown link alone'. The link's
+  // TEXT is still left alone -- that part has not changed -- but a link
+  // whose target is a local path is now the path control, because Codex
+  // emits nearly every file reference that way.
+  it('leaves a link alone when its target is a web address', async () => {
     const { fileProbe } = setProbe({ 'docs/a.md': 'markdown' });
     renderMd('[docs/a.md](https://example.com)');
     await waitFor(() => expect(screen.getByRole('link')).toBeTruthy());
     expect(fileProbe).not.toHaveBeenCalled();
+  });
+
+  it('opens a markdown link whose target is a local path, keeping its label', async () => {
+    const { fileProbe } = setProbe({ 'src/app.py': 'other' });
+    const onOpen = renderMd('[app.py](src/app.py:12)');
+    const btn = await screen.findByRole('button', { name: 'app.py' });
+    // The label is the label; the target is what main is asked about, with
+    // the line number stripped exactly as it is in prose.
+    expect(fileProbe).toHaveBeenCalledWith(PID, ['src/app.py']);
+    fireEvent.click(btn);
+    expect(onOpen).toHaveBeenCalledWith('src/app.py');
+    // And it is no longer an <a> the window would refuse to navigate to.
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('leaves an http target as a link even when it ends in .md', async () => {
+    const { fileProbe } = setProbe({ 'setup.md': 'markdown' });
+    renderMd('[setup](https://code.claude.com/docs/en/setup.md)');
+    const a = await screen.findByRole('link');
+    expect(a.getAttribute('href')).toBe('https://code.claude.com/docs/en/setup.md');
+    expect(fileProbe).not.toHaveBeenCalled();
+  });
+
+  // grep prints `path:N:` for a matching line and `path-N-` for a context
+  // line, and agents paste both. The first form already fell out of the
+  // line-number suffix; this is its twin. Measured: 95 occurrences across 6
+  // distinct files in a 400-transcript sample.
+  it('cuts the suffix grep glues on for a context line', async () => {
+    const { fileProbe } = setProbe({ 'docs/plan.md': 'markdown' });
+    const onOpen = renderMd('docs/plan.md-2147-  some matching text');
+    await waitFor(() => expect(fileProbe).toHaveBeenCalled());
+    expect(fileProbe.mock.calls[0]![1]).toContain('docs/plan.md');
+    fireEvent.click(await screen.findByRole('button', { name: /docs\/plan\.md/ }));
+    expect(onOpen).toHaveBeenCalledWith('docs/plan.md');
+  });
+
+  it('leaves a name that merely contains a dash and digits alone', async () => {
+    // The cut needs an extension before the -N-, so an ordinary filename
+    // with digits in it is untouched.
+    const { fileProbe } = setProbe({ 'docs/2026-09-18-plan.md': 'markdown' });
+    renderMd('see docs/2026-09-18-plan.md');
+    await waitFor(() => expect(fileProbe).toHaveBeenCalled());
+    expect(fileProbe.mock.calls[0]![1]).toContain('docs/2026-09-18-plan.md');
   });
 
   it('renders as plain text with no session behind the pane', async () => {
@@ -148,5 +225,71 @@ describe('paths in a reply', () => {
     await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(screen.queryByRole('button')).toBeNull();
     spy.mockRestore();
+  });
+});
+
+// A cached miss used to outlive the file being created: an agent names a
+// doc in a plan, writes it a minute later, and the path stayed plain text
+// for the rest of the session. Hits are still kept for the window's life --
+// a file that exists does not usually stop existing mid-session, and
+// re-probing them would be pure churn.
+describe('a miss goes stale, a hit does not', () => {
+  beforeEach(() => { clearFileProbeCache(); vi.useRealTimers(); });
+
+  it('asks again for a path that did not exist, once the answer is old', async () => {
+    vi.useFakeTimers();
+    let exists = false;
+    const fileProbe = vi.fn(async (_pid: number, candidates: string[]) =>
+      ({ ok: true as const, kinds: candidates.map(() => (exists ? 'markdown' as const : null)) }));
+    (globalThis as unknown as { window: { fleet: unknown } }).window.fleet = { fileProbe };
+
+    const { unmount } = render(
+      <FileLinkContext.Provider value={{ pid: PID, onOpen: vi.fn() }}>
+        <MarkdownText text="see docs/new.md" />
+      </FileLinkContext.Provider>,
+    );
+    await vi.advanceTimersByTimeAsync(5);
+    expect(fileProbe).toHaveBeenCalledTimes(1);
+
+    // Still inside the window the miss is believed: a remount does not ask.
+    unmount();
+    render(
+      <FileLinkContext.Provider value={{ pid: PID, onOpen: vi.fn() }}>
+        <MarkdownText text="see docs/new.md" />
+      </FileLinkContext.Provider>,
+    );
+    await vi.advanceTimersByTimeAsync(5);
+    expect(fileProbe).toHaveBeenCalledTimes(1);
+
+    // Past it, the file now exists, and the next mount asks again.
+    exists = true;
+    await vi.advanceTimersByTimeAsync(31_000);
+    render(
+      <FileLinkContext.Provider value={{ pid: PID, onOpen: vi.fn() }}>
+        <MarkdownText text="see docs/new.md" />
+      </FileLinkContext.Provider>,
+    );
+    await vi.advanceTimersByTimeAsync(5);
+    expect(fileProbe).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it('never re-asks for a path it has already found', async () => {
+    vi.useFakeTimers();
+    const fileProbe = vi.fn(async (_pid: number, candidates: string[]) =>
+      ({ ok: true as const, kinds: candidates.map(() => 'markdown' as const) }));
+    (globalThis as unknown as { window: { fleet: unknown } }).window.fleet = { fileProbe };
+
+    for (let i = 0; i < 3; i++) {
+      const { unmount } = render(
+        <FileLinkContext.Provider value={{ pid: PID, onOpen: vi.fn() }}>
+          <MarkdownText text="see docs/real.md" />
+        </FileLinkContext.Provider>,
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+      unmount();
+    }
+    expect(fileProbe).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 });

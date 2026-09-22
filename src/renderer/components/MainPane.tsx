@@ -173,6 +173,16 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
         setViewer({ kind: 'file', candidate, name: result.name, size: result.size, path: result.path, text: result.text });
       } else if (!result.ok && result.reason === 'too_large') {
         setViewer({ kind: 'too_large', candidate, name: result.name ?? candidate, size: result.size ?? 0 });
+      } else if (!result.ok && result.reason === 'permission_denied') {
+        // The one other refusal the viewer SHOWS rather than swallows. A
+        // denied read is not a broken link: the file is there and the app
+        // simply has not been granted the folder (macOS gates ~/Documents,
+        // ~/Desktop and ~/Downloads per application). Saying nothing here
+        // would leave someone clicking a path that quietly does nothing.
+        setViewer({
+          kind: 'no_permission', candidate,
+          name: result.name ?? candidate, size: result.size ?? 0, path: result.path,
+        });
       }
       // 'revealed': Finder is already in front, and there is nothing for
       // this pane to show.

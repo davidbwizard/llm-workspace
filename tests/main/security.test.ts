@@ -41,13 +41,28 @@ describe('renderer security posture', () => {
     const exposed = [...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/g)].map(m => m[1]);
     expect(exposed.sort()).toEqual([
       'app:theme',
+      // The dependency checks (first-run design §3-§5). Read-only and
+      // argument-free: checks:get returns main's cached sweep, checks:run
+      // re-probes. Neither takes anything from the renderer, and the only
+      // commands either can cause to run are the fixed `--version`/`doctor`
+      // list pinned in tests/main/checks.test.ts -- no renderer input
+      // reaches a spawn, and no probe ever sends a prompt to a model.
+      'checks:get', 'checks:run',
+      // Read-only: which answer the person has already given about the
+      // hooks install (first-run design §6).
+      'consent:get',
       'dialog:directory',
       'fleet:history', 'fleet:list',
       // Quick answers switch: main re-probes settings.json fresh on every
       // call (src/hooks/switch.ts) and writes it only through the existing
       // atomic, mode-preserving, exact-command-match install/uninstall
       // path -- see tests/hooks/switch.test.ts.
-      'hooks:get', 'hooks:set',
+      // 'hooks:decline' records a no and writes nothing to settings.json.
+      // 'hooks:preview' is read-only: it reports what an install WOULD add
+      // and issues the token without which hooks:set cannot install at all
+      // (first-run design §6) -- so the app cannot edit a file the person
+      // owns without having just shown them what it would put there.
+      'hooks:decline', 'hooks:get', 'hooks:preview', 'hooks:set',
       // Quick answers: main re-derives the prompt and checks the answer and
       // the pane before any key -- see tests/main/answer.test.ts's guards.
       'session:answer',

@@ -25,6 +25,11 @@ import { projectDir } from '../providers/claude/projectKey.ts';
 import { sanitizeOutbound, type OutboundRefusal } from './outbound.ts';
 import { readSessionImage } from './images.ts';
 import { probeSessionFiles, openSessionFile, type FileDeps } from './files.ts';
+import { runChecks, type Readiness } from './checks.ts';
+import {
+  previewHooksInstall, commitHooksInstall, uninstallHooks, readConsent, recordConsent,
+  type HooksPreview,
+} from '../hooks/consent.ts';
 import { readTurnImages, MAX_ATTACHMENTS } from './attachments.ts';
 import { createStager, createFileStager } from './staging.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
@@ -43,7 +48,7 @@ import {
 } from './sessionLive.ts';
 import { answerPrompt, type AnswerResult } from './answer.ts';
 import { setModeFor, readModeFor, type ModeSetResult } from './mode.ts';
-import { hooksState, setHooks, type HooksResult } from '../hooks/switch.ts';
+import { hooksState, type HooksResult } from '../hooks/switch.ts';
 import { usageSwitchState, setUsageSwitch, type UsageSwitchResult } from '../hooks/usageSwitch.ts';
 import { withContext, defaultContextOpts, buildUsagePayload, type ContextOpts } from './usage.ts';
 import type { UsagePayload } from '../core/usage.ts';
@@ -1345,6 +1350,32 @@ const fileDeps: FileDeps = {
   reveal: path => shell.showItemInFolder(path),
 };
 
+/** The last completed dependency sweep (src/main/checks.ts), or null while
+ *  the first one is still running.
+ *
+ *  Cached rather than probed per request because a full sweep costs ~11s --
+ *  `codex doctor` alone is that, measured -- and the renderer asks for this
+ *  on every mount of the panel. The startup sweep is kicked off by
+ *  src/main/index.ts strictly after the PATH repair; `checks:run` is the
+ *  Check again button, which re-runs without a restart (design §5). */
+let readiness: Readiness | null = null;
+
+/** Runs a sweep, caches it, and tells the window. Exported so startup can
+ *  trigger the first one; the renderer triggers later ones through
+ *  `checks:run`. Never throws -- a failure to probe must not be able to
+ *  take the app down, and the app degrades per capability rather than
+ *  refusing to start (design §4). */
+export async function refreshChecks(win: BrowserWindow | null): Promise<Readiness | null> {
+  try {
+    readiness = await runChecks();
+  } catch (e) {
+    console.error('checks: could not probe dependencies:', e);
+    return readiness;
+  }
+  if (win && !win.isDestroyed()) win.webContents.send('checks:update', readiness);
+  return readiness;
+}
+
 export function registerIpc(
   db: Db, onFleetList?: () => void, onSessionKill?: () => void, onSessionLaunch?: () => void,
 ): void {
@@ -1424,15 +1455,19 @@ export function registerIpc(
   });
   // A file an agent's reply names, clicked in the conversation. The
   // renderer only proposes the string it read off the transcript; every
-  // decision -- which folder it resolves against, whether it is really
-  // inside that folder once both sides are realpath'd, whether it exists,
-  // whether it is small enough to render, and whether it is read at all or
-  // merely shown in Finder -- is made in src/main/files.ts. The session's
-  // folder comes from this process's own discovery sweep, keyed by pid, so
-  // the renderer never names a root. shell.showItemInFolder, never
+  // decision -- which folder a relative one resolves against, whether it
+  // exists, whether it is small enough to render, and whether it is read at
+  // all or merely shown in Finder -- is made in src/main/files.ts. The
+  // session's folder comes from this process's own discovery sweep, keyed
+  // by pid, so the renderer never names a root.
+  //
+  // There is deliberately NO containment check: any markdown file that
+  // exists opens, including one above the session's folder. David's
+  // decision, 2026-09-22 -- src/main/files.ts's header has the reasoning
+  // and what the old restriction cost. shell.showItemInFolder, never
   // shell.openPath: openPath launches the file's default application,
   // which for a .command or a .app is code execution out of model-written
-  // text.
+  // text, and THAT is the guarantee that matters here.
   ipcMain.handle('session:file:probe', (_event, pid: unknown, candidates: unknown) =>
     probeSessionFiles(pid, candidates, fileDeps));
   ipcMain.handle('session:file:open', async (_event, pid: unknown, candidate: unknown, reveal: unknown) => {
@@ -1544,8 +1579,35 @@ export function registerIpc(
   // that the renderer cannot: which copy of src/hooks/helper.sh to install
   // from.
   ipcMain.handle('hooks:get', (): HooksResult => hooksState(resolvePaths(homedir())));
-  ipcMain.handle('hooks:set', (_event, on: unknown): HooksResult =>
-    setHooks(resolvePaths(homedir()), on === true, helperSourcePath()));
+  // Design §6: consent is a GATE in front of the write, not a dialog beside
+  // it. hooks:set can no longer install on its own -- turning it ON needs
+  // the token hooks:preview issued, and what gets written is the plan that
+  // preview showed, not a freshly recomputed one (src/hooks/consent.ts).
+  // Turning it OFF needs nothing: removing our own entries is always
+  // allowed, and a gate on leaving is not consent.
+  ipcMain.handle('hooks:preview', (): HooksPreview => previewHooksInstall(resolvePaths(homedir())));
+  ipcMain.handle('hooks:set', (_event, on: unknown, token: unknown): HooksResult => {
+    const paths = resolvePaths(homedir());
+    return on === true
+      ? commitHooksInstall(paths, token, helperSourcePath())
+      : uninstallHooks(paths);
+  });
+  // "No thanks." Recorded so the app asks once and then stops (design §6);
+  // it writes nothing to settings.json and changes nothing about what the
+  // app can do -- it still runs, with less.
+  ipcMain.handle('hooks:decline', (): { decision: string } => {
+    recordConsent(resolvePaths(homedir()).consent, 'declined');
+    return { decision: 'declined' };
+  });
+
+  // The dependency checks (design §3-§5). `checks:get` answers from the
+  // cached sweep so opening the panel is instant; `checks:run` is the Check
+  // again button and actually re-probes.
+  ipcMain.handle('checks:get', (): { status: 'running' } | { status: 'ready'; readiness: Readiness } =>
+    readiness === null ? { status: 'running' } : { status: 'ready', readiness });
+  ipcMain.handle('checks:run', async (event): Promise<Readiness | null> =>
+    refreshChecks(BrowserWindow.fromWebContents(event.sender)));
+  ipcMain.handle('consent:get', () => readConsent(resolvePaths(homedir()).consent));
 
   // Usage and context (usage design, Part A). The switch mirrors Quick
   // answers exactly: state re-read from settings.json on every call, and

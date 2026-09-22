@@ -1,10 +1,12 @@
 // A markdown file, read-only, beside the conversation or over it.
 //
 // Everything on screen here came back from src/main/files.ts, which decided
-// the path was inside the session's own folder, that it existed, and that it
-// was small enough to render. This component reads nothing and writes
-// nothing; the one action it offers besides closing is asking main to reveal
-// the same file in Finder, which goes back through the identical checks.
+// that the path existed, that it was markdown, and that it was small enough
+// to render. It does NOT have to be inside the session's own folder -- that
+// restriction was dropped deliberately on 2026-09-22, and files.ts's header
+// carries the reasoning. This component reads nothing and writes nothing;
+// the one action it offers besides closing is asking main to reveal the same
+// file in Finder, which goes back through the identical checks.
 //
 // The markdown is rendered with ConversationView's own exported
 // MarkdownText -- the renderer the conversation already uses, already
@@ -31,7 +33,15 @@ export type ViewerFile = {
   /** The resolved path, for the header's tooltip only. Absent when main
    *  refused before it had one to report. */
   path?: string;
-} & ({ kind: 'file'; text: string } | { kind: 'too_large' });
+} & (
+  { kind: 'file'; text: string }
+  | { kind: 'too_large' }
+  /** The file is there and macOS would not let the app read it
+   *  (src/main/files.ts's 'permission_denied'). Its own
+   *  kind rather than a silent no-op, because an empty viewer with no
+   *  explanation is exactly the failure this case exists to avoid. */
+  | { kind: 'no_permission' }
+);
 
 /** Where the viewer sits. MainPane picks this from the width it measures;
  *  there is no setting. */
@@ -87,7 +97,7 @@ export function FileViewer({ file, mode, onClose, onReveal }: {
     >
       <header className="fvhead">
         <span className="fvname" title={file.path ?? file.candidate}>{file.name}</span>
-        <span className="fvsize">{formatBytes(file.size)}</span>
+        {file.kind !== 'no_permission' && <span className="fvsize">{formatBytes(file.size)}</span>}
         <span className="fvspacer" />
         <button type="button" className="fvbtn" onClick={onReveal}>Reveal in Finder</button>
         <button type="button" className="fvbtn fvclose" aria-label="Close file" onClick={onClose}>
@@ -95,17 +105,37 @@ export function FileViewer({ file, mode, onClose, onReveal }: {
         </button>
       </header>
       <div className="fvbody">
-        {file.kind === 'file'
-          ? <MarkdownText text={file.text} />
-          : (
-            // The cap's own message. Not an apology and not a silent
-            // failure: it names the size and hands over the one route that
-            // still works.
-            <p className="fvtoobig">
-              {file.name} is {formatBytes(file.size)}, too large to show here.
-              Reveal it in Finder to open it yourself.
+        {file.kind === 'file' && <MarkdownText text={file.text} />}
+        {file.kind === 'too_large' && (
+          // The cap's own message. Not an apology and not a silent
+          // failure: it names the size and hands over the one route that
+          // still works.
+          <p className="fvtoobig">
+            {file.name} is {formatBytes(file.size)}, too large to show here.
+            Reveal it in Finder to open it yourself.
+          </p>
+        )}
+        {file.kind === 'no_permission' && (
+          // macOS gates ~/Documents, ~/Desktop and ~/Downloads per
+          // application. A packaged Fleet.app is a different application
+          // from the terminal this was always run from, so a grant that
+          // terminal already holds does nothing for it -- the read simply
+          // fails with EPERM (measured 2026-09-21). Naming the real cause
+          // and the exact place to fix it is the whole point: "file not
+          // found" would send someone looking for a file that is right
+          // there, and a blank pane would tell them nothing at all.
+          <div className="fvdenied">
+            <p>
+              macOS will not let this app read {file.name}. The file is there &mdash;
+              the app has not been given access to the folder it is in.
             </p>
-          )}
+            <p>
+              Open System Settings &rsaquo; Privacy &amp; Security &rsaquo; Files and Folders,
+              find this app, and turn on the folder this file lives in. Reveal in Finder
+              still works in the meantime.
+            </p>
+          </div>
+        )}
       </div>
     </section>
   );

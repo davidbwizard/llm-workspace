@@ -1,4 +1,4 @@
-import { Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type MutableRefObject } from 'react';
+import { Fragment, cloneElement, createContext, isValidElement, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type MutableRefObject, type ReactElement, type ReactNode } from 'react';
 import Markdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationTurn } from '../../store/conversation.ts';
@@ -10,13 +10,14 @@ import type { StageRefusal } from '../../main/staging.ts';
 // same rule MAX_REPLY_CHARS's own comment states for src/main imports.
 import type { SessionContext } from '../../core/usage.ts';
 import { ProviderMark } from './ProviderMark.tsx';
-import { remarkFilePaths, PathSpan } from './FilePath.tsx';
+import { remarkFilePaths, PathSpan, LinkedCodeText } from './FilePath.tsx';
 import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import { WorkingStrip } from './WorkingStrip.tsx';
 import { WaitingFallback } from './WaitingCard.tsx';
 import { PromptCard } from './PromptCard.tsx';
 import { ModeChip } from './ModeChip.tsx';
 import { useSettings } from '../state/settings.ts';
+import { useCopy, COPY_LABEL } from '../state/useCopy.ts';
 import { useSessionLive, type SessionMode } from '../state/useSessionLive.ts';
 import { addPending, pendingFor, dropPending, matchPending, markQueued, tickIdle, NOT_SEEN_AFTER_MS } from '../state/pending.ts';
 import './ConversationView.css';
@@ -38,39 +39,15 @@ import './ConversationView.css';
  *  mark, and neither hears nor sees the word "agent". */
 const PROVIDER_NAME: Record<Provider, string> = { claude: 'Claude', codex: 'Codex' };
 
-const COPY_LABEL = { idle: 'Copy', copied: 'Copied', failed: 'Copy failed' } as const;
-
 /** One-click copy that reports what actually happened for a moment. A
  *  failed write says "Copy failed" and logs why -- never a false "Copied".
- *  The write is wrapped so a missing clipboard API (which throws rather
- *  than rejecting) lands in the same failure path. */
+ *  The state machine itself lives in state/useCopy.ts, shared with the
+ *  first-run screen's own Copy button so the two cannot drift apart; this
+ *  is only its presentation. */
 function CopyButton({ getText, what }: { getText: () => string; what: string }) {
-  const [state, setState] = useState<keyof typeof COPY_LABEL>('idle');
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const alive = useRef(true);
-  // Set on every mount, not just initialised: StrictMode (main.tsx) mounts,
-  // unmounts and remounts in dev, and a flag only ever cleared stayed false,
-  // so the copy ran but its result was never shown.
-  useEffect(() => {
-    alive.current = true;
-    return () => { alive.current = false; clearTimeout(timer.current); };
-  }, []);
-  const settle = (next: keyof typeof COPY_LABEL) => {
-    if (!alive.current) return;
-    setState(next);
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => { if (alive.current) setState('idle'); }, 2000);
-  };
-  const copy = () => {
-    Promise.resolve()
-      .then(() => navigator.clipboard.writeText(getText()))
-      .then(() => settle('copied'), (err: unknown) => {
-        console.error('clipboard write failed:', err);
-        settle('failed');
-      });
-  };
+  const { state, copy } = useCopy();
   return (
-    <button type="button" className="copy-btn" data-state={state} onClick={copy}
+    <button type="button" className="copy-btn" data-state={state} onClick={() => copy(getText())}
       title={COPY_LABEL[state]} aria-label={state === 'idle' ? `Copy ${what}` : COPY_LABEL[state]}>
       <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
         strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -83,13 +60,33 @@ function CopyButton({ getText, what }: { getText: () => string; what: string }) 
   );
 }
 
+/** The `<code>` react-markdown puts inside a fenced block, with its paths
+ *  made clickable. Returns the children unchanged for anything that is not
+ *  the expected single-string shape, so an unusual block is left alone
+ *  rather than guessed at. */
+function linkifyCode(children: ReactNode): ReactNode {
+  if (!isValidElement(children)) return children;
+  const inner = (children.props as { children?: ReactNode }).children;
+  const text = typeof inner === 'string' ? inner
+    : Array.isArray(inner) && inner.length === 1 && typeof inner[0] === 'string' ? inner[0]
+      : null;
+  if (text === null) return children;
+  return cloneElement(children as ReactElement<{ children?: ReactNode }>, {
+    children: <LinkedCodeText text={text} />,
+  });
+}
+
 /** A fenced code block with its own Copy button. The text is read from the
- *  rendered <pre> at click time, so what is copied is exactly what shows. */
-function CodeBlock(props: ComponentProps<'pre'>) {
+ *  rendered <pre> at click time, so what is copied is exactly what shows --
+ *  and `textContent` walks every descendant, so the path buttons
+ *  LinkedCodeText puts inside contribute their own text and the copy stays
+ *  verbatim. That is what makes linkifying a code block safe: the block is
+ *  still one run of text as far as copying and selection are concerned. */
+function CodeBlock({ children, ...props }: ComponentProps<'pre'>) {
   const ref = useRef<HTMLPreElement>(null);
   return (
     <div className="md-codeblock">
-      <pre ref={ref} {...props} />
+      <pre ref={ref} {...props}>{linkifyCode(children)}</pre>
       <CopyButton what="code" getText={() => ref.current?.textContent ?? ''} />
     </div>
   );

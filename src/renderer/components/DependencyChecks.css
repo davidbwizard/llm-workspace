@@ -1,0 +1,234 @@
+/* The dependency list, ported from the approved mockup's own CSS
+   (claude.ai/artifact/JBHq1Sko5Sd7aaGpJj1Gyc, option A) rather than
+   reconstructed from the picture. Every value below is the mockup's; the
+   tokens are already the app's own (theme.css), which is why the port is a
+   copy rather than a translation.
+
+   Scoped under .checks / .dep so these short class names cannot collide
+   with anything else in the app. */
+
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.checks .dep {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 3px 11px;
+  align-items: start;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 11px 13px;
+  background: var(--ground);
+}
+
+/* Missing alone. An unhealthy or timed-out tool is present, and giving it
+   the critical tone would undo the distinction the probe makes. */
+.checks .dep.bad {
+  border-color: color-mix(in srgb, var(--critical) 38%, transparent);
+  background: linear-gradient(var(--critical-soft), var(--ground) 70%);
+}
+
+.checks .mk {
+  width: 15px;
+  height: 15px;
+  margin-top: 3px;
+  flex: none;
+}
+
+.checks .dep b {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.checks .dep .ver {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--faint);
+  margin-left: 7px;
+  font-weight: 400;
+}
+
+.checks .dep p {
+  grid-column: 2 / -1;
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* The state's own sentence, a shade brighter than the purpose that
+   follows it: it is the part that changed. */
+.checks .dep .say { color: var(--ink-2); }
+
+.checks .cmd {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.checks .cmd code {
+  font-family: var(--f-mono);
+  font-size: 12.5px;
+  background: var(--raised);
+  color: var(--ink);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  padding: 5px 9px;
+  overflow-x: auto;
+  white-space: nowrap;
+  /* Selectable by hand, so a machine with no clipboard API is not stuck. */
+  user-select: text;
+}
+
+.checks .cmd button {
+  font: inherit;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  flex: none;
+}
+
+.checks .cmd button:hover { color: var(--ink); }
+
+/* The copy button reports what happened; these are that report, and they
+   match ConversationView's own copy button's tones. */
+.checks .cmd button[data-state="copied"] { color: var(--accent); border-color: var(--accent); }
+.checks .cmd button[data-state="failed"] { color: var(--critical); border-color: var(--critical); }
+
+.checks .ok { color: var(--accent); }
+.checks .miss { color: var(--critical); }
+.checks .warn { color: var(--signal); }
+
+/* The Homebrew caveat, the timeout line and a route's prerequisite note:
+   all three sit in column two under the sentence. */
+.checks .needs,
+.checks .unknown,
+.checks .note {
+  grid-column: 2 / -1;
+  margin: 7px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.checks .needs,
+.checks .unknown { color: var(--ink-2); }
+.checks .note { color: var(--faint); font-size: 11.5px; margin-top: 3px; }
+
+.checks .needs a { color: var(--accent); }
+
+.checks .unknown code {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  background: var(--raised);
+  border-radius: 4px;
+  padding: 1px 5px;
+  user-select: text;
+}
+
+.checks .doc { grid-column: 2 / -1; margin-top: 7px; }
+
+.checks .link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.checks .doc pre {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  background: var(--raised);
+  color: var(--ink-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 9px 11px;
+  margin: 6px 0 0;
+  overflow-x: auto;
+  max-height: 200px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Shared shell for both placements. */
+.checksloading,
+.checkserror {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.checkserror { color: var(--ink-2); }
+
+.off {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 11px 13px;
+  background: var(--ground);
+}
+
+.offtitle {
+  margin: 0 0 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.off ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.offnote {
+  margin: 7px 0 0;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
+/* The mockup's shared button, used by the takeover's footer and by the
+   Check again row in Settings. */
+.firstrun .btn,
+.settingsfield .btn {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: var(--r-sm);
+  padding: 7px 15px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.firstrun .btn.primary,
+.settingsfield .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--ground);
+}
+
+.firstrun .btn.quiet,
+.settingsfield .btn.quiet {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.firstrun .btn:disabled,
+.settingsfield .btn:disabled { opacity: .6; cursor: default; }

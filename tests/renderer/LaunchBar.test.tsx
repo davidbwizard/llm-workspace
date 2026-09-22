@@ -265,3 +265,74 @@ describe('LaunchBar', () => {
     });
   });
 });
+
+// Design §4: a missing dependency costs exactly one capability, and the
+// control it costs is DISABLED WITH THE REASON ATTACHED, never hidden. A
+// control that vanished teaches the person nothing.
+describe('LaunchBar degrades per capability', () => {
+  const cap = (available: boolean, reason: string | null = null) =>
+    ({ available, reason, warning: null });
+
+  function withReadiness(launchCaps: { claude: ReturnType<typeof cap>; codex: ReturnType<typeof cap> }) {
+    const readiness = {
+      checkedAt: '2026-09-21T12:00:00.000Z',
+      checks: [],
+      launch: launchCaps,
+      attach: cap(true),
+      history: cap(true),
+    };
+    (globalThis as never as { window: { fleet: Record<string, unknown> } }).window.fleet = {
+      launch, chooseDirectory,
+      hooksGet: vi.fn(async () => ({ installed: false, error: null })),
+      hooksSet: vi.fn(async () => ({ installed: false, error: null })),
+      checksGet: vi.fn(async () => ({ status: 'ready', readiness })),
+      checksRun: vi.fn(),
+      onChecks: () => () => {},
+    };
+  }
+
+  it('disables Launch and says why when the provider cannot run', async () => {
+    withReadiness({ claude: cap(false, 'tmux is not installed.'), codex: cap(true) });
+    render(<LaunchBar onLaunched={vi.fn()} />);
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Launch' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+    // The reason in words, not only as a tooltip: a tooltip is not an
+    // explanation for anyone on a keyboard or a screen reader.
+    expect(screen.getByText('tmux is not installed.')).toBeTruthy();
+  });
+
+  it('keeps both providers in the list, marked, rather than hiding one', async () => {
+    withReadiness({ claude: cap(false, 'Claude Code is not installed.'), codex: cap(true) });
+    render(<LaunchBar onLaunched={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(/Claude \(unavailable\)/)).toBeTruthy());
+    // Codex is untouched: one missing tool costs exactly one option.
+    expect(screen.getByText('Codex')).toBeTruthy();
+  });
+
+  it('never launches a provider it has just said cannot run', async () => {
+    withReadiness({ claude: cap(false, 'Claude Code is not installed.'), codex: cap(true) });
+    render(<LaunchBar onLaunched={vi.fn()} />);
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Launch' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+    fireEvent.submit(screen.getByRole('button', { name: 'Launch' }).closest('form')!);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('leaves everything enabled while the first sweep has not finished', async () => {
+    (globalThis as never as { window: { fleet: Record<string, unknown> } }).window.fleet = {
+      launch, chooseDirectory,
+      hooksGet: vi.fn(async () => ({ installed: false, error: null })),
+      hooksSet: vi.fn(async () => ({ installed: false, error: null })),
+      checksGet: vi.fn(async () => ({ status: 'running' })),
+      checksRun: vi.fn(),
+      onChecks: () => () => {},
+    };
+    render(<LaunchBar onLaunched={vi.fn()} />);
+    // The app assumes it works rather than locking its own controls on no
+    // evidence -- a wrongly disabled Launch is worse than a launch that
+    // fails with a real message.
+    expect((screen.getByRole('button', { name: 'Launch' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});

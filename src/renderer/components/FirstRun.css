@@ -1,0 +1,58 @@
+/* Layout A, ported from the approved mockup's own CSS
+   (claude.ai/artifact/JBHq1Sko5Sd7aaGpJj1Gyc, `.takeover` and `.acts`).
+
+   The takeover fills what is left of the window under the launch bar and
+   scrolls on its own if the list is long -- the mockup is a fixed-height
+   picture and does not have to answer that, but a real window at 480px
+   minimum height with three failing dependencies does. */
+
+.firstrun {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--surface);
+}
+
+.firstrun .takeover {
+  padding: 26px 28px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 760px;
+}
+
+.firstrun .takeover h3 {
+  font-family: var(--f-display);
+  font-variation-settings: "SOFT" 100, "WONK" 1;
+  font-weight: 600;
+  font-size: 22px;
+  margin: 0;
+}
+
+.firstrun .takeover > p {
+  margin: 0;
+  color: var(--ink-2);
+  max-width: 62ch;
+  font-size: 14.5px;
+}
+
+.firstrun .acts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.firstrun .acts small {
+  color: var(--faint);
+  font-size: 12.5px;
+  margin-left: auto;
+}
+
+/* The launch bar stays visible above the takeover and is disabled, as the
+   mockup shows: the app is not pretending these controls are gone, it is
+   showing what they will be once the list above is clear. */
+.launchbar.disabled {
+  opacity: .55;
+  pointer-events: none;
+}

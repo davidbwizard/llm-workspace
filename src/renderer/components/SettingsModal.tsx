@@ -4,6 +4,9 @@ import {
   type Appearance, type CompactCards, type MessageStyle, type TextSize,
 } from '../state/settings.ts';
 import { ProviderMark } from './ProviderMark.tsx';
+import { DependencyChecks, CheckAgain } from './DependencyChecks.tsx';
+import { HooksConsent } from './HooksConsent.tsx';
+import { useChecks } from '../state/useChecks.ts';
 import './SettingsModal.css';
 
 /** Human wording for each stored value. Kept beside the store's own allowed
@@ -27,9 +30,14 @@ const COMPACT_HELP =
   "Compact cards show the logo, name, status and terminal. The folder path always appears at the top of a session's conversation.";
 const FOOTER_CAPTION = 'Changes apply right away and are remembered.';
 
-/** Design §4, verbatim. */
+/** Design §4's wording, with the consent step named. Turning this ON no
+ *  longer writes anything on its own (first-run design §6): it shows what
+ *  would be written and waits for a yes. Turning it OFF still just removes
+ *  our own entries, immediately -- a gate on leaving is not consent. */
 const QUICK_ANSWERS_HELP =
-  "Adds the app's hooks to ~/.claude/settings.json so it can show what Claude is asking. Turning this off removes them.";
+  "Lets the app show what Claude is asking, using hooks in ~/.claude/settings.json. "
+  + "Turning this on shows you exactly what it would add before anything is written. "
+  + "Turning it off removes only the entries it added.";
 
 /** Usage design, Part B, plus the coordinator's own review note: the base
  *  two sentences are the design's exact text; the third names the two
@@ -199,6 +207,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   // time Settings opens, so a hand edit cannot make it lie" -- the modal
   // stays mounted by its owner, so `open` going false-then-true is the only
   // signal a reopen gives this component.
+  const checks = useChecks();
   const [hooksInstalled, setHooksInstalled] = useState<boolean | null>(null);
   const [hooksError, setHooksError] = useState<string | null>(null);
   const [hooksBusy, setHooksBusy] = useState(false);
@@ -210,6 +219,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     let alive = true;
     setHooksInstalled(null);
     setHooksError(null);
+    setConsentOpen(false);
     // Two-arg .then, not a bare .then/chained .catch (same reasoning as
     // useFleet.ts): ipcRenderer.invoke rejects rather than hangs when main
     // has no handler, and an unhandled rejection here would leave the
@@ -221,11 +231,18 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     return () => { alive = false; };
   }, [open]);
 
+  // Turning it ON opens the consent panel and writes NOTHING. That is the
+  // gate (first-run design §6): main refuses an install it has not just
+  // previewed, so the switch could not write here even if it tried.
+  // Turning it OFF removes our own entries straight away.
+  const [consentOpen, setConsentOpen] = useState(false);
+
   const onToggleHooks = () => {
     const api = window.fleet;
     if (!api || hooksBusy || hooksInstalled === null) return;
+    if (!hooksInstalled) { setConsentOpen(true); return; }
     setHooksBusy(true);
-    void api.hooksSet(!hooksInstalled).then(
+    void api.hooksSet(false).then(
       r => { setHooksInstalled(r.installed); setHooksError(r.error); setHooksBusy(false); },
       err => { setHooksError(err instanceof Error ? err.message : String(err)); setHooksBusy(false); },
     );
@@ -409,6 +426,14 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             </div>
             <p className="settingshelp">{QUICK_ANSWERS_HELP}</p>
             {hooksError !== null && <p className="settingserror" role="alert">{hooksError}</p>}
+            {/* Shown only once someone has asked for it, and it is what
+                actually performs the install -- the switch above cannot. */}
+            {(consentOpen || hooksInstalled === true) && (
+              <HooksConsent
+                onSettled={setHooksInstalled}
+                onDeclined={() => setConsentOpen(false)}
+              />
+            )}
           </div>
         </section>
 
@@ -426,6 +451,29 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             </div>
             <p className="settingshelp">{USAGE_HELP}</p>
             {usageError !== null && <p className="settingserror" role="alert">{usageError}</p>}
+          </div>
+        </section>
+
+        {/* Design §5: the first-run checks stay reachable afterwards, because
+            a dependency can disappear later -- an uninstall, a Homebrew
+            cleanup, a PATH change. Same component the first-run surface
+            uses, driven by the same hook. */}
+        <section className="settingssection">
+          <h3 className="settingssectitle">What this app needs</h3>
+          <div className="settingsfield">
+            <p className="settingshelp">
+              This app runs agents in tmux and reads what they write. It never installs anything
+              for you &mdash; when something is missing it shows the command and you run it.
+            </p>
+            <DependencyChecks {...checks} />
+            <div className="settingsrecheck">
+              <CheckAgain recheck={checks.recheck} rechecking={checks.rechecking} />
+              {checks.readiness !== null && (
+                <span className="settingscaption">
+                  Last checked {new Date(checks.readiness.checkedAt).toLocaleTimeString()}
+                </span>
+              )}
+            </div>
           </div>
         </section>
 

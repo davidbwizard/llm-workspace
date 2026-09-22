@@ -179,16 +179,34 @@ describe('SettingsModal', () => {
     // hooksGet/hooksSet promise of its own to settle.
     let hooksGet: ReturnType<typeof vi.fn>;
     let hooksSet: ReturnType<typeof vi.fn>;
+    let hooksPreview: ReturnType<typeof vi.fn>;
+    let hooksDecline: ReturnType<typeof vi.fn>;
     beforeEach(() => {
       hooksGet = vi.fn(async () => ({ installed: false, error: null }));
       hooksSet = vi.fn(async (on: boolean) => ({ installed: on, error: null }));
-      (globalThis as never as { window: { fleet: unknown } }).window.fleet = { hooksGet, hooksSet };
+      // The consent gate (first-run design §6): turning Quick answers ON no
+      // longer writes anything by itself. It opens a panel built from this
+      // preview, and the token below is what makes an install possible at
+      // all -- main refuses hooksSet(true) without one.
+      hooksPreview = vi.fn(async () => ({
+        file: '/home/me/.claude/settings.json',
+        helperPath: '/home/me/.llm-workspace/bin/helper.sh',
+        fileExists: true, installed: false,
+        additions: [{ event: 'SessionStart', matcher: null, json: '{"hooks":[]}' }],
+        token: 'tok-1', error: null, decision: null,
+      }));
+      hooksDecline = vi.fn(async () => ({ decision: 'declined' }));
+      (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+        hooksGet, hooksSet, hooksPreview, hooksDecline,
+      };
     });
 
-    it('shows the exact design sentence', async () => {
+    it('says that turning it on shows you the change before making it', async () => {
       render(<SettingsModal open={true} onClose={() => {}} />);
       expect(screen.getByText(
-        "Adds the app's hooks to ~/.claude/settings.json so it can show what Claude is asking. Turning this off removes them.",
+        'Lets the app show what Claude is asking, using hooks in ~/.claude/settings.json. '
+        + 'Turning this on shows you exactly what it would add before anything is written. '
+        + 'Turning it off removes only the entries it added.',
       )).toBeTruthy();
       // Lets the initial hooksGet() resolve inside this test's act() scope,
       // rather than after it returns.
@@ -222,14 +240,41 @@ describe('SettingsModal', () => {
       await waitFor(() => expect(hooksGet).toHaveBeenCalledTimes(2));
     });
 
-    it('turns quick answers on via hooksSet and reflects the result', async () => {
+    // Design §6: consent is a gate IN FRONT of the write. Flipping the
+    // switch on must not edit a file the person owns -- it must show them
+    // what it would put there and wait.
+    it('turning it on writes nothing: it shows what would be written', async () => {
       render(<SettingsModal open={true} onClose={() => {}} />);
       await waitFor(() => expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false));
       fireEvent.click(screen.getByRole('switch', { name: 'Quick answers' }));
-      expect(hooksSet).toHaveBeenCalledWith(true);
-      await waitFor(() => {
-        expect(screen.getByRole('switch', { name: 'Quick answers' }).getAttribute('aria-checked')).toBe('true');
-      });
+
+      await waitFor(() => expect(hooksPreview).toHaveBeenCalled());
+      // The one assertion this whole change exists for.
+      expect(hooksSet).not.toHaveBeenCalled();
+      // And the file it would touch is named on screen, before anything.
+      await waitFor(() => expect(screen.getByText('/home/me/.claude/settings.json')).toBeTruthy());
+    });
+
+    it('installs only after an explicit yes, and only with the previewed token', async () => {
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false));
+      fireEvent.click(screen.getByRole('switch', { name: 'Quick answers' }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Add them' })).toBeTruthy());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add them' }));
+      // The token main issued with the preview -- without it main refuses.
+      expect(hooksSet).toHaveBeenCalledWith(true, 'tok-1');
+    });
+
+    it('takes no for an answer, and writes nothing when it gets one', async () => {
+      render(<SettingsModal open={true} onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false));
+      fireEvent.click(screen.getByRole('switch', { name: 'Quick answers' }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'No thanks' })).toBeTruthy());
+
+      fireEvent.click(screen.getByRole('button', { name: 'No thanks' }));
+      await waitFor(() => expect(hooksDecline).toHaveBeenCalled());
+      expect(hooksSet).not.toHaveBeenCalled();
     });
 
     it('turns quick answers off via hooksSet when it was already on', async () => {
@@ -245,25 +290,34 @@ describe('SettingsModal', () => {
       });
     });
 
-    it('shows the error line when hooksSet refuses, and leaves the switch reflecting the real state', async () => {
+    it('shows the refusal when the install is rejected, and stays honest about the state', async () => {
       hooksSet.mockResolvedValue({ installed: false, error: 'Settings changed while installing -- try again' });
       render(<SettingsModal open={true} onClose={() => {}} />);
       await waitFor(() => expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false));
       fireEvent.click(screen.getByRole('switch', { name: 'Quick answers' }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Add them' })).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Add them' }));
+
       await waitFor(() => {
-        expect(screen.getByRole('alert').textContent).toBe('Settings changed while installing -- try again');
+        expect(screen.getAllByRole('alert').some(
+          el => el.textContent === 'Settings changed while installing -- try again',
+        )).toBe(true);
       });
+      // The switch never claims a state the file does not show.
       expect(screen.getByRole('switch', { name: 'Quick answers' }).getAttribute('aria-checked')).toBe('false');
     });
 
-    it('disables the switch while a toggle request is in flight, and re-enables after it settles', async () => {
+    // Turning it OFF is now the only direct write the switch itself makes,
+    // so it is the one that can still be in flight.
+    it('disables the switch while a remove request is in flight, and re-enables after it settles', async () => {
+      hooksGet.mockResolvedValue({ installed: true, error: null });
       render(<SettingsModal open={true} onClose={() => {}} />);
       await waitFor(() => expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false));
       let resolve!: (v: { installed: boolean; error: null }) => void;
       hooksSet.mockReturnValue(new Promise(r => { resolve = r; }));
       fireEvent.click(screen.getByRole('switch', { name: 'Quick answers' }));
       expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(true);
-      resolve({ installed: true, error: null });
+      resolve({ installed: false, error: null });
       await waitFor(() => {
         expect(screen.getByRole('switch', { name: 'Quick answers' }).hasAttribute('disabled')).toBe(false);
       });

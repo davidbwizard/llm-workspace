@@ -18,7 +18,13 @@ import { fileURLToPath } from 'node:url';
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_SRC_CHARS = 4096;
 
-export type ImageRefusal = 'invalid' | 'no_session' | 'outside_roots' | 'not_found' | 'not_image' | 'too_large';
+export type ImageRefusal = 'invalid' | 'no_session' | 'outside_roots' | 'not_found' | 'not_image' | 'too_large'
+  /** Present and inside a permitted root; the OS refused the read.
+   *  Same macOS TCC case the markdown viewer hits -- see
+   *  isPermissionError (src/main/files.ts) for the measured errnos.
+   *  Kept apart from 'not_found' so an image inside ~/Documents that
+   *  the app has not been granted does not read as a broken link. */
+  | 'permission_denied';
 export type ImageResult = { ok: true; dataUrl: string } | { ok: false; reason: ImageRefusal };
 
 type Deps = {
@@ -64,6 +70,34 @@ async function realOrNull(p: string): Promise<string | null> {
 
 export const within = (p: string, root: string) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 
+/** Whether the OS refused this because of permission, rather than because
+ *  the file is not there. Lives here beside `within` for the same reason
+ *  that does: it is the shared primitive both user-file readers need (this
+ *  module and src/main/files.ts), and one implementation cannot drift from
+ *  itself.
+ *
+ *  Both codes, because two different mechanisms produce them and the person
+ *  cannot tell which one they hit:
+ *
+ *  - EPERM is what macOS returns when TCC denies a read. macOS gates
+ *    ~/Documents, ~/Desktop and ~/Downloads PER APPLICATION, and a packaged
+ *    Fleet.app is a different application from the terminal this has always
+ *    been run under -- a grant iTerm already holds does nothing for it, and
+ *    David's own projects live under ~/Documents. Measured on this machine
+ *    2026-09-21 against real TCC-protected paths (~/Library/Safari,
+ *    ~/Library/Messages): realpath, stat and access all SUCCEED, and only
+ *    the read fails, with EPERM. That is why this is checked at the read and
+ *    not earlier -- there is no earlier failure to catch.
+ *  - EACCES is the ordinary Unix mode bits.
+ *
+ *  Deliberately narrow: anything else stays whatever it already was, because
+ *  sending someone to a privacy setting over a disk error sends them
+ *  somewhere that cannot help them. */
+export function isPermissionError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code === 'EPERM' || code === 'EACCES';
+}
+
 export async function readSessionImage(sessionId: unknown, src: unknown, deps: Deps): Promise<ImageResult> {
   if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 200) return refuse('invalid');
   if (typeof src !== 'string' || src.length === 0 || src.length > MAX_SRC_CHARS || src.includes('\0')) return refuse('invalid');
@@ -86,7 +120,11 @@ export async function readSessionImage(sessionId: unknown, src: unknown, deps: D
   if (info.size > MAX_IMAGE_BYTES) return refuse('too_large');
 
   let bytes: Buffer;
-  try { bytes = await readFile(real); } catch { return refuse('not_found'); }
+  try {
+    bytes = await readFile(real);
+  } catch (e) {
+    return refuse(isPermissionError(e) ? 'permission_denied' : 'not_found');
+  }
   // The size was checked before reading; a file that grew in between is
   // still refused rather than sent.
   if (bytes.length > MAX_IMAGE_BYTES) return refuse('too_large');

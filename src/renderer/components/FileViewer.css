@@ -71,3 +71,22 @@
    FileLinkContext around it), so an .fp inside .fvbody is not reachable --
    but the conversation's own .fp is styled in ConversationView.css, beside
    the markdown rules it belongs with. */
+
+/* The permission refusal (src/main/files.ts's 'permission_denied'). Reads
+   as prose, not as an error chrome: the file is fine and the person has a
+   specific thing to go and do. */
+.fvdenied {
+  padding: 16px;
+  max-width: 62ch;
+}
+
+.fvdenied p {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.fvdenied p:last-child {
+  margin-bottom: 0;
+  color: var(--muted);
+}
