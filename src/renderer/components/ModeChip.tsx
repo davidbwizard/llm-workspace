@@ -17,13 +17,18 @@ import './ModeChip.css';
  *  The menu is built PER PROVIDER and the two never share a list (§3.2):
  *  Claude has four modes, Codex two plus a link out to the terminal.
  *
- *  The chip renders nothing at all when the mode is unknown. §5: "A mode
- *  the reader cannot identify is reported as unknown. The chip then shows
- *  nothing rather than a guess: claiming Manual on a session that is
- *  actually on Auto is the worst failure this feature has." There is
- *  nothing to switch FROM either -- main refuses the press for the same
- *  reason (`unreadable`) -- so a chip here would be a control that could
- *  only fail. */
+ *  §5's rule holds and is why the chip never NAMES a mode it does not
+ *  know: "claiming Manual on a session that is actually on Auto is the
+ *  worst failure this feature has." What it does instead of vanishing
+ *  (2026-09-22) is stay on screen, disabled, labelled "Mode", with the
+ *  reason in its title and aria-label. The common case is a session
+ *  started in iTerm or VS Code: no pane, so no mode -- and a control that
+ *  is simply absent teaches nobody why. Same treatment missing
+ *  dependencies already get: disabled with a reason, not hidden.
+ *
+ *  The one case that still draws nothing is `state === null`: the pane
+ *  before its first live push, where nothing has been established yet.
+ *  `.convfoot:empty` collapses the row until it lands. */
 
 /** What a refusal from main is shown as. Every reason setModeFor can
  *  return has a line: an unmapped one would show nothing at all, which is
@@ -33,7 +38,6 @@ const REFUSAL_TEXT: Record<string, string> = {
   not_tmux: 'This app did not start that session, so it cannot switch its mode.',
   session_gone: 'That session has ended.',
   invalid_mode: 'That mode does not exist for this session.',
-  busy: 'Not while the session is working.',
   prompt_open: 'Answer the prompt above first.',
   unreadable: 'Could not read the mode from the session.',
   unconfirmed: 'The session did not switch. Change it in the Terminal instead.',
@@ -42,18 +46,30 @@ const REFUSAL_TEXT: Record<string, string> = {
 };
 
 /** Why the chip is disabled, as a title/aria hint (§4.1: "The chip is
- *  disabled with a reason while the session is working"). */
+ *  disabled with a reason"). Each line has to make sense to a person
+ *  reading it in a tooltip, so none of them names an internal state -- the
+ *  key is main's word, the sentence is not. */
 const BLOCKED_TEXT: Record<NonNullable<SessionMode['blocked']>, string> = {
-  busy: 'Not while the session is working',
   prompt_open: 'Answer the prompt above first',
+  not_tmux: 'This app did not start this session, so its mode cannot be read or changed',
   session_gone: 'That session has ended',
   unreadable: 'Could not read the mode from the session',
 };
 
+/** The label on a chip with no mode to name. NOT a mode name: "Auto" on a
+ *  session nobody has read is exactly the lie §5 exists to prevent. "Mode"
+ *  names the control without asserting any state -- an em dash reads as a
+ *  value ("the mode is --") and announces as nothing to a screen reader,
+ *  and the reason itself is a sentence, too long for a pill sitting beside
+ *  "Enter to send". The reason goes in the title and the aria-label, where
+ *  there is room for it. */
+const NO_MODE_LABEL = 'Mode';
+
 export function ModeChip({ pid, state, onOpenTerminal }: {
   pid: number | null;
-  /** Straight off the session:live push, or null when there is no chip to
-   *  show -- a session this app did not launch has no pane to read. */
+  /** Straight off the session:live push, or null before the first one
+   *  lands (and for a pid whose provider main cannot tell -- there is no
+   *  menu, and no label, to draw without it). */
   state: SessionMode | null;
   /** The Codex menu's Permissions… row, and nothing else, uses this: it
    *  ONLY opens the session in the terminal. The app does not type
@@ -99,14 +115,24 @@ export function ModeChip({ pid, state, onOpenTerminal }: {
     if (open) menuRef.current?.querySelector('button')?.focus();
   }, [open]);
 
-  // §5's rule, and the reason this comes before the disabled check below:
-  // a chip with no mode would have to show a placeholder, and there is no
-  // honest placeholder for "we do not know".
-  if (state === null || mode === null) return null;
+  // Nothing has been established about this pane yet -- see the note at
+  // the top of the file on why this one case draws nothing at all.
+  if (state === null) return null;
 
   const provider = state.provider;
   const items = modeMenuFor(provider);
-  const disabled = blocked !== null || sending || pid === null;
+  // Main only ever sends a null mode with a reason beside it, but the chip
+  // does not lean on that: an unknown mode with no reason still says the
+  // one thing that is certainly true.
+  const reason = blocked !== null ? BLOCKED_TEXT[blocked]
+    : mode === null ? BLOCKED_TEXT.unreadable
+      : null;
+  // A null mode disables the chip through `reason` above, and must: the
+  // menu switches FROM the mode the pane reports, and main refuses a press
+  // it could not read a mode for (`unreadable`), so an openable chip here
+  // would be a control that could only fail.
+  const disabled = reason !== null || sending || pid === null;
+  const label = mode === null ? NO_MODE_LABEL : labelFor(provider, mode);
 
   async function pick(next: Mode): Promise<void> {
     setOpen(false);
@@ -148,19 +174,26 @@ export function ModeChip({ pid, state, onOpenTerminal }: {
 
   return (
     <>
-      <span className="modechip" data-mode={toneFor(mode)} ref={chipRef}>
+      {/* `unknown` is a fifth colour slot, not a missing one: the pill's
+          --m/--m-soft have to resolve to something or `color:var(--m)` is
+          invalid and the chip loses its colour entirely. */}
+      <span className="modechip" data-mode={mode === null ? 'unknown' : toneFor(mode)} ref={chipRef}>
         <button
           type="button"
           ref={buttonRef}
           aria-haspopup="menu"
           aria-expanded={open}
-          aria-label={`Permission mode: ${labelFor(provider, mode)}`}
+          // The reason, not the label, for a chip with no mode: "Permission
+          // mode: Mode" would tell a screen-reader user nothing at all.
+          aria-label={mode === null
+            ? `Permission mode unavailable: ${reason}`
+            : `Permission mode: ${label}`}
           disabled={disabled}
-          title={blocked ? BLOCKED_TEXT[blocked] : undefined}
+          title={reason ?? undefined}
           onClick={() => { setMessage(null); setOpen(o => !o); }}
         >
           <span className="dot" aria-hidden="true" />
-          <span className="label">{labelFor(provider, mode)}</span>
+          <span className="label">{label}</span>
           {/* An SVG, not the text glyph the mockup used. U+25B2 is not in
               IBM Plex Mono, so macOS substitutes some other font for that
               one character -- a different shape at a different size than

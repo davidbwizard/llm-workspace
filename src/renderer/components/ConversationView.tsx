@@ -734,9 +734,11 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
           Claude Code itself prints the mode in the terminal and where the
           eye already is when about to send. The pane header is deliberately
           untouched -- it already carries five controls and a sixth wraps it
-          at a narrow window. The chip renders nothing at all when the mode
-          is unknown or the session was not launched by this app, so this
-          row is empty rather than half-drawn in those cases. */}
+          at a narrow window. The chip draws nothing only before the pane's
+          first live push; an unknown mode or a session this app did not
+          launch draws a DISABLED chip carrying the reason (ModeChip.tsx),
+          so the row is empty rather than half-drawn only until the first
+          payload lands. */}
       <div className="convfoot">
         <ModeChip pid={pid} state={mode} onOpenTerminal={onOpenTerminal} />
         {/* Beside the mode chip, not in the pane header: that row already

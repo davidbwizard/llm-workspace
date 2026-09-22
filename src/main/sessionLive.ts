@@ -212,19 +212,20 @@ export function buildSessionLive(
   // and, below, the activity the whole pane is already drawn from.
   //
   // Blocking the chip off `activity` keeps it agreeing with what the pane
-  // is showing: working means the strip is up, waiting means a prompt card
-  // or the waiting fallback is. `waiting` blocks as well as `working`
-  // because a wait without an identified prompt card is exactly the case
+  // is showing: `waiting` means a prompt card or the waiting fallback is
+  // up, and a wait without an identified prompt card is exactly the case
   // where the pane may be showing a question -- §4.1's "Shift+Tab into a
-  // question does something else entirely". A null activity (the app
-  // genuinely cannot tell) does not block, the same way a null `busy` does
-  // not in sendKeysFor: a check that cannot answer must not become a new
-  // way to refuse something that would have worked. main re-checks all of
-  // this independently before it presses anything (setModeFor), so the
-  // chip's state is a hint, never the authority.
+  // question does something else entirely".
+  //
+  // `working` deliberately does NOT block (2026-09-22): a live pane
+  // honoured Shift+Tab mid-turn, so the old block bought nothing and left
+  // the chip dead for most of the time the pane is worth looking at. See
+  // ModeDeps.promptOpen (src/main/mode.ts) for the measurement. A null
+  // activity (the app genuinely cannot tell) does not block either. main
+  // re-checks all of this independently before it presses anything
+  // (setModeFor), so the chip's state is a hint, never the authority.
   const readMode = (activity: LiveActivity | null): ModeState | null => (deps.mode ?? ((p: number) => readModeFor(p, {
     provider: () => proc.provider,
-    busy: () => activity === 'working',
     promptOpen: () => activity === 'waiting',
   })))(pid);
 

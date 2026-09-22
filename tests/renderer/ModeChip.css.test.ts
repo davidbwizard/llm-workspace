@@ -31,6 +31,16 @@ describe('ModeChip.css: theme tokens only', () => {
     expect(css).toMatch(new RegExp(`\\.modechip\\[data-mode="${slot}"\\][^}]*--m:\\s*var\\(${token}\\)`));
     expect(css).toMatch(new RegExp(`\\.modemenu button i\\[data-tone="${slot}"\\][^}]*background:\\s*var\\(${token}\\)`));
   });
+
+  // Added 2026-09-22 with the disabled chip: a chip that names no mode
+  // still has to resolve --m and --m-soft, or `color:var(--m)` is invalid
+  // at computed-value time and the pill silently loses its colour. Neutral
+  // --muted, the same as the ask-first slot: an unknown mode is an absence,
+  // not a warning.
+  it('gives the no-mode chip the neutral slot rather than no slot at all', () => {
+    expect(css).toMatch(/\.modechip\[data-mode="unknown"\][^}]*--m:\s*var\(--muted\)/);
+    expect(css).toMatch(/\.modechip\[data-mode="unknown"\][^}]*--m-soft:/);
+  });
 });
 
 describe('ModeChip.css: the mockup\'s own rules', () => {
@@ -79,9 +89,10 @@ describe('ConversationView.css: the composer foot the chip sits in', () => {
     expect(conv).toMatch(/\.convfoot\s*\{[^}]*align-items:\s*center/);
   });
 
-  // The chip draws nothing for an unknown mode or a session this app did
-  // not launch, and an empty flex row would still claim its own margin --
-  // the composer would gain a gap for no visible reason.
+  // The chip draws nothing before the pane's first live push (an unknown
+  // mode now draws a disabled chip instead -- 2026-09-22), and an empty
+  // flex row would still claim its own margin, so the composer would gain
+  // a gap for no visible reason.
   it('collapses to nothing when the chip drew nothing', () => {
     expect(conv).toMatch(/\.convfoot:empty\s*\{[^}]*display:\s*none/);
   });

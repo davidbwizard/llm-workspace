@@ -1557,17 +1557,21 @@ export function registerIpc(
     }));
   // The mode switcher (src/main/mode.ts). The renderer names a pid and a
   // mode and nothing else: main resolves the provider itself, checks the
-  // mode against THAT provider's list, refuses while the session is
-  // mid-turn or a prompt card is up, reads the pane before pressing, and
-  // presses only BTab -- the one key name the tmux allowlist gained for
-  // this. Returns a promise: the press loop waits on the pane between
-  // presses. The chip's own state is not fetched here; it rides the
-  // session:live push (buildSessionLive), so it updates whether the mode
-  // changed through this channel or in the terminal.
+  // mode against THAT provider's list, refuses while a prompt card is up,
+  // reads the pane before pressing, and presses only BTab -- the one key
+  // name the tmux allowlist gained for this. Returns a promise: the press
+  // loop waits on the pane between presses. The chip's own state is not
+  // fetched here; it rides the session:live push (buildSessionLive), so it
+  // updates whether the mode changed through this channel or in the
+  // terminal.
+  //
+  // No `busy` dep, deliberately: busyForPid is still what session:keys
+  // needs, but a mid-turn pane honours Shift+Tab (measured 2026-09-22 --
+  // see ModeDeps.promptOpen), so refusing here only made the chip dead
+  // while a session was working.
   ipcMain.handle('session:mode:set', (_event, pid: unknown, mode: unknown): Promise<ModeSetResult> =>
     setModeFor(pid, mode, {
       provider: providerForPid,
-      busy: busyForPid,
       promptOpen: p => promptOpenFor(p, {
         cached: cachedPushOpenSessions, processes: getCachedLiveProcesses(), read: readLiveSession,
       }),

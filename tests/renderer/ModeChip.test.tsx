@@ -33,16 +33,36 @@ describe('ModeChip: what it shows', () => {
     expect(screen.getByRole('button').textContent).toContain('Accept edits');
   });
 
-  // §5's rule, at the surface it protects: claiming "Manual" on a session
-  // that is actually on Auto is the worst failure this feature has, so an
-  // unidentified mode draws no chip at all rather than a placeholder.
-  it('renders nothing at all when the mode is unknown', () => {
-    const { container } = render(
+  // Converted from 'renders nothing at all when the mode is unknown'
+  // (2026-09-22). §5's rule is unchanged and still pinned below -- the chip
+  // must never NAME a mode it does not know, because claiming "Manual" on a
+  // session that is actually on Auto is the worst failure this feature has.
+  // What changed is the other half: a control that vanishes teaches nothing,
+  // so the chip now stays put, disabled, saying why. The label reads "Mode":
+  // it names the control without asserting any state.
+  it('stays put with an honest label, rather than vanishing, when the mode is unknown', () => {
+    render(
       <ModeChip pid={PID} state={state({ mode: null, blocked: 'unreadable' })} onOpenTerminal={() => {}} />,
     );
-    expect(container.firstChild).toBeNull();
+    const chip = screen.getByRole('button') as HTMLButtonElement;
+    expect(chip.textContent).toContain('Mode');
+    expect(chip.disabled).toBe(true);
+    expect(chip.getAttribute('title')).toBe('Could not read the mode from the session');
   });
 
+  it('names no mode at all when it does not know one', () => {
+    render(<ModeChip pid={PID} state={state({ mode: null, blocked: 'unreadable' })} onOpenTerminal={() => {}} />);
+    const chip = screen.getByRole('button');
+    for (const name of ['Manual', 'Accept edits', 'Plan', 'Auto', 'Default']) {
+      expect(chip.textContent).not.toContain(name);
+    }
+    expect(chip.getAttribute('aria-label')).not.toMatch(/Manual|Accept edits|Plan|Auto|Default/);
+  });
+
+  // The one case that still draws nothing, and the reason it must: this is
+  // the pane before its first live push, when the app has not yet asked. A
+  // disabled chip here would claim a fact ("no mode") that nobody has
+  // established. .convfoot:empty collapses the row until the push lands.
   it('renders nothing when there is no chip state at all', () => {
     const { container } = render(<ModeChip pid={PID} state={null} onOpenTerminal={() => {}} />);
     expect(container.firstChild).toBeNull();
@@ -62,6 +82,17 @@ describe('ModeChip: what it shows', () => {
       <ModeChip pid={PID} state={state({ provider, mode })} onOpenTerminal={() => {}} />,
     );
     expect(container.querySelector('.modechip')!.getAttribute('data-mode')).toBe(tone);
+  });
+
+  // A fifth slot, for the chip that names no mode: it has to resolve to a
+  // real --m/--m-soft pair or the pill loses its colour entirely (the vars
+  // would be undefined). Neutral, like the ask-first mode -- it is not a
+  // warning, it is an absence. ModeChip.css.test.ts pins the tokens.
+  it('takes a neutral colour slot when there is no mode to colour', () => {
+    const { container } = render(
+      <ModeChip pid={PID} state={state({ mode: null, blocked: 'not_tmux' })} onOpenTerminal={() => {}} />,
+    );
+    expect(container.querySelector('.modechip')!.getAttribute('data-mode')).toBe('unknown');
   });
 });
 
@@ -135,12 +166,15 @@ describe('ModeChip: switching', () => {
     await waitFor(() => expect(setMode).toHaveBeenCalledWith(PID, 'auto'));
   });
 
+  // Converted 2026-09-22 from the same test driven with reason 'busy',
+  // which main can no longer return: the reason is now one main still
+  // gives. What it pins is unchanged -- a refusal is shown, never swallowed.
   it('shows the refusal main gave, rather than pretending the mode changed', async () => {
-    bridge(vi.fn().mockResolvedValue({ status: 'refused', reason: 'busy' }));
+    bridge(vi.fn().mockResolvedValue({ status: 'refused', reason: 'prompt_open' }));
     render(<ModeChip pid={PID} state={state()} onOpenTerminal={() => {}} />);
     fireEvent.click(screen.getByRole('button'));
     fireEvent.click(screen.getAllByRole('menuitemradio')[2]!);
-    expect((await screen.findByRole('status')).textContent).toBe('Not while the session is working.');
+    expect((await screen.findByRole('status')).textContent).toBe('Answer the prompt above first.');
   });
 
   it('says so, and never silently, when the bridge rejects', async () => {
@@ -168,12 +202,19 @@ describe('ModeChip: switching', () => {
 });
 
 describe('ModeChip: when it refuses to open at all', () => {
+  // Converted 2026-09-22. The 'busy' row is gone: being mid-turn no longer
+  // blocks the switch at all (main/mode.ts §4 -- Shift+Tab was measured to
+  // be honoured mid-turn), and the type no longer carries the value. Its
+  // place is taken by the three cases that used to make the chip VANISH,
+  // and now disable it instead, `not_tmux` being the common one: a session
+  // David started in iTerm or VS Code, with no pane to read a mode from.
   it.each([
-    ['busy', 'Not while the session is working'],
-    ['prompt_open', 'Answer the prompt above first'],
-    ['session_gone', 'That session has ended'],
-  ] as const)('is disabled, with a reason, while %s', (blocked, reason) => {
-    render(<ModeChip pid={PID} state={state({ blocked })} onOpenTerminal={() => {}} />);
+    ['prompt_open', 'manual', 'Answer the prompt above first'],
+    ['session_gone', null, 'That session has ended'],
+    ['not_tmux', null, 'This app did not start this session, so its mode cannot be read or changed'],
+    ['unreadable', null, 'Could not read the mode from the session'],
+  ] as const)('is disabled, with a reason, while %s', (blocked, mode, reason) => {
+    render(<ModeChip pid={PID} state={state({ mode, blocked })} onOpenTerminal={() => {}} />);
     // No jest-dom in this project, same as PromptCard.test.tsx: the
     // disabled state is read off the element itself.
     const chip = screen.getByRole('button') as HTMLButtonElement;
@@ -184,8 +225,19 @@ describe('ModeChip: when it refuses to open at all', () => {
   });
 
   it('still shows the mode while it is disabled', () => {
-    render(<ModeChip pid={PID} state={state({ mode: 'plan', blocked: 'busy' })} onOpenTerminal={() => {}} />);
+    render(<ModeChip pid={PID} state={state({ mode: 'plan', blocked: 'prompt_open' })} onOpenTerminal={() => {}} />);
     expect(screen.getByRole('button').textContent).toContain('Plan');
+  });
+
+  // Defensive, and not a case main produces: it never sends a null mode
+  // without a reason. The menu switches FROM the mode the pane reports, and
+  // main refuses a press it cannot read a mode for (`unreadable`), so a chip
+  // that opened here would be a control that could only fail.
+  it('will not open a menu when it has no mode to switch from', () => {
+    render(<ModeChip pid={PID} state={state({ mode: null, blocked: null })} onOpenTerminal={() => {}} />);
+    const chip = screen.getByRole('button') as HTMLButtonElement;
+    expect(chip.disabled).toBe(true);
+    expect(chip.getAttribute('title')).toBe('Could not read the mode from the session');
   });
 
   it('is disabled with no live pid', () => {
