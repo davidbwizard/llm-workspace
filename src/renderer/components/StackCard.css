@@ -1,0 +1,137 @@
+/* A stack reuses SessionCard's card shape rather than inventing a second
+   one -- same radius, same border tokens, same attention treatment, so a
+   folded folder reads as a sibling of the cards around it rather than a
+   different kind of object. Only what is genuinely new lives here.
+
+   The two offset sheets below the face are what says "there is more than one
+   of these" before any count is read: a structural signal that survives
+   grayscale and a colour-vision deficiency, the same standard
+   OpenSessionCard.css's own .card.unread left border is held to.
+
+   The three motion values live here, on the root, so the whole open/close
+   gesture is retuned in one place -- "Slide", 220ms, the option David chose
+   from the rendered prototype on 2026-09-22. */
+.stack {
+  --dur: 220ms;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --stag: 30ms;
+  position: relative; margin-bottom: 9px;
+}
+
+.stack::before, .stack::after {
+  content: ""; position: absolute; left: 5px; right: 5px; bottom: -4px; height: 11px;
+  background: var(--surface); border: 1px solid var(--line-soft); border-top: none;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+}
+.stack::before { left: 10px; right: 10px; bottom: -9px; height: 13px; background: var(--ground); }
+
+.stackface {
+  position: relative; z-index: 1;
+  background: var(--ground); border: 1px solid var(--line-soft);
+  border-radius: var(--r-md); display: flex; align-items: flex-start; gap: 9px;
+  padding: 16px 17px 17px;
+}
+.stack.attn > .stackface {
+  border-color: color-mix(in srgb, var(--critical) 34%, transparent);
+  background: linear-gradient(var(--critical-soft), var(--ground) 70%);
+}
+.stack.sel > .stackface { border-color: color-mix(in srgb, var(--accent) 46%, transparent); }
+.stackface:hover { border-color: color-mix(in srgb, var(--accent) 46%, transparent); }
+
+/* The whole face is the toggle: a 44px-plus target that covers the name, the
+   path and the summary, so folding never depends on hitting a small chevron. */
+.stacktoggle {
+  flex-grow: 1; min-width: 0; background: none; border: none; padding: 0;
+  text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 6px;
+  font: inherit; color: inherit;
+}
+.stackcount {
+  font-family: var(--f-mono); font-size: 10px; color: var(--accent);
+  background: var(--raised); border-radius: 6px; padding: 3px 8px; align-self: flex-start;
+}
+.stackname { font-family: var(--f-display); font-weight: 600; font-size: 18px; line-height: 1.2; color: var(--ink); }
+.stackpath {
+  font-family: var(--f-mono); font-size: 10.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stacksummary { font-size: 14px; color: var(--ink-2); line-height: 1.5; }
+.stack.attn .stacksummary { color: var(--critical); }
+
+.stackreply {
+  flex: none; font: inherit; font-size: 12px; padding: 7px 11px; min-height: 44px;
+  background: var(--raised); color: var(--ink); border: 1px solid var(--line);
+  border-radius: var(--r-sm); cursor: pointer;
+}
+
+/* Same duration and curve as the height below, so the mark and the drawer
+   arrive together rather than one trailing the other. */
+.stackchev {
+  flex: none; display: inline-flex; color: var(--muted);
+  transition: transform var(--dur) var(--ease);
+}
+.stack.open .stackchev { transform: rotate(180deg); }
+
+/* Height animates 0fr -> 1fr, NOT max-height. A hard-coded max either clips
+   a deep stack or leaves dead air under a shallow one; a grid row animated
+   to 1fr resolves to the real content height whatever that turns out to be.
+
+   visibility, not display:none, is what keeps the folded members out of the
+   accessibility tree and the tab order -- they are always in the DOM now,
+   because a node that does not exist cannot transition. display:none would
+   hide them just as well and destroy the animation with it.
+
+   The 0s-with-a-delay transition is the sequencing: hidden lands only AFTER
+   the collapse has finished, so the members do not vanish mid-slide, while
+   the open rule below has no delay so they are reachable the instant the
+   stack starts opening. */
+.stackmembers {
+  position: relative; z-index: 1;
+  display: grid; grid-template-rows: 0fr;
+  margin: 8px 0 0 12px;
+  visibility: hidden;
+  transition: grid-template-rows var(--dur) var(--ease), visibility 0s linear var(--dur);
+}
+.stack.open .stackmembers {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition: grid-template-rows var(--dur) var(--ease), visibility 0s linear 0s;
+}
+
+/* min-height:0 alongside overflow:hidden, or the grid item refuses to shrink
+   below its content and the 0fr row never actually collapses. */
+.stackmembers-inner {
+  overflow: hidden; min-height: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+
+/* Members are inset (above) so the stack reads as one object with contents,
+   not four unrelated cards that happen to be adjacent. Each slides down into
+   place as it fades in. */
+.stackmember {
+  opacity: 0; transform: translateY(-10px);
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+/* Arriving staggers, leaving does not. A staggered exit reads as the app
+   hesitating -- things leave together and come back one at a time. This
+   works because a closing element takes its delay from the state it is
+   moving TO, which is the rule above, whose shorthand carries an implicit
+   0s delay. So the stagger only ever applies on the way in. `--i` is set
+   per member in StackCard.tsx, which is what makes it correct at any depth
+   rather than up to however many nth-child lines were written out. */
+.stack.open .stackmember {
+  opacity: 1; transform: none;
+  transition-delay: calc(var(--stag) * var(--i));
+}
+
+/* NOT belt and braces here, unlike WorkingStrip.css's own block. theme.css
+   stops `animation` globally and `transition` only on .card and .btn --
+   every rule above is a transition on neither, so without this the whole
+   slide would still run for someone who asked the OS for less motion.
+
+   Only the transitions go. visibility and opacity are deliberately left
+   alone: zeroing them here would open the stack onto nothing. */
+@media (prefers-reduced-motion: reduce) {
+  .stackmembers, .stack.open .stackmembers,
+  .stackmember, .stack.open .stackmember,
+  .stackchev { transition: none; }
+}
