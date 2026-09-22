@@ -3970,6 +3970,28 @@ The suite passing is not the finish line for a rendered surface. jsdom computes 
 3. A folder whose session is waiting shows the attention treatment while folded, and its Answer button works from the face.
 4. A folder with two waiting members shows the count and NO Answer button.
 
+**The motion, which no test can confirm**
+
+The DOM test proves the members stay mounted and the CSS test proves the
+rules reach the page. Neither can tell you it LOOKS right. Vitest stubs CSS
+imports, so nothing in the suite has ever rendered this animation.
+
+4a. Open and close a stack several times. 220ms should read as quick and
+    settled -- no bounce, no lag, and no sense of waiting for it. Members
+    arrive one after another, 30ms apart.
+4b. The chevron and the drawer arrive TOGETHER. If the arrow finishes
+    turning before the members land, or after, the two are on different
+    durations and the stack reads as two things happening instead of one.
+4c. Close a stack that is open. Members leave together -- no stagger on the
+    way out. A staggered exit reads as the app hesitating.
+4d. Open a stack with SIX members, more than any hard-coded stagger list
+    would cover. The last member still staggers like the rest.
+4e. Turn on Reduce Motion (System Settings > Accessibility > Display) and
+    open a stack. Members must appear INSTANTLY -- not fade, and above all
+    not stay invisible. An empty drawer here means the reduced-motion block
+    killed visibility along with the transition, which is the one way this
+    feature can fail completely for the people who asked for less motion.
+
 **Categories**
 
 5. Filing a session under a new name pulls it out of its folder: the category header appears with that one card under it, and the folder row below drops from a stack of three to a stack of two.
