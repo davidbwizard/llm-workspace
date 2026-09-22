@@ -200,8 +200,8 @@
   color: var(--faint);
 }
 
-/* The mockup's shared button. */
-.checksroot .btn,
+/* The mockup's shared button, used by the takeover's footer and by the
+   Check again row in Settings. */
 .firstrun .btn,
 .settingsfield .btn {
   font: inherit;
