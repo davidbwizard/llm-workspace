@@ -1,3 +1,4 @@
+import { basename, isAbsolute } from 'node:path';
 import type { Provider } from '../core/types.ts';
 import type { LiveSessionFile } from '../providers/claude/liveSession.ts';
 
@@ -6,11 +7,14 @@ export type HostApp = 'iterm2' | 'terminal' | 'vscode' | 'claude-app' | 'codex-a
 export interface LiveProcess {
   pid: number;
   /** Which provider's CLI this is -- known with certainty at discovery
-   *  time, from the `pgrep -x <bin>` that found this pid (spec §7.1a),
-   *  independent of any transcript match. Not nullable and not optional:
-   *  every LiveProcess src/discovery/live.ts produces comes from grepping
-   *  for exactly one of PROVIDER_BINS, so there is no code path that
-   *  discovers a pid without also knowing which binary found it. */
+   *  time, from whichever rule matched this pid in the process listing
+   *  (spec §7.1a), independent of any transcript match. Two rules, both in
+   *  src/discovery/live.ts: the executable name is exactly one of
+   *  PROVIDER_BINS, or it is `node` and nodeHostedProvider (below)
+   *  recognises the script it is running. Not nullable and not optional:
+   *  neither rule can match without naming exactly one provider, so there
+   *  is no code path that discovers a pid without also knowing which
+   *  provider it belongs to. */
   provider: Provider;
   tty: string | null;
   cwd: string | null;
@@ -64,6 +68,88 @@ export function parseProcessList(out: string): Array<{ pid: number; comm: string
     if (m) rows.push({ pid: Number(m[1]), comm: m[2]! });
   }
   return rows;
+}
+
+/** The two provider CLIs discovery looks for -- the same 'claude' | 'codex'
+ *  vocabulary Provider (core/types.ts) uses. `as const` gives this array's
+ *  elements the literal type `'claude' | 'codex'`, identical to Provider,
+ *  so a match is already assignable wherever a Provider is wanted with no
+ *  cast: this IS which provider found the pid, not a lookalike string that
+ *  happens to match. */
+export const PROVIDER_BINS = ['claude', 'codex'] as const;
+
+/** Node flags that mean there is no script file at all -- the next argv
+ *  entry is source code (`-e`/`--eval`/`-p`/`--print`) or the whole run is a
+ *  syntax check (`-c`/`--check`). Seeing one abandons the whole process
+ *  rather than reading the code, or the checked file, as a path to match. */
+const NODE_NO_SCRIPT_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-c', '--check']);
+
+/** The npm package directories the two CLIs ship in, matched as exact scope
+ *  AND name. `@oai/cua-repl` (ChatGPT.app bundles its own node and runs that
+ *  under it, seen on the dev machine 2026-09-22) is why neither the scope
+ *  alone nor a substring of the package name is enough. */
+const PROVIDER_PACKAGES: ReadonlyArray<readonly [Provider, string]> = [
+  ['claude', '/node_modules/@anthropic-ai/claude-code/'],
+  ['codex', '/node_modules/@openai/codex/'],
+];
+
+/** Which provider, if any, a `node` process is hosting, from its full argv
+ *  (`ps -axo pid=,args=`). Null for every other Node process.
+ *
+ *  Why this exists: an npm-installed provider CLI is a JavaScript entry
+ *  point with a `#!/usr/bin/env node` shebang, so the kernel runs NODE and
+ *  the process's `comm` is `node`. Matching the executable name alone --
+ *  all discovery did until 2026-09-22 -- found a Homebrew-cask install and
+ *  never an npm one. The first outside user had npm-installed Codex: his
+ *  sessions worked while the app stayed open, then could not be typed into
+ *  after a restart, because the pid->tmux map is rebuilt from tmux on
+ *  restart and discovery had no matching process to meet it.
+ *
+ *  A false positive is worse than a miss here: an unrelated Node process
+ *  shown as a live agent session is one the app would offer to type into.
+ *  So the evidence required is the SCRIPT PATH, and it must be either
+ *
+ *    - an absolute path whose file name is exactly a PROVIDER_BINS name --
+ *      what an npm bin entry is, wherever the prefix puts it (nvm, volta,
+ *      pnpm, bun and Homebrew's npm prefix all differ, and only some have a
+ *      `/bin/` segment, so the prefix itself is not evidence); or
+ *    - an absolute path inside one of PROVIDER_PACKAGES, for the package
+ *      entry point run directly rather than through its bin entry.
+ *
+ *  Deliberately rejected, each trading reach for precision:
+ *   - a RELATIVE script path (`node ./claude`): it is relative to that
+ *     process's cwd, not ours, so it cannot be resolved from a listing --
+ *     and an installed CLI's path is always absolute.
+ *   - an EXTENSION on an otherwise matching name (`claude.js`): a project
+ *     file called that is far likelier than an executable named exactly
+ *     `claude`, and npm bin entries carry no extension.
+ *   - RESOLVING the path on disk (readlink, then the package.json `name`):
+ *     the strongest evidence available, but it is filesystem work per
+ *     candidate on a sweep that runs every 5 seconds, and this rule is
+ *     already exactly as strong as the executable-name rule beside it. It
+ *     is the upgrade path if a false positive is ever reported.
+ *   - a flag that takes a separate value (`node -r foo /usr/local/bin/claude`
+ *     reads `foo` as the script and so matches nothing). Fail-closed: a
+ *     missed session, never a fabricated one.
+ *
+ *  A path containing spaces cannot be recovered from `ps` output either, and
+ *  fails closed the same way. */
+export function nodeHostedProvider(args: string): Provider | null {
+  let script: string | null = null;
+  for (const token of args.trim().split(/\s+/).slice(1)) {
+    if (token.startsWith('-')) {
+      // `--input-type=module` and friends carry their value inline; only the
+      // flag name decides.
+      if (NODE_NO_SCRIPT_FLAGS.has(token.split('=')[0]!)) return null;
+      continue;
+    }
+    script = token;
+    break;
+  }
+  if (script === null || !isAbsolute(script)) return null;
+  const scriptPath = script;
+  const pkg = PROVIDER_PACKAGES.find(([, dir]) => scriptPath.includes(dir));
+  return pkg ? pkg[0] : PROVIDER_BINS.find(bin => bin === basename(scriptPath)) ?? null;
 }
 
 /** Parse `ps -o tty= -p <pid>`. `??` means no controlling terminal. */

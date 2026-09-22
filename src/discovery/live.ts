@@ -24,7 +24,8 @@ import { promisify } from 'node:util';
 import { basename } from 'node:path';
 import { homedir } from 'node:os';
 import {
-  parseProcessList, parseTty, parseLsofCwd, parseLsofNames, parseEtime, parseRss, classifyHost, type LiveProcess,
+  parseProcessList, parseTty, parseLsofCwd, parseLsofNames, parseEtime, parseRss, classifyHost,
+  nodeHostedProvider, PROVIDER_BINS, type LiveProcess,
 } from './parse.ts';
 import { parseProcessChainHop, resolvePaths } from '../config.ts';
 import {
@@ -35,13 +36,13 @@ import type { Provider } from '../core/types.ts';
 
 const execFileP = promisify(execFile);
 
-/** The two provider CLIs discovery greps for -- the same 'claude' | 'codex'
- *  vocabulary Provider (core/types.ts) uses. `as const` gives this array's
- *  elements the literal type `'claude' | 'codex'`, identical to Provider,
- *  so each `bin` below is already assignable to inspectPid's `provider`
- *  parameter with no cast -- this IS which provider found the pid, not a
- *  lookalike string that happens to match. */
-const PROVIDER_BINS = ['claude', 'codex'] as const;
+/** The executable name a JavaScript entry point's process actually carries:
+ *  an npm-installed CLI has a `#!/usr/bin/env node` shebang, so the kernel
+ *  runs node and `comm` is `node`, never the CLI's own name. Such a process
+ *  is identified by its argv instead -- see nodeHostedProvider
+ *  (src/discovery/parse.ts) for the rules and what they deliberately
+ *  reject. */
+const NODE_BIN = 'node';
 
 /** One shell-out, injectable so tests can drive discovery deterministically
  *  (missing binary, a pid that exited mid-lookup, canned output) without
@@ -267,13 +268,15 @@ async function openRolloutsByPid(pids: number[], exec: ExecFn, codexRoot: string
   return out;
 }
 
-/** A matched pid (found by `pgrep -x <bin>` for either provider) is a
- *  session only if no OTHER matched pid is its ancestor -- a helper process
- *  a session spawned (a sandbox wrapper, an app-server, ...) still matches
- *  `pgrep -x codex`/`pgrep -x claude` by binary name, but reaches the real
- *  session through its own parent chain, however many non-matching
- *  processes (a shell, a REPL) sit in between. `matchedPids` is every pid
- *  pgrep found this sweep, across both providers -- checked as a flat set
+/** A matched pid (either matching rule, either provider) is a session only
+ *  if no OTHER matched pid is its ancestor -- a helper process a session
+ *  spawned (a sandbox wrapper, an app-server, ...) runs the same binary, or
+ *  the same node-hosted script, as the session that spawned it, but reaches
+ *  that session through its own parent chain, however many non-matching
+ *  processes (a shell, a REPL) sit in between. Node-hosted matches take
+ *  part in this rule on both sides: as helpers to be dropped, and as
+ *  ancestors that drop their own helpers. `matchedPids` is every pid
+ *  matched this sweep, across both providers and both rules -- a flat set
  *  rather than per-provider, since a helper's ancestor is always the same
  *  provider's session in practice, and nothing about the rule requires
  *  assuming that.
@@ -302,28 +305,50 @@ function filterToSessions(inspected: InspectedPid[], matchedPids: ReadonlySet<nu
  *  session list built independently from transcripts -- a discovery
  *  failure must never be able to reach, let alone reduce, that list.
  *
- *  Matches every PROVIDER_BINS pid first (both providers, so the matched
- *  set filterToSessions checks ancestry against is complete before any pid
- *  is inspected), then inspects them all concurrently, then drops helper
+ *  Matches every provider pid first (both providers, so the matched set
+ *  filterToSessions checks ancestry against is complete before any pid is
+ *  inspected), then inspects them all concurrently, then drops helper
  *  processes -- a session's own subprocesses that also happen to run the
  *  same binary (see filterToSessions).
  *
- *  ONE `ps` enumeration, filtered here, rather than `pgrep -x <bin>` per
- *  provider. pgrep is unusable for this: it does not report the calling
- *  process's own ancestors, so an app launched from inside an agent
- *  session could never discover that session -- and that is precisely the
- *  session someone is most likely to have launched it from. Measured
- *  2026-09-16 on this machine: `pgrep -x claude` returned four pids from
- *  an unrelated process tree and three from inside one of them, the
- *  missing one being the session that started the app. `ps -axo` sees the
- *  same table regardless of who asks. */
+ *  Two matching rules, because an npm-installed CLI is a JavaScript entry
+ *  point and its process is therefore called `node`, not `claude`/`codex`
+ *  (the bug the first outside user hit, 2026-09-22): the executable name is
+ *  exactly a PROVIDER_BINS name, or it is `node` and nodeHostedProvider
+ *  recognises the script in its argv. The argv listing that second rule
+ *  needs is ONE `ps -axo pid=,args=` for the whole machine, issued
+ *  concurrently with the executable-name listing so it costs no wall clock
+ *  (measured 2026-09-22 on this machine: 26ms, the same as the comm
+ *  listing, against a sweep of ~118ms; 167 KB of output against execFile's
+ *  1 MiB maxBuffer, past which it fails soft to name-only matching).
+ *
+ *  ONE `ps` enumeration per field, filtered here, rather than
+ *  `pgrep -x <bin>` per provider. pgrep is unusable for this: it does not
+ *  report the calling process's own ancestors, so an app launched from
+ *  inside an agent session could never discover that session -- and that is
+ *  precisely the session someone is most likely to have launched it from.
+ *  Measured 2026-09-16 on this machine: `pgrep -x claude` returned four
+ *  pids from an unrelated process tree and three from inside one of them,
+ *  the missing one being the session that started the app. `ps -axo` sees
+ *  the same table regardless of who asks. */
 export async function discoverLiveProcesses(exec: ExecFn = defaultExec, deps: DiscoveryDeps = {}): Promise<LiveProcess[]> {
   try {
-    const matched = parseProcessList(await exec('ps', ['-axo', 'pid=,comm=']))
-      .flatMap(({ pid, comm }) => {
-        const provider = PROVIDER_BINS.find(bin => bin === basename(comm));
-        return provider ? [{ pid, provider }] : [];
-      });
+    const [commList, argvList] = await Promise.all([
+      exec('ps', ['-axo', 'pid=,comm=']),
+      exec('ps', ['-axo', 'pid=,args=']),
+    ]);
+    // Same shape as the comm listing -- pid, then the rest of the line
+    // verbatim -- so parseProcessList reads both; here the "comm" field is
+    // the whole argv. Enrichment only: a failed or oversized argv listing is
+    // an empty map, and matching falls back to the executable name alone,
+    // exactly as it behaved before node-hosted CLIs were recognised.
+    const argvByPid = new Map(parseProcessList(argvList).map(({ pid, comm }) => [pid, comm]));
+    const matched = parseProcessList(commList).flatMap(({ pid, comm }) => {
+      const name = basename(comm);
+      const provider = PROVIDER_BINS.find(bin => bin === name)
+        ?? (name === NODE_BIN ? nodeHostedProvider(argvByPid.get(pid) ?? '') : null);
+      return provider ? [{ pid, provider }] : [];
+    });
     const matchedPids = new Set(matched.map(m => m.pid));
     const codexPids = matched.filter(m => m.provider === 'codex').map(m => m.pid);
 
