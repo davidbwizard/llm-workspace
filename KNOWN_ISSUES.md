@@ -306,3 +306,58 @@ conversation view, where today they are invisible. That is arguably correct --
 the person typed them -- but it is a visible change and David has not ruled on
 it. A narrower fix that only resolves the pending entry would leave the message
 vanishing rather than showing as sent, which is its own oddity.
+
+## The staged-image sweep tries to unlink directories, forever (2026-09-22)
+
+Every launch logs, twice:
+
+```
+sweeping a staged image failed: EPERM: operation not permitted, unlink
+  '.../llm-workspace-attachments/9948d14f-...'
+```
+
+Not a permissions problem and not two instances competing, which is what it
+looks like. `createStager`'s sweep (`src/main/staging.ts:72`) stats each
+`readdir` entry and calls `unlink` on anything older than the cutoff, without
+checking WHAT it is. Two entries in that directory are directories, not files:
+
+```
+drwxr-xr-x@ 2 davidbrabbins staff 64 Sep 21 03:35 9948d14f-a35a-4ace-9dd9-f9dd3378a612
+drwxr-xr-x@ 2 davidbrabbins staff 64 Sep 21 03:35 95c9d5aa-14d4-4bd8-9095-9a44d06a354f
+```
+
+`unlink` on a directory returns EPERM on macOS. Measured directly: `unlink
+a-directory` -> EPERM, `unlink a-file` -> OK. So the sweep fails on the same
+two entries on every launch and can never clear them.
+
+**Fix:** check `isDirectory()` before unlinking, and decide deliberately
+whether a stray directory should be removed recursively or left alone and
+reported once rather than every launch. The wider point is that the catch
+swallows every reason equally -- a permission problem, a directory, and a
+genuinely undeletable file all log the same line.
+
+## An ingest write that outwaits the busy timeout crashes the main process (2026-09-22)
+
+Found by reading, not by seeing it fail, while investigating whether a packaged
+build running beside a dev build contend on `~/.llm-workspace/index.sqlite`.
+**They do not**, in practice: WAL is on and better-sqlite3's 5s busy timeout is
+already in place, so a second writer waits rather than failing, and these
+writes take milliseconds. Measured on a copy, never the live file:
+
+```
+journal_mode  = wal
+busy_timeout  = 5000
+second writer = database is locked  (after 5185ms)
+```
+
+The latent gap is what happens if a write ever does exceed that 5 seconds.
+`ingestSpool` runs in a bare `setInterval` (`src/main/index.ts:174`) and
+`ingestAll` inside `startBackgroundWork`; neither is wrapped, so the throw
+becomes an unhandled exception in the main process. Low probability, real
+consequence, and it gets more likely the more instances someone runs -- which
+a tester with a packaged build beside a dev one is doing by definition.
+
+Unrelated to the above: `Failed to delete the database: Database IO error
+(service_worker_storage)` when two builds run together is Chromium's own
+storage, not the app's index -- both resolve userData to the same path from the
+same package name. Expected, and not something the app controls.
