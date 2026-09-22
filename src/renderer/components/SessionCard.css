@@ -50,6 +50,25 @@
            font-family:var(--f-mono); font-size:11px; color:var(--muted);
            font-variant-numeric:tabular-nums; }
 .dial { flex:none; }
+
+/* The sub-agent count on an open-session card: `live/total`, the same
+   notation the .dial's label beside it already uses, without the dial.
+   Measured -- the dial is 5 + pips*10 px, so ten agents is 105px against a
+   rail card's 121px of content, and carrying it here would have needed a
+   408px rail against a 420px maximum. The label costs ~27px whatever the
+   count, which is what makes it affordable at all.
+
+   flex:none, like every other number in this row: these are digits, and
+   half a number read at a glance is worse than no number. When the row
+   runs out of width the count is dropped whole (SessionRail.css /
+   FleetView.css), never squeezed. */
+.agents { flex:none; font-variant-numeric:tabular-nums; }
+/* The accessible name. Not display:none -- that would take it out of the
+   accessibility tree and leave a screen reader with "two slash three",
+   which names nothing. Same clip-path technique as the status word's own
+   hidden state. */
+.agents-name { position:absolute; width:1px; height:1px; margin:-1px; padding:0;
+  overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
 .state { margin-left:auto; display:flex; align-items:center; gap:6px; font-size:10.5px; }
 /* The status shape (StatusIcon.tsx), which replaced the colour-only dot
    that used to live on this line. It sits HERE, with .state itself, rather

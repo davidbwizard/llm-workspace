@@ -47,6 +47,30 @@
 @container gridcard (max-width: 276px) {
   .ctxchip-tok, .ctxchip-sep { display:none; }
 }
+
+/* The same two, shifted wider, for a row also carrying a sub-agent count
+   -- marked `hasagents` by OpenSessionCard, because a container query
+   cannot ask whether a child is present. Note the marker is on the ROW and
+   not the card: here the card IS the container, and an @container block
+   only ever matches its container's DESCENDANTS.
+
+   Measured on a grid card (which carries an event count the rail's does
+   not) with a worst-case row: the full row needs 315px of card content,
+   and the row minus its token count needs 271px. No scrollbar headroom,
+   for the same reason as above -- a card is not a scroll container, so
+   this query sees its true width. The +1 is the fractional-pixel slack the
+   276 above already carries.
+
+   No word breakpoint, measured rather than assumed: with the count
+   dropped, the row fits at 234px of card content, and the narrowest column
+   this grid can produce is 280px (244px of content). A grid card never has
+   to give up the status word, with agents or without. */
+@container gridcard (max-width: 316px) {
+  .hasagents .ctxchip-tok, .hasagents .ctxchip-sep { display:none; }
+}
+@container gridcard (max-width: 272px) {
+  .agents { display:none; }
+}
 .fleet.dim { opacity:.62; }
 .fleet.dim:hover { opacity:1; }
 .divider { font-family:var(--f-body); font-weight:600; font-size:13px;

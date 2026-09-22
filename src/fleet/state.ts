@@ -616,6 +616,19 @@ export interface OpenSession {
   sessionId: string | null;
   lastProse: string | null;
   events: number | null;
+  /** Sub-agents this session has ever spawned, and how many of those are
+   *  live right now -- the same pair, and the same recency heuristic, the
+   *  history card already shows (see fleetState's own note on why
+   *  `liveAgents` is recency and not spawned-minus-ended).
+   *
+   *  THREE-WAY, and the card depends on it: `null` means this pid is not
+   *  uniquely matched, so nothing may be attributed to it; `0` means it IS
+   *  matched and genuinely spawned none. Rendering both as "no agents" is
+   *  fine; RECORDING both as 0 would make the card assert something about
+   *  a session it has not identified. Null under exactly the same
+   *  conditions as sessionId/events/activity above. */
+  agents: number | null;
+  liveAgents: number | null;
   /** The working/waiting/idle distinction from the matched session's own
    *  turn boundary (see the Activity doc comment above) -- null under the
    *  same conditions as sessionId. */
@@ -680,6 +693,7 @@ export interface OpenSession {
  *  actually shows. */
 function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
   sessionId: string | null; lastProse: string | null; events: number | null; activity: Activity | null;
+  agents?: number | null; liveAgents?: number | null;
 } | null, isTmux: (pid: number) => boolean): OpenSession {
   return {
     pid: p.pid,
@@ -696,6 +710,10 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
     sessionId: enrichment?.sessionId ?? (m.quality === 'unique' ? m.sessionId : null),
     lastProse: enrichment?.lastProse ?? null,
     events: enrichment?.events ?? null,
+    // `?? null`, never `?? 0`: no enrichment means no matched session to
+    // count agents for, and that is not the same claim as "none".
+    agents: enrichment?.agents ?? null,
+    liveAgents: enrichment?.liveAgents ?? null,
     activity: enrichment?.activity ?? null,
     tmux: isTmux(p.pid),
     junk: junkCwdKind(p.cwd) !== null,
@@ -777,6 +795,10 @@ export function openSessions(
   return processes.map((p, i) => {
     const m = matches[i]!; // classifyMatch returns one result per process, same order
     const matched = m.quality === 'unique' ? byId.get(m.sessionId!) ?? null : null;
+    // agents/liveAgents come straight off the matched SessionState, which
+    // fleetState already computed with the same heuristic openSessionsLive
+    // reimplements below -- the two paths must not disagree about a field
+    // the same card renders (tests/fleet/state.test.ts pins that).
     return buildOpenSession(p, m, matched, isTmux);
   }).sort(compareOpenSessions(
     o => junkCwdKind(o.cwd) !== null,
@@ -1032,6 +1054,7 @@ export function openSessionsLive(
 
   const enrichmentById = new Map<string, {
     sessionId: string; lastProse: string | null; events: number | null; activity: Activity;
+    agents: number; liveAgents: number;
   }>();
   // The real recency signal for compareOpenSessions' tiers 3/4 -- read
   // straight off the SAME query enrichmentById already runs (below), for
@@ -1047,6 +1070,40 @@ export function openSessionsLive(
     // session has no status file at all.
     if (uniqueIds.some(id => !liveStatusBySession.has(id))) {
       for (const b of currentBlockers(db, now)) blockers.set(b.sessionId, b);
+    }
+
+    // BOTH agent numbers from ONE query, grouped per (session, agent):
+    // `agents` counts the pairs that were ever spawned, `liveAgents` those
+    // whose own most recent event is inside WORKING_MS -- the same pair and
+    // the same heuristic fleetState computes for a history card, so the two
+    // card kinds cannot disagree about one number.
+    //
+    // ONE query, and NOT a column on the enrichment aggregate below, which
+    // is where this started. Measured against the real 337k-event index:
+    // adding `COUNT(DISTINCT CASE WHEN kind='agent.spawned' ...)` to that
+    // query took it from 3.9 ms to 34.9 ms, because COUNT(*)/MAX(ts) are
+    // answered from events_session_ts(session_id, ts) alone while `kind`
+    // and `agent_id` live in the row and force a fetch per event. Asking
+    // separately, with `agent_id IS NOT NULL` doing the narrowing, leaves
+    // that query untouched at its original cost.
+    //
+    // Still index-BOUND, unlike fleetState's equivalent: that one filters
+    // on `agent_id IS NOT NULL` across the whole table (a full scan,
+    // measured at 209-349 ms here), while this filters on `session_id IN
+    // (...)` over the handful of uniquely-matched ids. Measured cost of
+    // this query: 1.1 ms for the six most recently active sessions, 11.3 ms
+    // when all six are agent-heavy ones. See the note on the agent index
+    // this deliberately does not add, in the commit message.
+    const agentsById = new Map<string, number>();
+    const liveAgentsById = new Map<string, number>();
+    for (const r of db.prepare(`
+      SELECT session_id, agent_id, MAX(ts) last_ts, MAX(kind = 'agent.spawned') spawned
+      FROM events WHERE session_id IN (${uniqueIds.map(() => '?').join(',')}) AND agent_id IS NOT NULL
+      GROUP BY session_id, agent_id`).all(...uniqueIds) as any[]) {
+      if (!r.spawned) continue; // never had an agent.spawned row -- not a countable agent
+      agentsById.set(r.session_id, (agentsById.get(r.session_id) ?? 0) + 1);
+      const age = r.last_ts ? now - Date.parse(r.last_ts) : Infinity;
+      if (age <= WORKING_MS) liveAgentsById.set(r.session_id, (liveAgentsById.get(r.session_id) ?? 0) + 1);
     }
 
     const rows = db.prepare(`
@@ -1070,6 +1127,7 @@ export function openSessionsLive(
       });
       enrichmentById.set(r.session_id, {
         sessionId: r.session_id, lastProse: r.last_prose ?? null, events: r.events ?? 0, activity,
+        agents: agentsById.get(r.session_id) ?? 0, liveAgents: liveAgentsById.get(r.session_id) ?? 0,
       });
       if (r.last_ts) lastActiveMsById.set(r.session_id, Date.parse(r.last_ts));
     }

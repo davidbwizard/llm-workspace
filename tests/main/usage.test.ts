@@ -103,7 +103,7 @@ describe('claudeContextFor / codexContextFor / withContext', () => {
     return {
       provider: 'claude', host: 'unknown', cwd: '/repo/x', project: 'x', ageSeconds: null, rssBytes: null,
       match: 'unique', sessionId: null, lastProse: null, events: null, activity: null, tmux: false,
-      junk: false, context: null, ...o,
+      junk: false, context: null, agents: null, liveAgents: null, ...o,
     };
   }
 

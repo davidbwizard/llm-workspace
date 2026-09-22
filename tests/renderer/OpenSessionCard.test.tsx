@@ -24,7 +24,8 @@ beforeEach(() => {
 const base: OpenSession = {
   pid: 4242, provider: 'claude', host: 'iterm2', cwd: '/Users/me/trellome', project: 'trellome',
   ageSeconds: 9 * 86_400, rssBytes: 206 * 1024 * 1024, match: 'unknown',
-  sessionId: null, lastProse: null, events: null, activity: null, tmux: true, junk: false, context: null,
+  sessionId: null, lastProse: null, events: null, agents: null, liveAgents: null,
+  activity: null, tmux: true, junk: false, context: null,
 };
 
 // Every test below that isn't specifically about the kill flow needs SOME
@@ -1017,5 +1018,61 @@ describe('the status row', () => {
     const { container } = render1('idle');
     expect(container.querySelector('.state .dot')).toBeNull();
     expect(container.querySelector('.state .stateicon')).toBeTruthy();
+  });
+});
+
+/* ---- the sub-agent count --------------------------------------------
+   Shown only when there are agents to show. That is not only tidiness:
+   measured, the count costs ~27px of a status row that has overflowed its
+   card three times already, and most sessions spawn none -- so the common
+   card has to pay nothing for this. */
+describe('the sub-agent count', () => {
+  const render1 = (over: Partial<OpenSession>) => render(
+    <OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
+      onResume={neverResume()} state={{ ...base, match: 'unique', sessionId: 's1',
+        activity: 'working', agents: null, liveAgents: null, ...over }} />,
+  );
+
+  it('shows live/total, the same notation the history card uses', () => {
+    const { container } = render1({ agents: 3, liveAgents: 2 });
+    expect(container.querySelector('.agents')!.textContent).toContain('2/3');
+  });
+
+  it('adds nothing to the row when the session spawned none', () => {
+    const { container } = render1({ agents: 0, liveAgents: 0 });
+    expect(container.querySelector('.agents')).toBeNull();
+  });
+
+  // The distinction the data layer keeps (see tests/fleet/state.test.ts):
+  // null is "this pid is not uniquely matched", not "it has none". Both
+  // render nothing -- but only one of them would be a lie if it rendered
+  // "0/0", so neither may.
+  it('shows nothing, not a zero, when the count is unknown', () => {
+    const { container } = render1({ agents: null, liveAgents: null, match: 'ambiguous', sessionId: null });
+    expect(container.querySelector('.agents')).toBeNull();
+    expect(container.textContent).not.toContain('0/0');
+  });
+
+  // The row's width rules have to know whether this element is there: a
+  // container query cannot ask "is a child present", so the row says so.
+  // On the ROW rather than the card, because in the fleet grid the card IS
+  // the query container and a container can't match itself.
+  it('marks the row, so the width rules can budget for it', () => {
+    expect(render1({ agents: 2, liveAgents: 1 }).container.querySelector('.metrics')!.className).toContain('hasagents');
+    expect(render1({ agents: 0, liveAgents: 0 }).container.querySelector('.metrics')!.className).not.toContain('hasagents');
+  });
+
+  // "2/3" read aloud is "two slash three", which says nothing about what
+  // is being counted. The digits are decoration; the phrase is the name.
+  it('names itself for a screen reader rather than reading as digits', () => {
+    const { container } = render1({ agents: 3, liveAgents: 2 });
+    const el = container.querySelector('.agents')!;
+    expect(el.querySelector('[aria-hidden="true"]')!.textContent).toBe('2/3');
+    expect(el.textContent).toContain('2 of 3 sub-agents running');
+  });
+
+  it('counts down to none running without disappearing', () => {
+    const { container } = render1({ agents: 4, liveAgents: 0 });
+    expect(container.querySelector('.agents')!.textContent).toContain('0/4');
   });
 });

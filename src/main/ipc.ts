@@ -175,6 +175,9 @@ export const OPEN_SESSION_STRUCTURAL_FIELDS = [
   // Numbers only ({ usedTokens, windowTokens, leftPct } or null) -- nothing
   // for a bidi or zero-width character to hide in.
   'context',
+  // Counts this app derives from its own index, never text a model or a
+  // user wrote -- nothing to sanitise, same as `events` above.
+  'agents', 'liveAgents',
 ] as const satisfies readonly (keyof OpenSession)[];
 
 /** Sanitises every field named in `fields` whose current value is a string
