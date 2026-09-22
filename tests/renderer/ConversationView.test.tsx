@@ -2676,6 +2676,45 @@ describe('ConversationView -- the permission-mode chip', () => {
     expect(chip!.textContent).toContain('Plan');
   });
 
+  /* ---- the sub-agent chip beside it -------------------------------
+     Same row, same collapse rule. What matters here is not the chip's own
+     wording (tests/renderer/AgentChip.test.tsx pins that) but that the
+     foot holds both, and that .convfoot:empty still has nothing to match
+     against when neither draws -- the row would otherwise claim its
+     margin below a composer that looks finished. */
+  it('puts the sub-agent chip in the foot beside the mode chip', async () => {
+    const live = withLive();
+    const { container } = renderConv({ agents: 2, liveAgents: 1 });
+    await waitFor(() => expect(container.querySelector('.convbox')).toBeTruthy());
+    live.push(payload({ provider: 'claude', mode: 'plan', blocked: null }));
+    const foot = container.querySelector('.convbox .convfoot')!;
+    expect(foot.querySelector('.modechip')).toBeTruthy();
+    expect(foot.querySelector('.agentchip')).toBeTruthy();
+    expect(container.querySelector('.panehead .agentchip')).toBeNull();
+  });
+
+  it('leaves the foot genuinely empty when neither chip has anything to say', async () => {
+    // No live push, so no mode chip; no counts, so no agent chip.
+    const { container } = renderConv({ agents: null, liveAgents: null });
+    await waitFor(() => expect(container.querySelector('.convbox')).toBeTruthy());
+    const foot = container.querySelector('.convfoot')!;
+    expect(foot.querySelector('.modechip')).toBeNull();
+    expect(foot.querySelector('.agentchip')).toBeNull();
+    // :empty matches only an element with NO children AND no text -- a
+    // stray whitespace text node from the JSX would defeat the rule and
+    // leave the margin behind, which is the bug this pins.
+    expect(foot.childNodes.length).toBe(0);
+  });
+
+  it('keeps the foot alive when only the sub-agent chip has something to say', async () => {
+    const { container } = renderConv({ agents: 3, liveAgents: 0 });
+    await waitFor(() => expect(container.querySelector('.convbox')).toBeTruthy());
+    const foot = container.querySelector('.convfoot')!;
+    expect(foot.querySelector('.modechip')).toBeNull();
+    expect(foot.querySelector('.agentchip')).toBeTruthy();
+    expect(foot.childNodes.length).toBeGreaterThan(0);
+  });
+
   it('draws no chip at all until the push carries one', async () => {
     const live = withLive();
     const { container } = renderConv();
