@@ -243,3 +243,35 @@ message in the same form as an unsent one). What worked, all day:
      below), a count when more than one, and to take you there on click.
      Waiting is already the only filled status mark, so the band should use
      that same shape rather than inventing a third vocabulary.
+- **Sidebar organisation -- four requests from Nate, the first outside user
+  (2026-09-22), via David. Not specced, not built.**
+  1. **Rename a session**, an alias shown in the heading so you can tell what
+     it is about at a glance.
+  2. **Group sessions into collapsible folders**, Slack-style: assign a group,
+     collapse it when not working on it, expand when you are.
+  3. **Reorder sessions** by hand in the sidebar. This is David's own earlier
+     request too ("dont auto move cards"), so they are one job, not two.
+  4. **Hide sessions** from the sidebar, with a toggle to show them again.
+
+  **Treat these as ONE feature with one decision underneath, or they will be
+  built three times with three incompatible answers: what is the name attached
+  TO?** A pid dies with the process; a session id is gone tomorrow. If someone
+  renames a session "auth refactor", they almost certainly expect the name to
+  survive closing it and starting another in the same folder -- which means the
+  alias, the group, the order and the hidden flag all belong to the FOLDER, not
+  to the session. Nate's own words point that way: "so i can see what its about
+  from the heading" is a fact about the project, not about this process.
+
+  If that is right, `src/renderer/state/favourites.ts` is the precedent and
+  probably the store to extend: it is already per-folder, already persisted,
+  already shared between the launch bar and the conversation header.
+
+  The awkward case to decide deliberately rather than discover: several
+  sessions running in the SAME folder. They would share one alias and one
+  group, and the sidebar would show the alias several times. Options are a
+  per-session suffix, an alias plus the session's own last message, or
+  grouping same-folder sessions under one collapsible heading -- which may be
+  what "group" should mean in the first place.
+
+  Also worth knowing before building: Cmd+1-9 is defined by sidebar order, so
+  reordering and hiding both silently redefine what Cmd+3 opens.
