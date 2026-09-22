@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SessionRail } from '../../src/renderer/components/SessionRail.tsx';
 import { setSettings, reloadSettings } from '../../src/renderer/state/settings.ts';
+import { reloadGroups } from '../../src/renderer/state/groups.ts';
 
 // @testing-library/user-event is not a dependency of this project (every
 // other renderer test file drives interaction through fireEvent, and
@@ -49,15 +50,25 @@ const sessionsPlainPid2Bumped = [
 // Three-session fixture for the relevance-ordering tests below: one
 // blocked, one plain, and one that starts plain and gets bumped into
 // "unread" by a rerender, same technique as sessionsPid2Bumped above.
+//
+// DELIBERATELY NOT in pid order (blocked-proj, pid 1, sits LAST rather than
+// at array index 0): SessionRail's rank tiebreak is the session's own INDEX
+// in this array, and with grouping on (Task 5), a row's rendered position
+// is frozen from its own first render onward -- so if the blocked session
+// also happened to be first by array position, "keeps a blocked card above
+// everything else" below could pass purely from that coincidence, with the
+// blocked tier in compareOpenSessions doing nothing at all. Proven by
+// temporarily disabling that tier and watching the test still pass with the
+// old (pid-ordered) array; see task-5-report.md for the actual output.
 const sessions3 = [
-  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 2, project: 'unread-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c2', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
   { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'unread-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c2', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 const sessions3Pid2Bumped = [
-  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
-  { pid: 2, project: 'unread-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c2', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
   { pid: 3, project: 'plain-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c3', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+  { pid: 2, project: 'unread-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/c2', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 15 },
+  { pid: 1, project: 'blocked-proj', provider: 'claude', activity: 'waiting_permission', lastProse: 'Confirm?', cwd: '/c1', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
 ] as never[];
 
 // Same shape, pid 2 given a genuine junk cwd (a real tmpdir() path, not
@@ -98,6 +109,15 @@ beforeEach(() => {
   // within a file.
   localStorage.clear();
   reloadSettings();
+  // Task 5: grouping defaults to ON, so every test in this file now mounts
+  // a rail that calls rememberKeys on render, writing rail-order keys into
+  // groups.ts's own module-singleton `current`. localStorage.clear() alone
+  // does not touch that in-memory copy -- only reloadGroups() re-reads it
+  // back to DEFAULT_GROUPS -- so without this, a folder key remembered by
+  // one test would outlive it and reorder or restack an unrelated test's
+  // cards. Same reasoning as reloadSettings() just above, for the same
+  // localStorage-survives-the-file reason.
+  reloadGroups();
 });
 
 describe('SessionRail', () => {
@@ -364,23 +384,54 @@ describe('SessionRail', () => {
       return [...container.querySelectorAll('.proj')].map(el => el.textContent);
     }
 
-    it('moves an unread card above a merely-recent one', () => {
+    // REWRITTEN for Task 5 (spec's Ordering section: "Rows do not move on
+    // their own... a session starting to wait changes how its row looks,
+    // never where it is"). The original test drove this scenario with a
+    // mid-session unread bump and asserted the row MOVED -- that assertion
+    // is now permanently false, not just for a rerender: isUnread requires
+    // seenEvents to already hold a LOWER baseline for that pid
+    // (SessionRail.tsx's own `events > (seenEvents.get(pid) ?? events)`),
+    // which can only be true once the rail has rendered that pid before --
+    // and rememberKeys freezes a row's position off that SAME first render,
+    // in the same commit cycle that establishes the baseline. So a row can
+    // never be both "unread" and "not yet frozen" on any render, which
+    // means the promotion this test used to check cannot happen at all
+    // anymore. Do not restore the old "moves above" assertion -- it would
+    // never go red again no matter what the code does. What survives, and
+    // is what this now proves: the unread SIGNAL still fires (the dot), and
+    // the row's position does not move because of it -- both halves of
+    // what actually changed here, pinned in one test.
+    it('flags an unread card but does not move its row', () => {
       const { rerender, container } = render(<SessionRail sessions={sessionsPlain} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      // Baseline order matches the prop as given -- neither card is blocked
-      // or unread yet.
-      expect(projectOrder(container)).toEqual(['llm-workspace', 'game-viewer']);
+      const before = projectOrder(container);
+      expect(before).toEqual(['llm-workspace', 'game-viewer']);
       rerender(<SessionRail sessions={sessionsPlainPid2Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      // pid 2 (now unread) moves above pid 1, which is merely working.
-      expect(projectOrder(container)).toEqual(['game-viewer', 'llm-workspace']);
+      // pid 2 is now unread -- the dot still fires...
+      expect(container.querySelectorAll('.unread-dot')).toHaveLength(1);
+      // ...but its row stays exactly where it was.
+      expect(projectOrder(container)).toEqual(before);
     });
 
+    // REWRITTEN for Task 5, same reasoning as the test above: the original
+    // full-array assertion here conflated two claims. "Blocked first" is
+    // still real and checked every render (compareOpenSessions' blocked
+    // tier needs no prior baseline, unlike unread). "Unread above merely-
+    // recent" was never actually exercised by the bump -- pid 2 already
+    // sits above pid 3 in the INCOMING array before any bump, so that part
+    // of the assertion held whether or not the bump (or isUnread) did
+    // anything, and it cannot be repaired into a real ordering assertion
+    // either, for the same reason as the test above (a pid can only be
+    // unread once its row is already frozen). Keeping it would leave a
+    // decorative assertion that could never go red for the reason its own
+    // name claims, so it is dropped rather than kept for show.
+    //
     // Mutation target: the blocked check in compareOpenSessions running
-    // AFTER the unread check (instead of before) would let an unread,
-    // non-blocked card outrank a blocked one here.
-    it('keeps a blocked card above an unread one, which stays above a merely-recent one', () => {
+    // AFTER the junk/unread checks (instead of before) would let a
+    // non-blocked card outrank pid 1 here.
+    it('keeps a blocked card above everything else', () => {
       const { rerender, container } = render(<SessionRail sessions={sessions3} selectedPid={3} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
       rerender(<SessionRail sessions={sessions3Pid2Bumped} selectedPid={3} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      expect(projectOrder(container)).toEqual(['blocked-proj', 'unread-proj', 'plain-proj']);
+      expect(projectOrder(container)[0]).toBe('blocked-proj');
     });
 
     // Junk stays last even when it's the one card with new output --
@@ -393,30 +444,49 @@ describe('SessionRail', () => {
     });
   });
 
-  // Cmd+1..9: unlike the grid (FleetView.test.tsx), the rail DOES reorder
-  // cards (the unread promotion above) -- these prove the hotkey number
-  // still tracks each session's RANK in the incoming `sessions` prop, not
-  // wherever it currently sits on screen, so pressing Cmd+N (App.tsx, which
-  // reads the same canonical `sessions`/openSessions order) always lands on
-  // the card carrying that same number, regardless of unread reshuffling.
-  // David's own ruling: "same numbering everywhere... in sidebar order" --
-  // App.tsx computes ONE shared pid->number map (useFleet.ts's
-  // orderedSessions, which already mirrors this component's own unread-
-  // promotion sort) and hands it down as cmdIndexByPid, rather than this
-  // component deriving numbers from its own rank or its own reordered
-  // display position.
+  // Cmd+1..9: unlike the grid (FleetView.test.tsx), the rail can place a
+  // card somewhere other than its rank in `sessions` -- these prove the
+  // hotkey number still tracks each session's PID through that placement,
+  // not wherever it currently sits on screen, so pressing Cmd+N (App.tsx,
+  // which reads the same canonical `sessions`/openSessions order) always
+  // lands on the card carrying that same number. David's own ruling: "same
+  // numbering everywhere... in sidebar order" -- App.tsx computes ONE
+  // shared pid->number map (useFleet.ts's orderedSessions) and hands it
+  // down as cmdIndexByPid, rather than this component deriving numbers from
+  // its own rank or its own display position.
+  //
+  // REWRITTEN for Task 5 (spec's Ordering section: "Rows do not move on
+  // their own... a session starting to wait changes how its row looks,
+  // never where it is"). The original form of this test drove the
+  // reordering with a mid-session unread bump and a rerender -- that no
+  // longer reorders anything once grouping defaults to ON: a row's folder
+  // key is remembered (groups.ts's rememberKeys) after its very first
+  // render, and applyStableOrder then holds that row at its remembered slot
+  // on every later render regardless of what compareOpenSessions would now
+  // say, by design (see "folder grouping > keeps a row where it first
+  // appeared..." above, which proves that stability directly). Do not
+  // restore the rerender-and-bump form -- it would pass or fail by
+  // accident, not by design, since the position it checks can no longer
+  // move.
+  //
+  // What's still true, and still worth a test: compareOpenSessions still
+  // decides where a row lands the FIRST time the rail ever sees it, and the
+  // hotkey number is a lookup by pid against that placement, not a read of
+  // screen position. One render proves both -- pid 2 starts BLOCKED (a
+  // tier that needs no prior baseline, unlike unread), so it lands first
+  // despite being second in both the incoming array and cmdIndexByPid.
   describe('the Cmd+N hotkey numbers', () => {
-    it("shows the number cmdIndexByPid gives each pid, tracking that pid through its own reordering", () => {
-      const cmdIndexByPid = new Map([[1, 1], [2, 2], [3, 3]]);
-      const { rerender, container } = render(<SessionRail sessions={sessionsPlain} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" cmdIndexByPid={cmdIndexByPid} />);
-      expect([...container.querySelectorAll('.proj')].map(el => el.textContent)).toEqual(['llm-workspace', 'game-viewer']);
-      expect([...container.querySelectorAll('.cmdnum')].map(n => n.textContent)).toEqual(['1', '2']);
-
-      // pid 2 (game-viewer) becomes unread and is promoted above pid 1 in
-      // THIS component's own display order -- its number must follow it
-      // (still "2"), since it's a lookup by pid, not by position.
-      rerender(<SessionRail sessions={sessionsPlainPid2Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" cmdIndexByPid={cmdIndexByPid} />);
+    it('shows the number cmdIndexByPid gives each pid, tracking that pid through compareOpenSessions’ own first placement', () => {
+      const cmdIndexByPid = new Map([[1, 1], [2, 2]]);
+      const startsBlocked = [
+        { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+        { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+      ] as never[];
+      const { container } = render(<SessionRail sessions={startsBlocked} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" cmdIndexByPid={cmdIndexByPid} />);
+      // pid 2 is blocked, so it lands FIRST despite being second in the
+      // array and in cmdIndexByPid.
       expect([...container.querySelectorAll('.proj')].map(el => el.textContent)).toEqual(['game-viewer', 'llm-workspace']);
+      // Its number follows IT, not the slot it landed in -- still "2".
       expect([...container.querySelectorAll('.cmdnum')].map(n => n.textContent)).toEqual(['2', '1']);
     });
 
@@ -436,6 +506,100 @@ describe('SessionRail', () => {
       setSettings({ compactCards: 'fleet' });
       const { container } = render(<SessionRail sessions={sessions} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
       expect(container.querySelectorAll('.card.compact').length).toBe(0);
+    });
+  });
+
+  // Task 5: sessions sharing a cwd fold into one StackCard row. groupSessions
+  // defaults to 'on' (settings.ts's DEFAULT_SETTINGS), so this is the rail's
+  // normal behaviour now, not an opt-in path -- every test above this block
+  // uses fixtures with distinct cwds per session specifically so grouping
+  // never engages behind their backs.
+  describe('folder grouping', () => {
+    const twoInOneFolder = [
+      { pid: 1, project: 'repo', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/repo', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, sessionId: 's1' },
+      { pid: 2, project: 'repo', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/repo', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, sessionId: 's2' },
+    ] as never[];
+
+    const renderRail = (list: never[] = twoInOneFolder) => render(
+      <SessionRail sessions={list} selectedPid={null} onSelect={() => {}} onKill={noopKill}
+        onReattach={noopReattach} onResume={noopResume} side="left" />,
+    );
+
+    beforeEach(() => {
+      localStorage.clear();
+      reloadGroups();
+      reloadSettings();
+    });
+
+    it('renders one row for two sessions sharing a folder', () => {
+      renderRail();
+      expect(screen.getByText('2 sessions')).toBeTruthy();
+    });
+
+    it('leaves a lone session as an ordinary card, with no stack chrome', () => {
+      renderRail([twoInOneFolder[0]] as never[]);
+      expect(screen.queryByText(/\d+ sessions/)).toBeNull();
+    });
+
+    it('shows the members once the stack is opened, and keeps them open across a re-render', () => {
+      // Full cards, not compact: compact's own Close button lives behind
+      // the "Session actions" menu (OpenSessionCard.tsx's
+      // `phase === 'idle' && !compact`), and this test is about the members
+      // being present and reachable once unfolded, not about that menu --
+      // same reasoning as the pre-existing "reaches the real onKill" test
+      // above, which opts into 'fleet' for the same button.
+      setSettings({ compactCards: 'fleet' });
+      const { rerender } = renderRail();
+      // Scoped to the "N sessions" text rather than a project-name match:
+      // the stack's members are ALWAYS in the DOM even while folded
+      // (StackCard.tsx's own doc comment -- only CSS hides them), so a
+      // `name: /repo/i` query also matches each member's own
+      // `role="button"` card (aria-label "Open repo...") and is ambiguous
+      // with two members sharing that project name.
+      fireEvent.click(screen.getByRole('button', { name: /2 sessions/i }));
+      expect(screen.getByLabelText(/Close, pid 1/)).toBeTruthy();
+      rerender(
+        <SessionRail sessions={twoInOneFolder} selectedPid={null} onSelect={() => {}} onKill={noopKill}
+          onReattach={noopReattach} onResume={noopResume} side="left" />,
+      );
+      expect(screen.getByLabelText(/Close, pid 1/)).toBeTruthy();
+    });
+
+    it('does not group when the setting is off', () => {
+      // Full cards, not compact -- see the comment above.
+      setSettings({ compactCards: 'fleet', groupSessions: 'off' });
+      renderRail();
+      expect(screen.queryByText('2 sessions')).toBeNull();
+      expect(screen.getByLabelText(/Close, pid 1/)).toBeTruthy();
+      expect(screen.getByLabelText(/Close, pid 2/)).toBeTruthy();
+    });
+
+    it('keeps a row where it first appeared when a later session starts waiting', () => {
+      const first = [
+        { pid: 1, project: 'a-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, sessionId: 'sa' },
+        { pid: 2, project: 'b-proj', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10, sessionId: 'sb' },
+      ] as never[];
+      const { rerender, container } = render(
+        <SessionRail sessions={first} selectedPid={null} onSelect={() => {}} onKill={noopKill}
+          onReattach={noopReattach} onResume={noopResume} side="left" />,
+      );
+      const namesOf = () => [...container.querySelectorAll('.proj')].map(p => p.textContent);
+      const before = namesOf();
+      // tsconfig's noUncheckedIndexedAccess types `first[1]` as
+      // `never | undefined` (declared plan defect #2): `!` alone narrows
+      // that back to `never`, but a bare `never` cannot be spread ("Spread
+      // types may only be created from object types"), so the spread target
+      // goes through `unknown` first, the same two-step cast this file's
+      // other test files already use for a differently-typed global.
+      const bumped = [
+        { ...(first[1]! as unknown as object), activity: 'waiting_permission' },
+        first[0]!,
+      ] as never[];
+      rerender(
+        <SessionRail sessions={bumped} selectedPid={null} onSelect={() => {}} onKill={noopKill}
+          onReattach={noopReattach} onResume={noopResume} side="left" />,
+      );
+      expect(namesOf()).toEqual(before);
     });
   });
 });

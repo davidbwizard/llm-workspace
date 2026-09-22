@@ -6,11 +6,13 @@ import { useEffect, useState } from 'react';
 // compareOpenSessions from state.ts threw at module load and rendered the
 // whole window blank -- see order.ts's comment.
 import type { OpenSession } from '../../fleet/state.ts';
-import { compareOpenSessions } from '../../fleet/order.ts';
+import { compareOpenSessions, groupByFolder, applyStableOrder } from '../../fleet/order.ts';
 import type { KillResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
+import { StackCard } from './StackCard.tsx';
 import { compactIn, useSettings } from '../state/settings.ts';
+import { useGroups, isStackOpen, toggleStack, orderIndex, rememberKeys } from '../state/groups.ts';
 import './SessionRail.css';
 
 // Sensible bounds for a drag-resized rail: narrow enough to reclaim real
@@ -214,37 +216,81 @@ export function SessionRail({
     isUnread,
   ));
 
+  // Subscribed for its side effect alone -- a category change, a stack
+  // toggle or a newly-remembered key all live in this store, and any of them
+  // must re-render the rail even though the values below are read through
+  // the module functions (isStackOpen, orderIndex, ...), not off this
+  // return, since those are the same functions StackCard and the row-order
+  // sort below need to call directly.
+  useGroups();
+  const grouping = useSettings().groupSessions === 'on';
+
+  // Renders one session's card, identical whether it sits loose in the rail
+  // or inside an opened StackCard -- this rail wires each OpenSessionCard to
+  // seven handlers plus its own unread and cmdIndex state, and a second copy
+  // of that wiring (one here, one in StackCard) could only ever drift from
+  // this one.
+  function renderSession(s: OpenSession): JSX.Element {
+    const waiting = s.activity === 'waiting_permission' || s.activity === 'waiting_input';
+    const unread = isUnread(s);
+    return (
+      <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
+        <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill} onReveal={onReveal}
+          onReattach={onReattach} onResume={onResume} unread={unread} compact={compact}
+          cmdIndex={cmdIndexByPid?.get(s.pid)} />
+        {waiting && (
+          // Named with project and pid, matching the neighbouring Close
+          // button's own convention (OpenSessionCard.tsx's
+          // `Close, pid ${pid}`) -- with two waiting sessions in the rail, a
+          // bare "Answer" would put two indistinguishable buttons in the
+          // accessibility tree, defeating the rail's whole point of telling
+          // sessions apart. Task 5: selects this pid and switches to the
+          // Conversation view, where the prompt card (or its waiting-card
+          // fallback) lives -- no popover opens here any more.
+          <button type="button" className="railreply"
+            aria-label={`Answer ${s.project}, pid ${s.pid}`}
+            onClick={() => onAnswer?.(s.pid)}>
+            Answer
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // Grouping OFF is the pre-grouping rail exactly: the transform does not
+  // run at all, rather than running and being flattened, so nothing about
+  // the old path -- Cmd+N numbers, unread promotion, junk-last -- can
+  // regress behind a setting most people leave on.
+  const rows = grouping
+    ? applyStableOrder(groupByFolder(displaySessions), orderIndex)
+    : null;
+
+  // Appending happens in an effect, not during render: rememberKeys writes
+  // localStorage and notifies subscribers, and doing that mid-render would
+  // re-enter this component while it is still rendering (groups.ts's own
+  // doc comment). The join/split is how a stable STRING dependency stands in
+  // for an array one -- useEffect compares deps by identity, and
+  // `rows.map(...)` would be a fresh array every render, firing this effect
+  // (and its write) on every single fleet push forever.
+  const rowKeys = rows?.map(r => r.key).join('\n') ?? '';
+  useEffect(() => {
+    if (rowKeys !== '') rememberKeys(rowKeys.split('\n'));
+  }, [rowKeys]);
+
   return (
     <nav className={`rail ${side}`} style={{ width }} aria-label="Open sessions">
       {side === 'right' && handle}
       <div className="railcards">
-        {displaySessions.map(s => {
-          const waiting = s.activity === 'waiting_permission' || s.activity === 'waiting_input';
-          const unread = isUnread(s);
-          return (
-            <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
-              <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill} onReveal={onReveal}
-                onReattach={onReattach} onResume={onResume} unread={unread} compact={compact}
-                cmdIndex={cmdIndexByPid?.get(s.pid)} />
-              {waiting && (
-                // Named with project and pid, matching the neighbouring
-                // Close button's own convention (OpenSessionCard.tsx's
-                // `Close, pid ${pid}`) -- with two waiting sessions in the
-                // rail, a bare "Answer" would put two indistinguishable
-                // buttons in the accessibility tree, defeating the rail's
-                // whole point of telling sessions apart. Task 5: selects
-                // this pid and switches to the Conversation view, where the
-                // prompt card (or its waiting-card fallback) lives -- no
-                // popover opens here any more.
-                <button type="button" className="railreply"
-                  aria-label={`Answer ${s.project}, pid ${s.pid}`}
-                  onClick={() => onAnswer?.(s.pid)}>
-                  Answer
-                </button>
-              )}
-            </div>
-          );
-        })}
+        {rows === null
+          ? displaySessions.map(renderSession)
+          : rows.map(row => (
+              row.kind === 'session'
+                ? renderSession(row.session)
+                : <StackCard key={row.key} cwd={row.cwd} members={row.members}
+                    open={isStackOpen(row.cwd)} onToggle={toggleStack}
+                    selectedPid={selectedPid} renderMember={renderSession}
+                    onAnswer={onAnswer} />
+            ))}
       </div>
       {side === 'left' && handle}
     </nav>
