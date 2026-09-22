@@ -145,3 +145,39 @@ you notice, and the noticing is always worse than the asking.
 3. Is read-only-without-tmux worth building, or should no-tmux simply be a wall
    with instructions? It depends whether the history view stands on its own,
    which is David's call, not mine.
+
+## 9. Why tmux is not bundled (decided 2026-09-22)
+
+Raised three times and settled: **the app bundles nothing.** It checks, and it
+says what is missing.
+
+The case for bundling was product feel -- "download it and it works" is a real
+quality, and David wanted the app to feel all-encompassing. The case against is
+not maintenance cost, which is real but bearable; it is that bundling tmux
+would *take a feature away*.
+
+tmux's client and server must be the same version. A bundled tmux would create
+sessions on its own server, so the person's own `tmux attach` would refuse them
+on a protocol mismatch -- and attaching from your own terminal is one of the
+things David likes most about how this app works. Paying maintenance to lose a
+feature is the wrong trade.
+
+The strongest precedent points the same way: iTerm2's tmux integration is the
+nearest thing to what this app does, and it requires the user's own tmux rather
+than shipping one, for this exact reason. Apps bundle a CLI when the user never
+touches the same copy -- git in GitHub Desktop, ripgrep in VS Code. tmux is not
+that, because the user attaches to the same server.
+
+**If this is ever revisited**, the only version worth building is
+prefer-theirs-fall-back-to-ours: system tmux when present, bundled only when
+absent. That keeps attach working for anyone who has tmux and still gives a
+bare machine a working app. It brings one wrinkle that must be designed, not
+discovered: someone who starts on the bundled tmux and later installs their own
+has live sessions owned by a server their new client cannot attach to, so the
+app must remember which tmux owns the running sessions, keep using it, and be
+able to explain why attaching fails in that one case.
+
+Related decision: the app also does not download or install anything (§5). The
+reasoning is different -- distribution liability, and the CLIs needing an
+interactive login anyway -- but the conclusion is the same. It shows the
+command; the person runs it.
