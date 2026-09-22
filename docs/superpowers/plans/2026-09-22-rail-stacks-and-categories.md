@@ -4019,6 +4019,10 @@ imports, so nothing in the suite has ever rendered this animation.
 21. Try to drag a row into a different category section: the drop is refused (no-drop cursor), and nothing moves.
 22. Tab to a card's `...` menu and use Move up / Move down with the keyboard alone. The row moves the same one place a drop would. The first row offers no Move up; the last offers no Move down.
 23. A session that starts waiting while you watch changes colour and wording but does NOT change position.
+23a. Open a card menu, then start dragging that same row. `.railrow.dragging`
+    sets `opacity: .45`, which opens a NEW STACKING CONTEXT — check it does
+    not fight the `menu-open` z-index fix and leave the menu painting behind
+    the card below it. Only a real drag shows this; jsdom paints nothing.
 
 **The setting, and the narrow rail**
 
