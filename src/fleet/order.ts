@@ -79,3 +79,88 @@ export function compareOpenSessions<T extends Orderable>(
     return a.pid - b.pid;
   };
 }
+
+/** The minimal shape the grouping transform reads. Declared locally for the
+ *  same reason Orderable above is: a type import from state.ts is erased at
+ *  build but still creates a state.ts <-> order.ts cycle that crashes the
+ *  vitest worker at collection time (worker exits, 0 tests run, no assertion
+ *  error). Structural typing means a real OpenSession satisfies it. */
+export interface Groupable {
+  pid: number;
+  cwd: string | null;
+}
+
+/** One row of the rail: either a lone session, or several sharing a folder. */
+export type RailRow<T> =
+  | { kind: 'session'; key: string; session: T }
+  | { kind: 'stack'; key: string; cwd: string; members: T[] };
+
+/** What a row is remembered by, across restarts and across a session's death.
+ *  The folder, when there is one -- see the spec's identity ruling on why not
+ *  the pid or the session id. A session with no cwd cannot be remembered at
+ *  all, so it gets a pid key that is unique for this run and simply lands at
+ *  the end of the order on the next one. */
+export function rowKey(s: Groupable): string {
+  return s.cwd !== null && s.cwd !== '' ? s.cwd : `pid:${s.pid}`;
+}
+
+/** Collapses sessions sharing a cwd into one row. PURE and storage-free: the
+ *  caller has already sorted `sessions`, and this preserves that order both
+ *  BETWEEN rows (a row sits where its first member sat) and WITHIN a stack
+ *  (members keep their arrival order). So compareOpenSessions remains the one
+ *  and only ordering concept -- there is no second comparator here to drift
+ *  from it.
+ *
+ *  A folder with exactly one session stays a plain session row, never a stack
+ *  of one: stacking exists to collapse a crowd, and a lidded single card
+ *  would be one extra click for nothing.
+ *
+ *  A session with no cwd is never grouped -- not even with other cwd-less
+ *  sessions, which have nothing in common beyond the app failing to read
+ *  their folder. rowKey gives each its own pid key, so they stay separate. */
+export function groupByFolder<T extends Groupable>(sessions: T[]): RailRow<T>[] {
+  // Map preserves insertion order, which is what puts each row where its
+  // first member sat -- no explicit position bookkeeping needed.
+  const byKey = new Map<string, T[]>();
+  for (const s of sessions) {
+    const key = rowKey(s);
+    const bucket = byKey.get(key);
+    if (bucket) bucket.push(s);
+    else byKey.set(key, [s]);
+  }
+
+  const rows: RailRow<T>[] = [];
+  for (const [key, members] of byKey) {
+    const first = members[0];
+    if (first === undefined) continue;
+    if (members.length === 1) {
+      rows.push({ kind: 'session', key, session: first });
+    } else {
+      // Every member of a multi-member bucket shares the cwd that keyed it,
+      // and rowKey only buckets by cwd when it is a non-empty string -- a
+      // pid key is unique per process, so it can never reach this branch.
+      rows.push({ kind: 'stack', key, cwd: first.cwd as string, members });
+    }
+  }
+  return rows;
+}
+
+/** Puts rows in the order the user has them, NOT the order activity suggests
+ *  (spec: "not auto movement for the cards"). A session that starts waiting
+ *  changes how its row looks, never where it is.
+ *
+ *  `indexOf` is passed IN rather than read from the store here for the same
+ *  reason junk-ness is passed into compareOpenSessions: this module must stay
+ *  free of anything the renderer cannot import, and it keeps the function
+ *  testable without a DOM or localStorage.
+ *
+ *  Array.prototype.sort is stable, so rows whose key is unknown (all equal at
+ *  MAX_SAFE_INTEGER) keep the relative order groupByFolder gave them -- which
+ *  is compareOpenSessions' own. A brand-new row therefore lands where the
+ *  comparator would have put it, once, and keeps that slot from then on. */
+export function applyStableOrder<T>(
+  rows: RailRow<T>[],
+  indexOf: (key: string) => number,
+): RailRow<T>[] {
+  return [...rows].sort((a, b) => indexOf(a.key) - indexOf(b.key));
+}
