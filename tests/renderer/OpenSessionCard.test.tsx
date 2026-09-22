@@ -7,7 +7,7 @@ import type { KillResult } from '../../src/main/ipc.ts';
 import type { LaunchResult } from '../../src/main/launch.ts';
 import { getFavourites, addFavourite, reloadFavourites } from '../../src/renderer/state/favourites.ts';
 import {
-  reloadGroups, categoryNames, categoryOfSession, assignCategory, pruneAssignments,
+  reloadGroups, categoryNames, categoryOfSession, assignCategory, pruneAssignments, MAX_CATEGORIES,
 } from '../../src/renderer/state/groups.ts';
 
 // favourites.ts is a module-scoped singleton store (settings.ts's own
@@ -1219,6 +1219,41 @@ describe('the category menu item', () => {
     openCategoryPanel();
     fireEvent.click(screen.getByRole('button', { name: 'No category' }));
     expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  // Fix, post-review: the brief's own create-field code called
+  // assignCategory unconditionally on Enter, so hitting MAX_CATEGORIES made
+  // it silently discard the typed name and close the menu -- a control that
+  // accepts input, looks like it worked, and quietly drops it. Same
+  // disabled-with-reason treatment as every other blocked control on this
+  // card, applied to the create affordance specifically: the cap bounds how
+  // many NAMES exist (assignCategory's own `!known && length >= MAX`
+  // refusal, groups.ts), not who may pick a name that already exists, so
+  // only creation is blocked here -- proven by the second test below.
+  describe('the category cap', () => {
+    function fillCategoriesToCap() {
+      for (let i = 0; i < MAX_CATEGORIES; i++) assignCategory('filler', `Cat${i}`);
+    }
+
+    it('disables creating a new category once the cap is reached, with the reason visible and associated', () => {
+      fillCategoriesToCap();
+      renderCat();
+      openCategoryPanel();
+      const field = screen.getByRole('textbox', { name: /new category name/i }) as HTMLInputElement;
+      expect(field.disabled).toBe(true);
+      const why = screen.getByText(new RegExp(`${MAX_CATEGORIES} categories`, 'i'));
+      expect(field.getAttribute('aria-describedby')).toBe(why.getAttribute('id'));
+    });
+
+    // The distinction the review specifically asked not to get wrong: the
+    // cap is on the STORE, not on assigning to a name that already exists.
+    it('still lets a session be filed under an EXISTING category once the cap is reached', () => {
+      fillCategoriesToCap();
+      renderCat();
+      openCategoryPanel();
+      fireEvent.click(screen.getByRole('button', { name: 'Cat0' }));
+      expect(categoryOfSession('s1')).toBe('Cat0');
+    });
   });
 });
 

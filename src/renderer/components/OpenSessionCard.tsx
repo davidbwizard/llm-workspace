@@ -8,7 +8,7 @@ import { StatusIcon } from './StatusIcon.tsx';
 import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES } from '../state/favourites.ts';
 import {
   useGroups, categoryNames, categoryOfSession, assignCategory, renameCategory,
-  deleteCategory, categoryInUse, MAX_CATEGORY_LENGTH,
+  deleteCategory, categoryInUse, MAX_CATEGORY_LENGTH, MAX_CATEGORIES,
 } from '../state/groups.ts';
 import './OpenSessionCard.css';
 
@@ -341,6 +341,22 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   const categoryBlockedReason = state.match === 'ambiguous'
     ? 'Several sessions share this folder, so the app cannot tell which one this is. A category needs one session to attach to.'
     : 'No conversation matched to this process yet, so there is nothing to attach a category to.';
+
+  // The cap bounds the STORE, not who may use a name that already exists:
+  // assignCategory (groups.ts) only refuses a NEW name once
+  // `categories.length >= MAX_CATEGORIES` -- an EXISTING name still
+  // assigns at the cap, since the cap exists to bound the menu, not to
+  // freeze who may file into it. So this only ever disables the CREATE
+  // affordance below; every row for an existing name stays live.
+  //
+  // Fix, not the original brief: that code called assignCategory
+  // unconditionally from the create field's Enter handler, so hitting the
+  // cap made the field silently discard the name and close the menu with
+  // no sign anything went wrong -- exactly the silent failure this app
+  // does not allow. Same treatment as every other disabled control here:
+  // a real `disabled` attribute plus real, associated reason text, never a
+  // tooltip.
+  const atCap = categoryNames().length >= MAX_CATEGORIES;
 
   // idle -> confirming -> pending -> (launched, handled by navigating away
   // and resetting) | 'failed' (dismissable, retryable from idle) |
@@ -734,13 +750,30 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
                   the name when it is new, so there is no window in which a
                   created name exists with nothing pointing at it because the
                   second half failed. A name outliving its assignments is
-                  what pruning produces later, on purpose. */}
+                  what pruning produces later, on purpose.
+                  Disabled at the cap, reason visible: see atCap's own doc
+                  comment above for why this is the one branch of this
+                  action that can fail, and why it must never fail quietly. */}
+              {atCap && (
+                <p className="catwhy" id={`catcap-${state.pid}`}>
+                  You already have {MAX_CATEGORIES} categories, the most this app keeps at once.
+                  Delete one to make room for a new name.
+                </p>
+              )}
               <label className="catedit">
                 <span className="catlabel">New category name</span>
                 <input type="text" placeholder="New category" maxLength={MAX_CATEGORY_LENGTH}
+                  disabled={atCap}
+                  aria-describedby={atCap ? `catcap-${state.pid}` : undefined}
                   onKeyDown={e => {
                     if (e.key === 'Escape') { setCatOpen(false); return; }
                     if (e.key !== 'Enter') return;
+                    // Belt and suspenders with the `disabled` attribute
+                    // above: this is what makes it impossible for Enter to
+                    // reach assignCategory's own cap refusal and produce
+                    // the silent no-op the disabled state exists to
+                    // prevent, regardless of how the field was reached.
+                    if (atCap) return;
                     if (e.currentTarget.value.trim() === '') return;
                     assignCategory(sessionId, e.currentTarget.value);
                     setMenuOpen(false);
