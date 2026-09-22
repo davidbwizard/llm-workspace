@@ -36,19 +36,23 @@ export type SessionLive = {
    *  5s fleet sweep that keeps OpenSession.context. */
   context: SessionContext | null;
   /** The permission-mode chip's state (mode-switcher design §2), or null
-   *  when there is no chip at all -- a session this app did not launch has
-   *  no pane to read one from. Redeclared here for the same reason as the
+   *  when there is nothing to draw a chip from at all -- a pid whose
+   *  provider main cannot tell. A session this app did not launch DOES get
+   *  a state: mode null, blocked 'not_tmux', so the chip can say why it is
+   *  disabled. Redeclared here for the same reason as the
    *  rest of this type: src/renderer/** must never import from src/main/**. */
   mode: SessionMode | null;
 };
 
 export type SessionMode = {
   provider: Provider;
-  /** null means main's reader could not identify the mode. The chip then
-   *  shows NOTHING rather than a guess (§5). */
+  /** null means there is no mode to name -- no pane, a dead session, or a
+   *  screen the reader could not identify. The chip never NAMES a mode it
+   *  does not know (§5); it shows a disabled control carrying `blocked` as
+   *  its reason instead. */
   mode: Mode | null;
   /** Why the chip cannot be clicked right now, or null when it can. */
-  blocked: 'session_gone' | 'busy' | 'prompt_open' | 'unreadable' | null;
+  blocked: 'not_tmux' | 'session_gone' | 'prompt_open' | 'unreadable' | null;
 };
 
 /** Re-exported so the chip can take its colour from the shared table

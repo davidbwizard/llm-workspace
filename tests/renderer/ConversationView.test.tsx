@@ -2724,12 +2724,34 @@ describe('ConversationView -- the permission-mode chip', () => {
     expect(container.querySelector('.modechip')).toBeNull();
   });
 
-  it('draws no chip for a mode the reader could not identify', async () => {
+  // Converted 2026-09-22 from 'draws no chip for a mode the reader could
+  // not identify'. The push now carries a reason instead of a blank, and
+  // the foot keeps the control, disabled and saying why -- a chip that
+  // vanishes tells nobody anything. It still names no mode (§5).
+  it('keeps a disabled chip, with the reason, for a mode the reader could not identify', async () => {
     const live = withLive();
     const { container } = renderConv();
     await waitFor(() => expect(container.querySelector('.convbox')).toBeTruthy());
     live.push(payload({ provider: 'claude', mode: null, blocked: 'unreadable' }));
-    expect(container.querySelector('.modechip')).toBeNull();
+    const chip = container.querySelector('.convfoot .modechip > button') as HTMLButtonElement;
+    expect(chip).toBeTruthy();
+    expect(chip.disabled).toBe(true);
+    expect(chip.getAttribute('title')).toBe('Could not read the mode from the session');
+    expect(chip.textContent).toContain('Mode');
+  });
+
+  // The other half of the same change: the session David actually has open
+  // most often -- started in iTerm or VS Code, no pane, no mode.
+  it('keeps a disabled chip for a session this app did not launch', async () => {
+    const live = withLive();
+    const { container } = renderConv();
+    await waitFor(() => expect(container.querySelector('.convbox')).toBeTruthy());
+    live.push(payload({ provider: 'claude', mode: null, blocked: 'not_tmux' }));
+    const chip = container.querySelector('.convfoot .modechip > button') as HTMLButtonElement;
+    expect(chip).toBeTruthy();
+    expect(chip.disabled).toBe(true);
+    expect(chip.getAttribute('title'))
+      .toBe('This app did not start this session, so its mode cannot be read or changed');
   });
 
   it("builds the Codex menu for a Codex session, not Claude's", async () => {

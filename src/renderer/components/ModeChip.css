@@ -19,6 +19,14 @@
 .modechip[data-mode="edits"] { --m:var(--accent); --m-soft:var(--accent-soft); }
 .modechip[data-mode="plan"] { --m:var(--ag-purple); --m-soft:var(--ag-purple-soft); }
 .modechip[data-mode="auto"] { --m:var(--critical); --m-soft:var(--critical-soft); }
+/* The fifth slot, for a chip that names no mode at all: no pane to read
+   (a session started in iTerm or VS Code), a session that has ended, or a
+   screen the reader could not identify. Neutral, like the ask-first mode --
+   an unknown mode is an absence, not a warning, and the chip is already
+   drawn at the `:disabled` opacity below. It needs a slot of its own all
+   the same: without one, --m and --m-soft are undefined, `color:var(--m)`
+   is invalid at computed-value time, and the pill loses its colour. */
+.modechip[data-mode="unknown"] { --m:var(--muted); --m-soft:transparent; }
 
 .modechip { position:relative; flex:none; }
 .modechip > button { font:inherit; font-family:var(--f-mono); font-size:11.5px; color:var(--m);

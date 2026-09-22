@@ -70,7 +70,6 @@ function deps(pane: ReturnType<typeof cyclingPane>, extra: Partial<ModeDeps> = {
     sleep: async () => {},
     has: () => true,
     provider: () => 'claude',
-    busy: () => false,
     promptOpen: () => false,
     ...extra,
   };
@@ -105,13 +104,20 @@ describe('readModeFor', () => {
     expect(readModeFor(PID, deps(pane))).toEqual({ provider: 'claude', mode: null, blocked: 'unreadable' });
   });
 
-  // §4.1: the chip is disabled with a reason while the session is working.
-  // The mode it already read is still reported -- the chip keeps showing
-  // what the pane says, it just cannot be clicked.
-  it('still reports the mode while the session is mid-turn, but blocks the switch', () => {
+  // Converted 2026-09-22 from 'still reports the mode while the session is
+  // mid-turn, but blocks the switch'. The busy guard is gone: against a
+  // live pane streaming a reply (capture 4047 -> 4508 bytes), Shift+Tab
+  // moved the mode from accept edits to plan while the response kept
+  // arriving, so the block bought nothing and left the chip dead for most
+  // of the time anyone is looking at a session. There is no `busy` input to
+  // pass any more -- what stands in that test's place is the fact a
+  // reinstated guard would have to break, plus the absence of the dep it
+  // would need.
+  it('leaves a readable pane switchable: nothing about the turn blocks it', () => {
     const pane = cyclingPane('claude', 'manual');
-    expect(readModeFor(PID, deps(pane, { busy: () => true })))
-      .toEqual({ provider: 'claude', mode: 'manual', blocked: 'busy' });
+    const d = deps(pane);
+    expect('busy' in d).toBe(false);
+    expect(readModeFor(PID, d)).toEqual({ provider: 'claude', mode: 'manual', blocked: null });
   });
 
   it('blocks the switch while a prompt card is up', () => {
@@ -120,13 +126,23 @@ describe('readModeFor', () => {
       .toEqual({ provider: 'claude', mode: 'manual', blocked: 'prompt_open' });
   });
 
-  it('answers null for a session this app did not launch -- there is no pane to read', () => {
+  // Converted 2026-09-22 from 'answers null for a session this app did not
+  // launch -- there is no pane to read'. Null blanked the chip, and the
+  // session with no pane is the common one: started in iTerm or VS Code.
+  // The reading is the same -- nothing is captured, no mode is claimed --
+  // but it is now reported, so the chip can say why it cannot be used.
+  it('reports not_tmux for a session this app did not launch, and reads no pane', () => {
     clearRegistry();
     const pane = cyclingPane('claude', 'manual');
-    expect(readModeFor(PID, deps(pane))).toBeNull();
+    expect(readModeFor(PID, deps(pane)))
+      .toEqual({ provider: 'claude', mode: null, blocked: 'not_tmux' });
     expect(pane.captures).toHaveLength(0);
   });
 
+  // The one answer that is still null, and the reason it has to be: the
+  // provider decides which menu, which mode list and which reader the chip
+  // uses, so without it there is no chip to disable -- not even a label to
+  // put on one. Everything else that used to blank the chip now reports.
   it('answers null when the provider cannot be told', () => {
     const pane = cyclingPane('claude', 'manual');
     expect(readModeFor(PID, deps(pane, { provider: () => null }))).toBeNull();
@@ -255,14 +271,10 @@ describe('setModeFor: the guards, every one of which presses nothing', () => {
     expect(pane.sent).toHaveLength(0);
   });
 
-  // §4.1. Shift+Tab into a question does something else entirely.
-  it('refuses while the session is mid-turn', async () => {
-    const pane = cyclingPane('claude', 'manual');
-    await expect(setModeFor(PID, 'plan', deps(pane, { busy: () => true })))
-      .resolves.toEqual({ status: 'refused', reason: 'busy' });
-    expect(pane.sent).toHaveLength(0);
-  });
-
+  // §4.1, and the half of it that survives: Shift+Tab into a question does
+  // something else entirely. The mid-turn half is gone -- see the readModeFor
+  // conversion above, and ipc.test.ts for the guard that session:mode:set
+  // passes no busy dep.
   it('refuses while a prompt card is up', async () => {
     const pane = cyclingPane('claude', 'manual');
     await expect(setModeFor(PID, 'plan', deps(pane, { promptOpen: () => true })))
@@ -328,7 +340,7 @@ describe('setModeFor: the cap', () => {
     };
     const d: ModeDeps = {
       send: stuck.send, capture: stuck.capture, sleep: async () => {}, has: () => true,
-      provider: () => 'claude', busy: () => false, promptOpen: () => false,
+      provider: () => 'claude', promptOpen: () => false,
     };
     const result = await setModeFor(PID, 'plan', d);
     expect(result).toEqual({ status: 'refused', reason: 'unconfirmed' });
@@ -351,7 +363,7 @@ describe('setModeFor: the cap', () => {
         ? { ok: true, stdout: '0\n' }
         : { ok: true, stdout: flip ? CLAUDE_SCREENS.manual : CLAUDE_SCREENS.auto },
       sleep: async () => {}, has: () => true,
-      provider: () => 'claude', busy: () => false, promptOpen: () => false,
+      provider: () => 'claude', promptOpen: () => false,
     };
     const result = await setModeFor(PID, 'plan', d);
     expect(result).toEqual({ status: 'refused', reason: 'exhausted' });
@@ -369,7 +381,7 @@ describe('setModeFor: the cap', () => {
         ? { ok: true, stdout: '0\n' }
         : { ok: true, stdout: CLAUDE_SCREENS.auto },
       sleep: async () => {}, has: () => true,
-      provider: () => 'claude', busy: () => false, promptOpen: () => false,
+      provider: () => 'claude', promptOpen: () => false,
     };
     await expect(setModeFor(PID, 'plan', d)).resolves.toEqual({ status: 'refused', reason: 'session_gone' });
     expect(sent.filter(a => a[a.length - 1] === 'BTab')).toHaveLength(1);
@@ -377,7 +389,7 @@ describe('setModeFor: the cap', () => {
 
   it('never logs the mode of a session it refused, only the pid and the reason', async () => {
     const pane = cyclingPane('claude', 'manual');
-    await setModeFor(PID, 'plan', deps(pane, { busy: () => true }));
-    expect(errors).toHaveBeenCalledWith('session:mode refused', { pid: PID, reason: 'busy' });
+    await setModeFor(PID, 'plan', deps(pane, { promptOpen: () => true }));
+    expect(errors).toHaveBeenCalledWith('session:mode refused', { pid: PID, reason: 'prompt_open' });
   });
 });

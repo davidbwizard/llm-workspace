@@ -20,17 +20,24 @@ import { tmuxNameForPid, resolveLiveTmux } from './sessions.ts';
 
 export type ModeRefusal =
   | 'invalid_pid' | 'not_tmux' | 'session_gone' | 'invalid_mode'
-  | 'busy' | 'prompt_open' | 'unreadable' | 'unconfirmed' | 'exhausted' | 'in_flight';
+  | 'prompt_open' | 'unreadable' | 'unconfirmed' | 'exhausted' | 'in_flight';
 
 /** Why the chip cannot be clicked right now, or null when it can. The mode
- *  it already read is reported alongside: a working session still shows the
- *  mode it is working in, it just cannot be switched. */
-export type ModeBlock = 'session_gone' | 'busy' | 'prompt_open' | 'unreadable';
+ *  it already read is reported alongside where there is one: a session with
+ *  a prompt card up still shows the mode it is in, it just cannot switch.
+ *
+ *  Every one of these is shown to the person as a DISABLED chip with the
+ *  reason attached, never as a missing one -- a control that vanishes
+ *  teaches nothing about why it is not there. */
+export type ModeBlock = 'not_tmux' | 'session_gone' | 'prompt_open' | 'unreadable';
 
 export type ModeState = {
   provider: Provider;
-  /** null means the reader could not identify the mode. §5: the chip then
-   *  shows NOTHING rather than a guess. */
+  /** null means there is no mode to name: the app did not launch this
+   *  session (no pane), the session has ended, or the reader could not
+   *  identify what the pane is showing. §5's rule is unchanged -- the chip
+   *  never NAMES a mode it does not know -- but it stays on screen,
+   *  disabled, carrying `blocked` as its reason. */
   mode: Mode | null;
   blocked: ModeBlock | null;
 };
@@ -41,8 +48,8 @@ export type ModeSetResult =
   | { status: 'refused'; reason: ModeRefusal };
 
 /** Injected in tests; production passes the closures registerIpc already
- *  builds for sendKeysFor (busy, provider) and promptOpenFor, and takes the
- *  real tmux and timer for the rest. Mirrors AnswerDeps (src/main/answer.ts)
+ *  builds for sendKeysFor (provider) and promptOpenFor, and takes the real
+ *  tmux and timer for the rest. Mirrors AnswerDeps (src/main/answer.ts)
  *  deliberately: the same shapes, so the two cannot drift on what a test
  *  has to fake. */
 export type ModeDeps = {
@@ -57,13 +64,17 @@ export type ModeDeps = {
    *  this there is nothing to validate a requested mode against and no
    *  chip is shown at all. */
   provider?: (pid: number) => Provider | null;
-  /** Whether the agent is mid-turn: true, false, or null when it cannot be
-   *  told. Only a definite `true` blocks -- the same reading sendKeysFor
-   *  (src/main/ipc.ts) gives this dep, and for the same reason: a check
-   *  that cannot answer must not become a new way to refuse something that
-   *  would have worked. A definite prompt card is the dangerous case, and
-   *  promptOpen below answers that one as a plain boolean. */
-  busy?: (pid: number) => boolean | null;
+  /** Whether a prompt card is up. The ONE thing that blocks a switch:
+   *  Shift+Tab into an open question does something else entirely.
+   *
+   *  There is deliberately no `busy` dep beside it. This module used to
+   *  refuse mid-turn as well, from §4.1's original wording -- measured
+   *  against a live pane on 2026-09-22 and dropped: with the session
+   *  genuinely streaming (capture growing 4047 -> 4508 bytes), Shift+Tab
+   *  moved the pane from accept edits to plan while the reply kept
+   *  arriving. The block bought nothing and made the chip dead for most of
+   *  the time anyone is looking at a working session. See §4 of the design
+   *  doc before reinstating it. */
   promptOpen?: (pid: number) => boolean;
 };
 
@@ -112,40 +123,42 @@ function readPane(name: string, provider: Provider, capture: ModeDeps['capture']
   return readModeScreen(cap.stdout, provider).mode;
 }
 
-/** The chip's state for one pid, or null when there is no chip to show at
- *  all: a pid that is not a live process of a known provider.
+/** The chip's state for one pid, or null when there is nothing to draw a
+ *  chip from at all: a pid that is not a live process of a known provider.
+ *  The provider decides the menu, the mode list and the reader, so without
+ *  it there is not even a disabled chip to show.
  *
  *  Synchronous, and at most ONE capture-pane: this is called from the
  *  session:live push path, which runs on the pane's own change cadence
  *  (coalesced at 250 ms; ~6 ms per capture-pane, measured 2026-09-21).
  *
  *  A session with no pane to read -- one this app did not launch, or one
- *  whose tmux session has died -- captures nothing at all. A session that
- *  is merely BLOCKED from switching (working, prompt card up) is still
- *  read: §4.1 disables the chip, it does not blank it, so the mode has to
- *  keep arriving while the agent works. */
+ *  whose tmux session has died -- captures nothing at all, and says which
+ *  of the two it is. A session that is merely BLOCKED from switching (a
+ *  prompt card up) is still read: §4.1 disables the chip, it does not blank
+ *  it, so the mode has to keep arriving while the agent works. */
 export function readModeFor(pid: unknown, deps: ModeDeps = {}): ModeState | null {
   if (!validPid(pid)) return null;
   const provider = deps.provider?.(pid) ?? null;
   if (provider === null) return null;
 
-  // A session the app did not launch has no pane to capture, so there is
-  // no chip at all -- not a dead one. Its composer is already disabled for
-  // the same reason (REFUSAL_TEXT.not_tmux), and a permanently greyed chip
-  // beside that would only add noise to the one foot both share.
-  if (tmuxNameForPid(pid) === null) return null;
+  // A session the app did not launch has no pane to capture -- the common
+  // case, one started in iTerm or VS Code. It gets a disabled chip carrying
+  // that reason rather than no chip: the control that is absent teaches
+  // nothing, and this is the same treatment missing dependencies already
+  // get in the first-run work.
+  if (tmuxNameForPid(pid) === null) return { provider, mode: null, blocked: 'not_tmux' };
   const name = resolveLiveTmux(pid, { has: deps.has });
   if (name === null) return { provider, mode: null, blocked: 'session_gone' };
 
   const mode = readPane(name, provider, deps.capture);
   // Order matters: an unreadable pane is reported as unreadable only when
-  // nothing more specific already blocks the chip, so a working session
-  // whose screen happens not to carry a footer still says "working".
+  // nothing more specific already blocks the chip, so a session with a
+  // prompt card up whose screen happens not to carry a footer still says so.
   const blocked: ModeBlock | null =
-    deps.busy?.(pid) === true ? 'busy'
-      : deps.promptOpen?.(pid) === true ? 'prompt_open'
-        : mode === null ? 'unreadable'
-          : null;
+    deps.promptOpen?.(pid) === true ? 'prompt_open'
+      : mode === null ? 'unreadable'
+        : null;
   return { provider, mode, blocked };
 }
 
@@ -172,9 +185,9 @@ export async function setModeFor(pid: unknown, mode: unknown, deps: ModeDeps = {
   const name = resolveLiveTmux(pid, { has: deps.has });
   if (name === null) return refuse(pid, 'session_gone');
 
-  // §4.1: refuse outright while the pane is mid-turn or a prompt card is
-  // up. Shift+Tab into a question does something else entirely.
-  if (deps.busy?.(pid) === true) return refuse(pid, 'busy');
+  // §4.1: refuse outright while a prompt card is up. Shift+Tab into a
+  // question does something else entirely. Mid-turn is NOT refused -- see
+  // ModeDeps.promptOpen for the measurement that removed that guard.
   if (deps.promptOpen?.(pid) === true) return refuse(pid, 'prompt_open');
 
   if (inFlight.has(pid)) return refuse(pid, 'in_flight');

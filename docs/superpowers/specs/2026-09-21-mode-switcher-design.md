@@ -107,9 +107,24 @@ do not share a list. Claude has four modes; Codex has two plus a link out.
 
 ## 4. How the switch runs
 
-1. Refuse outright if the pane is mid-turn or a prompt card is up: Shift+Tab
-   into a question does something else entirely. The chip is disabled with a
-   reason while the session is working.
+1. Refuse outright if a prompt card is up: Shift+Tab into a question does
+   something else entirely. The chip is disabled, with that reason on it.
+
+   **Changed 2026-09-22 -- mid-turn no longer refuses, and this replaces the
+   original rule ("refuse outright if the pane is mid-turn or a prompt card is
+   up"). Do not reinstate it from the old text.** The mid-turn half was an
+   assumption written here before it was measured. Measured against a live
+   pane: with the session genuinely streaming a reply (`capture-pane` growing
+   4047 -> 4508 bytes between reads), Shift+Tab moved the pane from `accept
+   edits` to `plan` while the response kept arriving. So the CLI honours
+   Shift+Tab mid-turn, the refusal protected nothing, and its only effect was
+   to make the chip dead whenever anyone was watching a session work -- which
+   is most of the time. The prompt-card half stands: it was not disproved, and
+   it is the dangerous case.
+
+   Consequence in the code: `ModeDeps` (`src/main/mode.ts`) carries no `busy`
+   dep at all, `session:mode:set` passes it none, and `ModeBlock` has no
+   `busy` value. `tests/main/ipc.test.ts` fails if that dep is wired back in.
 2. Leave tmux copy-mode first, the same guard `sendKeysFor` already uses --
    a pane in a mode routes keys to that mode's key table.
 3. Read the current mode from `capture-pane`.
@@ -135,9 +150,23 @@ two.
 Fixtures go in the repo with usernames and project names redacted
 (`Bluewizard` -> `ExampleOrg`), as the rest of the fixtures are.
 
-A mode the reader cannot identify is reported as unknown. The chip then shows
-nothing rather than a guess: claiming "Manual" on a session that is actually on
-Auto is the worst failure this feature has.
+A mode the reader cannot identify is reported as unknown. The chip never names
+a mode it has not read: claiming "Manual" on a session that is actually on Auto
+is the worst failure this feature has.
+
+**Changed 2026-09-22 -- the chip no longer disappears when there is no mode.**
+The original wording was "the chip then shows nothing rather than a guess", and
+hiding was how it was built. That made the control absent in the commonest case
+of all: a session started in iTerm or VS Code has no tmux pane, so it has no
+mode, so there was no chip and nothing to tell anyone why. A control that is
+missing teaches nothing. The chip now stays put, disabled, labelled **Mode** --
+which names the control without asserting any state -- with the reason in its
+title and aria-label: no pane because this app did not start the session, the
+session has ended, or the mode could not be read. Only the rule against naming
+an unread mode was ever load-bearing, and it is untouched.
+
+The one case that still draws nothing is the pane before its first live push,
+where nothing has been established yet.
 
 ## 6. Verification
 

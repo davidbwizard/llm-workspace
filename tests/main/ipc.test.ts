@@ -1763,6 +1763,26 @@ describe("session:launch / session:reattach -- Task 13's real handlers", () => {
     // would loop forever on an always-empty touched set.
     expect(ingestDep).toMatch(/if\s*\(\s*ingestSpool\([^)]*\)\s*>\s*0\s*\)\s*\{[\s\S]*notifySessionChanged/);
   });
+
+  // Converted 2026-09-22 from tests/main/mode.test.ts's 'refuses while the
+  // session is mid-turn', which pinned setModeFor's busy guard. The guard
+  // was dropped after a live pane honoured Shift+Tab mid-turn (capture
+  // growing 4047 -> 4508 bytes, mode moving accept edits -> plan while the
+  // reply kept arriving), so mid-turn is no longer an input to that module
+  // at all and the old test has nothing to pass it. What replaces it is the
+  // wiring that would have to come back first: session:mode:set must not
+  // hand setModeFor a busy dep again. Asserted on source for the same
+  // plain-node-vitest reason as the handlers above. promptOpen is checked
+  // alongside it because that guard is real and must stay.
+  it('session:mode:set passes promptOpen but no busy dep', () => {
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
+    // Up to the next handler: this one's body ends in `}));`, which the
+    // `\n  }` shape the tests above match against does not cover.
+    const modeHandler = ipc.match(/ipcMain\.handle\(\s*'session:mode:set',([\s\S]*?)\n {2}ipcMain\.handle\(/)?.[1] ?? '';
+    expect(modeHandler).toMatch(/setModeFor\(/);
+    expect(modeHandler).toMatch(/promptOpen:/);
+    expect(modeHandler).not.toMatch(/\bbusy\s*:/);
+  });
 });
 
 describe('resolveReattachTarget', () => {

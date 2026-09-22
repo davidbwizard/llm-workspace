@@ -1089,8 +1089,13 @@ describe('buildSessionLive -- the mode chip', () => {
 
   // The default closure is what production uses, and it must ask the
   // process's own provider -- not guess one. A pid the registry does not
-  // know has no pane at all, so there is no chip and no capture.
-  it('shows no chip at all, and reads no pane, for a session this app did not launch', () => {
+  // know has no pane at all, so there is no mode and no capture.
+  //
+  // Converted 2026-09-22 from 'shows no chip at all ...': the payload now
+  // carries the reason instead of a bare null, so the pane can draw a
+  // disabled chip that says why rather than silently dropping the control.
+  // The cost side is unchanged and still asserted: no capture-pane runs.
+  it('reports not_tmux, and reads no pane, for a session this app did not launch', () => {
     const db = openDb(':memory:');
     const captures: string[][] = [];
     const processes = [proc({ pid: 4821, provider: 'claude', cwd: '/repo/claude' })];
@@ -1101,7 +1106,7 @@ describe('buildSessionLive -- the mode chip', () => {
         has: () => true, provider: () => 'claude',
       }),
     });
-    expect(p?.mode).toBeNull();
+    expect(p?.mode).toEqual({ provider: 'claude', mode: null, blocked: 'not_tmux' });
     expect(captures).toEqual([]);
   });
 });
