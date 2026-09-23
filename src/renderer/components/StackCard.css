@@ -45,9 +45,25 @@
   text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 6px;
   font: inherit; color: inherit;
 }
+/* The count and the unread dot share a row so the dot sits beside the pill
+   rather than on its own line -- .stacktoggle is a column, so a bare sibling
+   would drop to the next line. align-self keeps the row content-width. */
+.stacktop { display: flex; align-items: center; gap: 7px; align-self: flex-start; }
 .stackcount {
   font-family: var(--f-mono); font-size: 10px; color: var(--accent);
-  background: var(--raised); border-radius: 6px; padding: 3px 8px; align-self: flex-start;
+  background: var(--raised); border-radius: 6px; padding: 3px 8px;
+}
+
+/* Deliberately the same 8px --signal circle as OpenSessionCard.css's own
+   .unread-dot, not a second treatment: an update inside a folded stack and
+   an update on a loose card are the same fact, so they get the same mark.
+   Not absolutely positioned like that one, because a stack's top-right
+   corner already carries the Move up/down pair. --signal, never --critical
+   (which stays unambiguously "waiting on you") and never --accent (already
+   this card's live/working colour). */
+.stackunread {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--signal);
 }
 .stackname { font-family: var(--f-display); font-weight: 600; font-size: 18px; line-height: 1.2; color: var(--ink); }
 .stackpath {

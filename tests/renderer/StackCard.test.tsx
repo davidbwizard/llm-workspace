@@ -122,6 +122,43 @@ describe('StackCard', () => {
     expect(screen.queryByRole('button', { name: /^Answer/ })).toBeNull();
   });
 
+  it('shows the unread dot on the face when a member has unread output', () => {
+    const { container } = render(
+      <StackCard cwd="/repo" members={[session(1, 'idle'), session(2, 'idle')]} open={false}
+        onToggle={vi.fn()} selectedPid={null} renderMember={() => null} unread={true} />,
+    );
+    expect(container.querySelector('.stackunread')).not.toBeNull();
+  });
+
+  it('shows it while OPEN too, so the signal never depends on where you are looking', () => {
+    const { container } = render(
+      <StackCard cwd="/repo" members={[session(1, 'idle'), session(2, 'idle')]} open={true}
+        onToggle={vi.fn()} selectedPid={null} renderMember={() => null} unread={true} />,
+    );
+    expect(container.querySelector('.stackunread')).not.toBeNull();
+  });
+
+  it('shows no dot when nothing is unread', () => {
+    const { container } = render(
+      <StackCard cwd="/repo" members={[session(1, 'idle'), session(2, 'idle')]} open={false}
+        onToggle={vi.fn()} selectedPid={null} renderMember={() => null} />,
+    );
+    expect(container.querySelector('.stackunread')).toBeNull();
+  });
+
+  // attn beats unread, matching OpenSessionCard's own attn/unread/live
+  // priority: a stack that is both waiting and unread must read as waiting,
+  // and two differently-meant marks at once would make a third, ambiguous
+  // state out of two clear ones.
+  it('suppresses the unread dot while a member is waiting on you', () => {
+    const { container } = render(
+      <StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}
+        selectedPid={null} renderMember={() => null} unread={true} />,
+    );
+    expect(container.querySelector('.stack.attn')).not.toBeNull();
+    expect(container.querySelector('.stackunread')).toBeNull();
+  });
+
   it('carries the attention treatment while any member waits', () => {
     const { container } = render(
       <StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}

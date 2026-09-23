@@ -384,7 +384,12 @@ export function SessionRail({
                     : <StackCard cwd={row.cwd} members={row.members}
                         open={isStackOpen(row.cwd)} onToggle={toggleStack}
                         selectedPid={selectedPid} renderMember={renderSession}
-                        onAnswer={onAnswer} onMoveUp={move.up} onMoveDown={move.down} />}
+                        onAnswer={onAnswer} onMoveUp={move.up} onMoveDown={move.down}
+                        // Folding a stack must not fold away the fact that
+                        // something arrived in it. isUnread is this rail's
+                        // own per-viewer signal (seenEvents), so the stack
+                        // cannot work it out for itself.
+                        unread={row.members.some(isUnread)} />}
                 </div>
               );
             })}

@@ -32,7 +32,7 @@ export function stackSummary(members: OpenSession[]): string {
  *  plus its unread and cmdIndex state, and threading all of that through here
  *  would duplicate that wiring in a second place that could drift from it. */
 export function StackCard({
-  cwd, members, open, onToggle, selectedPid, renderMember, onAnswer, onMoveUp, onMoveDown,
+  cwd, members, open, onToggle, selectedPid, renderMember, onAnswer, onMoveUp, onMoveDown, unread,
 }: {
   cwd: string;
   members: OpenSession[];
@@ -51,6 +51,16 @@ export function StackCard({
    *  they are. Absent when the row is at that end of its section. */
   onMoveUp?: () => void;
   onMoveDown?: () => void;
+  /** True when ANY member has unread output. Passed in rather than computed
+   *  here because unread-ness is a per-viewer fact only the rail tracks (its
+   *  `seenEvents` baseline), exactly as it is for a loose card.
+   *
+   *  A folded stack hides its members, so without this an arriving update is
+   *  invisible until you happen to open the folder -- which defeats the one
+   *  thing this app exists to do. Shown whether folded or open: when open the
+   *  member carries its own dot too, but repeating it on the face costs
+   *  nothing and means the signal never depends on where you are looking. */
+  unread?: boolean;
 }): JSX.Element {
   const waiting = members.filter(isWaiting);
   const label = lastSegment(cwd);
@@ -61,6 +71,12 @@ export function StackCard({
   // the count stands on its own and the stack must be opened -- deliberately
   // not a button that silently picks the first one.
   const answerable = waiting.length === 1 ? waiting[0] : undefined;
+
+  // attn beats unread, the same priority OpenSessionCard's own classname
+  // picks (attn/unread/live, in that order): a stack that is BOTH waiting on
+  // you and unread must read as waiting, and showing two differently-meant
+  // marks at once would make a third, ambiguous state.
+  const showUnread = unread === true && waiting.length === 0;
 
   const cls = ['stack'];
   if (waiting.length > 0) cls.push('attn');
@@ -76,7 +92,15 @@ export function StackCard({
           aria-expanded={open}
           onClick={() => onToggle(cwd)}
         >
-          <span className="stackcount">{members.length} sessions</span>
+          {/* The dot rides WITH the count rather than in the card's own
+              top-right corner, because on a stack that corner already holds
+              the Move up/down pair -- an absolutely-placed dot would sit on
+              top of them. Same 8px --signal circle as OpenSessionCard's
+              .unread-dot, so the two read as one signal in two places. */}
+          <span className="stacktop">
+            <span className="stackcount">{members.length} sessions</span>
+            {showUnread && <span className="stackunread" aria-label="Unread output" role="img" />}
+          </span>
           {/* Decorative: aria-expanded on this button already tells a screen
               reader which way the stack is, so naming the chevron too would
               say the same thing twice. */}
