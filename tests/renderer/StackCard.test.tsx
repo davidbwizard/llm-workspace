@@ -122,6 +122,25 @@ describe('StackCard', () => {
     expect(screen.queryByRole('button', { name: /^Answer/ })).toBeNull();
   });
 
+  // The deck behind the card is two sheets deep for three or more sessions
+  // and one for exactly two, so its depth says roughly how many are in there
+  // before the count pill is read.
+  it('shows a two-sheet deck for three or more sessions', () => {
+    const { container } = render(
+      <StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}
+        selectedPid={null} renderMember={() => null} />,
+    );
+    expect(container.querySelector('.stack.deep')).not.toBeNull();
+  });
+
+  it('shows a one-sheet deck for exactly two sessions', () => {
+    const { container } = render(
+      <StackCard cwd="/repo" members={[session(1, 'idle'), session(2, 'idle')]} open={false}
+        onToggle={vi.fn()} selectedPid={null} renderMember={() => null} />,
+    );
+    expect(container.querySelector('.stack.deep')).toBeNull();
+  });
+
   it('shows the unread dot on the face when a member has unread output', () => {
     const { container } = render(
       <StackCard cwd="/repo" members={[session(1, 'idle'), session(2, 'idle')]} open={false}

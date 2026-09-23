@@ -79,6 +79,12 @@ export function StackCard({
   const showUnread = unread === true && waiting.length === 0;
 
   const cls = ['stack'];
+  // Two sheets behind the card for three or more sessions, one for exactly
+  // two -- the deck's depth says roughly how many are in there before the
+  // count pill is read, the way a stacked notification does. It does not keep
+  // growing past two: a third sliver adds no information and starts to look
+  // like a shadow bug.
+  if (members.length >= 3) cls.push('deep');
   if (waiting.length > 0) cls.push('attn');
   if (open) cls.push('open');
   if (holdsSelection) cls.push('sel');

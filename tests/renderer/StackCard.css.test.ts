@@ -85,6 +85,23 @@ describe('the stack open/close motion', () => {
     expect(blockAfter('.stack.open .stackchev {')).toMatch(/transform:\s*rotate\(180deg\)/);
   });
 
+  // A margin on .stackmembers survives the grid row collapsing to 0fr, so it
+  // left a dead band under a FOLDED card -- and the deck's sheets, positioned
+  // from the bottom of the whole component, floated away from the card by
+  // exactly that much. The gap above the members therefore has to live inside
+  // the clipped area, where collapsing takes it with them.
+  it('keeps the gap above the members inside the clip, so a folded card has no dead band', () => {
+    expect(blockAfter('.stackmembers {')).not.toMatch(/margin:\s*\d+px\s+0\s+0/);
+    expect(blockAfter('.stackmembers-inner {')).toMatch(/padding-top:\s*8px/);
+  });
+
+  // The sheets stand for members you cannot see. Once the stack is open you
+  // can see them, and the deck would also be sitting under the expanded list
+  // rather than under the card.
+  it('hides the deck once the stack is open', () => {
+    expect(blockAfter('.stack.open::after, .stack.open::before {')).toMatch(/opacity:\s*0/);
+  });
+
   // Found by hand-testing the running app, which is the only place it shows:
   // jsdom computes no layout, so nothing in this suite can see a rotation
   // happening about the wrong point.

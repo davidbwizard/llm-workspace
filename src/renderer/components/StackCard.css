@@ -15,15 +15,46 @@
   --dur: 220ms;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --stag: 30ms;
-  position: relative; margin-bottom: 9px;
+  position: relative;
+  /* Room for the deepest sheet to peek without the next row sitting on it.
+     Collapses to nothing once open, because the sheets are gone by then. */
+  margin-bottom: 8px;
+  transition: margin-bottom var(--dur) var(--ease);
+}
+.stack.deep { margin-bottom: 13px; }
+.stack.open { margin-bottom: 0; }
+
+/* The deck, built the way iOS stacks notifications: each sheet behind is
+   NARROWER and peeks a few pixels lower, and each recedes a step towards the
+   rail's own background so the front card reads as nearest. The inset is what
+   sells it -- equal-width sheets just look like a thicker border.
+
+   Bottom corners only. A sheet is the bottom sliver of a card hidden behind
+   the one in front, so rounding its top would draw a corner that is supposed
+   to be underneath something.
+
+   Depth carries the count: two sheets for three or more sessions, one for
+   exactly two, so the deck says roughly how many before the pill is read. */
+.stack::after {
+  content: ""; position: absolute; left: 7px; right: 7px; bottom: -5px; height: 14px;
+  background: color-mix(in srgb, var(--ground) 72%, var(--surface));
+  border: 1px solid var(--line-soft); border-top: none;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  transition: opacity var(--dur) var(--ease);
+}
+.stack.deep::before {
+  content: ""; position: absolute; left: 14px; right: 14px; bottom: -10px; height: 14px;
+  background: color-mix(in srgb, var(--ground) 44%, var(--surface));
+  border: 1px solid var(--line-soft); border-top: none;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  transition: opacity var(--dur) var(--ease);
 }
 
-.stack::before, .stack::after {
-  content: ""; position: absolute; left: 5px; right: 5px; bottom: -4px; height: 11px;
-  background: var(--surface); border: 1px solid var(--line-soft); border-top: none;
-  border-radius: 0 0 var(--r-md) var(--r-md);
-}
-.stack::before { left: 10px; right: 10px; bottom: -9px; height: 13px; background: var(--ground); }
+/* Gone once the stack is open: the sheets stand for members you cannot see,
+   and the moment you can see them the deck is a lie -- it would also sit
+   under the expanded member list rather than under the card. Faded on the
+   same curve as the drawer so the two read as one gesture. */
+.stack.open::after, .stack.open::before { opacity: 0; }
 
 .stackface {
   position: relative; z-index: 1;
@@ -114,7 +145,12 @@
 .stackmembers {
   position: relative; z-index: 1;
   display: grid; grid-template-rows: 0fr;
-  margin: 8px 0 0 12px;
+  /* Left indent only. The gap ABOVE the members belongs inside the clipped
+     area (.stackmembers-inner's padding-top), not here: a margin on this
+     element survives the row collapsing to 0fr, so a folded stack kept an 8px
+     dead band under the card and the deck's sheets -- positioned from the
+     bottom of the whole component -- floated away from it. */
+  margin-left: 12px;
   visibility: hidden;
   transition: grid-template-rows var(--dur) var(--ease), visibility 0s linear var(--dur);
 }
@@ -129,6 +165,9 @@
 .stackmembers-inner {
   overflow: hidden; min-height: 0;
   display: flex; flex-direction: column; gap: 8px;
+  /* Inside the clip, so it disappears with the members instead of leaving a
+     dead band under a folded card. See .stackmembers above. */
+  padding-top: 8px;
 }
 
 /* Members are inset (above) so the stack reads as one object with contents,
