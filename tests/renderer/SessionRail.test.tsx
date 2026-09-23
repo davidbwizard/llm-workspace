@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { tmpdir } from 'node:os';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, renderHook, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SessionRail } from '../../src/renderer/components/SessionRail.tsx';
+import { useRailSlots } from '../../src/renderer/state/useRailSlots.ts';
 import { setSettings, reloadSettings } from '../../src/renderer/state/settings.ts';
 import {
   reloadGroups, assignCategory, categoryOfSession, bindPendingCategory, resolvePendingCategories, getGroups,
@@ -446,50 +447,78 @@ describe('SessionRail', () => {
     });
   });
 
-  // Cmd+1..9: unlike the grid (FleetView.test.tsx), the rail can place a
-  // card somewhere other than its rank in `sessions` -- these prove the
-  // hotkey number still tracks each session's PID through that placement,
-  // not wherever it currently sits on screen, so pressing Cmd+N (App.tsx,
-  // which reads the same canonical `sessions`/openSessions order) always
-  // lands on the card carrying that same number. David's own ruling: "same
-  // numbering everywhere... in sidebar order" -- App.tsx computes ONE
-  // shared pid->number map (useFleet.ts's orderedSessions) and hands it
-  // down as cmdIndexByPid, rather than this component deriving numbers from
-  // its own rank or its own display position.
+  // Cmd+1..9 addresses SLOTS, not sessions -- David's own model, given
+  // verbatim to the branch that built this: "slot 1 is always slot 1... if
+  // a card in slot one moves, slot 1 stays as slot 1." App.tsx now builds
+  // cmdIndexByPid from src/renderer/state/useRailSlots.ts, the SAME
+  // row-layout computation this component itself now consumes (see this
+  // file's own top-of-file comment on the `sections`/useRailSlots change),
+  // rather than useFleet.ts's old `orderedSessions`, which tied a number to
+  // a PID and let it follow that pid wherever its card ended up.
   //
-  // REWRITTEN for Task 5 (spec's Ordering section: "Rows do not move on
-  // their own... a session starting to wait changes how its row looks,
-  // never where it is"). The original form of this test drove the
-  // reordering with a mid-session unread bump and a rerender -- that no
-  // longer reorders anything once grouping defaults to ON: a row's folder
-  // key is remembered (groups.ts's rememberKeys) after its very first
-  // render, and applyStableOrder then holds that row at its remembered slot
-  // on every later render regardless of what compareOpenSessions would now
-  // say, by design (see "folder grouping > keeps a row where it first
-  // appeared..." above, which proves that stability directly). Do not
-  // restore the rerender-and-bump form -- it would pass or fail by
-  // accident, not by design, since the position it checks can no longer
-  // move.
-  //
-  // What's still true, and still worth a test: compareOpenSessions still
-  // decides where a row lands the FIRST time the rail ever sees it, and the
-  // hotkey number is a lookup by pid against that placement, not a read of
-  // screen position. One render proves both -- pid 2 starts BLOCKED (a
-  // tier that needs no prior baseline, unlike unread), so it lands first
-  // despite being second in both the incoming array and cmdIndexByPid.
+  // REWRITTEN for the slot-hotkeys task. The old form of this test built
+  // cmdIndexByPid BY HAND as {1:1, 2:2} -- pid-keyed, matching neither
+  // session's actual row -- specifically to prove pid 2's badge stayed "2"
+  // even once blocked-tier promotion put its card in the FIRST row: "its
+  // number follows IT, not the slot it landed in." That is now the wrong
+  // behaviour by design. This proves the opposite, and does it with the
+  // REAL useRailSlots computation rather than a hand-built stand-in a
+  // future change could silently drift from (exactly how the bug this task
+  // fixes went unnoticed for as long as it did): two fixtures, sharing the
+  // same two folders and project names, where a DIFFERENT session is the
+  // blocked one each time -- if slot 1's number were still glued to a pid
+  // rather than to the row, the second render would show the same numbers
+  // in the same (now wrong) order as the first.
   describe('the Cmd+N hotkey numbers', () => {
-    it('shows the number cmdIndexByPid gives each pid, tracking that pid through compareOpenSessions’ own first placement', () => {
-      const cmdIndexByPid = new Map([[1, 1], [2, 2]]);
-      const startsBlocked = [
+    it('gives a slot’s number to whichever pid currently sits in it, not to a pid it once belonged to', () => {
+      const pid2Blocked = [
         { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'idle', lastProse: 'ok', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
         { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
       ] as never[];
-      const { container } = render(<SessionRail sessions={startsBlocked} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" cmdIndexByPid={cmdIndexByPid} />);
-      // pid 2 is blocked, so it lands FIRST despite being second in the
-      // array and in cmdIndexByPid.
-      expect([...container.querySelectorAll('.proj')].map(el => el.textContent)).toEqual(['game-viewer', 'llm-workspace']);
-      // Its number follows IT, not the slot it landed in -- still "2".
-      expect([...container.querySelectorAll('.cmdnum')].map(n => n.textContent)).toEqual(['2', '1']);
+      const { result: slotsA, unmount: unmountHookA } = renderHook(() => useRailSlots(pid2Blocked));
+      const { container: containerA, unmount: unmountA } = render(<SessionRail sessions={pid2Blocked} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" cmdIndexByPid={slotsA.current.slotByPid} />);
+      // pid 2 is blocked, so it lands FIRST -- and now CARRIES slot 1's
+      // number, rather than keeping "2" as the old, removed behaviour did.
+      expect([...containerA.querySelectorAll('.proj')].map(el => el.textContent)).toEqual(['game-viewer', 'llm-workspace']);
+      expect([...containerA.querySelectorAll('.cmdnum')].map(n => n.textContent)).toEqual(['1', '2']);
+
+      // Unmount BEFORE resetting the store, not just reset it: a mounted
+      // SessionRail is still subscribed (useGroups, inside useRailSlots) and
+      // would react to reloadGroups() below by re-running its own
+      // rememberKeys effect against ITS OWN (fixture A) rows, silently
+      // undoing the reset before the second render ever mounts.
+      unmountA();
+      unmountHookA();
+      // localStorage.clear() too, not just reloadGroups() alone --
+      // reloadGroups() only RE-READS the singleton from localStorage
+      // (groups.ts's own read()); it does not reset it, and the render
+      // above already wrote fixture A's row order there via rememberKeys.
+      // Without clearing it first, "reloadGroups()" here would just read
+      // fixture A's own committed order straight back, achieving nothing.
+      // Same pairing the folder-grouping/reordering describe blocks below
+      // already use in their own beforeEach, for the same reason. Reset the
+      // persisted row order between the two scenarios: without it, '/b'
+      // (game-viewer) would already be remembered in slot 1 from the render
+      // above, and applyStableOrder (order.ts) would hold it there
+      // regardless of which session is blocked now -- the same "a row does
+      // not move on its own" stability the folder-grouping tests below rely
+      // on, which would make the second render below prove nothing.
+      localStorage.clear();
+      reloadGroups();
+
+      // Same two projects and folders, roles reversed: pid 1 is now the
+      // blocked one, and takes the first row instead.
+      const pid1Blocked = [
+        { pid: 1, project: 'llm-workspace', provider: 'claude', activity: 'waiting_input', lastProse: 'Overwrite?', cwd: '/a', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+        { pid: 2, project: 'game-viewer', provider: 'codex', activity: 'idle', lastProse: 'ok', cwd: '/b', junk: false, host: 'iterm2', ageSeconds: 60, rssBytes: 1e8, events: 10 },
+      ] as never[];
+      const { result: slotsB } = renderHook(() => useRailSlots(pid1Blocked));
+      const { container: containerB } = render(<SessionRail sessions={pid1Blocked} selectedPid={null} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" cmdIndexByPid={slotsB.current.slotByPid} />);
+      expect([...containerB.querySelectorAll('.proj')].map(el => el.textContent)).toEqual(['llm-workspace', 'game-viewer']);
+      // Slot 1 still reads "1" -- now on llm-workspace's card, not
+      // game-viewer's. A pid-glued implementation would show ['2', '1']
+      // here instead (pid 1 still carrying whatever number it had before).
+      expect([...containerB.querySelectorAll('.cmdnum')].map(n => n.textContent)).toEqual(['1', '2']);
     });
 
     it('shows no numbers at all when cmdIndexByPid is not supplied', () => {

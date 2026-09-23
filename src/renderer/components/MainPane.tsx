@@ -77,15 +77,29 @@ export const SIDE_PANEL_MIN_PX = 820;
  *  task. Wrapping `sessions` back into a payload for FleetView below is
  *  therefore never lossy: by the time this file runs, that payload IS just
  *  these sessions. */
-export function MainPane({ selection, sessions, onSelect, onSetView, onClear, railSide, cmdIndexByPid }: {
+export function MainPane({
+  selection, sessions, orderedSessions, onSelect, onSetView, onClear, railSide, cmdIndexByPid,
+}: {
   selection: Selection;
   sessions: OpenSession[];
+  /** The same sessions as `sessions`, in the order useRailSlots.ts's shared
+   *  computation puts them (App.tsx) -- stack members adjacent, sharing
+   *  their stack's own slot. Used ONLY for the grid (FleetView, below,
+   *  rendered while nothing is selected): SessionRail computes its own row
+   *  order from `sessions` regardless of what order it arrives in (it is
+   *  the one place that already re-derives categories/stacking/manual order
+   *  from the raw list), so threading this through it too would be a
+   *  second, unused copy. Optional and defaulted to `sessions` so every
+   *  existing direct render of this component (this file's own tests
+   *  included) keeps showing the grid in plain payload order, exactly as it
+   *  did before this existed. */
+  orderedSessions?: OpenSession[];
   onSelect: (pid: number) => void;
   onSetView: (v: PaneView) => void;
   onClear: () => void;
   railSide: 'left' | 'right';
-  /** Cmd+1..9's own shared ranking (App.tsx, backed by useFleet.ts's
-   *  orderedSessions) -- pid to hotkey number (1-9), for whichever open-
+  /** Cmd+1..9's own shared SLOT numbering (App.tsx, backed by
+   *  useRailSlots.ts) -- pid to hotkey number (1-9), for whichever open-
    *  session cards this pane renders (the grid below, or the rail further
    *  down). Optional so every existing direct render of this component
    *  (this file's own tests included) keeps working with no numbers shown,
@@ -211,7 +225,10 @@ export function MainPane({ selection, sessions, onSelect, onSetView, onClear, ra
     return (
       <div className="mainpane">
         <FleetView
-          payload={{ version: 1, generatedAt: new Date().toISOString(), openSessions: sessions }}
+          payload={{
+            version: 1, generatedAt: new Date().toISOString(),
+            openSessions: orderedSessions ?? sessions,
+          }}
           error={null}
           onSelect={onSelect}
           cmdIndexByPid={cmdIndexByPid}

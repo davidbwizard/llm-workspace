@@ -53,18 +53,16 @@ export function useFleet() {
   }, []);
   const clear = useCallback(() => setSelection(null), []);
 
-  // Cmd+1..9 (App.tsx's own window keydown listener) and the small hotkey
-  // number OpenSessionCard shows on both the grid and the rail (spec:
-  // "same numbering everywhere... in sidebar order") both need ONE
-  // canonical ranking, computed once, here, rather than each view deriving
-  // its own -- otherwise a card's own number could disagree with what
-  // Cmd+N actually selects. This mirrors SessionRail's own unread-promotion
-  // sort exactly (same comparator, same "recorded on first sight or while
-  // selected" baseline rule) so the ranking matches what the sidebar shows
-  // whenever it's the thing on screen; SessionRail keeps its own separate
-  // tracking for its unread DOT and its own live reordering, which this
-  // does not replace -- this exists solely to give every card a single,
-  // globally-agreed number.
+  // NO LONGER what feeds Cmd+1..9 or the cards' own hotkey numbers -- David's
+  // slot model ("slot 1 is always slot 1... a card moving must not move the
+  // chord that reaches it") needs the rail's actual row layout (categories,
+  // folder stacks, his own manual order), none of which this ranking knows
+  // about; App.tsx now builds that from src/renderer/state/useRailSlots.ts
+  // instead. `orderedSessions` below is otherwise unchanged and still
+  // exercised directly by its own tests (tests/renderer/useFleet.test.tsx),
+  // so it stays rather than being pulled out mid-task; flagged in this
+  // branch's own report as a candidate for removal if nothing else comes to
+  // need it.
   const [seenEvents, setSeenEvents] = useState<Map<number, number>>(new Map());
   useEffect(() => {
     if (!payload) return;

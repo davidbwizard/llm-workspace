@@ -173,11 +173,13 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   compact?: boolean;
   /** Cmd+1..9 (App.tsx's own window keydown listener): 1-9 shows a small
    *  muted hotkey number in the corner, titled with the actual chord.
-   *  Supplied by the caller (FleetView/SessionRail), keyed to that same
-   *  session's RANK in the canonical sessions/openSessions order -- not
-   *  wherever this card currently sits on screen, which for SessionRail can
-   *  differ from that rank once its own unread promotion reorders the
-   *  rendered list (see SessionRail.tsx's own doc comment on why). Decorative
+   *  Supplied by the caller (FleetView/SessionRail), keyed to the SLOT this
+   *  card currently occupies (src/renderer/state/useRailSlots.ts) -- the
+   *  card's position on screen, not the session's pid. That is deliberate,
+   *  not incidental: David's own slot model is that slot 1 is always slot 1
+   *  regardless of which card is in it, so the number must follow the ROW,
+   *  and a card dragged or promoted into a different row picks up THAT
+   *  row's number rather than carrying its old one with it. Decorative
    *  (aria-hidden) like the badge/unread-dot above: the card's own
    *  accessible name already carries everything about it that matters to a
    *  screen reader, and this is a purely visual hint for a sighted,

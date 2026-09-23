@@ -64,6 +64,42 @@ describe('MainPane', () => {
     expect(container.querySelector('.fleet')).toBeTruthy();
   });
 
+  // The grid used to always map over `sessions` in whatever order it
+  // arrived -- App.tsx's own payload.openSessions, which can disagree with
+  // the rail about order (categories, folder stacks, David's own manual
+  // reorder). `orderedSessions` (App.tsx, backed by
+  // src/renderer/state/useRailSlots.ts) is what the grid uses INSTEAD once
+  // it is supplied, so a card's own Cmd+N number means the same thing in
+  // both places.
+  it('lays the grid out in orderedSessions order when it is given, not sessions order', () => {
+    const two = [
+      { pid: 1, project: 'first', provider: 'claude', activity: null, lastProse: null, cwd: '/a', host: 'iterm2', ageSeconds: 1, rssBytes: null, events: null, sessionId: null, tmux: false },
+      { pid: 2, project: 'second', provider: 'claude', activity: null, lastProse: null, cwd: '/b', host: 'iterm2', ageSeconds: 1, rssBytes: null, events: null, sessionId: null, tmux: false },
+    ] as never[];
+    // Reversed relative to `two` -- proof this is a real reorder, not a
+    // coincidence of `sessions`' own order still matching.
+    const reversed = [two[1]!, two[0]!];
+    const { container } = render(
+      <MainPane selection={null} sessions={two} orderedSessions={reversed}
+        onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />,
+    );
+    expect([...container.querySelectorAll('.fleet .proj')].map(p => p.textContent)).toEqual(['second', 'first']);
+  });
+
+  // Every existing direct render of this component (every other test in
+  // this file) omits `orderedSessions` entirely -- the grid must keep
+  // showing plain `sessions` order for them, exactly as it always did.
+  it('falls back to sessions order when orderedSessions is not supplied', () => {
+    const two = [
+      { pid: 1, project: 'first', provider: 'claude', activity: null, lastProse: null, cwd: '/a', host: 'iterm2', ageSeconds: 1, rssBytes: null, events: null, sessionId: null, tmux: false },
+      { pid: 2, project: 'second', provider: 'claude', activity: null, lastProse: null, cwd: '/b', host: 'iterm2', ageSeconds: 1, rssBytes: null, events: null, sessionId: null, tmux: false },
+    ] as never[];
+    const { container } = render(
+      <MainPane selection={null} sessions={two} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />,
+    );
+    expect([...container.querySelectorAll('.fleet .proj')].map(p => p.textContent)).toEqual(['first', 'second']);
+  });
+
   it('shows the rail and hides the grid once a session is selected', () => {
     const { container } = render(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={sessions} onSelect={() => {}} onSetView={() => {}} onClear={() => {}} railSide="left" />);
     expect(container.querySelector('.rail')).toBeTruthy();

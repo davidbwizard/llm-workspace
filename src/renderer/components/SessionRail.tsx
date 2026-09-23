@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 // compareOpenSessions from state.ts threw at module load and rendered the
 // whole window blank -- see order.ts's comment.
 import type { OpenSession } from '../../fleet/state.ts';
-import { compareOpenSessions, railSections, type RailRow } from '../../fleet/order.ts';
+import type { RailRow } from '../../fleet/order.ts';
 import type { KillResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
@@ -16,9 +16,8 @@ import { compactIn, useSettings } from '../state/settings.ts';
 // The same folder-name helper StackCard's face uses, so the bar names a stack
 // exactly as the stack names itself rather than inventing a second spelling.
 import { lastSegment } from '../state/favourites.ts';
-import {
-  useGroups, isStackOpen, toggleStack, orderIndex, rememberKeys, categoryForRow, moveRow,
-} from '../state/groups.ts';
+import { isStackOpen, toggleStack, rememberKeys, moveRow } from '../state/groups.ts';
+import { useRailSlots } from '../state/useRailSlots.ts';
 import './SessionRail.css';
 
 // Sensible bounds for a drag-resized rail: narrow enough to reclaim real
@@ -202,39 +201,26 @@ export function SessionRail({
   // yet) that only this component tracks -- src/fleet/state.ts's own
   // relevance sort (openSessions/openSessionsLive, run in the main
   // process before `sessions` ever reaches here) has no visibility into
-  // it and so cannot rank by it. This layers that tier in on top of the
-  // order already baked into `sessions` (blocked first, then recency,
-  // junk last) by reusing the SAME comparator those two builders use,
-  // rather than a second, hand-rolled reordering that could drift from
-  // theirs: `isUnread` supplies the one signal only the rail has, and the
-  // received array's own index stands in for the recency rank neither
-  // builder exposes past this point (OpenSession carries no timestamp of
-  // its own -- see compareOpenSessions' doc comment) -- it already
-  // reflects that ordering correctly, so re-deriving it here would only
-  // risk disagreeing with it.
+  // it, and neither does useRailSlots below, which computes the row ORDER
+  // both this component and App.tsx share. isUnread is no longer fed into
+  // that order at all (see useRailSlots.ts's own doc comment for the proof
+  // that doing so was already inert, and why dropping it is what makes the
+  // computation callable from App, which cannot see this component's own
+  // `seenEvents`). What's left for isUnread here is the per-viewer signal
+  // itself: the unread DOT on a card, and the `unread` prop a folded
+  // StackCard shows for a member you have not looked at -- neither is
+  // about row order.
   function isUnread(s: OpenSession): boolean {
     return s.pid !== selectedPid && s.events != null && s.events > (seenEvents.get(s.pid) ?? s.events);
   }
-  const rankByPid = new Map(sessions.map((s, i) => [s.pid, i]));
-  const displaySessions = [...sessions].sort(compareOpenSessions(
-    // Sent across on OpenSession, not recomputed here: the check needs
-    // tmpdir() and this is a sandboxed renderer. It cannot be skipped either
-    // -- the unread tier below is checked before the rank tiers, so without
-    // it an unread junk card would be promoted above a real session.
-    s => s.junk,
-    s => rankByPid.get(s.pid) ?? 0,
-    () => 0, // no ties possible on the rank above (pid-unique indices), so no secondary signal is needed
-    isUnread,
-  ));
 
-  // Subscribed for its side effect alone -- a category change, a stack
-  // toggle or a newly-remembered key all live in this store, and any of them
-  // must re-render the rail even though the values below are read through
-  // the module functions (isStackOpen, orderIndex, ...), not off this
-  // return, since those are the same functions StackCard and the row-order
-  // sort below need to call directly.
-  useGroups();
-  const grouping = useSettings().groupSessions === 'on';
+  // The ONE shared row layout -- see useRailSlots.ts's own doc comment for
+  // why this must be the same computation App.tsx uses for Cmd+1..9, rather
+  // than a second, rail-local one that could drift from it. This component
+  // still owns `isStackOpen`/`toggleStack`/`moveRow` calls directly below,
+  // since those read and write the SAME groups.ts store useRailSlots already
+  // subscribes this render to.
+  const { sections } = useRailSlots(sessions);
 
   // Renders one session's card, identical whether it sits loose in the rail
   // or inside an opened StackCard -- this rail wires each OpenSessionCard to
@@ -278,13 +264,6 @@ export function SessionRail({
       </div>
     );
   }
-
-  // The transform ALWAYS runs. `grouping` is folder stacking and nothing
-  // else -- sections and David's own row order apply either way, because
-  // "not auto movement for the cards" was stated unconditionally and a
-  // category he set must not vanish because he turned stacking off. This
-  // replaces Task 5's `rows === null` branch, which switched off too much.
-  const sections = railSections(displaySessions, categoryForRow, orderIndex, grouping);
 
   // Pruning a dead assignment is NOT done here. It belongs on the fleet push
   // itself, which useFleet owns (Task 8) -- this component is not mounted in
@@ -465,6 +444,15 @@ export function SessionRail({
                 down: i < section.rows.length - 1
                   ? () => moveWithinSection(section.rows, row.key, 1) : undefined,
               };
+              // Every member of a stack shares the stack's own slot
+              // (useRailSlots.ts), so any one of them names it -- the first
+              // is picked arbitrarily, not because it is special. Guarded
+              // rather than asserted: groupByFolder never produces an empty
+              // stack, but noUncheckedIndexedAccess still types
+              // row.members[0] as possibly undefined.
+              const stackCmdIndex = row.kind === 'stack'
+                ? (row.members[0] ? cmdIndexByPid?.get(row.members[0].pid) : undefined)
+                : undefined;
               return (
                 <div className={`railrow${dragKey === row.key ? ' dragging' : ''}`}
                   key={row.key} {...dragProps(row.key)}
@@ -483,7 +471,12 @@ export function SessionRail({
                         // something arrived in it. isUnread is this rail's
                         // own per-viewer signal (seenEvents), so the stack
                         // cannot work it out for itself.
-                        unread={row.members.some(isUnread)} />}
+                        unread={row.members.some(isUnread)}
+                        // A folded stack renders none of its members' own
+                        // badges (CSS hides that whole subtree), so without
+                        // this the number a chord picks would be invisible
+                        // until the stack is opened.
+                        cmdIndex={stackCmdIndex} />}
                 </div>
               );
             })}

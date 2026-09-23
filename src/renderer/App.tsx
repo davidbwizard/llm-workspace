@@ -1,10 +1,12 @@
-import { Component, useEffect, useMemo, useRef, type ErrorInfo, type ReactNode } from 'react';
+import { Component, useEffect, useRef, type ErrorInfo, type ReactNode } from 'react';
 import { MainPane } from './components/MainPane.tsx';
 import { LaunchBar } from './components/LaunchBar.tsx';
 import { FirstRun, useFirstRun } from './components/FirstRun.tsx';
 import { useChecks } from './state/useChecks.ts';
 import { useFleet } from './state/useFleet.ts';
 import { useSettings } from './state/settings.ts';
+import { useRailSlots, mostUrgentMember } from './state/useRailSlots.ts';
+import { isStackOpen, toggleStack } from './state/groups.ts';
 
 interface ErrorBoundaryState { error: Error | null; componentStack: string | null }
 
@@ -74,7 +76,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
  *  three states FleetView used to guard on its own, before it became one
  *  branch inside MainPane instead of everything App rendered). */
 export function App() {
-  const { payload, error, selection, select, setView, clear, orderedSessions } = useFleet();
+  const { payload, error, selection, select, setView, clear } = useFleet();
   const settings = useSettings();
   // One useChecks for the whole window: the launch bar's disabled state and
   // the first-run screen read the same sweep, so Check again on that screen
@@ -82,24 +84,31 @@ export function App() {
   const checks = useChecks();
   const firstRun = useFirstRun(checks);
 
-  // Cmd+1..9: the small hotkey number every open-session card shows (both
-  // the grid and the rail) is looked up from this SAME map, so a card's own
-  // number always matches what pressing that chord actually selects --
-  // orderedSessions (useFleet.ts) is the one shared ranking both this and
-  // every card's own number are built from.
-  const cmdIndexByPid = useMemo(() => {
-    const m = new Map<number, number>();
-    orderedSessions.forEach((s, i) => { if (i < 9) m.set(s.pid, i + 1); });
-    return m;
-  }, [orderedSessions]);
+  // Cmd+1..9 addresses SLOTS, not sessions (David's own model: "slot 1 is
+  // always slot 1... if a card in slot one moves, slot 1 stays as slot 1").
+  // useRailSlots is the ONE computation behind both this and the small
+  // hotkey number every card shows (rail and grid alike) -- see that hook's
+  // own doc comment for why splitting this into two independent rankings is
+  // exactly how the old version of this drifted. Called with `[]` while the
+  // index is still loading, rather than skipping the call: React's Rules of
+  // Hooks forbid calling it only after the early returns below.
+  const { rows, slotByPid: cmdIndexByPid } = useRailSlots(payload?.openSessions ?? []);
+
+  // What FleetView's grid maps over in place of raw payload.openSessions
+  // (MainPane, below) -- the SAME row order the rail renders, flattened,
+  // stack members sitting adjacent under their shared number. Rendering the
+  // grid's own stack chrome is separate, neglected-view work and stays out
+  // of scope; this only stops the grid's ordinary cards from contradicting
+  // the rail about order and numbering.
+  const orderedSessions = rows.flatMap(r => (r.kind === 'session' ? [r.session] : r.members));
 
   // Latest-value refs, not effect dependencies: the listener below is
   // installed exactly once, for the component's whole lifetime (its own
   // effect has an empty dependency array), and reads through these instead
-  // of closing over a stale orderedSessions/select from whichever render
-  // happened to run when it was attached.
-  const orderedRef = useRef(orderedSessions);
-  orderedRef.current = orderedSessions;
+  // of closing over a stale rows/select from whichever render happened to
+  // run when it was attached.
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const selectRef = useRef(select);
   selectRef.current = select;
 
@@ -110,20 +119,33 @@ export function App() {
       if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
       const digit = Number(e.key);
       if (!Number.isInteger(digit) || digit < 1 || digit > 9) return;
-      const sessions = orderedRef.current;
-      // Ignored, not clamped: with fewer open sessions than the digit
-      // pressed, there is no Nth (or, for 9, no "last" beyond what a lower
-      // digit already reaches) session to select.
-      if (sessions.length < digit) return;
-      const target = digit === 9 ? sessions[sessions.length - 1] : sessions[digit - 1];
+      // Ignored, not clamped: with fewer rows than the digit pressed, there
+      // is no Nth row (slot) to select. This also drops the old "9 always
+      // selects the last session" special case -- under slots that would
+      // mean Cmd+9 selects something OTHER than whatever card is showing
+      // "9" once there are more than nine rows, which is exactly the
+      // card's-number-disagrees-with-what-the-chord-does bug this whole
+      // change exists to close. Slot 9 is now just slot 9, like every
+      // other digit.
+      const row = rowsRef.current[digit - 1];
+      if (row === undefined) return;
+      // A plain row selects its one session; a stack row selects whichever
+      // member most needs you (mostUrgentMember, useRailSlots.ts) and opens
+      // the stack if it was folded, so the chord never lands somewhere the
+      // user cannot see. The undefined case is unreachable in practice
+      // (groupByFolder never produces an empty stack) but is still real to
+      // the type checker (noUncheckedIndexedAccess).
+      const target = row.kind === 'session' ? row.session : mostUrgentMember(row.members);
+      if (target === undefined) return;
       // preventDefault only now that this has actually acted -- an ignored
-      // chord (too few sessions, or one this handler doesn't own) must not
+      // chord (too few rows, or one this handler doesn't own) must not
       // swallow whatever the OS or the page would otherwise do with it.
       e.preventDefault();
+      if (row.kind === 'stack' && !isStackOpen(row.cwd)) toggleStack(row.cwd);
       // The same select() a card click uses -- always resets the view to
       // Conversation (useFleet.ts's own select), never straight to the
       // Terminal one.
-      selectRef.current(target!.pid);
+      selectRef.current(target.pid);
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -190,6 +212,7 @@ export function App() {
             <MainPane
               selection={selection}
               sessions={payload.openSessions}
+              orderedSessions={orderedSessions}
               onSelect={select}
               onSetView={setView}
               onClear={clear}

@@ -32,7 +32,7 @@ export function stackSummary(members: OpenSession[]): string {
  *  plus its unread and cmdIndex state, and threading all of that through here
  *  would duplicate that wiring in a second place that could drift from it. */
 export function StackCard({
-  cwd, members, open, onToggle, selectedPid, renderMember, onAnswer, onMoveUp, onMoveDown, unread,
+  cwd, members, open, onToggle, selectedPid, renderMember, onAnswer, onMoveUp, onMoveDown, unread, cmdIndex,
 }: {
   cwd: string;
   members: OpenSession[];
@@ -61,6 +61,16 @@ export function StackCard({
    *  member carries its own dot too, but repeating it on the face costs
    *  nothing and means the signal never depends on where you are looking. */
   unread?: boolean;
+  /** Cmd+1..9's own slot number (useRailSlots.ts): every member of this
+   *  stack shares ONE number, whether the stack is folded or open -- opening
+   *  it does not grow the number of things a chord can address. Shown on the
+   *  FACE, not only on the members' own (individually correct but, while
+   *  folded, CSS-hidden) badges: without this, the one thing a hotkey number
+   *  exists to tell you -- what pressing that chord does -- would be
+   *  invisible for exactly the rows most likely to be folded. Optional so
+   *  every existing render of this component (this file's own tests
+   *  included) keeps rendering exactly as it did before this existed. */
+  cmdIndex?: number;
 }): JSX.Element {
   const waiting = members.filter(isWaiting);
   const label = lastSegment(cwd);
@@ -140,6 +150,15 @@ export function StackCard({
               <button type="button" aria-label={`Move ${label} down`} onClick={onMoveDown}>Down</button>
             )}
           </div>
+        )}
+        {/* Cmd+1..9's own slot number (useRailSlots.ts), the same .cmdnum
+            style and title convention OpenSessionCard's own badge uses, so
+            the two read as one signal wherever either appears. Decorative
+            (aria-hidden) for the same reason that one is: the stack's own
+            accessible name (the toggle button's label) already carries
+            everything a screen reader needs. */}
+        {cmdIndex != null && cmdIndex >= 1 && cmdIndex <= 9 && (
+          <span className="cmdnum" aria-hidden="true" title={`Cmd+${cmdIndex}`}>{cmdIndex}</span>
         )}
       </div>
       {/* ALWAYS rendered, never `{open && ...}`: a node that does not exist

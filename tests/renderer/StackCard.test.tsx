@@ -225,3 +225,39 @@ describe('StackCard move controls', () => {
     expect(onToggle).not.toHaveBeenCalled();
   });
 });
+
+// Cmd+1..9's own slot number, on the FACE -- same .cmdnum class,
+// aria-hidden and title convention OpenSessionCard.test.tsx already proves
+// for a plain card (see that file's own "Cmd+N hotkey number" describe
+// block). What's specific to a stack: it is the only number shown while
+// folded, since every member's own badge is in the CSS-hidden subtree.
+describe('StackCard -- the Cmd+N hotkey number', () => {
+  const members = [session(1, 'idle'), session(2, 'idle')];
+
+  it('shows the given number, aria-hidden, titled with the actual chord', () => {
+    const { container } = render(
+      <StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}
+        selectedPid={null} renderMember={() => null} cmdIndex={4} />,
+    );
+    const num = container.querySelector('.cmdnum');
+    expect(num?.textContent).toBe('4');
+    expect(num?.getAttribute('title')).toBe('Cmd+4');
+    expect(num?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('shows nothing when no cmdIndex is given', () => {
+    const { container } = render(
+      <StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}
+        selectedPid={null} renderMember={() => null} />,
+    );
+    expect(container.querySelector('.cmdnum')).toBeNull();
+  });
+
+  it('still shows the number while the stack is open, unchanged', () => {
+    const { container } = render(
+      <StackCard cwd="/repo" members={members} open={true} onToggle={vi.fn()}
+        selectedPid={null} renderMember={() => null} cmdIndex={4} />,
+    );
+    expect(container.querySelector('.cmdnum')?.textContent).toBe('4');
+  });
+});
