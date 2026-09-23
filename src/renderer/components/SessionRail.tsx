@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 // TYPE-only from state.ts: that module imports node:os and reaches the
 // database, neither of which exists in a sandboxed renderer. A type import is
 // erased at build so it costs nothing; the comparator itself comes from
@@ -11,7 +11,11 @@ import type { KillResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
 import { StackCard } from './StackCard.tsx';
+import { RailAttentionBar } from './RailAttentionBar.tsx';
 import { compactIn, useSettings } from '../state/settings.ts';
+// The same folder-name helper StackCard's face uses, so the bar names a stack
+// exactly as the stack names itself rather than inventing a second spelling.
+import { lastSegment } from '../state/favourites.ts';
 import {
   useGroups, isStackOpen, toggleStack, orderIndex, rememberKeys, categoryForRow, moveRow,
 } from '../state/groups.ts';
@@ -296,6 +300,71 @@ export function SessionRail({
   // different key sets could then join to the same string and the effect
   // would skip remembering the new one. NUL is the one byte a path can never
   // contain, so it is the only separator this join can use safely.
+  // Which rows carry an attention state, and what to call them. Waiting beats
+  // unread, the same priority OpenSessionCard's classname and StackCard's
+  // face already use. A stack answers for its members: folding one must not
+  // fold away the fact that something inside it needs you.
+  function attnKindOf(row: RailRow<OpenSession>): 'waiting' | 'unread' | null {
+    const members = row.kind === 'stack' ? row.members : [row.session];
+    if (members.some(m => m.activity === 'waiting_permission' || m.activity === 'waiting_input')) return 'waiting';
+    if (members.some(isUnread)) return 'unread';
+    return null;
+  }
+
+  function attnLabelOf(row: RailRow<OpenSession>): string | null {
+    if (attnKindOf(row) === null) return null;
+    return row.kind === 'stack' ? lastSegment(row.cwd) : row.session.project;
+  }
+
+  // The off-screen half. Rows no longer move on their own, so a session that
+  // starts waiting can sit below the fold with nothing on screen saying so --
+  // see RailAttentionBar's own comment for why this is the half that makes
+  // the ordering decision safe rather than a nicety.
+  //
+  // IntersectionObserver rather than scroll maths: it fires only when
+  // visibility actually changes, so an idle rail costs nothing, and it stays
+  // correct through resizes and stack opens without listening for either.
+  const cardsRef = useRef<HTMLDivElement | null>(null);
+  const [offscreen, setOffscreen] = useState<
+    { kind: 'waiting' | 'unread'; label: string; direction: 'up' | 'down' } | null
+  >(null);
+
+  useEffect(() => {
+    const root = cardsRef.current;
+    // jsdom implements no IntersectionObserver, and there may be no root on
+    // the first pass. Show nothing rather than throw: the bar is an aid, and
+    // every card still carries its own attention treatment without it.
+    if (!root || typeof IntersectionObserver === 'undefined') return;
+
+    const marked = Array.from(root.querySelectorAll<HTMLElement>('[data-attn]'));
+    if (marked.length === 0) { setOffscreen(null); return; }
+
+    const recompute = (): void => {
+      const bounds = root.getBoundingClientRect();
+      let best: { kind: 'waiting' | 'unread'; label: string; direction: 'up' | 'down' } | null = null;
+      for (const el of marked) {
+        const box = el.getBoundingClientRect();
+        // Genuinely outside the scroll viewport, not merely clipped by a few
+        // pixels -- a card half in view needs no signpost pointing at it.
+        const above = box.bottom <= bounds.top;
+        const below = box.top >= bounds.bottom;
+        if (!above && !below) continue;
+        const kind = el.dataset.attn === 'waiting' ? 'waiting' as const : 'unread' as const;
+        // Waiting anywhere outranks unread anywhere; among equals the first in
+        // rail order wins, so the bar cannot flip between two candidates.
+        if (best === null || (kind === 'waiting' && best.kind === 'unread')) {
+          best = { kind, label: el.dataset.attnLabel ?? '', direction: above ? 'up' : 'down' };
+        }
+      }
+      setOffscreen(best);
+    };
+
+    const io = new IntersectionObserver(recompute, { root, threshold: 0 });
+    for (const el of marked) io.observe(el);
+    recompute();
+    return () => { io.disconnect(); };
+  });
+
   const rowKeys = sections.flatMap(sec => sec.rows.map(r => r.key)).join('\0');
   useEffect(() => {
     if (rowKeys !== '') rememberKeys(rowKeys.split('\0'));
@@ -360,7 +429,27 @@ export function SessionRail({
   return (
     <nav className={`rail ${side}`} style={{ width }} aria-label="Open sessions">
       {side === 'right' && handle}
-      <div className="railcards">
+      {offscreen && (
+        <RailAttentionBar
+          kind={offscreen.kind}
+          // Composed here, not stored: `label` in state is the row's bare
+          // NAME, which is also what the selector below matches on. Using the
+          // display sentence as a DOM selector would break the scroll the
+          // moment anyone reworded the copy.
+          label={offscreen.kind === 'waiting'
+            ? `${offscreen.label} is waiting on you`
+            : `${offscreen.label} has new output`}
+          direction={offscreen.direction}
+          onGo={() => {
+            const el = cardsRef.current?.querySelector(`[data-attn-label="${CSS.escape(offscreen.label)}"]`);
+            el?.scrollIntoView({
+              block: 'nearest',
+              behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+            });
+          }}
+        />
+      )}
+      <div className="railcards" ref={cardsRef}>
         {sections.map(section => (
           // The key for the unnamed section cannot collide with a real name,
           // which normalizeGroups guarantees is trimmed and non-empty -- a
@@ -378,7 +467,12 @@ export function SessionRail({
               };
               return (
                 <div className={`railrow${dragKey === row.key ? ' dragging' : ''}`}
-                  key={row.key} {...dragProps(row.key)}>
+                  key={row.key} {...dragProps(row.key)}
+                  // What the off-screen-attention observer below watches. Set
+                  // on the ROW, not the card, because a folded stack's members
+                  // have no boxes of their own to observe.
+                  data-attn={attnKindOf(row) ?? undefined}
+                  data-attn-label={attnLabelOf(row) ?? undefined}>
                   {row.kind === 'session'
                     ? renderSession(row.session, move)
                     : <StackCard cwd={row.cwd} members={row.members}
