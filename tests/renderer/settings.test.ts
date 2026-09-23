@@ -11,7 +11,7 @@ beforeEach(() => {
 
 describe('normalizeSettings', () => {
   it('accepts a complete, valid object unchanged', () => {
-    const s = { appearance: 'dark', textSize: 14, messageStyle: 'c', compactCards: 'off' };
+    const s = { appearance: 'dark', textSize: 14, messageStyle: 'c', compactCards: 'off', groupSessions: 'off' };
     expect(normalizeSettings(s)).toEqual(s);
   });
 
@@ -45,7 +45,7 @@ describe('normalizeSettings', () => {
 describe('the settings store', () => {
   it('starts at the documented defaults with nothing stored', () => {
     expect(getSettings()).toEqual({
-      appearance: 'system', textSize: 16, messageStyle: 'a', compactCards: 'both',
+      appearance: 'system', textSize: 16, messageStyle: 'a', compactCards: 'both', groupSessions: 'on',
     });
   });
 
@@ -106,6 +106,31 @@ describe('the settings store', () => {
   it('validates what it is given, not only what it reads back', () => {
     setSettings({ appearance: 'sepia' as never });
     expect(getSettings().appearance).toBe('system');
+  });
+});
+
+describe('groupSessions', () => {
+  it('defaults to on', () => {
+    expect(DEFAULT_SETTINGS.groupSessions).toBe('on');
+  });
+
+  it('keeps a valid value and falls back to the default for anything else', () => {
+    expect(normalizeSettings({ groupSessions: 'off' }).groupSessions).toBe('off');
+    expect(normalizeSettings({ groupSessions: 'sometimes' }).groupSessions).toBe('on');
+    expect(normalizeSettings({ groupSessions: null }).groupSessions).toBe('on');
+  });
+
+  it('round-trips through setSettings', () => {
+    setSettings({ groupSessions: 'off' });
+    expect(getSettings().groupSessions).toBe('off');
+    reloadSettings();
+    expect(getSettings().groupSessions).toBe('off');
+  });
+
+  it('changes the object identity, so subscribers re-render', () => {
+    const before = getSettings();
+    setSettings({ groupSessions: 'off' });
+    expect(getSettings()).not.toBe(before);
   });
 });
 

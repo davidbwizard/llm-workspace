@@ -6,6 +6,10 @@ import { ProviderMark } from './ProviderMark.tsx';
 import { ContextChip } from './ContextChip.tsx';
 import { StatusIcon } from './StatusIcon.tsx';
 import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES } from '../state/favourites.ts';
+import {
+  useGroups, categoryNames, categoryOfSession, assignCategory, renameCategory,
+  deleteCategory, categoryInUse, MAX_CATEGORY_LENGTH, MAX_CATEGORIES,
+} from '../state/groups.ts';
 import './OpenSessionCard.css';
 
 // One card per live process (David: "ALL OPEN SESSIONS should show. And
@@ -129,7 +133,7 @@ const KILL_SETTLE_MS = 5_500;
 const REATTACH_COLS = 120;
 const REATTACH_ROWS = 40;
 
-export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume, unread, compact = false, cmdIndex }: {
+export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, onResume, unread, compact = false, cmdIndex, onMoveUp, onMoveDown }: {
   state: OpenSession; onOpen: (pid: number) => void;
   /** Sends session:kill for this card's pid. Always resolves to a
    *  KillResult (src/main/ipc.ts), never throws by contract -- but this
@@ -169,17 +173,29 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   compact?: boolean;
   /** Cmd+1..9 (App.tsx's own window keydown listener): 1-9 shows a small
    *  muted hotkey number in the corner, titled with the actual chord.
-   *  Supplied by the caller (FleetView/SessionRail), keyed to that same
-   *  session's RANK in the canonical sessions/openSessions order -- not
-   *  wherever this card currently sits on screen, which for SessionRail can
-   *  differ from that rank once its own unread promotion reorders the
-   *  rendered list (see SessionRail.tsx's own doc comment on why). Decorative
+   *  Supplied by the caller (FleetView/SessionRail), keyed to the SLOT this
+   *  card currently occupies (src/renderer/state/useRailSlots.ts) -- the
+   *  card's position on screen, not the session's pid. That is deliberate,
+   *  not incidental: David's own slot model is that slot 1 is always slot 1
+   *  regardless of which card is in it, so the number must follow the ROW,
+   *  and a card dragged or promoted into a different row picks up THAT
+   *  row's number rather than carrying its old one with it. Decorative
    *  (aria-hidden) like the badge/unread-dot above: the card's own
    *  accessible name already carries everything about it that matters to a
    *  screen reader, and this is a purely visual hint for a sighted,
    *  keyboard-driven user. Omitted (no number shown) for anything past the
    *  ninth card, and for any caller that doesn't track this at all. */
   cmdIndex?: number;
+  /** Move this row one place up / down in the rail's own order, calling the
+   *  SAME store function a drop calls (groups.ts's moveRow) -- the keyboard
+   *  half of dragging, which is otherwise unreachable without a pointer.
+   *
+   *  Each is absent when the row is already at that end of its section, and
+   *  BOTH are absent for every caller that does not order rows at all (the
+   *  fleet grid, and the rail with grouping off), so no existing call site
+   *  grows a menu item it has no meaning for. */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }) {
   const hostLabel = hostLabelFor(state.host) ?? undefined;
   // Age and memory are NEVER gated on match quality here: the card IS the
@@ -296,6 +312,63 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   const favourites = useFavourites();
   const isFav = state.cwd !== null && favourites.includes(state.cwd);
   const favouritesAtCap = !isFav && favourites.length >= MAX_FAVOURITES;
+
+  // Categories are keyed by SESSION ID, not by folder -- David's explicit
+  // call (spec's identity ruling): "to session id. It can be temp. If clear
+  // or session exit its lost." The store is the same shared singleton the
+  // rail reads, so filing a session here re-heads its row with no reload.
+  //
+  // Sharing a folder does NOT stop a session being filed. applyExactMatches
+  // (src/discovery/match.ts) overrides the cwd guess with an exact
+  // pid-to-session identity wherever one exists -- Claude's live session
+  // file, Codex's open root rollout -- so two sessions in one folder
+  // normally each have their own id and each take their own category.
+  //
+  // `sessionId` is null only when neither of those resolved: no live session
+  // file and no open rollout, in practice a session this app did not launch
+  // and that predates the file. Rare, but real, and there is no stable
+  // handle to hang an assignment off in that state -- so the item is
+  // DISABLED with the reason VISIBLE rather than hidden: say why in the UI,
+  // the same rule the Codex reattach text follows.
+  useGroups();
+  const sessionId = state.sessionId;
+  const currentCategory = sessionId === null ? null : categoryOfSession(sessionId);
+  const [catOpen, setCatOpen] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  // Disabled WITH THE REASON VISIBLE, never a title attribute: a tooltip
+  // explains nothing to anyone on a keyboard or a screen reader, and this
+  // app already makes that call for the Codex reattach line and for the
+  // launch dropdown's name field.
+  //
+  // Two different causes, two different sentences, because they call for
+  // different things from the reader. 'ambiguous' means several sessions
+  // share this folder and the app will not attribute a category to a guess
+  // -- David can still file them one at a time from each session's OWN card
+  // once they are distinguishable. 'unknown' means no conversation has been
+  // matched to this process at all, which usually resolves itself as soon as
+  // the session is prompted. Collapsing them into one "unavailable" would
+  // teach the reader nothing about which of the two they are looking at.
+  const categoryBlockedReason = state.match === 'ambiguous'
+    ? 'Several sessions share this folder, so the app cannot tell which one this is. A category needs one session to attach to.'
+    : 'No conversation matched to this process yet, so there is nothing to attach a category to.';
+
+  // The cap bounds the STORE, not who may use a name that already exists:
+  // assignCategory (groups.ts) only refuses a NEW name once
+  // `categories.length >= MAX_CATEGORIES` -- an EXISTING name still
+  // assigns at the cap, since the cap exists to bound the menu, not to
+  // freeze who may file into it. So this only ever disables the CREATE
+  // affordance below; every row for an existing name stays live.
+  //
+  // Fix, not the original brief: that code called assignCategory
+  // unconditionally from the create field's Enter handler, so hitting the
+  // cap made the field silently discard the name and close the menu with
+  // no sign anything went wrong -- exactly the silent failure this app
+  // does not allow. Same treatment as every other disabled control here:
+  // a real `disabled` attribute plus real, associated reason text, never a
+  // tooltip.
+  const atCap = categoryNames().length >= MAX_CATEGORIES;
 
   // idle -> confirming -> pending -> (launched, handled by navigating away
   // and resetting) | 'failed' (dismissable, retryable from idle) |
@@ -561,7 +634,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
             // would put indistinguishable buttons in the accessibility
             // tree, which is the one thing the rail exists to prevent.
             aria-label={`Session actions, pid ${state.pid}`}
-            onClick={() => setMenuOpen(o => !o)}
+            onClick={() => { setMenuOpen(o => !o); setCatOpen(false); setRenaming(null); setRenameError(null); }}
           >
             <span aria-hidden="true">…</span>
           </button>
@@ -574,6 +647,18 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
               its ordinary, fully-supported button semantics. */}
           {menuOpen && (
             <div className="cardmenu-list">
+              {onMoveUp && (
+                <button type="button" className="cardmenu-item"
+                  onClick={() => { setMenuOpen(false); onMoveUp(); }}>
+                  Move up
+                </button>
+              )}
+              {onMoveDown && (
+                <button type="button" className="cardmenu-item"
+                  onClick={() => { setMenuOpen(false); onMoveDown(); }}>
+                  Move down
+                </button>
+              )}
               {compact && hostLabel && onReveal && (
                 <button type="button" className="cardmenu-item"
                   onClick={() => { setMenuOpen(false); void onReveal(state.pid); }}>
@@ -585,6 +670,15 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
                   onClick={() => { setMenuOpen(false); setReattachPhase('confirming'); }}>
                   Reattach in app
                 </button>
+              )}
+              <button type="button" className="cardmenu-item"
+                disabled={sessionId === null}
+                aria-describedby={sessionId === null ? `catwhy-${state.pid}` : undefined}
+                onClick={() => setCatOpen(true)}>
+                {currentCategory === null ? 'Add to category' : `Category: ${currentCategory}`}
+              </button>
+              {sessionId === null && (
+                <p className="catwhy" id={`catwhy-${state.pid}`}>{categoryBlockedReason}</p>
               )}
               <button type="button" className="cardmenu-item"
                 disabled={state.cwd === null || favouritesAtCap}
@@ -602,6 +696,113 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
                   Close session
                 </button>
               )}
+            </div>
+          )}
+          {menuOpen && catOpen && sessionId !== null && (
+            <div className="cardmenu-list catpanel" role="group" aria-label="Category">
+              {/* One category per session, so this is a chosen-one list, not
+                  a set of checkboxes: aria-pressed marks which name is the
+                  session's, and picking another simply replaces it. */}
+              <button type="button" className="catitem"
+                aria-pressed={currentCategory === null}
+                onClick={() => { assignCategory(sessionId, null); setMenuOpen(false); }}>
+                No category
+              </button>
+
+              {categoryNames().map((name, i) => (
+                renaming === name ? (
+                  <label className="catedit" key={name}>
+                    <span className="catlabel">New name for {name}</span>
+                    <input type="text" defaultValue={name} autoFocus maxLength={MAX_CATEGORY_LENGTH}
+                      onKeyDown={e => {
+                        if (e.key === 'Escape') { setRenaming(null); setRenameError(null); return; }
+                        if (e.key !== 'Enter') return;
+                        // renameCategory rewrites every assignment pointing
+                        // at the old name in one commit, so a rename can
+                        // never orphan a session. It refuses a name already
+                        // taken rather than merging two categories -- that
+                        // is a different decision, and not reversible.
+                        if (renameCategory(name, e.currentTarget.value) === null) {
+                          setRenameError('That is already a category, or the name is blank.');
+                          return;
+                        }
+                        setRenaming(null);
+                        setRenameError(null);
+                      }} />
+                  </label>
+                ) : (
+                  <div className="catrow" key={name}>
+                    <button type="button" className="catitem catpick"
+                      aria-pressed={currentCategory === name}
+                      onClick={() => { assignCategory(sessionId, name); setMenuOpen(false); }}>
+                      {name}
+                    </button>
+                    {/* Named with the category, not bare "Rename": this list
+                        repeats the same two buttons per row, and bare names
+                        would be indistinguishable in the accessibility
+                        tree -- the same rule the per-card Close button
+                        already follows. */}
+                    <button type="button" className="catmini"
+                      aria-label={`Rename ${name}`}
+                      onClick={() => { setRenaming(name); setRenameError(null); }}>
+                      Rename
+                    </button>
+                    <button type="button" className="catmini catdanger"
+                      aria-label={`Delete ${name}`}
+                      disabled={categoryInUse(name)}
+                      aria-describedby={categoryInUse(name) ? `catuse-${state.pid}-${i}` : undefined}
+                      onClick={() => { deleteCategory(name); }}>
+                      Delete
+                    </button>
+                    {/* Shown, not hidden: the spec's rule is that the UI
+                        says WHY delete is unavailable. Because the rail
+                        prunes assignments against the live session list on
+                        every push, anything still holding a name is a live
+                        session by construction. */}
+                    {categoryInUse(name) && (
+                      <p className="catwhy" id={`catuse-${state.pid}-${i}`}>
+                        A session is in {name}. Move it out first.
+                      </p>
+                    )}
+                  </div>
+                )
+              ))}
+
+              {renameError && <p className="catwhy" role="alert">{renameError}</p>}
+
+              {/* Creating and assigning are ONE action: assignCategory adds
+                  the name when it is new, so there is no window in which a
+                  created name exists with nothing pointing at it because the
+                  second half failed. A name outliving its assignments is
+                  what pruning produces later, on purpose.
+                  Disabled at the cap, reason visible: see atCap's own doc
+                  comment above for why this is the one branch of this
+                  action that can fail, and why it must never fail quietly. */}
+              {atCap && (
+                <p className="catwhy" id={`catcap-${state.pid}`}>
+                  You already have {MAX_CATEGORIES} categories, the most this app keeps at once.
+                  Delete one to make room for a new name.
+                </p>
+              )}
+              <label className="catedit">
+                <span className="catlabel">New category name</span>
+                <input type="text" placeholder="New category" maxLength={MAX_CATEGORY_LENGTH}
+                  disabled={atCap}
+                  aria-describedby={atCap ? `catcap-${state.pid}` : undefined}
+                  onKeyDown={e => {
+                    if (e.key === 'Escape') { setCatOpen(false); return; }
+                    if (e.key !== 'Enter') return;
+                    // Belt and suspenders with the `disabled` attribute
+                    // above: this is what makes it impossible for Enter to
+                    // reach assignCategory's own cap refusal and produce
+                    // the silent no-op the disabled state exists to
+                    // prevent, regardless of how the field was reached.
+                    if (atCap) return;
+                    if (e.currentTarget.value.trim() === '') return;
+                    assignCategory(sessionId, e.currentTarget.value);
+                    setMenuOpen(false);
+                  }} />
+              </label>
             </div>
           )}
         </div>

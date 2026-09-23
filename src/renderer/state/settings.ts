@@ -21,18 +21,27 @@ export type MessageStyle = 'a' | 'c';
 /** One setting with four values rather than two booleans, so "Both on but
  *  Fleet off" is not a state that can exist. */
 export type CompactCards = 'off' | 'sidebar' | 'fleet' | 'both';
+/** Whether sessions sharing a folder collapse into one rail row.
+ *
+ *  FOLDER STACKING ONLY. Categories and David's own row order apply either
+ *  way -- "not auto movement for the cards" was stated unconditionally, and
+ *  a category he set must not disappear because he turned stacking off. So
+ *  'off' means no stacks, not a rollback of the whole feature. */
+export type GroupSessions = 'on' | 'off';
 
 export type Settings = {
   appearance: Appearance;
   textSize: TextSize;
   messageStyle: MessageStyle;
   compactCards: CompactCards;
+  groupSessions: GroupSessions;
 };
 
 export const APPEARANCES: readonly Appearance[] = ['system', 'light', 'dark'];
 export const TEXT_SIZES: readonly TextSize[] = [14, 15, 16, 17];
 export const MESSAGE_STYLES: readonly MessageStyle[] = ['a', 'c'];
 export const COMPACT_CARDS: readonly CompactCards[] = ['off', 'sidebar', 'fleet', 'both'];
+export const GROUP_SESSIONS: readonly GroupSessions[] = ['on', 'off'];
 
 export const SETTINGS_STORAGE_KEY = 'llmws:settings';
 
@@ -41,7 +50,7 @@ export const SETTINGS_STORAGE_KEY = 'llmws:settings';
  *  rule down the agent's replies), compact cards in both places, and
  *  appearance following the OS until told otherwise. */
 export const DEFAULT_SETTINGS: Settings = {
-  appearance: 'system', textSize: 16, messageStyle: 'a', compactCards: 'both',
+  appearance: 'system', textSize: 16, messageStyle: 'a', compactCards: 'both', groupSessions: 'on',
 };
 
 function pick<T>(allowed: readonly T[], value: unknown, fallback: T): T {
@@ -60,6 +69,7 @@ export function normalizeSettings(raw: unknown): Settings {
     textSize: pick(TEXT_SIZES, r.textSize, DEFAULT_SETTINGS.textSize),
     messageStyle: pick(MESSAGE_STYLES, r.messageStyle, DEFAULT_SETTINGS.messageStyle),
     compactCards: pick(COMPACT_CARDS, r.compactCards, DEFAULT_SETTINGS.compactCards),
+    groupSessions: pick(GROUP_SESSIONS, r.groupSessions, DEFAULT_SETTINGS.groupSessions),
   };
 }
 
@@ -79,7 +89,8 @@ function write(s: Settings): void {
 
 function same(a: Settings, b: Settings): boolean {
   return a.appearance === b.appearance && a.textSize === b.textSize
-    && a.messageStyle === b.messageStyle && a.compactCards === b.compactCards;
+    && a.messageStyle === b.messageStyle && a.compactCards === b.compactCards
+    && a.groupSessions === b.groupSessions;
 }
 
 let current: Settings = read();

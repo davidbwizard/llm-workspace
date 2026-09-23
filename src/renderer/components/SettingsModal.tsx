@@ -28,6 +28,8 @@ const MESSAGE_STYLE_LABEL: Record<MessageStyle, string> = {
 };
 const COMPACT_HELP =
   "Compact cards show the logo, name, status and terminal. The folder path always appears at the top of a session's conversation.";
+const GROUP_SESSIONS_HELP =
+  "Collapses sessions that share a folder into one row. Categories and your manual row order apply either way.";
 const FOOTER_CAPTION = 'Changes apply right away and are remembered.';
 
 /** Design §4's wording, with the consent step named. Turning this ON no
@@ -197,6 +199,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const compactLabelId = useId();
   const textSizeLabelId = useId();
   const styleLabelId = useId();
+  const groupSessionsLabelId = useId();
   const quickAnswersLabelId = useId();
   const usageLabelId = useId();
 
@@ -371,6 +374,18 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               onChange={compactCards => setSettings({ compactCards })}
             />
             <p className="settingshelp">{COMPACT_HELP}</p>
+          </div>
+          <div className="settingsfield">
+            <div className="settingsswitchrow">
+              <div className="settingslabel" id={groupSessionsLabelId}>Group sessions by folder</div>
+              <QuickAnswersSwitch
+                checked={settings.groupSessions === 'on'}
+                disabled={false}
+                labelId={groupSessionsLabelId}
+                onToggle={() => setSettings({ groupSessions: settings.groupSessions === 'on' ? 'off' : 'on' })}
+              />
+            </div>
+            <p className="settingshelp">{GROUP_SESSIONS_HELP}</p>
           </div>
         </section>
 

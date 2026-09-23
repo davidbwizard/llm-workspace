@@ -216,3 +216,32 @@
   color:var(--critical); background:none; border:1px solid var(--critical);
   border-radius:20px; padding:4px 0; cursor:pointer; }
 .railreply:hover { background:var(--critical-soft); }
+
+/* A category header is typography and a rule, nothing more -- no colour, no
+   icon, no swatch. The spec's "a name and nothing else" is a decision, not a
+   first draft: the rail already spends its colour budget on attention state,
+   and a second colour system would compete with the one thing this app
+   exists to show. */
+.railsection { display: flex; flex-direction: column; gap: 6px; }
+.railsection + .railsection { margin-top: 14px; }
+.railsectionname {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-2); margin: 0;
+  display: flex; align-items: center; gap: 9px;
+  /* min-width:0 plus the overflow rule is what keeps a 32-character name
+     from pushing the rail's own content past its border at the 140px
+     minimum width -- the same failure a long project name already had. */
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.railsectionname::after {
+  content: ""; flex: 1 0 12px; height: 1px; background: var(--line-soft);
+}
+
+/* The drag wrapper. It carries no box of its own -- the card inside it still
+   draws every border and background -- so adding this layer changes nothing
+   visually until a drag is actually in progress. */
+.railrow { position: relative; }
+/* Feedback while dragging comes from opacity alone, not a transform: a
+   transform on an ancestor opens a stacking context, and OpenSessionCard.css
+   already documents at length what that does to an open card menu. */
+.railrow.dragging { opacity: .45; }

@@ -1,0 +1,227 @@
+/* A stack reuses SessionCard's card shape rather than inventing a second
+   one -- same radius, same border tokens, same attention treatment, so a
+   folded folder reads as a sibling of the cards around it rather than a
+   different kind of object. Only what is genuinely new lives here.
+
+   The two offset sheets below the face are what says "there is more than one
+   of these" before any count is read: a structural signal that survives
+   grayscale and a colour-vision deficiency, the same standard
+   OpenSessionCard.css's own .card.unread left border is held to.
+
+   The three motion values live here, on the root, so the whole open/close
+   gesture is retuned in one place -- "Slide", 220ms, the option David chose
+   from the rendered prototype on 2026-09-22. */
+.stack {
+  --dur: 220ms;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --stag: 30ms;
+  position: relative;
+  /* How far the LOWEST sheet hangs below the card. The margin is exactly
+     that, never more: the rail already puts 6px between rows, so any excess
+     here is added on top of it and a stack ends up sitting further from the
+     next card than a plain card does -- which is precisely what it looked
+     like before this was tied together (8px of margin over a 5px peek left
+     9px of air where every other row had 6px).
+
+     Kept as a variable rather than three matching numbers so the two cannot
+     drift apart: the sheets below position themselves from it. Collapses to
+     nothing once open, because the sheets are gone by then. */
+  --sheet-1: 5px;   /* the sheet directly behind the card */
+  --sheet-2: 10px;  /* the one behind that, drawn only when deep */
+  --deepest-sheet: var(--sheet-1);
+  margin-bottom: var(--deepest-sheet);
+  transition: margin-bottom var(--dur) var(--ease);
+}
+.stack.deep { --deepest-sheet: var(--sheet-2); }
+.stack.open { margin-bottom: 0; }
+
+/* The deck, built the way iOS stacks notifications: each sheet behind is
+   NARROWER and peeks a few pixels lower, and each recedes a step towards the
+   rail's own background so the front card reads as nearest. The inset is what
+   sells it -- equal-width sheets just look like a thicker border.
+
+   Bottom corners only. A sheet is the bottom sliver of a card hidden behind
+   the one in front, so rounding its top would draw a corner that is supposed
+   to be underneath something.
+
+   Depth carries the count: two sheets for three or more sessions, one for
+   exactly two, so the deck says roughly how many before the pill is read. */
+.stack::after {
+  content: ""; position: absolute; left: 7px; right: 7px; height: 14px;
+  bottom: calc(var(--sheet-1) * -1);
+  background: color-mix(in srgb, var(--ground) 72%, var(--surface));
+  border: 1px solid var(--line-soft); border-top: none;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  transition: opacity var(--dur) var(--ease);
+}
+.stack.deep::before {
+  content: ""; position: absolute; left: 14px; right: 14px; height: 14px;
+  bottom: calc(var(--sheet-2) * -1);
+  background: color-mix(in srgb, var(--ground) 44%, var(--surface));
+  border: 1px solid var(--line-soft); border-top: none;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  transition: opacity var(--dur) var(--ease);
+}
+
+/* Gone once the stack is open: the sheets stand for members you cannot see,
+   and the moment you can see them the deck is a lie -- it would also sit
+   under the expanded member list rather than under the card. Faded on the
+   same curve as the drawer so the two read as one gesture. */
+.stack.open::after, .stack.open::before { opacity: 0; }
+
+.stackface {
+  position: relative; z-index: 1;
+  background: var(--ground); border: 1px solid var(--line-soft);
+  border-radius: var(--r-md); display: flex; align-items: flex-start; gap: 9px;
+  padding: 16px 17px 17px;
+}
+.stack.attn > .stackface {
+  border-color: color-mix(in srgb, var(--critical) 34%, transparent);
+  background: linear-gradient(var(--critical-soft), var(--ground) 70%);
+}
+.stack.sel > .stackface { border-color: color-mix(in srgb, var(--accent) 46%, transparent); }
+.stackface:hover { border-color: color-mix(in srgb, var(--accent) 46%, transparent); }
+
+/* The whole face is the toggle: a 44px-plus target that covers the name, the
+   path and the summary, so folding never depends on hitting a small chevron. */
+.stacktoggle {
+  flex-grow: 1; min-width: 0; background: none; border: none; padding: 0;
+  text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 6px;
+  font: inherit; color: inherit;
+}
+/* The count and the unread dot share a row so the dot sits beside the pill
+   rather than on its own line -- .stacktoggle is a column, so a bare sibling
+   would drop to the next line. align-self keeps the row content-width. */
+.stacktop { display: flex; align-items: center; gap: 7px; align-self: flex-start; }
+.stackcount {
+  font-family: var(--f-mono); font-size: 10px; color: var(--accent);
+  background: var(--raised); border-radius: 6px; padding: 3px 8px;
+}
+
+/* Deliberately the same 8px --signal circle as OpenSessionCard.css's own
+   .unread-dot, not a second treatment: an update inside a folded stack and
+   an update on a loose card are the same fact, so they get the same mark.
+   Not absolutely positioned like that one, because a stack's top-right
+   corner already carries the Move up/down pair. --signal, never --critical
+   (which stays unambiguously "waiting on you") and never --accent (already
+   this card's live/working colour). */
+.stackunread {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--signal);
+}
+.stackname { font-family: var(--f-display); font-weight: 600; font-size: 18px; line-height: 1.2; color: var(--ink); }
+.stackpath {
+  font-family: var(--f-mono); font-size: 10.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stacksummary { font-size: 14px; color: var(--ink-2); line-height: 1.5; }
+.stack.attn .stacksummary { color: var(--critical); }
+
+.stackreply {
+  flex: none; font: inherit; font-size: 12px; padding: 7px 11px; min-height: 44px;
+  background: var(--raised); color: var(--ink); border: 1px solid var(--line);
+  border-radius: var(--r-sm); cursor: pointer;
+}
+
+/* Same duration and curve as the height below, so the mark and the drawer
+   arrive together rather than one trailing the other.
+
+   align-self is what stops the mark ARCING instead of turning in place, and
+   it is not optional. .stacktoggle is a COLUMN flex container, so its cross
+   axis is horizontal and the default align-items:stretch blows this span out
+   to the full width of the card -- a ~250px box with a 12px glyph at its
+   left edge. rotate(180deg) turns about the BOX centre, which is then half a
+   card away from the arrow, so the arrow swings across in a semicircle.
+   `flex: none` does NOT prevent this: it governs the main (vertical) axis.
+   align-self sizes the box to its content, putting the box centre back on
+   the glyph centre. Found by hand-testing the running app -- jsdom computes
+   no layout, so no test in this suite could ever have seen it. */
+.stackchev {
+  flex: none; align-self: flex-end; display: inline-flex; color: var(--muted);
+  transition: transform var(--dur) var(--ease);
+}
+.stack.open .stackchev { transform: rotate(180deg); }
+
+/* Height animates 0fr -> 1fr, NOT max-height. A hard-coded max either clips
+   a deep stack or leaves dead air under a shallow one; a grid row animated
+   to 1fr resolves to the real content height whatever that turns out to be.
+
+   visibility, not display:none, is what keeps the folded members out of the
+   accessibility tree and the tab order -- they are always in the DOM now,
+   because a node that does not exist cannot transition. display:none would
+   hide them just as well and destroy the animation with it.
+
+   The 0s-with-a-delay transition is the sequencing: hidden lands only AFTER
+   the collapse has finished, so the members do not vanish mid-slide, while
+   the open rule below has no delay so they are reachable the instant the
+   stack starts opening. */
+.stackmembers {
+  position: relative; z-index: 1;
+  display: grid; grid-template-rows: 0fr;
+  /* Left indent only. The gap ABOVE the members belongs inside the clipped
+     area (.stackmembers-inner's padding-top), not here: a margin on this
+     element survives the row collapsing to 0fr, so a folded stack kept an 8px
+     dead band under the card and the deck's sheets -- positioned from the
+     bottom of the whole component -- floated away from it. */
+  margin-left: 12px;
+  visibility: hidden;
+  transition: grid-template-rows var(--dur) var(--ease), visibility 0s linear var(--dur);
+}
+.stack.open .stackmembers {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition: grid-template-rows var(--dur) var(--ease), visibility 0s linear 0s;
+}
+
+/* min-height:0 alongside overflow:hidden, or the grid item refuses to shrink
+   below its content and the 0fr row never actually collapses. */
+.stackmembers-inner {
+  overflow: hidden; min-height: 0;
+  display: flex; flex-direction: column; gap: 8px;
+  /* Inside the clip, so it disappears with the members instead of leaving a
+     dead band under a folded card. See .stackmembers above. */
+  padding-top: 8px;
+}
+
+/* Members are inset (above) so the stack reads as one object with contents,
+   not four unrelated cards that happen to be adjacent. Each slides down into
+   place as it fades in. */
+.stackmember {
+  opacity: 0; transform: translateY(-10px);
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+/* Arriving staggers, leaving does not. A staggered exit reads as the app
+   hesitating -- things leave together and come back one at a time. This
+   works because a closing element takes its delay from the state it is
+   moving TO, which is the rule above, whose shorthand carries an implicit
+   0s delay. So the stagger only ever applies on the way in. `--i` is set
+   per member in StackCard.tsx, which is what makes it correct at any depth
+   rather than up to however many nth-child lines were written out. */
+.stack.open .stackmember {
+  opacity: 1; transform: none;
+  transition-delay: calc(var(--stag) * var(--i));
+}
+
+/* NOT belt and braces here, unlike WorkingStrip.css's own block. theme.css
+   stops `animation` globally and `transition` only on .card and .btn --
+   every rule above is a transition on neither, so without this the whole
+   slide would still run for someone who asked the OS for less motion.
+
+   Only the transitions go. visibility and opacity are deliberately left
+   alone: zeroing them here would open the stack onto nothing. */
+@media (prefers-reduced-motion: reduce) {
+  .stackmembers, .stack.open .stackmembers,
+  .stackmember, .stack.open .stackmember,
+  .stackchev { transition: none; }
+}
+
+/* A sibling of .stacktoggle, not a child: the toggle is a button, and a
+   button inside a button is invalid HTML that browsers silently un-nest,
+   which would drop these two controls out of the face entirely. */
+.stackmove { flex: none; display: flex; flex-direction: column; gap: 4px; }
+.stackmove button {
+  font-family: var(--f-mono); font-size: 10px; color: var(--muted);
+  background: none; border: 1px solid var(--line); border-radius: 5px;
+  padding: 3px 7px; cursor: pointer;
+}
+.stackmove button:hover { color: var(--ink); border-color: var(--accent); }

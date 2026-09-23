@@ -12,6 +12,9 @@ import type { FleetListPayload } from '../../main/ipc.ts';
 // of state.ts in the first place.
 import type { OpenSession } from '../../fleet/state.ts';
 import { compareOpenSessions } from '../../fleet/order.ts';
+// groups.ts imports nothing but react -- safe from the renderer, unlike
+// fleet/state.ts, which reaches node:os and the database.
+import { pruneAssignments, resolvePendingCategories } from './groups.ts';
 
 export type PaneView = 'conversation' | 'terminal';
 export type Selection = { pid: number; view: PaneView } | null;
@@ -50,18 +53,16 @@ export function useFleet() {
   }, []);
   const clear = useCallback(() => setSelection(null), []);
 
-  // Cmd+1..9 (App.tsx's own window keydown listener) and the small hotkey
-  // number OpenSessionCard shows on both the grid and the rail (spec:
-  // "same numbering everywhere... in sidebar order") both need ONE
-  // canonical ranking, computed once, here, rather than each view deriving
-  // its own -- otherwise a card's own number could disagree with what
-  // Cmd+N actually selects. This mirrors SessionRail's own unread-promotion
-  // sort exactly (same comparator, same "recorded on first sight or while
-  // selected" baseline rule) so the ranking matches what the sidebar shows
-  // whenever it's the thing on screen; SessionRail keeps its own separate
-  // tracking for its unread DOT and its own live reordering, which this
-  // does not replace -- this exists solely to give every card a single,
-  // globally-agreed number.
+  // NO LONGER what feeds Cmd+1..9 or the cards' own hotkey numbers -- David's
+  // slot model ("slot 1 is always slot 1... a card moving must not move the
+  // chord that reaches it") needs the rail's actual row layout (categories,
+  // folder stacks, his own manual order), none of which this ranking knows
+  // about; App.tsx now builds that from src/renderer/state/useRailSlots.ts
+  // instead. `orderedSessions` below is otherwise unchanged and still
+  // exercised directly by its own tests (tests/renderer/useFleet.test.tsx),
+  // so it stays rather than being pulled out mid-task; flagged in this
+  // branch's own report as a candidate for removal if nothing else comes to
+  // need it.
   const [seenEvents, setSeenEvents] = useState<Map<number, number>>(new Map());
   useEffect(() => {
     if (!payload) return;
@@ -78,6 +79,22 @@ export function useFleet() {
       return next ?? prev;
     });
   }, [payload, selection?.pid]);
+
+  // Category bookkeeping belongs on the fleet push, and this hook is the
+  // single subscriber to fleet:update -- SessionRail is not mounted in every
+  // view, and neither of these may depend on which pane is on screen.
+  //
+  // Resolve first, then prune: resolve only ever assigns a session id that
+  // is in THIS push, so the prune below can never undo what it just did.
+  useEffect(() => {
+    if (!payload) return;
+    const open = payload.openSessions;
+    if (open.length === 0) return;
+    resolvePendingCategories(open);
+    pruneAssignments(
+      open.map(s => s.sessionId).filter((id): id is string => id !== null && id !== ''),
+    );
+  }, [payload]);
 
   const orderedSessions = useMemo<OpenSession[]>(() => {
     if (!payload) return [];

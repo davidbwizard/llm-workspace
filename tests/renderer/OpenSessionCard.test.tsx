@@ -6,6 +6,9 @@ import type { OpenSession } from '../../src/fleet/state.ts';
 import type { KillResult } from '../../src/main/ipc.ts';
 import type { LaunchResult } from '../../src/main/launch.ts';
 import { getFavourites, addFavourite, reloadFavourites } from '../../src/renderer/state/favourites.ts';
+import {
+  reloadGroups, categoryNames, categoryOfSession, assignCategory, pruneAssignments, MAX_CATEGORIES,
+} from '../../src/renderer/state/groups.ts';
 
 // favourites.ts is a module-scoped singleton store (settings.ts's own
 // shape) -- clearing localStorage alone leaves the in-memory value
@@ -875,7 +878,7 @@ describe('OpenSessionCard', () => {
       const { container } = renderCompact({}, { onReveal: vi.fn(async () => {}) });
       fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
       expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
-        .toEqual(['Show in iTerm2', 'Reattach in app', 'Add folder to favourites', 'Close session']);
+        .toEqual(['Show in iTerm2', 'Reattach in app', 'Add to category', 'Add folder to favourites', 'Close session']);
     });
 
     it('omits Reattach for a session that is already tmux-backed, and Show in host with no host', () => {
@@ -886,7 +889,7 @@ describe('OpenSessionCard', () => {
       const { container } = renderCompact({ tmux: true, host: 'unknown' });
       fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
       expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
-        .toEqual(['Add folder to favourites', 'Close session']);
+        .toEqual(['Add to category', 'Add folder to favourites', 'Close session']);
     });
 
     it.each([
@@ -969,12 +972,12 @@ describe('OpenSessionCard', () => {
     // David's addition: the "⋯" menu now exists on a full card too, but
     // ONLY for favouriting -- Close/Reattach stay exactly as they were,
     // visible inline pills, never duplicated into this menu for a full card.
-    it('offers a session-actions menu on a full card too, with only the favourites item in it', () => {
+    it('offers a session-actions menu on a full card too, with the category and favourites items in it', () => {
       const { container } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
         onReattach={neverReattach()} onResume={neverResume()} state={enrichedCompact} />);
       fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
       expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
-        .toEqual(['Add folder to favourites']);
+        .toEqual(['Add to category', 'Add folder to favourites']);
       // Close/Reattach still render as their own visible pills, unaffected.
       expect(screen.getByRole('button', { name: /^Close, pid/ })).toBeTruthy();
     });
@@ -1027,6 +1030,274 @@ describe('OpenSessionCard', () => {
     return render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
       onResume={neverResume()} compact state={{ ...enrichedCompact, ...over }} {...props} />);
   }
+});
+
+// Categories (Task 1's groups.ts store), filed from this card's own "..."
+// menu. A top-level describe, not nested inside `describe('OpenSessionCard',
+// ...)` above: it needs its own beforeEach clearing groups.ts's storage
+// (the outer describe's beforeEach only resets favourites.ts), and nothing
+// here depends on state declared inside that block.
+describe('the category menu item', () => {
+  // A session-keyed store, so the fixture needs a real sessionId -- the
+  // base fixture is deliberately unmatched (sessionId: null), which is the
+  // "cannot be categorised" case tested last.
+  const matched: OpenSession = {
+    ...base, match: 'unique', sessionId: 's1', activity: 'working', tmux: true,
+  };
+
+  function renderCat(over: Partial<OpenSession> = {}) {
+    return render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
+      onResume={neverResume()} compact state={{ ...matched, ...over }} />);
+  }
+
+  function openCategoryPanel() {
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^(Add to category|Category: )/ }));
+  }
+
+  beforeEach(() => { localStorage.clear(); reloadGroups(); });
+
+  it('offers to put the session in a category', () => {
+    renderCat();
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    expect(screen.getByRole('button', { name: 'Add to category' })).toBeTruthy();
+  });
+
+  it('creates a name and assigns the session to it in one go', () => {
+    renderCat();
+    openCategoryPanel();
+    const field = screen.getByRole('textbox', { name: /new category name/i });
+    fireEvent.change(field, { target: { value: 'Fleet' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+    expect(categoryOfSession('s1')).toBe('Fleet');
+    expect(categoryNames()).toEqual(['Fleet']);
+  });
+
+  // THE case David will actually hit, and the one the exact-session-identity
+  // work exists to make possible: two sessions in the same repo, each with
+  // its own id because applyExactMatches resolved each pid from its live
+  // session file, filed under two different names. A shared cwd is not a
+  // barrier -- this test is what says so.
+  it('files two sessions sharing a folder under two different categories', () => {
+    const { unmount } = render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+      onReattach={neverReattach()} onResume={neverResume()} compact
+      state={{ ...matched, pid: 101, cwd: '/repo', sessionId: 's1', match: 'unique' }} />);
+    openCategoryPanel();
+    let field = screen.getByRole('textbox', { name: /new category name/i });
+    fireEvent.change(field, { target: { value: 'Review' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+    unmount();
+
+    render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()}
+      onReattach={neverReattach()} onResume={neverResume()} compact
+      state={{ ...matched, pid: 102, cwd: '/repo', sessionId: 's2', match: 'unique' }} />);
+    openCategoryPanel();
+    field = screen.getByRole('textbox', { name: /new category name/i });
+    fireEvent.change(field, { target: { value: 'Shipping' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+
+    expect(categoryOfSession('s1')).toBe('Review');
+    expect(categoryOfSession('s2')).toBe('Shipping');
+    expect(categoryNames()).toEqual(['Review', 'Shipping']);
+  });
+
+  it('names the current category on the menu item once assigned', () => {
+    assignCategory('s1', 'Fleet');
+    renderCat();
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    expect(screen.getByRole('button', { name: 'Category: Fleet' })).toBeTruthy();
+  });
+
+  it('assigns to a name another session already created', () => {
+    assignCategory('other', 'Fleet');
+    renderCat();
+    openCategoryPanel();
+    fireEvent.click(screen.getByRole('button', { name: 'Fleet' }));
+    expect(categoryOfSession('s1')).toBe('Fleet');
+  });
+
+  it('marks the current category as the chosen one', () => {
+    assignCategory('s1', 'Fleet');
+    renderCat();
+    openCategoryPanel();
+    // No @testing-library/jest-dom in this repo (verified: package.json
+    // never mentions it, vitest.config.ts registers no setupFiles) -- so
+    // this reads the attribute directly rather than using toHaveAttribute.
+    expect(screen.getByRole('button', { name: 'Fleet' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('clears the category through No category, leaving the name standing', () => {
+    assignCategory('s1', 'Fleet');
+    renderCat();
+    openCategoryPanel();
+    fireEvent.click(screen.getByRole('button', { name: 'No category' }));
+    expect(categoryOfSession('s1')).toBeNull();
+    expect(categoryNames()).toEqual(['Fleet']);
+  });
+
+  it('renames a category, and the session follows the new name', () => {
+    assignCategory('s1', 'Fleet');
+    renderCat();
+    openCategoryPanel();
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Fleet' }));
+    const field = screen.getByRole('textbox', { name: /new name for Fleet/i });
+    fireEvent.change(field, { target: { value: 'Shipping' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+    expect(categoryOfSession('s1')).toBe('Shipping');
+  });
+
+  it('says why a rename was refused rather than failing silently', () => {
+    assignCategory('other', 'Review');
+    assignCategory('s1', 'Fleet');
+    renderCat();
+    openCategoryPanel();
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Fleet' }));
+    const field = screen.getByRole('textbox', { name: /new name for Fleet/i });
+    fireEvent.change(field, { target: { value: 'Review' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+    expect(screen.getByText(/already a category/i)).toBeTruthy();
+    expect(categoryOfSession('s1')).toBe('Fleet');
+  });
+
+  // The spec's rule, and the UI half of it: "The UI shows why, rather than
+  // hiding the option."
+  it('blocks Delete while a live session holds the name, and explains it on the button', () => {
+    assignCategory('s1', 'Fleet');
+    renderCat();
+    openCategoryPanel();
+    const del = screen.getByRole('button', { name: 'Delete Fleet' }) as HTMLButtonElement;
+    expect(del.disabled).toBe(true);
+    const why = screen.getByText(/a session is in Fleet/i);
+    expect(del.getAttribute('aria-describedby')).toBe(why.getAttribute('id'));
+    expect(categoryNames()).toEqual(['Fleet']);
+  });
+
+  it('deletes a name that nothing holds', () => {
+    assignCategory('other', 'Fleet');
+    // The rail prunes on every fleet push; here the session simply is not live.
+    pruneAssignments(['s1']);
+    renderCat();
+    openCategoryPanel();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Fleet' }));
+    expect(categoryNames()).toEqual([]);
+  });
+
+  // Disabled WITH THE REASON VISIBLE, not hidden and not in a title
+  // attribute -- a tooltip explains nothing to anyone on a keyboard or a
+  // screen reader, the same call this app already makes for the Codex
+  // reattach line and the name field in the launch dropdown.
+  it('says a folder is shared, when that is why it cannot file this one', () => {
+    renderCat({ sessionId: null, match: 'ambiguous' });
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    const item = screen.getByRole('button', { name: 'Add to category' }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    const why = screen.getByText(/several sessions share this folder/i);
+    expect(why.textContent).toMatch(/cannot tell which one this is/i);
+    expect(item.getAttribute('aria-describedby')).toBe(why.getAttribute('id'));
+  });
+
+  // The other cause of a null sessionId, and a different sentence: nothing
+  // matched this process at all, which is not the same as too much matching.
+  it('says no conversation was matched, when THAT is why', () => {
+    renderCat({ sessionId: null, match: 'unknown' });
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    expect((screen.getByRole('button', { name: 'Add to category' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/no conversation matched to this process yet/i)).toBeTruthy();
+  });
+
+  it('shows no reason at all once the session is uniquely matched', () => {
+    renderCat();
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    expect(screen.queryByText(/several sessions share this folder/i)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Add to category' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('never opens the session when a category control is clicked', () => {
+    const onOpen = vi.fn();
+    render(<OpenSessionCard onOpen={onOpen} onKill={neverKill()} onReattach={neverReattach()}
+      onResume={neverResume()} compact state={matched} />);
+    openCategoryPanel();
+    fireEvent.click(screen.getByRole('button', { name: 'No category' }));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  // Fix, post-review: the brief's own create-field code called
+  // assignCategory unconditionally on Enter, so hitting MAX_CATEGORIES made
+  // it silently discard the typed name and close the menu -- a control that
+  // accepts input, looks like it worked, and quietly drops it. Same
+  // disabled-with-reason treatment as every other blocked control on this
+  // card, applied to the create affordance specifically: the cap bounds how
+  // many NAMES exist (assignCategory's own `!known && length >= MAX`
+  // refusal, groups.ts), not who may pick a name that already exists, so
+  // only creation is blocked here -- proven by the second test below.
+  describe('the category cap', () => {
+    function fillCategoriesToCap() {
+      for (let i = 0; i < MAX_CATEGORIES; i++) assignCategory('filler', `Cat${i}`);
+    }
+
+    it('disables creating a new category once the cap is reached, with the reason visible and associated', () => {
+      fillCategoriesToCap();
+      renderCat();
+      openCategoryPanel();
+      const field = screen.getByRole('textbox', { name: /new category name/i }) as HTMLInputElement;
+      expect(field.disabled).toBe(true);
+      const why = screen.getByText(new RegExp(`${MAX_CATEGORIES} categories`, 'i'));
+      expect(field.getAttribute('aria-describedby')).toBe(why.getAttribute('id'));
+    });
+
+    // The distinction the review specifically asked not to get wrong: the
+    // cap is on the STORE, not on assigning to a name that already exists.
+    it('still lets a session be filed under an EXISTING category once the cap is reached', () => {
+      fillCategoriesToCap();
+      renderCat();
+      openCategoryPanel();
+      fireEvent.click(screen.getByRole('button', { name: 'Cat0' }));
+      expect(categoryOfSession('s1')).toBe('Cat0');
+    });
+  });
+});
+
+// The keyboard half of dragging (Task 9): Move up/Move down in the card's
+// own menu, calling the SAME store function (groups.ts's moveRow) a drop
+// calls -- see SessionRail.test.tsx's "reordering rows" describe for the
+// end-to-end proof that they do. This file only proves the wiring: the
+// items appear exactly when wired, call exactly what they're given, and
+// never touch onOpen or the fold/unfold state of anything else.
+describe('the move menu items', () => {
+  function renderMovable(props: Record<string, unknown> = {}) {
+    return render(<OpenSessionCard onOpen={() => {}} onKill={neverKill()} onReattach={neverReattach()}
+      onResume={neverResume()} compact state={base} {...props} />);
+  }
+
+  // Absent unless wired, so every existing menu assertion in this file --
+  // which renders the card without them -- keeps its exact item list.
+  it('adds nothing to the menu when no move handlers are given', () => {
+    const { container } = renderMovable();
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
+      .not.toContain('Move up');
+  });
+
+  it('offers Move up and Move down, and closes the menu after one', () => {
+    const onMoveUp = vi.fn();
+    const onMoveDown = vi.fn();
+    const { container } = renderMovable({ onMoveUp, onMoveDown });
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move up' }));
+    expect(onMoveUp).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.cardmenu-list')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move down' }));
+    expect(onMoveDown).toHaveBeenCalledTimes(1);
+  });
+
+  it('never opens the session when a move item is clicked', () => {
+    const onOpen = vi.fn();
+    renderMovable({ onOpen, onMoveUp: vi.fn(), onMoveDown: vi.fn() });
+    fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move up' }));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
 });
 
 /* ---- Status row, variant A -------------------------------------------

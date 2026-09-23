@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 // TYPE-only from state.ts: that module imports node:os and reaches the
 // database, neither of which exists in a sandboxed renderer. A type import is
 // erased at build so it costs nothing; the comparator itself comes from
@@ -6,11 +6,18 @@ import { useEffect, useState } from 'react';
 // compareOpenSessions from state.ts threw at module load and rendered the
 // whole window blank -- see order.ts's comment.
 import type { OpenSession } from '../../fleet/state.ts';
-import { compareOpenSessions } from '../../fleet/order.ts';
+import type { RailRow } from '../../fleet/order.ts';
 import type { KillResult } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { OpenSessionCard } from './OpenSessionCard.tsx';
+import { StackCard } from './StackCard.tsx';
+import { RailAttentionBar } from './RailAttentionBar.tsx';
 import { compactIn, useSettings } from '../state/settings.ts';
+// The same folder-name helper StackCard's face uses, so the bar names a stack
+// exactly as the stack names itself rather than inventing a second spelling.
+import { lastSegment } from '../state/favourites.ts';
+import { isStackOpen, toggleStack, rememberKeys, moveRow } from '../state/groups.ts';
+import { useRailSlots } from '../state/useRailSlots.ts';
 import './SessionRail.css';
 
 // Sensible bounds for a drag-resized rail: narrow enough to reclaim real
@@ -110,6 +117,11 @@ export function SessionRail({
   const [width, setWidth] = useState<number>(() => readStoredRailWidth() ?? RAIL_DEFAULT_WIDTH);
   useEffect(() => { writeStoredRailWidth(width); }, [width]);
 
+  // Which row is currently being dragged. Component state, not the store:
+  // it lasts for the length of one gesture and nothing outside this rail has
+  // any use for it.
+  const [dragKey, setDragKey] = useState<string | null>(null);
+
   // Unread tracking: `events` is the one counter OpenSession always grows
   // monotonically as new agent output arrives for a uniquely-matched
   // session (see fleet/state.ts's own doc comment on OpenSession --
@@ -189,62 +201,287 @@ export function SessionRail({
   // yet) that only this component tracks -- src/fleet/state.ts's own
   // relevance sort (openSessions/openSessionsLive, run in the main
   // process before `sessions` ever reaches here) has no visibility into
-  // it and so cannot rank by it. This layers that tier in on top of the
-  // order already baked into `sessions` (blocked first, then recency,
-  // junk last) by reusing the SAME comparator those two builders use,
-  // rather than a second, hand-rolled reordering that could drift from
-  // theirs: `isUnread` supplies the one signal only the rail has, and the
-  // received array's own index stands in for the recency rank neither
-  // builder exposes past this point (OpenSession carries no timestamp of
-  // its own -- see compareOpenSessions' doc comment) -- it already
-  // reflects that ordering correctly, so re-deriving it here would only
-  // risk disagreeing with it.
+  // it, and neither does useRailSlots below, which computes the row ORDER
+  // both this component and App.tsx share. isUnread is no longer fed into
+  // that order at all (see useRailSlots.ts's own doc comment for the proof
+  // that doing so was already inert, and why dropping it is what makes the
+  // computation callable from App, which cannot see this component's own
+  // `seenEvents`). What's left for isUnread here is the per-viewer signal
+  // itself: the unread DOT on a card, and the `unread` prop a folded
+  // StackCard shows for a member you have not looked at -- neither is
+  // about row order.
   function isUnread(s: OpenSession): boolean {
     return s.pid !== selectedPid && s.events != null && s.events > (seenEvents.get(s.pid) ?? s.events);
   }
-  const rankByPid = new Map(sessions.map((s, i) => [s.pid, i]));
-  const displaySessions = [...sessions].sort(compareOpenSessions(
-    // Sent across on OpenSession, not recomputed here: the check needs
-    // tmpdir() and this is a sandboxed renderer. It cannot be skipped either
-    // -- the unread tier below is checked before the rank tiers, so without
-    // it an unread junk card would be promoted above a real session.
-    s => s.junk,
-    s => rankByPid.get(s.pid) ?? 0,
-    () => 0, // no ties possible on the rank above (pid-unique indices), so no secondary signal is needed
-    isUnread,
-  ));
+
+  // The ONE shared row layout -- see useRailSlots.ts's own doc comment for
+  // why this must be the same computation App.tsx uses for Cmd+1..9, rather
+  // than a second, rail-local one that could drift from it. This component
+  // still owns `isStackOpen`/`toggleStack`/`moveRow` calls directly below,
+  // since those read and write the SAME groups.ts store useRailSlots already
+  // subscribes this render to.
+  const { sections } = useRailSlots(sessions);
+
+  // Renders one session's card, identical whether it sits loose in the rail
+  // or inside an opened StackCard -- this rail wires each OpenSessionCard to
+  // seven handlers plus its own unread and cmdIndex state, and a second copy
+  // of that wiring (one here, one in StackCard) could only ever drift from
+  // this one.
+  //
+  // `move` is the keyboard half of dragging (Task 9): absent for a member
+  // rendered INSIDE a stack (StackCard's own renderMember callback below
+  // takes one argument, so a member always gets undefined here) -- a
+  // session inside a stack cannot be reordered on its own, because the drag
+  // unit is the whole row, never a member of it. No `key` here any more:
+  // the row wrapper added by the caller below now owns it, since that
+  // wrapper -- not this div -- is what the drag handlers attach to.
+  function renderSession(
+    s: OpenSession,
+    move?: { up?: () => void; down?: () => void },
+  ): JSX.Element {
+    const waiting = s.activity === 'waiting_permission' || s.activity === 'waiting_input';
+    const unread = isUnread(s);
+    return (
+      <div className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
+        <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill} onReveal={onReveal}
+          onReattach={onReattach} onResume={onResume} unread={unread} compact={compact}
+          cmdIndex={cmdIndexByPid?.get(s.pid)} onMoveUp={move?.up} onMoveDown={move?.down} />
+        {waiting && (
+          // Named with project and pid, matching the neighbouring Close
+          // button's own convention (OpenSessionCard.tsx's
+          // `Close, pid ${pid}`) -- with two waiting sessions in the rail, a
+          // bare "Answer" would put two indistinguishable buttons in the
+          // accessibility tree, defeating the rail's whole point of telling
+          // sessions apart. Task 5: selects this pid and switches to the
+          // Conversation view, where the prompt card (or its waiting-card
+          // fallback) lives -- no popover opens here any more.
+          <button type="button" className="railreply"
+            aria-label={`Answer ${s.project}, pid ${s.pid}`}
+            onClick={() => onAnswer?.(s.pid)}>
+            Answer
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // Pruning a dead assignment is NOT done here. It belongs on the fleet push
+  // itself, which useFleet owns (Task 8) -- this component is not mounted in
+  // every view, and an assignment's lifetime must not depend on which pane
+  // happens to be on screen. If a stale assignment were ever to outlive its
+  // session anyway, nothing would render for it, because rows are built from
+  // the live sessions, not from the map.
+  //
+  // The join/split below is how a string dependency stands in for an array
+  // one: useEffect compares deps by identity, and a fresh array each render
+  // would fire it forever. NUL (\0), not \n: a row key can be a raw
+  // filesystem cwd, and a newline is a legal byte inside a POSIX path -- two
+  // different key sets could then join to the same string and the effect
+  // would skip remembering the new one. NUL is the one byte a path can never
+  // contain, so it is the only separator this join can use safely.
+  // Which rows carry an attention state, and what to call them. Waiting beats
+  // unread, the same priority OpenSessionCard's classname and StackCard's
+  // face already use. A stack answers for its members: folding one must not
+  // fold away the fact that something inside it needs you.
+  function attnKindOf(row: RailRow<OpenSession>): 'waiting' | 'unread' | null {
+    const members = row.kind === 'stack' ? row.members : [row.session];
+    if (members.some(m => m.activity === 'waiting_permission' || m.activity === 'waiting_input')) return 'waiting';
+    if (members.some(isUnread)) return 'unread';
+    return null;
+  }
+
+  function attnLabelOf(row: RailRow<OpenSession>): string | null {
+    if (attnKindOf(row) === null) return null;
+    return row.kind === 'stack' ? lastSegment(row.cwd) : row.session.project;
+  }
+
+  // The off-screen half. Rows no longer move on their own, so a session that
+  // starts waiting can sit below the fold with nothing on screen saying so --
+  // see RailAttentionBar's own comment for why this is the half that makes
+  // the ordering decision safe rather than a nicety.
+  //
+  // IntersectionObserver rather than scroll maths: it fires only when
+  // visibility actually changes, so an idle rail costs nothing, and it stays
+  // correct through resizes and stack opens without listening for either.
+  const cardsRef = useRef<HTMLDivElement | null>(null);
+  const [offscreen, setOffscreen] = useState<
+    { kind: 'waiting' | 'unread'; label: string; direction: 'up' | 'down' } | null
+  >(null);
+
+  useEffect(() => {
+    const root = cardsRef.current;
+    // jsdom implements no IntersectionObserver, and there may be no root on
+    // the first pass. Show nothing rather than throw: the bar is an aid, and
+    // every card still carries its own attention treatment without it.
+    if (!root || typeof IntersectionObserver === 'undefined') return;
+
+    const marked = Array.from(root.querySelectorAll<HTMLElement>('[data-attn]'));
+    if (marked.length === 0) { setOffscreen(null); return; }
+
+    const recompute = (): void => {
+      const bounds = root.getBoundingClientRect();
+      let best: { kind: 'waiting' | 'unread'; label: string; direction: 'up' | 'down' } | null = null;
+      for (const el of marked) {
+        const box = el.getBoundingClientRect();
+        // Genuinely outside the scroll viewport, not merely clipped by a few
+        // pixels -- a card half in view needs no signpost pointing at it.
+        const above = box.bottom <= bounds.top;
+        const below = box.top >= bounds.bottom;
+        if (!above && !below) continue;
+        const kind = el.dataset.attn === 'waiting' ? 'waiting' as const : 'unread' as const;
+        // Waiting anywhere outranks unread anywhere; among equals the first in
+        // rail order wins, so the bar cannot flip between two candidates.
+        if (best === null || (kind === 'waiting' && best.kind === 'unread')) {
+          best = { kind, label: el.dataset.attnLabel ?? '', direction: above ? 'up' : 'down' };
+        }
+      }
+      setOffscreen(best);
+    };
+
+    const io = new IntersectionObserver(recompute, { root, threshold: 0 });
+    for (const el of marked) io.observe(el);
+    recompute();
+    return () => { io.disconnect(); };
+  });
+
+  const rowKeys = sections.flatMap(sec => sec.rows.map(r => r.key)).join('\0');
+  useEffect(() => {
+    if (rowKeys !== '') rememberKeys(rowKeys.split('\0'));
+  }, [rowKeys]);
+
+  // Which section each row is in, so a drop can be refused across a section
+  // boundary. Built from the sections that were just computed rather than by
+  // asking the store again, so the map and the render can never disagree.
+  const sectionOfKey = new Map<string, string | null>();
+  for (const section of sections) {
+    for (const row of section.rows) sectionOfKey.set(row.key, section.name);
+  }
+
+  /** Moves `key` one place within its OWN section, using the neighbour as it
+   *  is rendered rather than the neighbour in storage -- the stored order
+   *  outlives the rows in it, so an adjacent stored key may be a folder with
+   *  nothing running in it and stepping onto that would look like a skip. */
+  function moveWithinSection(rows: RailRow<OpenSession>[], key: string, delta: -1 | 1): void {
+    const i = rows.findIndex(r => r.key === key);
+    const target = rows[i + delta];
+    if (target === undefined) return;
+    moveRow(key, target.key);
+  }
+
+  function dragProps(key: string): React.HTMLAttributes<HTMLDivElement> & { draggable: true } {
+    return {
+      draggable: true,
+      onDragStart: e => {
+        setDragKey(key);
+        // Chromium and Firefox both refuse to start a drag with nothing on
+        // the transfer, so this is required even though the payload is
+        // never read back -- dragKey above is the real handle.
+        e.dataTransfer.setData('text/plain', key);
+        e.dataTransfer.effectAllowed = 'move';
+      },
+      // preventDefault on dragover is what marks an element as a valid drop
+      // target. NOT calling it is therefore how a drop is refused, and the
+      // browser shows the "no drop" cursor for free.
+      onDragOver: e => {
+        if (dragKey === null || dragKey === key) return;
+        if (sectionOfKey.get(dragKey) !== sectionOfKey.get(key)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+      },
+      onDrop: e => {
+        e.preventDefault();
+        if (dragKey !== null && dragKey !== key
+          && sectionOfKey.get(dragKey) === sectionOfKey.get(key)) {
+          // The ONE function the menu items call too, so drag and keyboard
+          // can never drift into two different notions of "one place up".
+          moveRow(dragKey, key);
+        }
+        setDragKey(null);
+      },
+      // Fires whether the drag landed or was abandoned, so the handle is
+      // always cleared -- a stale dragKey would make the next click-drag
+      // start from the wrong row.
+      onDragEnd: () => setDragKey(null),
+    };
+  }
 
   return (
     <nav className={`rail ${side}`} style={{ width }} aria-label="Open sessions">
       {side === 'right' && handle}
-      <div className="railcards">
-        {displaySessions.map(s => {
-          const waiting = s.activity === 'waiting_permission' || s.activity === 'waiting_input';
-          const unread = isUnread(s);
-          return (
-            <div key={s.pid} className={s.pid === selectedPid ? 'railitem sel' : 'railitem'}>
-              <OpenSessionCard state={s} onOpen={onSelect} onKill={onKill} onReveal={onReveal}
-                onReattach={onReattach} onResume={onResume} unread={unread} compact={compact}
-                cmdIndex={cmdIndexByPid?.get(s.pid)} />
-              {waiting && (
-                // Named with project and pid, matching the neighbouring
-                // Close button's own convention (OpenSessionCard.tsx's
-                // `Close, pid ${pid}`) -- with two waiting sessions in the
-                // rail, a bare "Answer" would put two indistinguishable
-                // buttons in the accessibility tree, defeating the rail's
-                // whole point of telling sessions apart. Task 5: selects
-                // this pid and switches to the Conversation view, where the
-                // prompt card (or its waiting-card fallback) lives -- no
-                // popover opens here any more.
-                <button type="button" className="railreply"
-                  aria-label={`Answer ${s.project}, pid ${s.pid}`}
-                  onClick={() => onAnswer?.(s.pid)}>
-                  Answer
-                </button>
-              )}
-            </div>
-          );
-        })}
+      {offscreen && (
+        <RailAttentionBar
+          kind={offscreen.kind}
+          // Composed here, not stored: `label` in state is the row's bare
+          // NAME, which is also what the selector below matches on. Using the
+          // display sentence as a DOM selector would break the scroll the
+          // moment anyone reworded the copy.
+          label={offscreen.kind === 'waiting'
+            ? `${offscreen.label} is waiting on you`
+            : `${offscreen.label} has new output`}
+          direction={offscreen.direction}
+          onGo={() => {
+            const el = cardsRef.current?.querySelector(`[data-attn-label="${CSS.escape(offscreen.label)}"]`);
+            el?.scrollIntoView({
+              block: 'nearest',
+              behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+            });
+          }}
+        />
+      )}
+      <div className="railcards" ref={cardsRef}>
+        {sections.map(section => (
+          // The key for the unnamed section cannot collide with a real name,
+          // which normalizeGroups guarantees is trimmed and non-empty -- a
+          // leading space is therefore unreachable.
+          <div className="railsection" key={section.name ?? ' uncategorised'}>
+            {section.name !== null && <h2 className="railsectionname">{section.name}</h2>}
+            {section.rows.map((row, i) => {
+              // Absent at each end of the section rather than present and
+              // disabled: a menu item that is always there and sometimes does
+              // nothing is worse than one that is only offered when it can act.
+              const move = {
+                up: i > 0 ? () => moveWithinSection(section.rows, row.key, -1) : undefined,
+                down: i < section.rows.length - 1
+                  ? () => moveWithinSection(section.rows, row.key, 1) : undefined,
+              };
+              // Every member of a stack shares the stack's own slot
+              // (useRailSlots.ts), so any one of them names it -- the first
+              // is picked arbitrarily, not because it is special. Guarded
+              // rather than asserted: groupByFolder never produces an empty
+              // stack, but noUncheckedIndexedAccess still types
+              // row.members[0] as possibly undefined.
+              const stackCmdIndex = row.kind === 'stack'
+                ? (row.members[0] ? cmdIndexByPid?.get(row.members[0].pid) : undefined)
+                : undefined;
+              return (
+                <div className={`railrow${dragKey === row.key ? ' dragging' : ''}`}
+                  key={row.key} {...dragProps(row.key)}
+                  // What the off-screen-attention observer below watches. Set
+                  // on the ROW, not the card, because a folded stack's members
+                  // have no boxes of their own to observe.
+                  data-attn={attnKindOf(row) ?? undefined}
+                  data-attn-label={attnLabelOf(row) ?? undefined}>
+                  {row.kind === 'session'
+                    ? renderSession(row.session, move)
+                    : <StackCard cwd={row.cwd} members={row.members}
+                        open={isStackOpen(row.cwd)} onToggle={toggleStack}
+                        selectedPid={selectedPid} renderMember={renderSession}
+                        onAnswer={onAnswer} onMoveUp={move.up} onMoveDown={move.down}
+                        // Folding a stack must not fold away the fact that
+                        // something arrived in it. isUnread is this rail's
+                        // own per-viewer signal (seenEvents), so the stack
+                        // cannot work it out for itself.
+                        unread={row.members.some(isUnread)}
+                        // A folded stack renders none of its members' own
+                        // badges (CSS hides that whole subtree), so without
+                        // this the number a chord picks would be invisible
+                        // until the stack is opened.
+                        cmdIndex={stackCmdIndex} />}
+                </div>
+              );
+            })}
+          </div>
+        ))}
       </div>
       {side === 'left' && handle}
     </nav>

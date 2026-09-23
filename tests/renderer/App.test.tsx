@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import { App, ErrorBoundary } from '../../src/renderer/App.tsx';
 import { reloadSettings, setSettings } from '../../src/renderer/state/settings.ts';
+import { reloadGroups } from '../../src/renderer/state/groups.ts';
 
 function Boom(): never {
   throw new Error('kaboom');
@@ -78,10 +79,12 @@ describe('App -- appearance', () => {
 
 // Cmd+1..9: a window-level keydown listener, installed once at the app
 // level (App.tsx's own effect has an empty dependency array), that selects
-// an open session the same way clicking its card does. Session order here
-// is plain payload order throughout -- none of these fixtures ever produce
-// an unread promotion, so useFleet.ts's orderedSessions (tested directly,
-// with that promotion, in useFleet.test.tsx) matches it exactly.
+// an open session the same way clicking its card does -- now a SLOT, per
+// David's own model ("slot 1 is always slot 1"), built by
+// src/renderer/state/useRailSlots.ts. Every fixture here uses a distinct
+// cwd per session, so folder stacking never engages and slot order is
+// plain payload order throughout, same as it always was for this describe
+// block.
 describe('App -- Cmd+1..9 session shortcuts', () => {
   const openSessions = (n: number) => Array.from({ length: n }, (_, i) => ({
     pid: i + 1, project: `proj-${i + 1}`, provider: 'claude', activity: null, lastProse: null,
@@ -92,6 +95,12 @@ describe('App -- Cmd+1..9 session shortcuts', () => {
   beforeEach(() => {
     localStorage.clear();
     reloadSettings();
+    // useRailSlots (App.tsx) now reads groups.ts's own persisted row order
+    // -- App never depended on that store before this. Same pairing
+    // SessionRail.test.tsx's own top-level beforeEach uses, and for the
+    // same reason: localStorage.clear() alone does not touch groups.ts's
+    // in-memory singleton, only reloadGroups() does.
+    reloadGroups();
     document.documentElement.removeAttribute('data-theme');
   });
 
@@ -123,10 +132,19 @@ describe('App -- Cmd+1..9 session shortcuts', () => {
     await waitFor(() => expect(container.querySelector('.panetitle')?.textContent).toBe('/proj-2'));
   });
 
-  it('selects the last open session on Cmd+9', async () => {
+  // REWRITTEN for the slot-hotkeys task, and a deliberate behaviour change,
+  // not a bug fix to a test that was merely inconvenient: the old handler
+  // special-cased 9 to mean "the LAST session", so with more than nine open
+  // it selected something OTHER than whatever card was actually showing a
+  // "9" badge (which stopped at the ninth). That directly contradicts
+  // David's own slot rule -- "slot 1 is always slot 1" -- for exactly the
+  // population (>9 open sessions) it used to matter for, so it is dropped:
+  // Cmd+9 now selects slot 9, like every other digit, and always matches
+  // whatever number that card is showing.
+  it('selects the ninth SLOT on Cmd+9, not the last session overall', async () => {
     const { container } = await renderWithSessions(11);
     pressCmd('9');
-    await waitFor(() => expect(container.querySelector('.panetitle')?.textContent).toBe('/proj-11'));
+    await waitFor(() => expect(container.querySelector('.panetitle')?.textContent).toBe('/proj-9'));
   });
 
   it('ignores Cmd+N when there are fewer open sessions than N, and never prevents default', async () => {
@@ -166,6 +184,67 @@ describe('App -- Cmd+1..9 session shortcuts', () => {
     const { unmount } = await renderWithSessions(3);
     unmount();
     expect(() => pressCmd('1')).not.toThrow();
+  });
+
+  // Item 3 of the slot-hotkeys task: what the chord does on a STACK row --
+  // a folded stack is one slot, and the chord has to land somewhere a
+  // person can actually see, so it selects the member that most needs them
+  // and opens the stack in the same keystroke.
+  describe('on a folded stack', () => {
+    async function renderWithFleetSessions(list: unknown[]) {
+      (globalThis as never as { window: { fleet: unknown } }).window.fleet = {
+        listFleet: vi.fn().mockResolvedValue({ version: 1, generatedAt: '', openSessions: list }),
+        listHistory: vi.fn().mockResolvedValue({ version: 1, generatedAt: '', sessions: [], total: 0 }),
+        onFleet: vi.fn(() => () => {}),
+        setTheme: vi.fn().mockResolvedValue({ status: 'set', theme: 'system' }),
+        killSession: vi.fn().mockResolvedValue({ status: 'killed' }),
+        revealSession: vi.fn().mockResolvedValue({ status: 'revealed' }),
+        reattach: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
+        resume: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
+      };
+      const result = render(<App />);
+      await waitFor(() => expect(screen.getByText(`${list.length} open`)).toBeTruthy());
+      return result;
+    }
+
+    const member = (pid: number, activity: string | null) => ({
+      pid, project: 'repo', provider: 'claude', activity, lastProse: null,
+      cwd: '/repo', host: 'iterm2', ageSeconds: 60, rssBytes: null, events: null,
+      sessionId: null, tmux: false, junk: false, match: 'unknown', context: null,
+    });
+
+    it('selects the waiting member and opens the stack, on one chord', async () => {
+      // pid 2 is the one waiting -- if the chord just picked the first
+      // member regardless, this would select pid 1 instead.
+      const stack = [member(1, 'idle'), member(2, 'waiting_input'), member(3, 'idle')] as never[];
+      const { container } = await renderWithFleetSessions(stack);
+      pressCmd('1'); // one slot: the whole stack
+      await waitFor(() => expect(container.querySelector('.stack.open')).toBeTruthy());
+      const selected = container.querySelector('.railitem.sel');
+      expect(selected?.querySelector('[aria-label*="pid 2"]')).toBeTruthy();
+    });
+
+    it('selects the first member when none of them are waiting', async () => {
+      const stack = [member(1, 'idle'), member(2, 'idle'), member(3, 'idle')] as never[];
+      const { container } = await renderWithFleetSessions(stack);
+      pressCmd('1');
+      await waitFor(() => expect(container.querySelector('.stack.open')).toBeTruthy());
+      const selected = container.querySelector('.railitem.sel');
+      expect(selected?.querySelector('[aria-label*="pid 1"]')).toBeTruthy();
+    });
+
+    // A stack already open must stay open, not toggle closed -- the guard is
+    // `!isStackOpen`, so a second chord on the same stack is a no-op on its
+    // open state, unlike an unconditional toggleStack() call would be.
+    it('leaves an already-open stack open on a second chord, rather than closing it', async () => {
+      const stack = [member(1, 'idle'), member(2, 'waiting_input')] as never[];
+      const { container } = await renderWithFleetSessions(stack);
+      pressCmd('1');
+      await waitFor(() => expect(container.querySelector('.stack.open')).toBeTruthy());
+      pressCmd('1');
+      await waitFor(() => expect(container.querySelector('.railitem.sel')).toBeTruthy());
+      expect(container.querySelector('.stack.open')).toBeTruthy();
+    });
   });
 });
 
