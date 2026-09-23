@@ -86,13 +86,20 @@
    path and the summary, so folding never depends on hitting a small chevron. */
 .stacktoggle {
   flex-grow: 1; min-width: 0; background: none; border: none; padding: 0;
-  text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 6px;
+  text-align: left; cursor: pointer; display: flex; flex-direction: column;
+  /* The SAME gap SessionCard.css gives .card. A stack face and a plain card
+     sit next to each other in one column, so a different internal rhythm
+     reads as inconsistent padding even though the padding is identical. */
+  gap: 10px;
   font: inherit; color: inherit;
 }
 /* The count and the unread dot share a row so the dot sits beside the pill
    rather than on its own line -- .stacktoggle is a column, so a bare sibling
    would drop to the next line. align-self keeps the row content-width. */
-.stacktop { display: flex; align-items: center; gap: 7px; align-self: flex-start; }
+/* Spans the row so the chevron can sit hard right against it, the way the
+   approved mockup had it. The pill and dot stay left because they come
+   first; only the chevron takes the auto margin. */
+.stacktop { display: flex; align-items: center; gap: 7px; align-self: stretch; }
 .stackcount {
   font-family: var(--f-mono); font-size: 10px; color: var(--accent);
   background: var(--raised); border-radius: 6px; padding: 3px 8px;
@@ -126,18 +133,22 @@
 /* Same duration and curve as the height below, so the mark and the drawer
    arrive together rather than one trailing the other.
 
-   align-self is what stops the mark ARCING instead of turning in place, and
-   it is not optional. .stacktoggle is a COLUMN flex container, so its cross
-   axis is horizontal and the default align-items:stretch blows this span out
-   to the full width of the card -- a ~250px box with a 12px glyph at its
-   left edge. rotate(180deg) turns about the BOX centre, which is then half a
-   card away from the arrow, so the arrow swings across in a semicircle.
-   `flex: none` does NOT prevent this: it governs the main (vertical) axis.
-   align-self sizes the box to its content, putting the box centre back on
-   the glyph centre. Found by hand-testing the running app -- jsdom computes
-   no layout, so no test in this suite could ever have seen it. */
+   THE BOX MUST HUG THE GLYPH, or the mark ARCS instead of turning in place.
+   rotate(180deg) turns about the box centre, so any box bigger than the
+   glyph swings it through an arc rather than spinning it. This bit once
+   lived as a column child of .stacktoggle, where align-items:stretch blew it
+   out to the full width of the card -- a ~250px box with a 12px glyph at its
+   left edge, which swung the arrow half a card across on every open. It is a
+   ROW child now, where the main axis sizes to content anyway, but align-self
+   stays as the explicit guard so moving it back into a column cannot quietly
+   reintroduce the bug. `flex: none` does NOT do this job: it governs the main
+   axis, which was the wrong one in the column case.
+
+   Found by hand-testing the running app -- jsdom computes no layout and
+   vitest stubs CSS imports, so no test here could ever have seen it. */
 .stackchev {
-  flex: none; align-self: flex-end; display: inline-flex; color: var(--muted);
+  flex: none; align-self: center; margin-left: auto;
+  display: inline-flex; color: var(--muted);
   transition: transform var(--dur) var(--ease);
 }
 .stack.open .stackchev { transform: rotate(180deg); }

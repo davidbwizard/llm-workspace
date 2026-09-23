@@ -113,15 +113,20 @@ export function StackCard({
               the Move up/down pair -- an absolutely-placed dot would sit on
               top of them. Same 8px --signal circle as OpenSessionCard's
               .unread-dot, so the two read as one signal in two places. */}
+          {/* Count, unread dot and chevron share the TOP ROW, so this face has
+              the same four rows a plain card does. On its own line the chevron
+              added a fifth, which is what made a stack read as taller and more
+              loosely spaced than the cards around it.
+
+              The chevron is decorative: aria-expanded on this button already
+              tells a screen reader which way the stack is, so naming it too
+              would say the same thing twice. */}
           <span className="stacktop">
             <span className="stackcount">{members.length} sessions</span>
             {showUnread && <span className="stackunread" aria-label="Unread output" role="img" />}
-          </span>
-          {/* Decorative: aria-expanded on this button already tells a screen
-              reader which way the stack is, so naming the chevron too would
-              say the same thing twice. */}
-          <span className="stackchev" aria-hidden="true">
-            <Icon name="chevron-down" size={12} />
+            <span className="stackchev" aria-hidden="true">
+              <Icon name="chevron-down" size={12} />
+            </span>
           </span>
           <span className="stackname">{label}</span>
           <span className="stackpath">{cwd}</span>

@@ -132,7 +132,20 @@ describe('the stack open/close motion', () => {
   // so the arrow swings across in a semicircle instead of turning in place.
   // `flex: none` does not help; it governs the main (vertical) axis.
   it('sizes the chevron box to its content, so the mark turns in place and does not arc', () => {
-    expect(blockAfter('.stackchev {')).toMatch(/align-self:\s*flex-(end|start)/);
+    // Any of these keeps the box hugging the glyph; `stretch` is the one that
+    // breaks it, and `flex: none` is NOT a substitute (wrong axis).
+    expect(blockAfter('.stackchev {')).toMatch(/align-self:\s*(center|flex-end|flex-start)/);
+    expect(blockAfter('.stackchev {')).not.toMatch(/align-self:\s*stretch/);
+  });
+
+  // A stack face and a plain card sit next to each other in one column, so a
+  // different internal rhythm reads as inconsistent padding even when the
+  // padding is byte-identical -- which is exactly how it looked when the
+  // chevron had its own row and the gap was 6px against the card's 10px.
+  it('spaces its rows like a plain card does, and keeps the chevron on the top row', () => {
+    expect(blockAfter('.stacktoggle {')).toMatch(/gap:\s*10px/);
+    expect(blockAfter('.stackchev {')).toMatch(/margin-left:\s*auto/);
+    expect(blockAfter('.stacktop {')).toMatch(/align-self:\s*stretch/);
   });
 
   // theme.css's blanket reduced-motion rule is `* { animation:none }` plus
