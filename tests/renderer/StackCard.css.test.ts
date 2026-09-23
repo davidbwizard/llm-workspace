@@ -85,6 +85,25 @@ describe('the stack open/close motion', () => {
     expect(blockAfter('.stack.open .stackchev {')).toMatch(/transform:\s*rotate\(180deg\)/);
   });
 
+  // The rail already puts 6px between rows. A stack's margin-bottom is added
+  // ON TOP of that, so any of it the sheets do not occupy becomes extra air
+  // and the stack sits further from the next card than a plain card does --
+  // which is exactly how it looked before these were tied together (8px of
+  // margin over a 5px peek left 9px where every other row had 6px).
+  //
+  // Asserted as the RELATIONSHIP, not as three matching numbers: numbers are
+  // what drifted, so a test that merely restates them would have passed
+  // happily while the gap was wrong.
+  it('hangs the margin exactly as far as the lowest sheet, so the rhythm is even', () => {
+    expect(blockAfter('.stack {')).toMatch(/margin-bottom:\s*var\(--deepest-sheet\)/);
+    expect(blockAfter('.stack {')).toMatch(/--deepest-sheet:\s*var\(--sheet-1\)/);
+    expect(blockAfter('.stack.deep {')).toMatch(/--deepest-sheet:\s*var\(--sheet-2\)/);
+    // And the sheets position themselves from the same two variables, so
+    // moving a sheet moves the margin with it.
+    expect(blockAfter('.stack::after {')).toMatch(/bottom:\s*calc\(var\(--sheet-1\) \* -1\)/);
+    expect(blockAfter('.stack.deep::before {')).toMatch(/bottom:\s*calc\(var\(--sheet-2\) \* -1\)/);
+  });
+
   // A margin on .stackmembers survives the grid row collapsing to 0fr, so it
   // left a dead band under a FOLDED card -- and the deck's sheets, positioned
   // from the bottom of the whole component, floated away from the card by

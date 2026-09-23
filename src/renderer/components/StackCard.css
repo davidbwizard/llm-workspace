@@ -16,12 +16,23 @@
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --stag: 30ms;
   position: relative;
-  /* Room for the deepest sheet to peek without the next row sitting on it.
-     Collapses to nothing once open, because the sheets are gone by then. */
-  margin-bottom: 8px;
+  /* How far the LOWEST sheet hangs below the card. The margin is exactly
+     that, never more: the rail already puts 6px between rows, so any excess
+     here is added on top of it and a stack ends up sitting further from the
+     next card than a plain card does -- which is precisely what it looked
+     like before this was tied together (8px of margin over a 5px peek left
+     9px of air where every other row had 6px).
+
+     Kept as a variable rather than three matching numbers so the two cannot
+     drift apart: the sheets below position themselves from it. Collapses to
+     nothing once open, because the sheets are gone by then. */
+  --sheet-1: 5px;   /* the sheet directly behind the card */
+  --sheet-2: 10px;  /* the one behind that, drawn only when deep */
+  --deepest-sheet: var(--sheet-1);
+  margin-bottom: var(--deepest-sheet);
   transition: margin-bottom var(--dur) var(--ease);
 }
-.stack.deep { margin-bottom: 13px; }
+.stack.deep { --deepest-sheet: var(--sheet-2); }
 .stack.open { margin-bottom: 0; }
 
 /* The deck, built the way iOS stacks notifications: each sheet behind is
@@ -36,14 +47,16 @@
    Depth carries the count: two sheets for three or more sessions, one for
    exactly two, so the deck says roughly how many before the pill is read. */
 .stack::after {
-  content: ""; position: absolute; left: 7px; right: 7px; bottom: -5px; height: 14px;
+  content: ""; position: absolute; left: 7px; right: 7px; height: 14px;
+  bottom: calc(var(--sheet-1) * -1);
   background: color-mix(in srgb, var(--ground) 72%, var(--surface));
   border: 1px solid var(--line-soft); border-top: none;
   border-radius: 0 0 var(--r-md) var(--r-md);
   transition: opacity var(--dur) var(--ease);
 }
 .stack.deep::before {
-  content: ""; position: absolute; left: 14px; right: 14px; bottom: -10px; height: 14px;
+  content: ""; position: absolute; left: 14px; right: 14px; height: 14px;
+  bottom: calc(var(--sheet-2) * -1);
   background: color-mix(in srgb, var(--ground) 44%, var(--surface));
   border: 1px solid var(--line-soft); border-top: none;
   border-radius: 0 0 var(--r-md) var(--r-md);
