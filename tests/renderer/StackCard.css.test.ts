@@ -85,6 +85,20 @@ describe('the stack open/close motion', () => {
     expect(blockAfter('.stack.open .stackchev {')).toMatch(/transform:\s*rotate\(180deg\)/);
   });
 
+  // Found by hand-testing the running app, which is the only place it shows:
+  // jsdom computes no layout, so nothing in this suite can see a rotation
+  // happening about the wrong point.
+  //
+  // .stacktoggle is a COLUMN flex container, so its cross axis is horizontal
+  // and the default align-items:stretch blows .stackchev out to the full
+  // width of the card. The 12px glyph then sits at the left edge of a ~250px
+  // box, and rotate(180deg) turns about the BOX centre -- half a card away --
+  // so the arrow swings across in a semicircle instead of turning in place.
+  // `flex: none` does not help; it governs the main (vertical) axis.
+  it('sizes the chevron box to its content, so the mark turns in place and does not arc', () => {
+    expect(blockAfter('.stackchev {')).toMatch(/align-self:\s*flex-(end|start)/);
+  });
+
   // theme.css's blanket reduced-motion rule is `* { animation:none }` plus
   // `.card, .btn { transition:none }` -- it does NOT cover .stack's
   // transitions, so this block is load-bearing rather than belt and braces.

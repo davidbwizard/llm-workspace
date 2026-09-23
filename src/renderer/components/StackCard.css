@@ -64,9 +64,20 @@
 }
 
 /* Same duration and curve as the height below, so the mark and the drawer
-   arrive together rather than one trailing the other. */
+   arrive together rather than one trailing the other.
+
+   align-self is what stops the mark ARCING instead of turning in place, and
+   it is not optional. .stacktoggle is a COLUMN flex container, so its cross
+   axis is horizontal and the default align-items:stretch blows this span out
+   to the full width of the card -- a ~250px box with a 12px glyph at its
+   left edge. rotate(180deg) turns about the BOX centre, which is then half a
+   card away from the arrow, so the arrow swings across in a semicircle.
+   `flex: none` does NOT prevent this: it governs the main (vertical) axis.
+   align-self sizes the box to its content, putting the box centre back on
+   the glyph centre. Found by hand-testing the running app -- jsdom computes
+   no layout, so no test in this suite could ever have seen it. */
 .stackchev {
-  flex: none; display: inline-flex; color: var(--muted);
+  flex: none; align-self: flex-end; display: inline-flex; color: var(--muted);
   transition: transform var(--dur) var(--ease);
 }
 .stack.open .stackchev { transform: rotate(180deg); }
