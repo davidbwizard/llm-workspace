@@ -32,7 +32,7 @@ export function stackSummary(members: OpenSession[]): string {
  *  plus its unread and cmdIndex state, and threading all of that through here
  *  would duplicate that wiring in a second place that could drift from it. */
 export function StackCard({
-  cwd, members, open, onToggle, selectedPid, renderMember, onAnswer, onMoveUp, onMoveDown, unread, cmdIndex,
+  cwd, members, open, onToggle, selectedPid, renderMember, onAnswer, onMoveUp, onMoveDown, unread, cmdIndex, compact = false,
 }: {
   cwd: string;
   members: OpenSession[];
@@ -71,6 +71,12 @@ export function StackCard({
    *  every existing render of this component (this file's own tests
    *  included) keeps rendering exactly as it did before this existed. */
   cmdIndex?: number;
+  /** The same per-viewer density setting OpenSessionCard takes. Without it a
+   *  stack rendered at FULL size in a compact rail, sitting among cards that
+   *  had shrunk their padding, their gaps, their title and dropped their path
+   *  row entirely -- which reads as the stack having more padding than its
+   *  neighbours even though the two paddings are byte-identical. */
+  compact?: boolean;
 }): JSX.Element {
   const waiting = members.filter(isWaiting);
   const label = lastSegment(cwd);
@@ -89,6 +95,7 @@ export function StackCard({
   const showUnread = unread === true && waiting.length === 0;
 
   const cls = ['stack'];
+  if (compact) cls.push('compact');
   // Two sheets behind the card for three or more sessions, one for exactly
   // two -- the deck's depth says roughly how many are in there before the
   // count pill is read, the way a stacked notification does. It does not keep
@@ -129,7 +136,10 @@ export function StackCard({
             </span>
           </span>
           <span className="stackname">{label}</span>
-          <span className="stackpath">{cwd}</span>
+          {/* Dropped in compact, exactly as OpenSessionCard drops its own
+              .path row: the folder NAME is already the title above, so the
+              full path is the first thing worth losing when space is. */}
+          {!compact && <span className="stackpath">{cwd}</span>}
           <span className="stacksummary">{stackSummary(members)}</span>
         </button>
         {answerable && (

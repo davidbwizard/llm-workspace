@@ -213,6 +213,18 @@
   transition-delay: calc(var(--stag) * var(--i));
 }
 
+/* Compact, mirroring OpenSessionCard.css's own `.card.compact` values rather
+   than picking new ones: a stack and a plain card sit in the same column, so
+   the moment the two densities disagree the stack reads as having more
+   padding than its neighbours -- which is exactly what happened while this
+   component ignored the setting entirely and rendered full-size in a compact
+   rail. If .card.compact's numbers ever change, these change with them. */
+.stack.compact > .stackface { padding: 10px 12px 11px; }
+.stack.compact .stacktoggle { gap: 7px; }
+.stack.compact .stackname { font-size: 15px; }
+.stack.compact .stacksummary { font-size: 12.5px; }
+.stack.compact .stackreply { min-height: 0; padding: 5px 9px; }
+
 /* NOT belt and braces here, unlike WorkingStrip.css's own block. theme.css
    stops `animation` globally and `transition` only on .card and .btn --
    every rule above is a transition on neither, so without this the whole

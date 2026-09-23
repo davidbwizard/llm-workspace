@@ -142,6 +142,17 @@ describe('the stack open/close motion', () => {
   // different internal rhythm reads as inconsistent padding even when the
   // padding is byte-identical -- which is exactly how it looked when the
   // chevron had its own row and the gap was 6px against the card's 10px.
+  // The rail defaults to compact. While this component ignored that setting
+  // it rendered full-size among cards that had shrunk, which is what read as
+  // a stack having more padding than its neighbours -- the paddings were
+  // byte-identical all along. These values MIRROR OpenSessionCard.css's own
+  // `.card.compact`; they are not independently chosen.
+  it('shrinks with the rail in compact mode, to the same numbers a card uses', () => {
+    expect(blockAfter('.stack.compact > .stackface {')).toMatch(/padding:\s*10px 12px 11px/);
+    expect(blockAfter('.stack.compact .stacktoggle {')).toMatch(/gap:\s*7px/);
+    expect(blockAfter('.stack.compact .stackname {')).toMatch(/font-size:\s*15px/);
+  });
+
   it('spaces its rows like a plain card does, and keeps the chevron on the top row', () => {
     expect(blockAfter('.stacktoggle {')).toMatch(/gap:\s*10px/);
     expect(blockAfter('.stackchev {')).toMatch(/margin-left:\s*auto/);

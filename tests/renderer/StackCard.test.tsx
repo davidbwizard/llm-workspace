@@ -125,6 +125,30 @@ describe('StackCard', () => {
   // The deck behind the card is two sheets deep for three or more sessions
   // and one for exactly two, so its depth says roughly how many are in there
   // before the count pill is read.
+  // The rail is compact by default, so this is the state a stack is usually
+  // in -- and it spent this whole feature rendering full-size next to
+  // compacted cards because the prop did not exist.
+  it('carries the compact class so it shrinks with the cards around it', () => {
+    const { container } = render(
+      <StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}
+        selectedPid={null} renderMember={() => null} compact={true} />,
+    );
+    expect(container.querySelector('.stack.compact')).not.toBeNull();
+  });
+
+  it('drops the path row when compact, exactly as a plain card does', () => {
+    const { container: full } = render(
+      <StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}
+        selectedPid={null} renderMember={() => null} />,
+    );
+    expect(full.querySelector('.stackpath')).not.toBeNull();
+    const { container: small } = render(
+      <StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}
+        selectedPid={null} renderMember={() => null} compact={true} />,
+    );
+    expect(small.querySelector('.stackpath')).toBeNull();
+  });
+
   it('shows a two-sheet deck for three or more sessions', () => {
     const { container } = render(
       <StackCard cwd="/repo" members={members} open={false} onToggle={vi.fn()}

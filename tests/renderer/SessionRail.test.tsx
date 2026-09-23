@@ -567,6 +567,18 @@ describe('SessionRail', () => {
       expect(screen.getByText('2 sessions')).toBeTruthy();
     });
 
+    // The rail computes the density setting and has to hand it ON to the
+    // stack. StackCard's own tests pass `compact` directly, so they cannot
+    // see this wiring break -- and it DID break: the prop did not exist for
+    // this feature's whole life, leaving stacks full-size among compacted
+    // cards. Deleting `compact={compact}` from the call site must turn this
+    // red; nothing else in the suite notices.
+    it('hands the compact setting on to a stack, not just to plain cards', () => {
+      const { container } = renderRail();
+      expect(container.querySelector('.stack')).not.toBeNull();
+      expect(container.querySelector('.stack.compact')).not.toBeNull();
+    });
+
     it('leaves a lone session as an ordinary card, with no stack chrome', () => {
       renderRail([twoInOneFolder[0]] as never[]);
       expect(screen.queryByText(/\d+ sessions/)).toBeNull();
