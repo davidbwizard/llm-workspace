@@ -24,11 +24,15 @@
 // "Ask once, and take no for an answer" is the consent RECORD
 // (~/.llm-workspace/consent.json). A declined answer is remembered so the
 // first-run screen stops asking; the app still runs, with less.
-import { mkdirSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Paths } from '../config.ts';
-import { buildHookFragments, planInstall, entryFor, type InstallPlan } from './install.ts';
+import {
+  buildHookFragments, buildCodexHookFragments, planInstall, entryFor, type InstallPlan,
+} from './install.ts';
 import {
   stableHelperPath, homeOf, hooksState, ensureBinDir, copyHelperAtomic,
   ensureSettingsDir, readSettingsForEdit, writeSettingsEdit, doUninstall, type HooksResult,
@@ -53,6 +57,16 @@ export interface HookAddition {
   json: string;
 }
 
+/** A second file this install would touch, described exactly as the first
+ *  one is. Design §6 asks the screen to show every file that will be
+ *  written and what goes in it; a Codex install writes two, so it lists
+ *  two. */
+export interface HookTarget {
+  file: string;
+  fileExists: boolean;
+  additions: HookAddition[];
+}
+
 export interface HooksPreview {
   /** The file that will be modified. Absolute, and named outright. */
   file: string;
@@ -62,6 +76,12 @@ export interface HooksPreview {
   fileExists: boolean;
   installed: boolean;
   additions: HookAddition[];
+  /** `~/.codex/hooks.json` and what would be added to it, or null when
+   *  there is nothing to offer: no `~/.codex` on this machine (installing
+   *  there would create config for a tool the person does not use), or its
+   *  hooks.json could not be read -- in which case `error` says so and the
+   *  Claude install is still offered rather than blocked by it. */
+  codex: HookTarget | null;
   /** Hands this back to commitHooksInstall to say yes. null when there is
    *  nothing safe to offer -- an unreadable or unparseable settings.json. */
   token: string | null;
@@ -74,7 +94,15 @@ export interface HooksPreview {
  *  preview supersedes the first, because the first is no longer what is on
  *  screen. Module scope for the same reason the PATH memo is -- it is a
  *  property of this process, not of any one caller. */
-let pending: { token: string; plan: InstallPlan & { baseText: string }; settingsPath: string } | null = null;
+let pending: {
+  token: string;
+  plan: InstallPlan & { baseText: string };
+  settingsPath: string;
+  /** The Codex half of the same offer, when one was shown. Carried with the
+   *  token rather than recomputed at commit time, for the same reason the
+   *  Claude plan is: what gets written is the plan that was on screen. */
+  codex: { path: string; plan: InstallPlan & { baseText: string } } | null;
+} | null = null;
 
 /** Drops a pending offer. Called after every commit (the token is spent)
  *  and by tests between cases. */
@@ -136,6 +164,7 @@ export function previewHooksInstall(paths: Paths): HooksPreview {
     helperPath,
     installed: hooksState(paths).installed,
     decision,
+    codex: null as HookTarget | null,
   };
 
   const read = readSettingsForEdit(paths.claudeSettings);
@@ -162,9 +191,51 @@ export function previewHooksInstall(paths: Paths): HooksPreview {
     json: JSON.stringify(entryFor(f), null, 2),
   }));
 
+  const codex = planCodex(paths, helperPath);
+
   const token = randomUUID();
-  pending = { token, plan: { ...plan, baseText: read.baseText }, settingsPath: paths.claudeSettings };
-  return { ...base, fileExists, additions, token, error: null };
+  pending = {
+    token,
+    plan: { ...plan, baseText: read.baseText },
+    settingsPath: paths.claudeSettings,
+    codex: codex.plan === null ? null : { path: paths.codexHooks, plan: codex.plan },
+  };
+  return { ...base, fileExists, additions, token, error: codex.error, codex: codex.target };
+}
+
+/** The Codex half of a preview. Never throws and never blocks the Claude
+ *  half: a machine with no `~/.codex` simply has nothing to offer, and a
+ *  hooks.json that cannot be read or planned is reported in `error` while
+ *  the Claude install stays on the table. Writing hooks for a tool the
+ *  person does not use would be its own kind of overreach, so the
+ *  directory's existence -- not the file's -- is what decides. */
+function planCodex(paths: Paths, helperPath: string): {
+  target: HookTarget | null; plan: (InstallPlan & { baseText: string }) | null; error: string | null;
+} {
+  const none = { target: null, plan: null, error: null };
+  if (!existsSync(dirname(paths.codexHooks))) return none;
+
+  const read = readSettingsForEdit(paths.codexHooks);
+  if (!read.ok) return { target: null, plan: null, error: `Codex hooks: ${read.error}` };
+
+  let plan: InstallPlan;
+  try {
+    plan = planInstall(read.parsed, buildCodexHookFragments(helperPath));
+  } catch (e) {
+    return { target: null, plan: null, error: `Could not read ~/.codex/hooks.json: ${(e as Error).message}` };
+  }
+
+  return {
+    target: {
+      file: paths.codexHooks,
+      fileExists: read.baseText !== '',
+      additions: plan.added.map(f => ({
+        event: f.event, matcher: f.matcher, json: JSON.stringify(entryFor(f), null, 2),
+      })),
+    },
+    plan: { ...plan, baseText: read.baseText },
+    error: null,
+  };
 }
 
 /** The yes. Writes only the plan the matching preview showed.
@@ -205,13 +276,28 @@ export function commitHooksInstall(paths: Paths, token: unknown, helperSource: s
     next: offer.plan.next, changed: offer.plan.changed, baseText: offer.plan.baseText,
   });
 
+  // The Codex file, when the preview offered one, and only after the Claude
+  // write. A failure here is reported but does not undo the Claude install
+  // that already landed -- two files cannot be written atomically, and
+  // silently rolling one back would be a worse surprise than saying so.
+  let codexError: string | null = null;
+  if (offer.codex !== null) {
+    codexError = ensureSettingsDir(offer.codex.path)
+      ?? writeSettingsEdit(offer.codex.path, {
+        next: offer.codex.plan.next,
+        changed: offer.codex.plan.changed,
+        baseText: offer.codex.plan.baseText,
+      });
+    if (codexError !== null) codexError = `Codex hooks: ${codexError}`;
+  }
+
   // Re-probed from the file, never inferred from which branch ran -- the
   // one thing this must not do is claim a state the file does not show.
   const installed = hooksState(paths).installed;
   // Consent is recorded only for a write that actually landed. An install
   // that was refused is not a yes to anything.
   if (error === null && installed) recordConsent(paths.consent, 'granted');
-  return { installed, error };
+  return { installed, error: error ?? codexError };
 }
 
 /** The clean uninstall design §6 requires. Delegates to the Quick answers
@@ -226,10 +312,18 @@ export function commitHooksInstall(paths: Paths, token: unknown, helperSource: s
  *  footprint is not a thing they need protecting from, and a consent gate
  *  on the exit is a gate on leaving. */
 export function uninstallHooks(paths: Paths): HooksResult {
-  const error = doUninstall(paths.claudeSettings, stableHelperPath(homeOf(paths)));
+  const stable = stableHelperPath(homeOf(paths));
+  const error = doUninstall(paths.claudeSettings, stable);
+  // Removal reaches every file the install could have written. doUninstall
+  // tolerates a missing file, so a machine that never had Codex hooks costs
+  // nothing here -- and one that does must not be left with entries
+  // pointing at a helper the person just turned off.
+  const codexError = existsSync(paths.codexHooks)
+    ? doUninstall(paths.codexHooks, stable)
+    : null;
   const installed = hooksState(paths).installed;
   // Turning it off IS an answer, and it is a no. Recorded so the app does
   // not turn round and ask again on the next launch.
   if (error === null && !installed) recordConsent(paths.consent, 'declined');
-  return { installed, error };
+  return { installed, error: error ?? (codexError === null ? null : `Codex hooks: ${codexError}`) };
 }

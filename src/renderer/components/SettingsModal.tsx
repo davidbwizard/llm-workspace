@@ -36,10 +36,14 @@ const FOOTER_CAPTION = 'Changes apply right away and are remembered.';
  *  longer writes anything on its own (first-run design §6): it shows what
  *  would be written and waits for a yes. Turning it OFF still just removes
  *  our own entries, immediately -- a gate on leaving is not consent. */
+/** Names no file itself any more: the install writes to Claude Code's
+ *  settings and, on a machine that has Codex, to Codex's hooks too. The
+ *  screen below lists the actual files, so naming one here could only ever
+ *  go out of date or be wrong for half the people reading it. */
 const QUICK_ANSWERS_HELP =
-  "Lets the app show what Claude is asking, using hooks in ~/.claude/settings.json. "
-  + "Turning this on shows you exactly what it would add before anything is written. "
-  + "Turning it off removes only the entries it added.";
+  "Lets the app show what an agent is asking, using hooks it adds to the files "
+  + "Claude Code and Codex own. Turning this on shows you exactly what it would add, "
+  + "and where, before anything is written. Turning it off removes only the entries it added.";
 
 /** Usage design, Part B, plus the coordinator's own review note: the base
  *  two sentences are the design's exact text; the third names the two

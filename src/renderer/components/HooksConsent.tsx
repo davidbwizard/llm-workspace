@@ -64,6 +64,15 @@ export function HooksConsent({ onSettled, onDeclined }: {
   // A refusal wins: it is about something the person just tried to do.
   const error = actionError ?? previewError;
 
+  // What is still MISSING, across every file this install writes -- not
+  // `preview.installed`, which only ever speaks for settings.json. With
+  // Claude's hooks already in and Codex's not, keying the screen off that
+  // flag would show "already installed" and offer Remove while eight Codex
+  // entries sat unoffered: the screen claiming a state the files do not
+  // show, which is the one thing it must never do.
+  const codexPending = preview.codex?.additions.length ?? 0;
+  const pending = preview.additions.length + codexPending;
+
   const install = () => {
     const api = window.fleet;
     if (!api?.hooksSet || preview.token === null || busy) return;
@@ -108,24 +117,35 @@ export function HooksConsent({ onSettled, onDeclined }: {
   return (
     <section className="hc" aria-label="Quick answers setup">
       <p className="hcwhat">
-        To show what an agent is asking you, this app adds hooks to a file Claude Code
-        owns. It will only ever touch its own entries.
+        To show what an agent is asking you, this app adds hooks to
+        {preview.codex ? ' files Claude Code and Codex own' : ' a file Claude Code owns'}.
+        It will only ever touch its own entries.
       </p>
 
       <dl className="hcfacts">
-        <dt>File it will change</dt>
-        <dd><code>{preview.file}</code>{preview.fileExists ? '' : ' (will be created)'}</dd>
+        <dt>{preview.codex ? 'Files it will change' : 'File it will change'}</dt>
+        {/* Both paths live in ONE dd. .hcfacts is a two-column grid that
+            pairs each dt with the dd after it, so a second dd would land in
+            the label column and shift every row below it. */}
+        <dd>
+          <div><code>{preview.file}</code>{preview.fileExists ? '' : ' (will be created)'}</div>
+          {preview.codex && (
+            <div><code>{preview.codex.file}</code>{preview.codex.fileExists ? '' : ' (will be created)'}</div>
+          )}
+        </dd>
         <dt>Script the hooks will run</dt>
         <dd><code>{preview.helperPath}</code></dd>
         <dt>Entries it will add</dt>
         <dd>
-          {preview.installed
+          {pending === 0
             ? 'None — they are already installed.'
-            : `${preview.additions.length} (${[...new Set(preview.additions.map(a => a.event))].join(', ')})`}
+            : preview.codex
+              ? `${preview.additions.length} in Claude Code, ${codexPending} in Codex`
+              : `${preview.additions.length} (${[...new Set(preview.additions.map(a => a.event))].join(', ')})`}
         </dd>
       </dl>
 
-      {preview.additions.length > 0 && (
+      {pending > 0 && (
         <div className="hcexact">
           <button type="button" className="hclink" aria-expanded={expanded}
             onClick={() => setExpanded(v => !v)}>
@@ -133,9 +153,15 @@ export function HooksConsent({ onSettled, onDeclined }: {
           </button>
           {expanded && (
             <ul className="hcadds">
-              {preview.additions.map(a => (
-                <li key={`${a.event}:${a.matcher ?? ''}`}>
-                  <span className="hcevent">{a.event}{a.matcher ? ` (${a.matcher})` : ''}</span>
+              {[
+                ...preview.additions.map(a => ({ a, where: preview.file })),
+                ...(preview.codex?.additions ?? []).map(a => ({ a, where: preview.codex!.file })),
+              ].map(({ a, where }) => (
+                <li key={`${where}:${a.event}:${a.matcher ?? ''}`}>
+                  <span className="hcevent">
+                    {a.event}{a.matcher ? ` (${a.matcher})` : ''}
+                    {preview.codex && <span className="hcwhere"> → {where}</span>}
+                  </span>
                   <pre>{a.json}</pre>
                 </li>
               ))}
@@ -144,10 +170,22 @@ export function HooksConsent({ onSettled, onDeclined }: {
         </div>
       )}
 
+      {/* Codex will not run a hook it has not had approved: it shows a
+          "Hooks need review" screen on its next start and the hook stays
+          inert until then. The app cannot accept that for the person, so
+          it says so rather than letting the hook look installed and do
+          nothing. */}
+      {preview.codex && preview.codex.additions.length > 0 && (
+        <p className="hcnote">
+          Codex will ask you to review the hook the next time it starts. It will not run
+          until you accept there.
+        </p>
+      )}
+
       {error !== null && <p className="hcerror" role="alert">{error}</p>}
 
       <div className="hcactions">
-        {preview.installed
+        {pending === 0
           ? (
             <>
               <button type="button" className="hcbtn" onClick={remove} disabled={busy}>

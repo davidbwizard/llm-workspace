@@ -231,3 +231,78 @@ describe('a clean uninstall removes what it added and nothing else', () => {
     expect(readConsent(paths.consent).hooks?.decision).toBe('declined');
   });
 });
+
+/** Codex has its own hook system (codex-cli 0.156.1: twelve events, config
+ *  in ~/.codex/hooks.json, same shape as Claude's). Installing there means
+ *  a SECOND file the person owns, so design §6's promise -- show every file
+ *  and what goes in it, before writing -- has to stretch to cover it. */
+describe('the Codex half of the same consent', () => {
+  const codexDir = () => join(home, '.codex');
+  const giveCodex = (hooks?: unknown) => {
+    mkdirSync(codexDir(), { recursive: true });
+    if (hooks !== undefined) writeFileSync(paths.codexHooks, JSON.stringify(hooks, null, 2) + '\n');
+  };
+  const codexFile = () => JSON.parse(readFileSync(paths.codexHooks, 'utf8'));
+
+  it('offers nothing for Codex on a machine that has none', () => {
+    // Creating ~/.codex for someone who does not use Codex would be the
+    // app making itself at home in a tool they never installed.
+    const preview = previewHooksInstall(paths);
+    expect(preview.codex).toBeNull();
+    commitHooksInstall(paths, preview.token, helperSource);
+    expect(existsSync(paths.codexHooks)).toBe(false);
+  });
+
+  it('names the Codex file and every entry it would add there', () => {
+    giveCodex();
+    const preview = previewHooksInstall(paths);
+    expect(preview.codex?.file).toBe(join(home, '.codex/hooks.json'));
+    expect(preview.codex?.fileExists).toBe(false);
+    expect(preview.codex?.additions.map(a => a.event)).toContain('PermissionRequest');
+  });
+
+  it('writes both files on one yes', () => {
+    giveCodex();
+    const preview = previewHooksInstall(paths);
+    const result = commitHooksInstall(paths, preview.token, helperSource);
+    expect(result.error).toBeNull();
+    expect(settings().hooks.PermissionRequest).toHaveLength(1);
+    expect(codexFile().hooks.PermissionRequest).toHaveLength(1);
+  });
+
+  it('leaves the user\'s own Codex hooks alone, installing and removing', () => {
+    const mine = { type: 'command', command: "bash '/u/.codex/hooks/block-destructive-bash.sh'", timeout: 5 };
+    giveCodex({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [mine] }] } });
+    const preview = previewHooksInstall(paths);
+    commitHooksInstall(paths, preview.token, helperSource);
+    expect(codexFile().hooks.PreToolUse[0].hooks[0].command).toContain('block-destructive-bash.sh');
+
+    uninstallHooks(paths);
+    const after = codexFile();
+    expect(after.hooks.PermissionRequest).toBeUndefined();
+    expect(after.hooks.PreToolUse[0].hooks[0].command).toContain('block-destructive-bash.sh');
+  });
+
+  it('reports an unreadable Codex file without blocking the Claude install', () => {
+    // A broken hooks.json belongs to Codex, not to us. Refusing the whole
+    // install over it would let another tool's bad file veto this one.
+    giveCodex();
+    writeFileSync(paths.codexHooks, '{ not json');
+    const preview = previewHooksInstall(paths);
+    expect(preview.codex).toBeNull();
+    expect(preview.error).toContain('Codex');
+    expect(preview.token).not.toBeNull();
+    const result = commitHooksInstall(paths, preview.token, helperSource);
+    expect(settings().hooks.PermissionRequest).toHaveLength(1);
+    expect(result.installed).toBe(true);
+  });
+
+  it('never installs a Codex event codex-cli does not have', () => {
+    giveCodex();
+    const preview = previewHooksInstall(paths);
+    const events = preview.codex!.additions.map(a => a.event);
+    for (const absent of ['PermissionDenied', 'Notification', 'CwdChanged', 'Elicitation']) {
+      expect(events).not.toContain(absent);
+    }
+  });
+});

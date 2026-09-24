@@ -215,10 +215,13 @@ describe('SettingsModal', () => {
 
     it('says that turning it on shows you the change before making it', async () => {
       render(<SettingsModal open={true} onClose={() => {}} />);
+      // Names no file: the install writes to Claude Code's settings and, on
+      // a machine with Codex, to Codex's hooks too. The consent screen below
+      // lists the actual files.
       expect(screen.getByText(
-        'Lets the app show what Claude is asking, using hooks in ~/.claude/settings.json. '
-        + 'Turning this on shows you exactly what it would add before anything is written. '
-        + 'Turning it off removes only the entries it added.',
+        'Lets the app show what an agent is asking, using hooks it adds to the files '
+        + 'Claude Code and Codex own. Turning this on shows you exactly what it would add, '
+        + 'and where, before anything is written. Turning it off removes only the entries it added.',
       )).toBeTruthy();
       // Lets the initial hooksGet() resolve inside this test's act() scope,
       // rather than after it returns.
