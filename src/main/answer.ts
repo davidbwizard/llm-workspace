@@ -670,7 +670,11 @@ class Run {
       const pick = picks[i]!;
       const expected = pick.other ?? pick.options.map(o => q.options[o]!.label).join(', ');
       const got = review.answers[i]!;
-      return got.question === q.question && norm(got.answer) === norm(expected);
+      // Whitespace-normalised on both sides, as the answer already was: a
+      // bordered question is wrapped by the dialog at word boundaries, so the
+      // join that puts it back cannot be byte-identical to the hook's string.
+      // This still admits only the same question, never a different one.
+      return norm(got.question) === norm(q.question) && norm(got.answer) === norm(expected);
     });
   }
 }

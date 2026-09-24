@@ -1,0 +1,17 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Pets  ✔ Submit  →
+
+Review your answers
+
+ ● Which color?
+   → Blue
+ │ ● Which pets would the probe pick here, given a question long enough to be drawn as a bordered block?
+   → Fish, Cat
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+
+
+

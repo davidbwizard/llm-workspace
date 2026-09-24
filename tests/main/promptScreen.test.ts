@@ -640,6 +640,39 @@ describe('readPromptScreen -- questions', () => {
     ]);
   });
 
+  // Fixtures 19 and 39 both carry questions short enough to be drawn plain, so
+  // neither exercised the "│ " border the dialog puts on a longer one -- the
+  // reason a two-question prompt stalled in real use while the suite stayed
+  // green. Captured live on 2026-09-24 (session pane %194), text neutralised.
+  it('reads a review answer whose question line carries the border', () => {
+    const q2 = 'Which pets would the probe pick here, given a question long enough'
+      + ' to be drawn as a bordered block?';
+    const result = readPromptScreen(
+      screen('116-ask2-review-bordered'), askExpect(ASK_HEADERS, ['Which color?', q2]));
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'review') throw new Error('expected review match');
+    expect(result.answers).toEqual([
+      { question: 'Which color?', answer: 'Blue' },
+      { question: q2, answer: 'Fish, Cat' },
+    ]);
+  });
+
+  it('joins a review question that the border wrapped over several lines', () => {
+    const q1 = 'Which color should the probe pick, given a question long enough that the dialog'
+      + ' draws it as a bordered block and wraps it over more than one line, so the reader has'
+      + ' to join the parts back together before it can compare them with what the card sent?';
+    const q2 = 'Which pets should the probe pick here, given a question that also wraps but over'
+      + ' only two lines? The second line carries the same border as the first.';
+    const result = readPromptScreen(
+      screen('117-ask2-review-wrapped'), askExpect(ASK_HEADERS, [q1, q2]));
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'review') throw new Error('expected review match');
+    expect(result.answers).toEqual([
+      { question: q1, answer: 'Blue' },
+      { question: q2, answer: 'Fish, Cat' },
+    ]);
+  });
+
   it.each([
     ['30-ask2-q1', 0],
     ['31-ask2-key4', 0],

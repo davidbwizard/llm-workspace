@@ -437,6 +437,59 @@ route -- in which case it inherits every fragility of screen-scraping, and the
 detector has to be proven to separate a real prompt from a session that merely
 printed the same words.
 
+## FIXED 2026-09-24: a prompt with two or more questions stalled on its review screen
+
+**It is not previews.** That was a coincidence of the first report, and the
+rest of this entry's original reasoning is left below for the record. The
+cause is the review screen itself, which only appears when a prompt carries
+two or more questions.
+
+**Measured the same morning**, after David hit the stall twice more on
+prompts whose options carried no previews at all:
+
+| test | questions | review screen | card |
+|---|---|---|---|
+| A | 1 | no | answered |
+| B | 2 | yes | stalled |
+
+Test B's outcome was predicted before it ran, which is what separates this
+from the two earlier reports.
+
+**The cause**, proven by running the real `readPromptScreen` against a live
+capture of Test B's review screen rather than by reading the code: it
+returned **one** answer for a two-question prompt, so `reviewMatches` failed
+its first check (`review.answers.length !== qs.length`) and the answer path
+refused. Two defects in `parseReviewAnswers` (`src/main/promptScreen.ts`),
+one per report:
+
+- It tested for the `●` bullet on the raw trimmed line. The dialog draws a
+  longer question as a bordered block, so that line reads `│ ● ...` and the
+  test misses it -- the question is skipped. `stripBorder` already existed
+  in that file for this exact border; it was simply applied after the bullet
+  test instead of before.
+- It read only the FIRST line of a question, then required the next non-blank
+  line to start with `→`. A bordered question also wraps, so a continuation
+  line sits there instead and the question is dropped as well. That is the
+  2026-09-24 report, whose first question wrapped over three lines.
+
+**Why 2525 passing tests did not catch it.** Both review fixtures, 19 and 39,
+carry questions short enough to be drawn plain -- `Which color?`,
+`Which pets?` -- so neither the border nor the wrap was ever on screen in a
+test. Real questions are long enough to get both. The suite and reality
+never overlapped. Fixtures `116-ask2-review-bordered` and
+`117-ask2-review-wrapped` are captured from live panes (text neutralised,
+border and wrap structure kept) and close that gap.
+
+**`reviewMatches` was not loosened**, per the warning the original entry
+left. The reader feeding it was what was broken. The one change there is
+that the question is now compared with the same `norm()` the answer already
+used -- the asymmetry the original entry flagged. A wrapped question is
+joined at word boundaries, so no join can be byte-identical to the hook's
+string; collapsing whitespace is what makes the comparison possible at all,
+and it still admits only the same question, never a different one.
+
+The original entry follows.
+
 ## A prompt whose options carry previews stalls on its review screen
 
 **Observed by David on 2026-09-24** in the `adventure-101-build` session

@@ -1,0 +1,20 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Pets  ✔ Submit  →
+
+Review your answers
+
+ │ ● Which color should the probe pick, given a question long enough that the dialog draws it as a bordered
+ │   block and wraps it over more than one line, so the reader has to join the parts back together before it
+ │   can compare them with what the card sent?
+   → Blue
+ │ ● Which pets should the probe pick here, given a question that also wraps but over only two lines?
+ │   The second line carries the same border as the first.
+   → Fish, Cat
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+
+
+

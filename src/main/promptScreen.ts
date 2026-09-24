@@ -424,14 +424,26 @@ function readPreviewOptions(
 function parseReviewAnswers(section: string[]): { question: string; answer: string }[] {
   const answers: { question: string; answer: string }[] = [];
   for (let i = 0; i < section.length; i++) {
-    const t = (section[i] ?? '').trim();
+    // The border is stripped BEFORE the bullet is looked for: the dialog draws
+    // a longer question as a bordered block, so its line reads "│ ● ..." and a
+    // bullet test on the raw line misses it entirely (measured 2026-09-24).
+    const t = stripBorder((section[i] ?? '').trim());
     if (!t.startsWith('●')) continue;
-    const question = stripBorder(t.slice(1).trim());
+    // A bordered question also wraps, over as many "│ " lines as it needs,
+    // before the "→" line that carries its answer. Join them back into the
+    // one string the hook sent.
+    const parts = [stripBorder(t.slice(1).trim())];
     let j = i + 1;
-    while (j < section.length && (section[j] ?? '').trim() === '') j++;
-    const next = (section[j] ?? '').trim();
+    for (; j < section.length; j++) {
+      const line = stripBorder((section[j] ?? '').trim());
+      if (line === '') continue;
+      // A bullet here is the next question: this one has no answer on screen.
+      if (line.startsWith('→') || line.startsWith('●')) break;
+      parts.push(line);
+    }
+    const next = stripBorder((section[j] ?? '').trim());
     if (next.startsWith('→')) {
-      answers.push({ question, answer: next.slice(1).trim() });
+      answers.push({ question: parts.join(' ').trim(), answer: next.slice(1).trim() });
       i = j;
     }
   }
