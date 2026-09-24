@@ -17,6 +17,27 @@ export const HOOK_EVENTS = [
  *  the helper is spawned, so this does not run on every Bash/Edit/Read call. */
 export const PRE_TOOL_MATCHER = 'AskUserQuestion|ExitPlanMode';
 
+/** The subset of HOOK_EVENTS that codex-cli actually has, read from its own
+ *  `/hooks` screen on 0.156.1 (which lists exactly twelve: PreToolUse,
+ *  PermissionRequest, PostToolUse, PreCompact, PostCompact, SessionStart,
+ *  SessionEnd, UserPromptSubmit, SubagentStart, SubagentStop, Stop,
+ *  Interrupt).
+ *
+ *  Installing an event Codex does not have would put a key in the user's
+ *  hooks.json that nothing can ever fire, so the six it lacks
+ *  (PermissionDenied, Notification, StopFailure, CwdChanged, Elicitation,
+ *  ElicitationResult) are left out rather than written and ignored.
+ *
+ *  PreToolUse is deliberately absent too, though Codex HAS it: our only
+ *  PreToolUse fragment carries PRE_TOOL_MATCHER, and both of those tool
+ *  names are Claude Code's. Codex emits neither, so that fragment could
+ *  only ever be dead weight in a Codex config. Codex's own prompts arrive
+ *  on PermissionRequest, which is installed. */
+export const CODEX_HOOK_EVENTS = [
+  'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PermissionRequest',
+  'Stop', 'SubagentStart', 'SubagentStop', 'PostCompact',
+] as const;
+
 export interface Fragment { event: string; matcher: string | null; id: string; command: string }
 export interface Manifest { owned: string[]; command: string }
 /** `changed` is false when every fragment was already present (and nothing
@@ -59,6 +80,24 @@ export function buildHookFragments(helperPath: string): Fragment[] {
     id: `llmws:PreToolUse:${PRE_TOOL_MATCHER}`, command,
   });
   return frags;
+}
+
+/** The same fragments for `~/.codex/hooks.json`, narrowed to
+ *  CODEX_HOOK_EVENTS. Same command, same quoting, same ids, so
+ *  isOwnedHookCommand and every manifest path treat a Codex install exactly
+ *  as they treat a Claude one -- there is no second notion of ownership.
+ *
+ *  The helper needs no Codex arm: its stdout is empty (it writes its row to
+ *  the spool and exits 0), and Codex validates hook stdout against its own
+ *  schema, rejecting anything JSON-shaped it does not recognise. Measured
+ *  2026-09-24 on 0.156.1: plain output is accepted, Claude Code's
+ *  `{"async":true,...}` is refused as "invalid session start JSON output",
+ *  which is why the security-guidance plugin's hooks fail there. */
+export function buildCodexHookFragments(helperPath: string): Fragment[] {
+  const command = shellCommandFor(helperPath);
+  return CODEX_HOOK_EVENTS.map(event => ({
+    event, matcher: null, id: `llmws:${event}`, command,
+  }));
 }
 
 /** Emits only fields the documented hook schema defines (type, command,

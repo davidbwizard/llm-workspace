@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync, chmodSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  buildHookFragments, planInstall, applyInstall, uninstall, SettingsChangedError,
+  buildHookFragments, buildCodexHookFragments, CODEX_HOOK_EVENTS, planInstall, applyInstall,
+  uninstall, isOwnedHookCommand, SettingsChangedError,
 } from '../../src/hooks/install.ts';
 
 const asRoot = process.getuid?.() === 0;
@@ -66,6 +67,75 @@ describe('planInstall', () => {
     expect(json).not.toContain('/path/a.sh');
     expect(json).toContain('/path/b.sh');
     expect(planB.next.hooks.PreToolUse.some((e: any) => e.hooks[0].command === 'mine.sh')).toBe(true);
+  });
+});
+
+/** codex-cli 0.156.1 has twelve hook events of its own, read from its `/hooks`
+ *  screen, and `~/.codex/hooks.json` uses the same shape as Claude's settings
+ *  (`{hooks: {Event: [{matcher?, hooks: [{type, command}]}]}}`), so the whole
+ *  planInstall/uninstall path is shared. Only the event list differs. */
+describe('buildCodexHookFragments', () => {
+  it('installs PermissionRequest -- the event a Codex prompt actually arrives on', () => {
+    const events = buildCodexHookFragments('/h.sh').map(f => f.event);
+    expect(events).toContain('PermissionRequest');
+  });
+
+  it('installs no event codex-cli does not have', () => {
+    const events = buildCodexHookFragments('/h.sh').map(f => f.event);
+    for (const absent of [
+      'PermissionDenied', 'Notification', 'StopFailure', 'CwdChanged',
+      'Elicitation', 'ElicitationResult',
+    ]) expect(events).not.toContain(absent);
+  });
+
+  it('installs no PreToolUse: our only matcher names two Claude-only tools', () => {
+    // Codex HAS PreToolUse, but never emits AskUserQuestion or ExitPlanMode,
+    // so the fragment could only ever sit in the config and never fire.
+    const frags = buildCodexHookFragments('/h.sh');
+    expect(frags.map(f => f.event)).not.toContain('PreToolUse');
+    expect(frags.every(f => f.matcher === null)).toBe(true);
+  });
+
+  it('is a subset of the Claude install, never an event of its own', () => {
+    const claude = new Set(buildHookFragments('/h.sh').map(f => f.event));
+    for (const e of CODEX_HOOK_EVENTS) expect(claude.has(e)).toBe(true);
+  });
+
+  it('writes commands our own ownership test recognises, same as Claude\'s', () => {
+    // One notion of ownership across both files: a Codex fragment must be
+    // removable by the same isOwnedHookCommand/manifest path.
+    const frags = buildCodexHookFragments('/x/helper.sh');
+    expect(frags.every(f => isOwnedHookCommand(f.command))).toBe(true);
+    expect(frags[0]!.command).toBe(buildHookFragments('/x/helper.sh')[0]!.command);
+  });
+
+  it('merges into a real ~/.codex/hooks.json without disturbing the user\'s own hooks', () => {
+    // The shape a Codex user actually has on disk (measured): a PreToolUse
+    // matcher running their own script.
+    const existing = {
+      hooks: {
+        PreToolUse: [{
+          matcher: 'Bash',
+          hooks: [{ type: 'command', command: "bash '/u/.codex/hooks/block-destructive-bash.sh'", timeout: 5 }],
+        }],
+      },
+    };
+    const plan = planInstall(existing, buildCodexHookFragments('/x/helper.sh'));
+    expect(plan.next.hooks.PreToolUse).toHaveLength(1);
+    expect(plan.next.hooks.PreToolUse[0].hooks[0].command).toContain('block-destructive-bash.sh');
+    expect(plan.next.hooks.PermissionRequest).toHaveLength(1);
+  });
+
+  it('uninstalls cleanly from a Codex file, leaving the user\'s hooks behind', () => {
+    const codexHooks = join(dir, 'hooks.json');
+    const plan = planInstall(
+      { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'mine.sh' }] }] } },
+      buildCodexHookFragments('/x/helper.sh'));
+    writeFileSync(codexHooks, JSON.stringify(plan.next), 'utf8');
+    uninstall(codexHooks, plan.manifest);
+    const after = JSON.parse(readFileSync(codexHooks, 'utf8'));
+    expect(after.hooks.PermissionRequest).toBeUndefined();
+    expect(after.hooks.PreToolUse[0].hooks[0].command).toBe('mine.sh');
   });
 });
 

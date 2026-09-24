@@ -14,6 +14,10 @@ export interface Paths {
   codexSessions: string;
   codexStateDb: string;
   codexHistoryDb: string;
+  /** codex-cli's own hook config, the Codex counterpart of
+   *  `claudeSettings`. Same `{hooks: {Event: [...]}}` shape, its own file
+   *  rather than a key inside a larger settings file. */
+  codexHooks: string;
   spool: string;
   appearance: string;
   /** What the person has agreed to let this app write into files they own
@@ -32,6 +36,7 @@ export function resolvePaths(home: string): Paths {
     codexSessions: join(home, '.codex/sessions'),
     codexStateDb: join(home, '.codex/state_5.sqlite'),
     codexHistoryDb: join(home, '.codex/thread_history_1.sqlite'),
+    codexHooks: join(home, '.codex/hooks.json'),
     spool: join(home, '.llm-workspace/spool'),
     appearance: join(home, '.llm-workspace/appearance.json'),
     consent: join(home, '.llm-workspace/consent.json'),
