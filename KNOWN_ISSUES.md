@@ -361,3 +361,44 @@ Unrelated to the above: `Failed to delete the database: Database IO error
 (service_worker_storage)` when two builds run together is Chromium's own
 storage, not the app's index -- both resolve userData to the same path from the
 same package name. Expected, and not something the app controls.
+
+## A Codex prompt never reaches the conversation, and none of them can
+
+**Observed by David on 2026-09-24.** Codex asked `Allow Computer Use to use
+"Google Chrome"?` with the usual four-option list (Allow / Allow for this
+session / Always allow / Cancel). The prompt sat in the terminal; the app's
+conversation view never showed it and the card never went to waiting. David's
+read at the time -- "I suspect none of the prompts will be visible" -- is
+correct, and it is structural rather than a missed case.
+
+**The cause.** Every prompt this app surfaces arrives as a hook event.
+`src/store/signals.ts:27` treats exactly two kinds as blocking:
+
+    const BLOCKING = new Set(['PermissionRequest', 'Elicitation']);
+
+Both are written by hooks that `src/hooks/install.ts` installs into
+`~/.claude/settings.json` (`config.ts:30`, `claudeSettings`). Verified on the
+dev machine: 15 hook events are installed, all of them Claude Code's.
+
+**Codex has no hook system**, so nothing can write those rows for a Codex
+session. `currentBlockers` therefore returns nothing for Codex, the card
+never reads `waiting_permission`, and the Conversation view has no prompt to
+render. Not one Codex prompt -- any of them, of any kind.
+
+A second gap points the same way: `src/main/sessionLive.ts:319` records that
+"Codex writes no live-session file", so the other path that gives a Claude
+session its live `waiting_permission` status has no Codex equivalent either.
+Both of the app's routes to "this session is waiting on you" are Claude-only.
+
+**What this does NOT affect.** Codex sessions are still discovered, still
+listed, and their transcripts still ingest -- the rollout parser
+(`src/providers/codex/parse.ts`) is unrelated to this. It is specifically
+prompts, and the waiting state that goes with them.
+
+**Not yet investigated**, and the thing to establish before designing a fix:
+whether a Codex prompt is detectable from its rollout file, or only from the
+pane's own screen. The app already reads a pane's screen for the quick-answers
+flow (`src/main/promptScreen.ts`), so a screen-based detector may be the only
+route -- in which case it inherits every fragility of screen-scraping, and the
+detector has to be proven to separate a real prompt from a session that merely
+printed the same words.
