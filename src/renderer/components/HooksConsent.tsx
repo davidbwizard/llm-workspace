@@ -172,13 +172,20 @@ export function HooksConsent({ onSettled, onDeclined }: {
 
       {/* Codex will not run a hook it has not had approved: it shows a
           "Hooks need review" screen on its next start and the hook stays
-          inert until then. The app cannot accept that for the person, so
-          it says so rather than letting the hook look installed and do
-          nothing. */}
-      {preview.codex && preview.codex.additions.length > 0 && (
+          inert until then. The app cannot accept that for the person, so it
+          says so -- before the write as a warning, and after it as the
+          state of things, rather than letting a written hook look installed
+          while it does nothing. */}
+      {preview.codex && codexPending > 0 && (
         <p className="hcnote">
           Codex will ask you to review the hook the next time it starts. It will not run
           until you accept there.
+        </p>
+      )}
+      {preview.codex && codexPending === 0 && preview.codexApproved === false && (
+        <p className="hcnote">
+          Written, but Codex has not approved it yet — it will ask the next time it starts,
+          and the hook will not run until you accept there.
         </p>
       )}
 

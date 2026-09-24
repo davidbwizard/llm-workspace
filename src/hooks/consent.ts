@@ -33,6 +33,7 @@ import type { Paths } from '../config.ts';
 import {
   buildHookFragments, buildCodexHookFragments, planInstall, entryFor, type InstallPlan,
 } from './install.ts';
+import { codexHookApproved } from './codexTrust.ts';
 import {
   stableHelperPath, homeOf, hooksState, ensureBinDir, copyHelperAtomic,
   ensureSettingsDir, readSettingsForEdit, writeSettingsEdit, doUninstall, type HooksResult,
@@ -76,6 +77,11 @@ export interface HooksPreview {
   fileExists: boolean;
   installed: boolean;
   additions: HookAddition[];
+  /** Whether Codex has a trust record for our PermissionRequest hook --
+   *  it will not run one it has not been shown. null when there is no
+   *  Codex to ask about. Presence of a record, not proof the hook on disk
+   *  is still the approved one (src/hooks/codexTrust.ts). */
+  codexApproved: boolean | null;
   /** `~/.codex/hooks.json` and what would be added to it, or null when
    *  there is nothing to offer: no `~/.codex` on this machine (installing
    *  there would create config for a tool the person does not use), or its
@@ -165,6 +171,11 @@ export function previewHooksInstall(paths: Paths): HooksPreview {
     installed: hooksState(paths).installed,
     decision,
     codex: null as HookTarget | null,
+    // Only meaningful where there is a Codex at all; planCodex's own
+    // directory test is what decides that, so mirror it here.
+    codexApproved: existsSync(dirname(paths.codexHooks))
+      ? codexHookApproved(paths, 'PermissionRequest')
+      : null,
   };
 
   const read = readSettingsForEdit(paths.claudeSettings);

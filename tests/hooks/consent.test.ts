@@ -306,3 +306,34 @@ describe('the Codex half of the same consent', () => {
     }
   });
 });
+
+/** Writing the hook is only half an install: Codex will not run one it has
+ *  not been shown, so the screen has to be able to say which. */
+describe('whether Codex has approved our hook', () => {
+  const giveCodex = () => mkdirSync(join(home, '.codex'), { recursive: true });
+  const writeCodexConfig = (body: string) =>
+    writeFileSync(join(home, '.codex/config.toml'), body);
+
+  it('says nothing about approval on a machine with no Codex', () => {
+    expect(previewHooksInstall(paths).codexApproved).toBeNull();
+  });
+
+  it('is false while Codex has no trust record for it', () => {
+    giveCodex();
+    expect(previewHooksInstall(paths).codexApproved).toBe(false);
+  });
+
+  it('is true once Codex has one', () => {
+    giveCodex();
+    writeCodexConfig(
+      `[hooks.state."${paths.codexHooks}:permission_request:0:0"]\ntrusted_hash = "sha256:abc"\n`);
+    expect(previewHooksInstall(paths).codexApproved).toBe(true);
+  });
+
+  it('stays false right after a successful write -- the write is not the approval', () => {
+    giveCodex();
+    const preview = previewHooksInstall(paths);
+    commitHooksInstall(paths, preview.token, helperSource);
+    expect(previewHooksInstall(paths).codexApproved).toBe(false);
+  });
+});
