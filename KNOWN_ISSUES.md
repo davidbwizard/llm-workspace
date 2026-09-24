@@ -396,6 +396,58 @@ Unrelated to the above: `Failed to delete the database: Database IO error
 storage, not the app's index -- both resolve userData to the same path from the
 same package name. Expected, and not something the app controls.
 
+## CORRECTED 2026-09-24: Codex DOES have hooks, and an app-server protocol
+
+The entry below rests on "**Codex has no hook system**, so nothing can write
+those rows for a Codex session". That is wrong on codex-cli **0.156.1**,
+the version installed on this machine. The observation it was built on --
+that a Codex prompt never reaches the conversation -- is real and still
+unfixed. The reason given for it is not.
+
+**Codex has a hook system.** Its event vocabulary, read from the binary's own
+string table and confirmed against the published docs:
+
+    pre_tool_use  permission_request  post_tool_use  pre_compact
+    post_compact  session_start  session_end  user_prompt_submit
+    subagent_start  subagent_stop  interrupt
+
+`permission_request` is exactly what `BLOCKING` in `src/store/signals.ts`
+already consumes. Config lives in `~/.codex/hooks.json`, in the same
+PascalCase shape as Claude's (`{"hooks":{"PreToolUse":[{"matcher":...,
+"hooks":[{"type":"command","command":...}]}]}}`) and every command hook is
+handed one JSON object on stdin. **This machine already has that file**, with
+the user's own `block-env-read.sh` and `block-destructive-bash.sh` in it --
+the Codex mirror of the Claude situation the RESOLVED entry above describes.
+
+So the likely fix is not a new detector at all: install the app's hooks into
+`~/.codex/hooks.json` the way `src/hooks/install.ts` already installs them
+into `~/.claude/settings.json`. **Not yet verified**, and to establish before
+building: whether Codex's `permission_request` payload carries the fields the
+app's helper writes, and whether `isOwnedHookCommand` needs a Codex arm.
+
+**The rollout file really is a dead end**, which the entry below guessed at
+and this confirms. Measured across the whole corpus -- 912 files, every
+`type` field at any nesting depth -- there is no approval record of any kind,
+while 645 of those sessions ran with `approval_policy = "on-request"`. The
+prompt and its answer are simply never written. `approval_policy` and
+`approvals_reviewer` are config keys written at session start, which is what
+made a first grep for "approval" look promising in 832 files.
+
+**A third route exists too**, if hooks turn out not to carry enough: the
+app-server protocol, whose server-to-client requests include
+`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`,
+`item/permissions/requestApproval` and `mcpServer/elicitation/request`.
+Generate its schema with `codex app-server generate-json-schema --out <dir>`
+(39 JSON schemas) or `generate-ts` (96 files). Measured today: a plain
+`codex` TUI registers with the shared daemon when one is running
+(`codex app-server daemon start`; `--no-daemon` opts out), and a second
+client -- `codex agents` -- then lists that session live, with a **"Needs
+you"** bucket of its own. Codex models the waiting state the app wants. A
+raw JSON-RPC connection to the control socket was closed without a reply,
+so the handshake `codex agents` uses is not yet worked out.
+
+The original entry follows, including the parts that still hold.
+
 ## A Codex prompt never reaches the conversation, and none of them can
 
 **Observed by David on 2026-09-24.** Codex asked `Allow Computer Use to use
