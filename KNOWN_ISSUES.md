@@ -307,7 +307,23 @@ the person typed them -- but it is a visible change and David has not ruled on
 it. A narrower fix that only resolves the pending entry would leave the message
 vanishing rather than showing as sent, which is its own oddity.
 
-## The staged-image sweep tries to unlink directories, forever (2026-09-22)
+## FIXED 2026-09-22: the staged-image sweep tried to unlink directories, forever
+
+**The fix.** `createStager`'s sweep (`src/main/staging.ts`) now asks `lstat`
+rather than `stat` and acts on what the entry actually is: a directory past
+the cutoff is `rmdir`'d, so the two empty strays are removed for good on the
+next launch, while one that is not empty is left alone and named on its own
+line -- this sweep does not know what put it there and must not delete
+content it did not write. `lstat` also means an entry is judged by its own
+age and its own type, so a symlink is unlinked as a link rather than
+followed to whatever it points at. The catch no longer logs one line for
+every reason: `ENOENT` is a concurrent instance having swept it first and is
+not reported at all, `ENOTEMPTY` is the stray-directory line, `EPERM` /
+`EACCES` is a permission line naming the code, and anything else is the
+original failure line with the path. Covered by `tests/main/staging.test.ts`
+(`createStager sweep: entries that are not files it wrote`).
+
+The diagnosis follows.
 
 Every launch logs, twice:
 
@@ -336,7 +352,25 @@ reported once rather than every launch. The wider point is that the catch
 swallows every reason equally -- a permission problem, a directory, and a
 genuinely undeletable file all log the same line.
 
-## An ingest write that outwaits the busy timeout crashes the main process (2026-09-22)
+## FIXED 2026-09-22: an ingest write that outwaited the busy timeout crashed the main process
+
+**The fix.** Both call sites in `src/main/index.ts` now handle a throw
+instead of letting it become an unhandled exception. The spool tick logs the
+reason and leaves the work to the next tick -- `ingestSpool` only removes a
+spool file once its row is written, so whatever failed is still on disk a
+second later -- and it still pushes any rows that landed before the throw,
+which are committed, by reading `touched` as well as the return value. The
+startup `ingestAll` is wrapped for a second reason beyond the crash: a throw
+there also skipped the watcher and the spool timer that follow it, leaving
+the app running with no ingestion at all. `startWatcher` runs with
+`ignoreInitial` false, so its own initial scan re-walks the same corpus and
+nothing is lost for long. Covered by `tests/main/lifecycle.test.ts` (`a
+failed ingest is handled, not thrown into the main process`) -- source
+structure checks, the same limitation that whole file documents, since
+`index.ts` imports `app` from `electron` and cannot be executed under
+plain-Node vitest.
+
+The diagnosis follows.
 
 Found by reading, not by seeing it fail, while investigating whether a packaged
 build running beside a dev build contend on `~/.llm-workspace/index.sqlite`.

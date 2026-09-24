@@ -150,7 +150,18 @@ function startBackgroundWork(): void {
   // pushFleet reads whatever refreshPushEnrichment last cached (see its
   // doc comment in src/main/ipc.ts) rather than querying itself, so it
   // never touches the database on any of these triggers.
-  ingestAll(db, roots());
+  // ingestAll catches per FILE (so a busy-timeout throw on one file's write
+  // is already only a skip), but a throw from the corpus walk itself is
+  // outside that and escapes. Unwrapped here it would not just crash the
+  // main process: it would skip the watcher and the spool timer below and
+  // leave the app running with no ingestion at all. Logged with its reason,
+  // never swallowed. Nothing is lost for long -- startWatcher runs with
+  // ignoreInitial false, so its own initial scan re-walks the same corpus.
+  try {
+    ingestAll(db, roots());
+  } catch (err) {
+    console.error('startup ingest failed, the watcher will catch up:', err instanceof Error ? err.message : String(err));
+  }
   pushFleet(mainWindow);
 
   // Watcher events arrive per file and can burst; coalesce so a busy
@@ -174,7 +185,25 @@ function startBackgroundWork(): void {
   spoolTimer = setInterval(() => {
     if (!db) return;
     const touched = new Set<string>();
-    if (ingestSpool(db, paths.spool, 'claude', touched) > 0) {
+    // A write that outwaits better-sqlite3's 5s busy timeout throws, and an
+    // interval callback has no caller to catch it -- unwrapped, that is an
+    // unhandled exception and the whole main process goes with it. Rare
+    // while one instance runs; steadily less rare with a packaged build
+    // beside a dev one. ingestSpool only removes a spool file once its row
+    // is written, so whatever failed is still on disk for the next tick to
+    // retry. Logged with its reason, never swallowed -- the same shape
+    // sessionLive.ts already uses for its own ingestSpool call.
+    let written = 0;
+    try {
+      written = ingestSpool(db, paths.spool, 'claude', touched);
+    } catch (err) {
+      console.error('spool ingest failed, retrying on the next tick:', err instanceof Error ? err.message : String(err));
+    }
+    // touched can only be non-empty when rows were actually written, so
+    // reading it as well as `written` changes nothing on the happy path --
+    // it is what still pushes the rows that landed before a throw, which
+    // are committed and would otherwise wait for an unrelated later push.
+    if (written > 0 || touched.size > 0) {
       pushFleet(mainWindow);
       notifySessionChanged(touched);
     }

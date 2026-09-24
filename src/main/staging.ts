@@ -9,7 +9,7 @@
 // Codex keeps a raw path with spaces as plain text). The generated name
 // means no quote or unusual character can ever reach that quoting.
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { MAX_IMAGE_BYTES, sniffImage } from './images.ts';
 
@@ -61,7 +61,20 @@ export function createStager(dir: string) {
   }
 
   /** Deletes files an earlier run left behind for more than a day. Anything
-   *  staged in this run is younger than that, so it is never touched. */
+   *  staged in this run is younger than that, so it is never touched.
+   *
+   *  Only this stager writes here, so every entry SHOULD be a file it wrote
+   *  -- but the real folder has picked up stray directories, and unlink on
+   *  a directory returns EPERM on macOS. Before the isDirectory() check
+   *  below that meant the same lines logged on every launch, forever, with
+   *  nothing able to clear them. The deliberate call: an empty stray
+   *  directory is removed, which clears it for good; one with anything in
+   *  it is left alone and named, because this sweep does not know what put
+   *  it there and must not delete content it did not write.
+   *
+   *  lstat, not stat: an entry is judged by its own age and its own type,
+   *  so a symlink is a link to be unlinked rather than whatever it points
+   *  at, and a dangling one is still cleaned up rather than skipped. */
   async function sweep(): Promise<void> {
     let names: string[];
     try { names = await readdir(dir); } catch { return; }
@@ -69,9 +82,24 @@ export function createStager(dir: string) {
     await Promise.all(names.map(async name => {
       const file = join(dir, name);
       try {
-        if ((await stat(file)).mtimeMs < cutoff) await unlink(file);
+        const info = await lstat(file);
+        if (info.mtimeMs >= cutoff) return;
+        if (info.isDirectory()) await rmdir(file);
+        else await unlink(file);
       } catch (err) {
-        console.error('sweeping a staged image failed:', err);
+        // One line per reason, not one line for everything: a directory
+        // someone else put here, a permission problem and an outright
+        // failure are three different situations and only the last is a
+        // bug in this app.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') return;   // already gone -- a concurrent instance swept it
+        if (code === 'ENOTEMPTY') {
+          console.error('sweeping staged images: leaving a directory that is not empty and not ours:', file);
+        } else if (code === 'EPERM' || code === 'EACCES') {
+          console.error(`sweeping staged images: not permitted to delete (${code}):`, file);
+        } else {
+          console.error('sweeping a staged image failed:', file, err);
+        }
       }
     }));
   }

@@ -192,8 +192,49 @@ describe('spool tick', () => {
   it('passes the sessions it ingested to notifySessionChanged', () => {
     const body = functionBody(main, 'startBackgroundWork');
     const tick = body.slice(body.search(/spoolTimer\s*=\s*setInterval\(/));
-    expect(tick).toMatch(/ingestSpool\(db,\s*paths\.spool,\s*'claude',\s*touched\)\s*>\s*0/);
+    expect(tick).toMatch(/ingestSpool\(db,\s*paths\.spool,\s*'claude',\s*touched\)/);
     expect(tick).toMatch(/notifySessionChanged\(touched\)/);
+  });
+});
+
+// A write that outwaits better-sqlite3's 5s busy timeout throws
+// SQLITE_BUSY. ingestSpool does not catch that (src/hooks/spool.ts: the
+// stmt.run loop is bare), and an interval callback has no caller to catch
+// it either -- so before this it became an unhandled exception and took the
+// whole main process down. Unlikely while one instance runs, steadily less
+// so with a packaged build beside a dev one (KNOWN_ISSUES, 2026-09-22).
+// ingestAll is the same shape: it catches PER FILE, but a throw from the
+// corpus walk itself escapes, and there it would also skip the watcher and
+// the spool timer that follow it.
+//
+// Text/structure checks only, the same limitation this whole file has --
+// index.ts imports `app` from 'electron', which is a path-string stub under
+// plain-Node vitest, so its real startup path cannot be executed here.
+describe('a failed ingest is handled, not thrown into the main process', () => {
+  it('wraps the spool tick ingest, logs the reason, and leaves it to the next tick', () => {
+    const body = functionBody(main, 'startBackgroundWork');
+    const tick = body.slice(body.search(/spoolTimer\s*=\s*setInterval\(/));
+    // try { ... ingestSpool(...) ... } catch (err) { console.error(..., err ...) }
+    expect(tick).toMatch(/try\s*{[^}]*ingestSpool\(/);
+    expect(tick).toMatch(/catch\s*\((\w+)\)\s*{\s*console\.error\([^;]*\1/);
+  });
+
+  it('wraps the startup ingest so a throw cannot skip the watcher and the spool timer', () => {
+    const body = functionBody(main, 'startBackgroundWork');
+    expect(body).toMatch(/try\s*{\s*ingestAll\(db,\s*roots\(\)\);\s*}\s*catch\s*\((\w+)\)\s*{\s*console\.error\([^;]*\1/);
+    // Still ahead of the watcher and the spool timer, and still before the
+    // push -- wrapping it must not reorder startup.
+    const ingestAt = body.indexOf('ingestAll(db, roots())');
+    expect(body.indexOf('startWatcher(')).toBeGreaterThan(ingestAt);
+    expect(body.search(/spoolTimer\s*=\s*setInterval\(/)).toBeGreaterThan(ingestAt);
+  });
+
+  it('still pushes whatever a failed spool tick managed to write before it threw', () => {
+    const body = functionBody(main, 'startBackgroundWork');
+    const tick = body.slice(body.search(/spoolTimer\s*=\s*setInterval\(/));
+    // Rows already written are committed, so the push condition reads
+    // `touched` as well as the return value, not the return value alone.
+    expect(tick).toMatch(/touched\.size\s*>\s*0/);
   });
 });
 

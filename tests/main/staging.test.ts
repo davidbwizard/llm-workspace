@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync, writeFileSync, utimesSync, readdirSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  chmodSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, existsSync,
+  symlinkSync, writeFileSync, utimesSync, readdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createStager, createFileStager, MAX_STAGED, MAX_FILE_BYTES } from '../../src/main/staging.ts';
@@ -76,6 +79,106 @@ describe('createStager', () => {
     await stager.sweep();
     expect(existsSync(old)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
+  });
+});
+
+// The sweep used to stat each readdir entry and unlink anything past the
+// cutoff without checking WHAT it was. unlink on a directory returns EPERM
+// on macOS, so two stray directories in the real attachments folder logged
+// the same two lines on every launch, forever, with nothing able to clear
+// them (KNOWN_ISSUES, 2026-09-22). These pin the deliberate decision: an
+// empty stray directory is removed -- which clears that for good -- and one
+// with anything in it is left alone and named once, because this sweep does
+// not know what put it there and must not delete content it did not write.
+describe('createStager sweep: entries that are not files it wrote', () => {
+  const ageOut = (path: string) => {
+    const twoDaysAgo = (Date.now() - 2 * 86_400_000) / 1000;
+    utimesSync(path, twoDaysAgo, twoDaysAgo);
+  };
+
+  /** Runs the sweep with console.error captured, so a test can assert on
+   *  what it said as well as on what it deleted. */
+  async function sweepQuietly(stager: { sweep: () => Promise<void> }): Promise<string[]> {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(a => (a instanceof Error ? a.message : String(a))).join(' '));
+    });
+    try { await stager.sweep(); } finally { spy.mockRestore(); }
+    return lines;
+  }
+
+  it('removes an empty stray directory rather than failing to unlink it every launch', async () => {
+    const dir = join(base, 'att');
+    const stager = createStager(dir);
+    await stager.stage(new Uint8Array(PNG));          // creates the folder
+    const stray = join(dir, '9948d14f-a35a-4ace-9dd9-f9dd3378a612');
+    mkdirSync(stray);
+    ageOut(stray);
+    expect(await sweepQuietly(stager)).toEqual([]);   // nothing to report -- it is gone
+    expect(existsSync(stray)).toBe(false);
+  });
+
+  it('leaves a stray directory that has something in it alone, and names it once', async () => {
+    const dir = join(base, 'att');
+    const stager = createStager(dir);
+    await stager.stage(new Uint8Array(PNG));
+    const stray = join(dir, 'not-ours');
+    mkdirSync(stray);
+    writeFileSync(join(stray, 'someone-elses.txt'), 'x');
+    ageOut(stray);                                    // after the write, which bumps the folder's mtime
+    const lines = await sweepQuietly(stager);
+    expect(existsSync(join(stray, 'someone-elses.txt'))).toBe(true);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/director/i);
+    expect(lines[0]).toContain(stray);
+    expect(lines[0]).not.toMatch(/EPERM|not permitted/);
+  });
+
+  it('leaves anything younger than the cutoff alone, directory or not', async () => {
+    const dir = join(base, 'att');
+    const stager = createStager(dir);
+    await stager.stage(new Uint8Array(PNG));
+    const fresh = join(dir, 'fresh-dir');
+    mkdirSync(fresh);
+    expect(await sweepQuietly(stager)).toEqual([]);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  it('says WHY it could not delete something, rather than one line for every reason', async () => {
+    const dir = join(base, 'att');
+    const stager = createStager(dir);
+    await stager.stage(new Uint8Array(PNG));
+    const stuck = join(dir, 'stuck.png');
+    writeFileSync(stuck, PNG);
+    ageOut(stuck);
+    chmodSync(dir, 0o500);                            // readable and statable, but nothing can be removed
+    let lines: string[];
+    try { lines = await sweepQuietly(stager); } finally { chmodSync(dir, 0o700); }
+    expect(existsSync(stuck)).toBe(true);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(stuck);
+    expect(lines[0]).toMatch(/EACCES|EPERM|permitted|permission/i);
+    // The point of the differentiation: this is NOT the line a stray
+    // directory produces, so the two are told apart in the log.
+    expect(lines[0]).not.toMatch(/director/i);
+  });
+
+  // The sweep asks lstat, not stat, so an entry is judged by its own age
+  // and its own type. A symlink is a link, never the directory it happens
+  // to point at -- unlink removes the link and leaves the target alone.
+  it('deletes an aged symlink itself, and never judges it by what it points at', async () => {
+    const dir = join(base, 'att');
+    const stager = createStager(dir);
+    await stager.stage(new Uint8Array(PNG));
+    const target = join(base, 'target-dir');
+    mkdirSync(target);                                // fresh, and a directory
+    const link = join(dir, 'link-to-a-dir');
+    symlinkSync(target, link);
+    const twoDaysAgo = (Date.now() - 2 * 86_400_000) / 1000;
+    lutimesSync(link, twoDaysAgo, twoDaysAgo);        // the LINK's own times, not the target's
+    expect(await sweepQuietly(stager)).toEqual([]);
+    expect(existsSync(link)).toBe(false);
+    expect(existsSync(target)).toBe(true);            // the target is untouched
   });
 });
 
