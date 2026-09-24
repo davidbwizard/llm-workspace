@@ -403,59 +403,65 @@ route -- in which case it inherits every fragility of screen-scraping, and the
 detector has to be proven to separate a real prompt from a session that merely
 printed the same words.
 
-## A multi-question prompt stalls on its review screen, unanswered
+## A prompt whose options carry previews stalls on its review screen
 
 **Observed by David on 2026-09-24** in the `adventure-101-build` session
-(pid 82272, pane `llmws-claude-f9f2d14a:%1154`). He reported "a multi select
-is failing". The live-session file reported `status: waiting`, and the pane
-was parked here, with BOTH questions already answered:
+(pid 82272, pane `llmws-claude-f9f2d14a:%1154`). Reported as "a multi select
+is failing". The live-session file said `status: waiting` and the pane was
+parked with BOTH questions already answered correctly:
 
-    ←  ☒ Word problems  ☒ Format scope  ✔ Submit  →
+    <-  [x] Word problems  [x] Format scope  / Submit  ->
     Review your answers
-     │ ● In-game questions are themed into word problems (grades 1-6 are
-     │   100% templated), so the displayed text is usually "In the cave you
-     │   find 80 gems and 8 more..." while the underlying sum is 80 + 8.
-     │   Should the whiteboard still pre-stack that sum?
+     | * In-game questions are themed into word problems (grades 1-6 are
+     |   100% templated), so the displayed text is usually "In the cave you
+     |   find 80 gems and 8 more..." while the underlying sum is 80 + 8.
+     |   Should the whiteboard still pre-stack that sum?
        -> Always stack it (Recommended)
-     ● Which questions should get a stacked template?
+     * Which questions should get a stacked template?
        -> 2- and 3-operand + / - (Recommended)
     Ready to submit your answers?
     > 1. Submit answers
       2. Cancel
 
-**What the code does** (verified, `src/main/answer.ts`). The answer walks each
-question, then requires the review screen to match the card before it will
-submit:
+**It is NOT a multi-select.** Read from the session transcript's own
+AskUserQuestion payload: both questions are `multiSelect: false`. The tab
+strip's checkbox glyphs mean "answered", not "multi-select", which is what
+made it look like one.
+
+**What IS distinctive: every option carries a `preview`.** All five options
+across both questions. That changes the layout, and the answer path with it
+-- `focusPreviewOption` walks the caret with arrow keys instead of pressing
+a digit. This codebase already treats preview layouts as under-measured:
+`hasMultiSelectPreview` exists only because the multi-select preview form
+"never has been" measured (answer.ts:95-104). The SINGLE-select preview form
+was measured 2026-09-21; the review screen that follows it may not have been.
+
+**Where it stops** (`answer.ts`):
 
     if (!isReview(cur) || !this.reviewMatches(cur.read, picks)) return this.fail();
     return this.press('1') ? null : this.fail();
 
-So reaching the review with both picks made and going no further is exactly
-what a failed `reviewMatches` looks like: the picks land, the submit never
-fires, and the prompt sits open.
+Both picks landed, so the per-question walk worked. Reaching the review and
+going no further is what a failed `isReview` or `reviewMatches` looks like.
 
-**The asymmetry, verified** (`answer.ts:666-675`):
+**Two candidate causes ruled OUT by measurement**, so nobody re-checks them:
 
-    return got.question === q.question && norm(got.answer) === norm(expected);
+- NOT the wrapped question text. `reviewMatches` compares the question with
+  exact string equality (while normalising the answer -- a real asymmetry,
+  answer.ts:673). The first question wraps over three lines with box-drawing
+  prefixes, which looked like the obvious culprit. It is not: stripping the
+  prefixes and joining the three lines reproduces the payload string exactly,
+  240 characters both, byte for byte.
+- NOT the answer labels. The screen shows "Always stack it (Recommended)" and
+  the payload label IS "Always stack it (Recommended)" -- the suffix is part
+  of the label, not something the UI appends.
 
-The ANSWER is compared normalised. The QUESTION is compared with exact string
-equality. The first question here is long enough that the terminal wraps it
-over three lines and prefixes each with a box-drawing `|`, so what is read
-back off the screen has to reproduce the payload string byte for byte to
-pass. The second question, short and unwrapped, would not have this problem.
+**Still to establish**: whether `isReview` recognises the review screen that
+follows a PREVIEW-layout prompt at all, or whether it only ever saw the plain
+layout's review. That is the first thing to measure, and it is measurable --
+capture the pane at the review step for a preview prompt and a non-preview
+one and compare what the reader makes of each.
 
-**Hypothesis, NOT yet proven**: the exact question comparison rejects a
-wrapped or prefixed rendering, and any prompt whose question text wraps is
-unanswerable from the app. It predicts short questions answer fine and long
-ones stall, which matches what was seen. The cheap experiment is a
-two-question prompt with one deliberately long question and one short one.
-
-Do NOT "fix" this by loosening the comparison until that is established --
-the check exists so the app can never submit a review that disagrees with the
-card, and weakening it without knowing the real cause trades a stall for a
-wrong answer, which is far worse.
-
-**Unknown**: whether this is specific to multi-select or affects any
-multi-question prompt. The tab strip shows checkbox glyphs, but each question
-was answered with a single choice, so the multi-select-ness may be incidental
-to the failure.
+Do NOT loosen `reviewMatches` to make this pass. It exists so the app can
+never submit a review that disagrees with the card; weakening it before the
+cause is known trades a stall for a wrong answer, which is far worse.
