@@ -107,3 +107,9 @@ Not repeated in full here -- follow the pointer.
   com.apple.quarantine`. $99/year plus notarisation turns that into a
   double-click; a universal build is a config change at roughly double the
   download. `docs/superpowers/specs/2026-09-22-handoff.md`
+
+## Previously opened md files in viewr
+- Store up to 5 for quick view. Yes i know they might not exsist. Make sure its the full path
+
+## Add app notifications
+- Add for finished prompts, and question prompts. 
