@@ -471,6 +471,35 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
     expect(sent.map(payloadData).join('')).toContain('STREAM_MARKER_2');
   });
 
+  it('restores a real tmux client after that client exits unexpectedly', async () => {
+    killTestSession();
+    const created = newSession(TEST_SESSION, process.cwd(), 'bash', 80, 24);
+    expect(created.ok).toBe(true);
+    await delay(200);
+
+    registerSession(TEST_PID, TEST_SESSION);
+    const clients: IPty[] = [];
+    const spawn = ((file: string, args: string[], options: Parameters<typeof realPtySpawn>[2]) => {
+      const client = realPtySpawn(file, args, options);
+      clients.push(client);
+      return client;
+    }) as typeof realPtySpawn;
+    const sent: unknown[] = [];
+    expect(await attachTerminal(TEST_PID, 80, 24, fakeWin(sent), { spawn }))
+      .toEqual({ status: 'attached' });
+    await delay(200);
+
+    clients[0]!.kill('SIGTERM');
+    for (let n = 0; n < 10 && clients.length < 2; n++) await delay(50);
+    expect(clients).toHaveLength(2);
+    expect(() => execFileSync('tmux', ['has-session', '-t', `=${TEST_SESSION}`])).not.toThrow();
+
+    execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, '-l', 'echo RECONNECTED_MARKER']);
+    execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, 'Enter']);
+    await delay(300);
+    expect(sent.map(payloadData).join('')).toContain('RECONNECTED_MARKER');
+  });
+
   // The property this whole change buys: node-pty gives tmux a real
   // terminal, so resizing the PTY makes tmux resize the window ITSELF --
   // no resize-window call, no size race. Mutation target: swap
