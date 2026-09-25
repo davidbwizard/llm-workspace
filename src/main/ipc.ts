@@ -41,7 +41,7 @@ import {
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
 import { conversationFor, turnSource, type ConversationCursor } from '../store/conversation.ts';
 import type { Provider } from '../core/types.ts';
-import { launchSession, reattachSession, resumeSession, launchCommand, type LaunchResult } from './launch.ts';
+import { launchSession, launchCodexSession, reattachSession, resumeSession, launchCommand, type LaunchResult } from './launch.ts';
 import { isCodexBusy } from './codexBusy.ts';
 import {
   buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, notifySessionChanged, type WatchDeps,
@@ -54,6 +54,7 @@ import { withContext, defaultContextOpts, buildUsagePayload, type ContextOpts } 
 import type { UsagePayload } from '../core/usage.ts';
 import { ingestSpool } from '../hooks/spool.ts';
 import { codexAppServer, type CodexAnswerResult } from './codexAppServer.ts';
+import { codexRelayThreadForPid } from './codexRelayControl.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -286,7 +287,9 @@ export function refreshPushEnrichment(
   // is injectable so tests never read the real home.
   cachedPushOpenSessions = withContext(
     db,
-    openSessionsLive(db, processes, now, { isTmux: pidIsTmux, launchedAtForPid }),
+    openSessionsLive(db, processes, now, {
+      isTmux: pidIsTmux, launchedAtForPid, codexThreadForPid: codexRelayThreadForPid,
+    }),
     contextOpts ?? defaultContextOpts(),
   );
 }
@@ -1741,7 +1744,7 @@ export function registerIpc(
   // characters AND quotes the result, and this handler refuses on its
   // reason rather than launching an unnamed session and pretending the
   // name was applied. Absent/null is the ordinary unnamed launch.
-  ipcMain.handle('session:launch', (
+  ipcMain.handle('session:launch', async (
     _event, provider: unknown, cwd: unknown, cols: unknown, rows: unknown, name: unknown,
   ) => {
     if (!isProvider(provider)) return { status: 'failed', reason: 'unrecognised provider' };
@@ -1756,7 +1759,9 @@ export function registerIpc(
     }
     const command = launchCommand(provider, name ?? null);
     if (!command.ok) return { status: 'failed', reason: command.reason };
-    const result: LaunchResult = launchSession(provider, cwd, cols, rows, {}, command.command);
+    const result: LaunchResult = provider === 'codex'
+      ? await launchCodexSession(cwd, cols, rows)
+      : launchSession(provider, cwd, cols, rows, {}, command.command);
     if (onSessionLaunch && result.status === 'launched') setImmediate(onSessionLaunch);
     return result;
   });

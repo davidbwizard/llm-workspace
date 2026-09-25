@@ -1,11 +1,39 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { launchSession, reattachSession, resumeSession, launchCommand, shellQuote } from '../../src/main/launch.ts';
+import { launchSession, launchCodexSession, reattachSession, resumeSession, launchCommand, shellQuote } from '../../src/main/launch.ts';
 import { SESSION_NAME_MAX } from '../../src/core/sessionName.ts';
 import { clearRegistry, tmuxNameForPid, registerSession, launchedAtForPid } from '../../src/main/sessions.ts';
 import { killSession } from '../../src/main/ipc.ts';
 import type { ExecFn } from '../../src/discovery/live.ts';
 
 beforeEach(() => clearRegistry());
+
+describe('launchCodexSession', () => {
+  it('starts a persistent relay and a native TUI rooted in the selected directory', async () => {
+    const relay = vi.fn();
+    const calls: string[][] = [];
+    const result = await launchCodexSession('/tmp/pilot', 120, 40, {
+      startDaemon: async () => {}, startRelay: relay, waitRelay: async () => true,
+      socketHome: '/tmp/home', executable: '/bin/node', relayScript: '/tmp/relay.js',
+      exec: args => { calls.push(args); return { ok: true, stdout: '' }; },
+      panePid: () => 4821,
+    });
+    expect(result).toEqual({ status: 'launched', pid: 4821 });
+    const tuiName = tmuxNameForPid(4821)!;
+    expect(relay.mock.calls[0]![0]).toBe(`fleet-codex-relay-${tuiName.slice('llmws-codex-relay-'.length)}`);
+    expect(calls[0]).toContain(tuiName);
+    expect(calls[0]!.at(-1)).toContain("codex -C '/tmp/pilot' --remote 'unix:///tmp/home/.llm-workspace/codex-relays/");
+  });
+
+  it('does not create a TUI when the local relay cannot start', async () => {
+    const exec = vi.fn(() => ({ ok: true as const, stdout: '' }));
+    const result = await launchCodexSession('/tmp/pilot', 120, 40, {
+      startDaemon: async () => {}, startRelay: () => {}, waitRelay: async () => false,
+      exec, socketHome: '/tmp/home',
+    });
+    expect(result).toEqual({ status: 'failed', reason: 'Codex relay did not open its local socket' });
+    expect(exec).not.toHaveBeenCalled();
+  });
+});
 
 describe('launchSession', () => {
   it('names the session so it is findable in tmux ls, and registers the pid', () => {

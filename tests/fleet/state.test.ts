@@ -812,6 +812,33 @@ describe('openSessionsLive', () => {
       const [o] = openSessionsLive(db, [proc({ pid:1, cwd:'/repo/new', ageSeconds:5, ...live('just-launched', '/repo/new') })], NOW);
       expect(o).toMatchObject({ match:'unique', sessionId:'just-launched', lastProse:null, events:null });
     });
+
+    it('uses relayed Codex thread IDs for two native TUIs in the same directory', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [
+        ev({ provider:'codex', sessionId:'codex-a', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+        ev({ provider:'codex', sessionId:'codex-a', kind:'prose', payload:{ text:'from A' }, contentHash:'b', subIndex:1 }),
+        ev({ provider:'codex', sessionId:'codex-b', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'c' }),
+        ev({ provider:'codex', sessionId:'codex-b', kind:'prose', payload:{ text:'from B' }, contentHash:'d', subIndex:1 }),
+      ]);
+      const open = openSessionsLive(db, [
+        proc({ pid:1, provider:'codex', cwd:'/repo/shared', ageSeconds:60 }),
+        proc({ pid:2, provider:'codex', cwd:'/repo/shared', ageSeconds:60 }),
+      ], NOW, { codexThreadForPid: pid => pid === 1 ? 'codex-a' : 'codex-b' });
+      const byPid = new Map(open.map(o => [o.pid, o]));
+      expect(byPid.get(1)).toMatchObject({ match:'unique', sessionId:'codex-a', lastProse:'from A' });
+      expect(byPid.get(2)).toMatchObject({ match:'unique', sessionId:'codex-b', lastProse:'from B' });
+    });
+
+    it('does not guess a conversation for a disconnected relay TUI', () => {
+      const db = openDb(':memory:');
+      insertEvents(db, [ev({ provider:'codex', sessionId:'old', kind:'session.started',
+        payload:{ cwd:'/repo/shared' }, contentHash:'a' })]);
+      const [open] = openSessionsLive(db,
+        [proc({ pid:1, provider:'codex', cwd:'/repo/shared', ageSeconds:60 })], NOW,
+        { codexThreadForPid: () => false });
+      expect(open).toMatchObject({ match:'unknown', sessionId:null, lastProse:null });
+    });
   });
 
   // Codex exact identity from the rollouts a process holds open. Measured

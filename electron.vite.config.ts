@@ -7,7 +7,10 @@ export default defineConfig({
   main: {
     build: {
       rollupOptions: {
-        input: resolve('src/main/index.ts'),
+        input: {
+          index: resolve('src/main/index.ts'),
+          codexRelay: resolve('src/main/codexRelay.ts'),
+        },
         external: ['better-sqlite3', 'chokidar'],
       },
     },

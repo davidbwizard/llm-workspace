@@ -901,6 +901,9 @@ export function openSessionsLive(
   db: Db, processes: LiveProcess[], now: number = Date.now(),
   deps: {
     isTmux?: (pid: number) => boolean;
+    /** Exact identity observed from a Fleet Codex TUI's protocol relay.
+     * false means a relay TUI is disconnected: do not guess by cwd. */
+    codexThreadForPid?: (pid: number) => string | false | null;
     /** Launch timestamp for a pid THIS APP started (src/main/sessions.ts),
      *  or null after restart or for an ordinary discovered process. An
      *  adopted Codex tmux pane can use its OS age when this is null; all
@@ -934,7 +937,19 @@ export function openSessionsLive(
   // live session file; anything short of exactly one falls back to cwd.
   const rolloutIds = rolloutSessionIds(
     processes, codexRolloutThreads(db, processes.flatMap(p => p.openRollouts ?? [])));
-  const matches = applyExactMatches(processes, classifyMatch(processes, refs), rolloutIds);
+  const exactCodexIds = new Map(rolloutIds);
+  const disconnectedRelays = new Set<number>();
+  if (deps.codexThreadForPid) {
+    for (const p of processes) {
+      if (p.provider !== 'codex') continue;
+      const id = deps.codexThreadForPid(p.pid);
+      if (id === false) disconnectedRelays.add(p.pid);
+      else if (id !== null) exactCodexIds.set(p.pid, id);
+    }
+  }
+  const matches = applyExactMatches(processes, classifyMatch(processes, refs), exactCodexIds)
+    .map(m => disconnectedRelays.has(m.pid)
+      ? { ...m, quality: 'unknown' as const, sessionId: null, candidates: [] } : m);
 
   // A Fleet-owned Codex pane can outlive this app's launch-time registry.
   // Discovery still has its OS process age after restart, so use that as

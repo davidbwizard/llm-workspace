@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { join } from 'node:path';
 import type { Provider } from '../core/types.ts';
 // Validated before any session id or name reaches tmux's shell string.
 import { SESSION_ID_SAFE } from '../core/identity.ts';
@@ -8,6 +11,9 @@ import {
 import type { KillResult } from './ipc.ts';
 import { newSession, setSessionOption, panePid as tmuxPanePid, type TmuxExec } from './tmux.ts';
 import { registerSession } from './sessions.ts';
+import { codexDaemonSocket, codexRelayName, codexRelaySocket, waitForCodexRelaySocket } from './codexRelayControl.ts';
+
+const execFileAsync = promisify(execFile);
 
 export type LaunchResult =
   | { status: 'launched'; pid: number }
@@ -90,9 +96,9 @@ export function launchCommand(provider: Provider, name: string | null | undefine
  *  pane instead of a fresh `claude`. */
 export function launchSession(
   provider: Provider, cwd: string, cols: number, rows: number,
-  deps: LaunchDeps = {}, command: string = provider,
+  deps: LaunchDeps = {}, command: string = provider, sessionName?: string,
 ): LaunchResult {
-  const name = `llmws-${provider}-${randomUUID().slice(0, 8)}`;
+  const name = sessionName ?? `llmws-${provider}-${randomUUID().slice(0, 8)}`;
   const started = newSession(name, cwd, command, cols, rows, deps.exec);
   if (!started.ok) return { status: 'failed', reason: started.error };
 
@@ -118,6 +124,43 @@ export function launchSession(
 
   registerSession(pid, name, deps.now ?? Date.now());
   return { status: 'launched', pid };
+}
+
+/** Fleet-owned Codex terminals connect through a per-TUI relay. The relay
+ * observes the TUI's own App Server thread switches and stores their exact
+ * result in tmux; it remains alive when Fleet closes. The running daemon is
+ * reused, never restarted. A failed launch leaves no fabricated mapping. */
+export async function launchCodexSession(
+  cwd: string, cols: number, rows: number, deps: LaunchDeps & {
+    startDaemon?: () => Promise<void>;
+    startRelay?: (name: string, cwd: string, command: string) => void;
+    waitRelay?: (path: string) => Promise<boolean>;
+    relayScript?: string;
+    executable?: string;
+    socketHome?: string;
+  } = {},
+): Promise<LaunchResult> {
+  const tuiName = `llmws-codex-relay-${randomUUID().slice(0, 8)}`;
+  const relayName = codexRelayName(tuiName);
+  const socket = codexRelaySocket(tuiName, deps.socketHome);
+  try {
+    await (deps.startDaemon ?? (async () => {
+      await execFileAsync('codex', ['app-server', 'daemon', 'start'], { timeout: 15000 });
+    }))();
+    const relayCommand = `ELECTRON_RUN_AS_NODE=1 ${shellQuote(deps.executable ?? process.execPath)} `
+      + `${shellQuote(deps.relayScript ?? join(import.meta.dirname, 'codexRelay.js'))} `
+      + `${shellQuote(socket)} ${shellQuote(codexDaemonSocket())} ${shellQuote(tuiName)}`;
+    (deps.startRelay ?? ((name, dir, command) => {
+      execFileSync('tmux', ['new-session', '-d', '-s', name, '-c', dir, command], { timeout: 5000 });
+    }))(relayName, cwd, relayCommand);
+    if (!await (deps.waitRelay ?? waitForCodexRelaySocket)(socket)) {
+      return { status: 'failed', reason: 'Codex relay did not open its local socket' };
+    }
+    return launchSession('codex', cwd, cols, rows, deps,
+      `codex -C ${shellQuote(cwd)} --remote ${shellQuote(`unix://${socket}`)}`, tuiName);
+  } catch (error) {
+    return { status: 'failed', reason: `Could not start Codex relay: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 /** session:resume. Relaunches a Claude conversation from its session id and
