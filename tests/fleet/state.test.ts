@@ -1404,6 +1404,64 @@ describe('openSessionsLive', () => {
     expect(open[0]!.sessionId).toBeNull();
   });
 
+  it('recovers an adopted Codex conversation from its OS process age when another process shares the cwd', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ provider:'codex', sessionId:'old-codex', kind:'session.started', ts:at(30),
+        payload:{ cwd:'/repo/shared' }, contentHash:'old' }),
+      ev({ provider:'codex', sessionId:'current-codex', kind:'session.started', ts:at(8),
+        payload:{ cwd:'/repo/shared' }, contentHash:'current' }),
+    ]);
+    // The app restarted, so launchedAtForPid has no entry. Discovery still
+    // knows this tmux pane's actual process age from ps. The other live
+    // process makes the existing one-process fallback ineligible.
+    const open = openSessionsLive(db, [
+      proc({ pid:100, provider:'codex', cwd:'/repo/shared', ageSeconds:10 * 60 }),
+      proc({ pid:200, provider:'claude', cwd:'/repo/shared', ageSeconds:40 * 60 }),
+    ], NOW, { isTmux: pid => pid === 100 });
+    const byPid = new Map(open.map(o => [o.pid, o]));
+    expect(byPid.get(100)).toMatchObject({ match:'unique', sessionId:'current-codex' });
+    expect(byPid.get(200)).toMatchObject({ match:'ambiguous', sessionId:null });
+  });
+
+  it('keeps an adopted Codex match ambiguous without OS age or with two qualifying transcripts', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ provider:'codex', sessionId:'first', kind:'session.started', ts:at(8),
+        payload:{ cwd:'/repo/shared' }, contentHash:'first' }),
+      ev({ provider:'codex', sessionId:'second', kind:'session.started', ts:at(2),
+        payload:{ cwd:'/repo/shared' }, contentHash:'second' }),
+    ]);
+    const other = proc({ pid:200, provider:'claude', cwd:'/repo/shared', ageSeconds:40 * 60 });
+    const deps = { isTmux: (pid: number) => pid === 100 };
+    const missingAge = openSessionsLive(db, [
+      proc({ pid:100, provider:'codex', cwd:'/repo/shared', ageSeconds:null }), other,
+    ], NOW, deps);
+    expect(missingAge.find(o => o.pid === 100)).toMatchObject({ match:'ambiguous', sessionId:null });
+    const twoNew = openSessionsLive(db, [
+      proc({ pid:100, provider:'codex', cwd:'/repo/shared', ageSeconds:10 * 60 }), other,
+    ], NOW, deps);
+    expect(twoNew.find(o => o.pid === 100)).toMatchObject({ match:'ambiguous', sessionId:null });
+  });
+
+  it('uses the recorded launch time when available for a Codex process', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ provider:'codex', sessionId:'earlier', kind:'session.started', ts:at(8),
+        payload:{ cwd:'/repo/shared' }, contentHash:'earlier' }),
+      ev({ provider:'codex', sessionId:'launched', kind:'session.started', ts:at(2),
+        payload:{ cwd:'/repo/shared' }, contentHash:'launched' }),
+    ]);
+    // The OS cutoff includes both, but this run's recorded launch instant
+    // lies between them and remains the more precise signal.
+    const open = openSessionsLive(db, [
+      proc({ pid:100, provider:'codex', cwd:'/repo/shared', ageSeconds:10 * 60 }),
+      proc({ pid:200, provider:'claude', cwd:'/repo/shared' }),
+    ], NOW, { isTmux: pid => pid === 100,
+      launchedAtForPid: pid => pid === 100 ? Date.parse(at(5)) : null });
+    expect(open.find(o => o.pid === 100)).toMatchObject({ match:'unique', sessionId:'launched' });
+  });
+
   // Bug 1: the general fallback for a pid this app did NOT launch (no
   // launchedAtForPid entry at all) -- an adopted session, or one started
   // in iTerm. Mirrors the real measurement that motivated this: a cwd

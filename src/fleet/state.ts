@@ -901,12 +901,9 @@ export function openSessionsLive(
   deps: {
     isTmux?: (pid: number) => boolean;
     /** Launch timestamp for a pid THIS APP started (src/main/sessions.ts),
-     *  or null for an ordinary discovered process. No default beyond
-     *  "always null" -- a pid this function cannot prove was launched by
-     *  the app must never be guessed at, only matched by cwd as before.
-     *  See the disambiguation step below for why this narrows an
-     *  otherwise-ambiguous match instead of feeding classifyMatch itself
-     *  (spec/team-lead ruling: keep classifyMatch a pure cwd matcher). */
+     *  or null after restart or for an ordinary discovered process. An
+     *  adopted Codex tmux pane can use its OS age when this is null; all
+     *  other missing timestamps keep the existing cwd fallback. */
     launchedAtForPid?: (pid: number) => number | null;
   } = {},
 ): OpenSession[] {
@@ -938,20 +935,30 @@ export function openSessionsLive(
     processes, codexRolloutThreads(db, processes.flatMap(p => p.openRollouts ?? [])));
   const matches = applyExactMatches(processes, classifyMatch(processes, refs), rolloutIds);
 
-  // Disambiguate an ambiguous match for a pid THIS APP launched: among the
-  // several sessions sharing that cwd, the app's own session is the one
-  // whose EARLIEST event lands at or after the launch time -- a session
-  // that already existed before the launch cannot be the one this pid just
-  // started. Only pids classifyMatch already called 'ambiguous' AND that
-  // launchedAtForPid recognises are even considered; every other match
-  // (unique, unknown, or ambiguous-but-not-launched-by-us) passes through
-  // untouched, exactly as before this existed.
-  const launchedAmbiguousPids = new Set(
-    matches.filter(m => m.quality === 'ambiguous' && launchedAtForPid(m.pid) !== null).map(m => m.pid));
+  // A Fleet-owned Codex pane can outlive this app's launch-time registry.
+  // Discovery still has its OS process age after restart, so use that as
+  // the cutoff for its ambiguous cwd match. A launch time this run actually
+  // recorded remains more precise; Claude keeps its existing path.
+  // ps rounds age to seconds; allow the same 5s skew as the general
+  // fallback below. Exactly one transcript must survive this cutoff.
+  const START_TOLERANCE_MS = 5_000;
+  const startByPid = new Map<number, number>();
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i]!;
+    if (match.quality !== 'ambiguous') continue;
+    const process = processes[i]!;
+    const age = process.ageSeconds;
+    const osStart = process.provider === 'codex' && isTmux(match.pid)
+      && typeof age === 'number' && Number.isFinite(age) && age >= 0
+      ? now - age * 1000 - START_TOLERANCE_MS : null;
+    const start = launchedAtForPid(match.pid) ?? osStart;
+    if (start !== null) startByPid.set(match.pid, start);
+  }
+  const startKnownAmbiguousPids = new Set(startByPid.keys());
 
-  // General fallback, for an ambiguous pid the launch timestamp above does
-  // NOT cover -- an adopted session, or one this app never launched at all
-  // (started in iTerm, or by a previous run). Bug report measurement: a
+  // General fallback, for an ambiguous pid the start-time path above does
+  // NOT cover -- for example a session started in iTerm, or a pane whose
+  // process age is unavailable. Bug report measurement: a
   // real cwd commonly has several recorded sessions (a directory
   // accumulates history over time) but exactly one live process, and
   // `/clear` starts a new session id INSIDE the same process -- so one
@@ -960,9 +967,9 @@ export function openSessionsLive(
   // began at or after this process started.
   //
   // Only viable when EXACTLY ONE live process shares this pid's cwd
-  // (rule 1): with two live processes at the same cwd there is no signal
-  // here that tells the two apart, so that case must stay ambiguous rather
-  // than guess. `pidCwdCounts` counts PROCESSES per cwd -- deliberately
+  // (rule 1): with two live processes at the same cwd this fallback has no
+  // signal that tells the two apart, so that case stays ambiguous.
+  // `pidCwdCounts` counts PROCESSES per cwd -- deliberately
   // distinct from `m.candidates.length`, which counts SESSIONS sharing
   // that cwd (the thing that made classifyMatch call this ambiguous in the
   // first place): a cwd can have two live processes and five old
@@ -977,7 +984,7 @@ export function openSessionsLive(
   // is the exact process `matches[i]` was built from, cwd included.
   const fallbackAmbiguousPids = new Set(
     matches.filter((m, i) => {
-      if (m.quality !== 'ambiguous' || launchedAtForPid(m.pid) !== null) return false;
+      if (m.quality !== 'ambiguous' || startByPid.has(m.pid)) return false;
       const cwd = processes[i]!.cwd;
       return cwd !== null && pidCwdCounts.get(cwd) === 1;
     }).map(m => m.pid));
@@ -987,7 +994,7 @@ export function openSessionsLive(
   // filter "started before this process existed" candidates out with;
   // latest is what the fallback path (only, rule 2) then breaks a
   // multi-candidate survival with, by picking the most recently active.
-  const timedPids = new Set([...launchedAmbiguousPids, ...fallbackAmbiguousPids]);
+  const timedPids = new Set([...startKnownAmbiguousPids, ...fallbackAmbiguousPids]);
   const earliestBySession = new Map<string, number>();
   const latestBySession = new Map<string, number>();
   if (timedPids.size > 0) {
@@ -1008,7 +1015,7 @@ export function openSessionsLive(
     }
   }
 
-  // Rule 3: process start comes from the process's own elapsed time
+  // Rule 3: the general fallback's process start comes from elapsed time
   // (ageSeconds), not from any event. Tolerance for the comparison below:
   // `ps` reports elapsed time as whole seconds, rounded, while event
   // timestamps carry millisecond precision -- a session's own first event
@@ -1016,15 +1023,13 @@ export function openSessionsLive(
   // that session actually predating the process. 5s covers that skew
   // comfortably without being wide enough to let a genuinely older session
   // (started, say, 30s earlier) qualify by accident.
-  const START_TOLERANCE_MS = 5_000;
-
   const resolvedMatches = matches.map((m, i) => {
-    if (launchedAmbiguousPids.has(m.pid)) {
-      const launchedAt = launchedAtForPid(m.pid)!; // set above -- this pid is in launchedAmbiguousPids precisely because it isn't null
-      const qualifying = m.candidates.filter(id => (earliestBySession.get(id) ?? -Infinity) >= launchedAt);
+    if (startKnownAmbiguousPids.has(m.pid)) {
+      const processStart = startByPid.get(m.pid)!;
+      const qualifying = m.candidates.filter(id => (earliestBySession.get(id) ?? -Infinity) >= processStart);
       // Exactly one qualifying candidate is what actually resolves this --
-      // none (the launched session's own first event hasn't been ingested
-      // yet) or several (more than one candidate started at/after launch,
+      // none (the session's own first event hasn't been ingested
+      // yet) or several (more than one candidate started after the process,
       // e.g. two sessions launched back to back) both leave the existing
       // ambiguous result untouched rather than guessing among them.
       if (qualifying.length !== 1) return m;
