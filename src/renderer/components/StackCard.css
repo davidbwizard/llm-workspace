@@ -194,6 +194,43 @@
   padding-top: 8px;
 }
 
+/* The clip is only needed WHILE the row collapses -- an open stack's row is
+   content-sized and has nothing to clip. Keeping it on regardless cost a
+   member card its "…" menu: the menu is a popover inside the member, so the
+   clip cut it off entirely (David's own report against the running window,
+   on a card nested in an expanded stack). No z-index can answer a clip.
+
+   Delayed to var(--dur) by the same 0s-transition trick this file already
+   uses for .stackmembers' visibility, so the members do not spill out of
+   the box while it is still growing. transition-behavior is what lets a
+   discrete property take that delay; where it is unsupported the switch is
+   simply immediate, which costs a brief spill on open rather than a broken
+   menu for as long as the stack is open.
+
+   Escaping the clip is all that is needed -- the menu does not also need a
+   z-index. .stackmembers above is position:relative with z-index:1, which
+   makes it a stacking context painting at layer 1, so everything inside it
+   already paints over the plain cards (z-index:auto) that follow the
+   stack. */
+.stack.open .stackmembers-inner {
+  overflow: visible;
+  transition: overflow 0s linear var(--dur);
+  transition-behavior: allow-discrete;
+}
+
+/* Lifting the MEMBER card is not enough when the menu belongs to one: the
+   member sits inside .stackmembers, which is z-index:1, so the card's own
+   z-index is scoped inside that and the whole stack still paints at layer 1
+   -- tying with the next stack's .stackface and losing on document order.
+   The stack that HOLDS the open menu is what has to rise, so it clears
+   every later .stackface. Same 3 as .card.menu-open, for the same reason.
+
+   :has() rather than a class from StackCard.tsx: the state belongs to a
+   card nested one or two levels in, and threading "one of my members has
+   its menu open" up through the component only to put it back in CSS is
+   more moving parts than the selector that asks the question directly. */
+.stack:has(.card.menu-open) { z-index: 3; }
+
 /* Members are inset (above) so the stack reads as one object with contents,
    not four unrelated cards that happen to be adjacent. Each slides down into
    place as it fades in. */
