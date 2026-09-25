@@ -1711,8 +1711,8 @@ describe('terminal:data parity', () => {
   it('every webContents.send channel has a matching ipcRenderer.on in preload', () => {
     const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
     const preload = strip(readFileSync('src/preload/index.ts', 'utf8'));
-    const pushed = [...ipc.matchAll(/webContents\.send\('([^']+)'/g)].map(m => m[1]).sort();
-    const heard = [...preload.matchAll(/ipcRenderer\.on\('([^']+)'/g)].map(m => m[1]).sort();
+    const pushed = [...new Set([...ipc.matchAll(/webContents\.send\('([^']+)'/g)].map(m => m[1]))].sort();
+    const heard = [...new Set([...preload.matchAll(/ipcRenderer\.on\('([^']+)'/g)].map(m => m[1]))].sort();
     expect(pushed).toEqual(heard);
   });
 });

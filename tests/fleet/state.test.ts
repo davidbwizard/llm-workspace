@@ -569,15 +569,15 @@ describe('openSessions', () => {
   // with certainty for every process (which binary it is running),
   // independent of any transcript match -- see the openSessions doc
   // comment. A process discovered as 'codex' reports 'codex' even when it
-  // matches a 'claude' session's cwd, because provider answers "which CLI
-  // is this process", not "which session does this belong to".
-  it("reports provider from the process's own discovery, not from a matched session of a different provider", () => {
+  // shares a 'claude' session's cwd, because provider answers "which CLI
+  // is this process", and a different provider's transcript is not a match.
+  it("reports provider from discovery without matching another provider's transcript", () => {
     const db = openDb(':memory:');
     insertEvents(db, [ev({ kind:'session.started', provider:'claude', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
     const sessions = fleetState(db, { now: NOW });
     const open = openSessions(sessions, [proc({ pid:9, provider:'codex', cwd:'/repo/live' })]);
-    expect(open[0]!.match).toBe('unique');
-    expect(open[0]!.sessionId).toBe('s1');
+    expect(open[0]!.match).toBe('unknown');
+    expect(open[0]!.sessionId).toBeNull();
     expect(open[0]!.provider).toBe('codex');
   });
 
@@ -610,8 +610,8 @@ describe('openSessions', () => {
   it('renders an ambiguous match without borrowing another session\'s words or activity, while provider stays attributable', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
-      ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
-      ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+      ev({ provider:'codex', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+      ev({ provider:'codex', sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
     ]);
     const sessions = fleetState(db, { now: NOW });
     const open = openSessions(sessions, [proc({
@@ -1064,12 +1064,12 @@ describe('openSessionsLive', () => {
     expect(open[0]!.name).toBe('FLEET STUFF');
   });
 
-  it("reports provider from the process's own discovery, not from a matched session of a different provider", () => {
+  it("reports provider from discovery without matching another provider's transcript", () => {
     const db = openDb(':memory:');
     insertEvents(db, [ev({ kind:'session.started', provider:'claude', payload:{ cwd:'/repo/live' }, contentHash:'a' })]);
     const open = openSessionsLive(db, [proc({ pid:9, provider:'codex', cwd:'/repo/live' })], NOW);
-    expect(open[0]!.match).toBe('unique');
-    expect(open[0]!.sessionId).toBe('s1');
+    expect(open[0]!.match).toBe('unknown');
+    expect(open[0]!.sessionId).toBeNull();
     expect(open[0]!.provider).toBe('codex');
   });
 
@@ -1108,8 +1108,8 @@ describe('openSessionsLive', () => {
   it('renders an ambiguous match without borrowing another session\'s words or activity, while provider stays attributable', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
-      ev({ kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
-      ev({ sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
+      ev({ provider:'codex', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'a' }),
+      ev({ provider:'codex', sessionId:'s2', kind:'session.started', payload:{ cwd:'/repo/shared' }, contentHash:'b' }),
     ]);
     const open = openSessionsLive(db, [proc({
       pid:7, provider:'codex', cwd:'/repo/shared', host:'terminal', ageSeconds:300, rssBytes:1_000_000,
@@ -1421,7 +1421,24 @@ describe('openSessionsLive', () => {
     ], NOW, { isTmux: pid => pid === 100 });
     const byPid = new Map(open.map(o => [o.pid, o]));
     expect(byPid.get(100)).toMatchObject({ match:'unique', sessionId:'current-codex' });
-    expect(byPid.get(200)).toMatchObject({ match:'ambiguous', sessionId:null });
+    expect(byPid.get(200)).toMatchObject({ match:'unknown', sessionId:null });
+  });
+
+  it('does not count a Claude transcript as a candidate for a Codex process in the same cwd', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ provider:'codex', sessionId:'current-codex', kind:'session.started', ts:at(8),
+        payload:{ cwd:'/repo/shared' }, contentHash:'codex' }),
+      ev({ provider:'claude', sessionId:'short-claude', kind:'session.started', ts:at(2),
+        payload:{ cwd:'/repo/shared' }, contentHash:'claude' }),
+    ]);
+    const open = openSessionsLive(db, [
+      proc({ pid:100, provider:'codex', cwd:'/repo/shared', ageSeconds:10 * 60 }),
+      proc({ pid:200, provider:'claude', cwd:'/repo/shared', ageSeconds:10 * 60 }),
+    ], NOW, { isTmux: pid => pid === 100 });
+    const byPid = new Map(open.map(o => [o.pid, o]));
+    expect(byPid.get(100)).toMatchObject({ match:'unique', sessionId:'current-codex' });
+    expect(byPid.get(200)).toMatchObject({ match:'unique', sessionId:'short-claude' });
   });
 
   it('keeps an adopted Codex match ambiguous without OS age or with two qualifying transcripts', () => {

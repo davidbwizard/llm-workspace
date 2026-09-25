@@ -404,7 +404,8 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
     byCwd.set(r.cwd, [...(byCwd.get(r.cwd) ?? []), r.session_id]);
   }
 
-  const refs = globalRows.map(r => ({ sessionId: r.session_id as string, cwd: (r.cwd ?? null) as string | null }));
+  const refs = globalRows.map(r => ({ sessionId: r.session_id as string, cwd: (r.cwd ?? null) as string | null,
+    provider: r.provider as LiveProcess['provider'] }));
   const matches = classifyMatch(opts.processes ?? [], refs);
   const bySession = new Map<string, { quality: MatchQuality; pids: number[]; host: LiveProcess['host'] | null }>();
   // Iterating `m.candidates` alone covers BOTH cases: for a `unique` match,
@@ -792,7 +793,7 @@ export function openSessions(
   sessions: SessionState[], processes: LiveProcess[], deps: { isTmux?: (pid: number) => boolean } = {},
 ): OpenSession[] {
   const isTmux = deps.isTmux ?? (() => false);
-  const refs = sessions.map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
+  const refs = sessions.map(s => ({ sessionId: s.sessionId, cwd: s.cwd, provider: s.provider }));
   const matches = applyExactMatches(processes, classifyMatch(processes, refs));
   const byId = new Map(sessions.map(s => [s.sessionId, s]));
 
@@ -912,21 +913,21 @@ export function openSessionsLive(
   const cwds = [...new Set(processes.map(p => p.cwd).filter((c): c is string => c !== null))];
 
   const candidateRows = cwds.length === 0 ? [] : db.prepare(`
-    SELECT session_id, json_extract(payload,'$.cwd') cwd, ts, id
+    SELECT session_id, provider, json_extract(payload,'$.cwd') cwd, ts, id
     FROM events
     WHERE kind = 'session.started' AND json_extract(payload,'$.cwd') IN (${cwds.map(() => '?').join(',')})
-  `).all(...cwds) as { session_id: string; cwd: string; ts: string; id: number }[];
+  `).all(...cwds) as { session_id: string; provider: LiveProcess['provider']; cwd: string; ts: string; id: number }[];
 
   // Most recent session.started per session_id -- the same "most recent
   // wins" rule fleetState's own cwd subquery uses (a resumed session
   // re-emits one session.started per transcript file). Sorted ascending
   // so each later entry overwrites the map with a newer one.
-  const cwdBySession = new Map<string, string>();
+  const cwdBySession = new Map<string, { cwd: string; provider: LiveProcess['provider'] }>();
   for (const r of [...candidateRows].sort((a, b) => a.ts.localeCompare(b.ts) || a.id - b.id)) {
-    cwdBySession.set(r.session_id, r.cwd);
+    cwdBySession.set(r.session_id, { cwd: r.cwd, provider: r.provider });
   }
 
-  const refs = [...cwdBySession.entries()].map(([sessionId, cwd]) => ({ sessionId, cwd }));
+  const refs = [...cwdBySession.entries()].map(([sessionId, { cwd, provider }]) => ({ sessionId, cwd, provider }));
   // Codex exact identity: the one known root rollout a process holds open
   // names its session outright, even when its cwd no longer matches the
   // session's (a folder moved mid-session). Same precedence as a Claude

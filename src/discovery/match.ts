@@ -2,7 +2,7 @@ import type { LiveProcess } from './parse.ts';
 
 export type MatchQuality = 'unique' | 'ambiguous' | 'unknown';
 
-export interface SessionRef { sessionId: string; cwd: string | null }
+export interface SessionRef { sessionId: string; cwd: string | null; provider?: LiveProcess['provider'] }
 
 export interface MatchResult {
   pid: number;
@@ -24,7 +24,7 @@ export interface MatchResult {
 export function classifyMatch(procs: LiveProcess[], sessions: SessionRef[]): MatchResult[] {
   return procs.map(p => {
     const candidates = p.cwd
-      ? sessions.filter(s => s.cwd === p.cwd).map(s => s.sessionId)
+      ? sessions.filter(s => s.cwd === p.cwd && (s.provider === undefined || s.provider === p.provider)).map(s => s.sessionId)
       : [];
     const quality: MatchQuality =
       candidates.length === 1 ? 'unique' : candidates.length > 1 ? 'ambiguous' : 'unknown';
