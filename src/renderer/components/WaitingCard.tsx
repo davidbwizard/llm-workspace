@@ -45,7 +45,8 @@ export function WaitingCard({ provider, hooksOn, onOpenTerminal }: {
       </div>
       <div className="p-body">
         <p className="hint">{`${name} is showing a question or a permission prompt.`}</p>
-        {!hooksOn && <p className="hint">Turn on Quick answers in Settings to answer here.</p>}
+        {provider === 'claude' && !hooksOn &&
+          <p className="hint">Turn on Quick answers in Settings to answer here.</p>}
       </div>
       <div className="p-foot">
         <button type="button" className="btn primary" onClick={onOpenTerminal}>Open Terminal</button>

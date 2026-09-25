@@ -15,6 +15,7 @@ import { readModeFor, type ModeState } from './mode.ts';
 import { tmuxNameForPid } from './sessions.ts';
 import { contextForSession, defaultContextOpts } from './usage.ts';
 import type { SessionContext } from '../core/usage.ts';
+import type { CodexSnapshot } from '../core/codexPrompt.ts';
 
 /** The pane's own three-way activity -- collapsed from fleet/state.ts's
  *  five-way Activity because the pane has neither a fleet card's blocker
@@ -41,6 +42,8 @@ export type SessionLivePayload = {
    *  Content comes from the hook payload; permission and plan choices
    *  from the pane. */
   prompt: PromptView | null;
+  /** Live Codex app-server requests for this exact thread, when subscribed. */
+  codex?: CodexSnapshot;
   /** Context window use for the conversation header (usage design, Part
    *  A) -- the same { usedTokens, windowTokens, leftPct } the session's
    *  card carries, or null (no session, or no count yet). */
@@ -159,6 +162,7 @@ export interface SessionLiveDeps {
    *  currentPrompt closure, src/main/ipc.ts) can pass `() => null` and skip
    *  the capture entirely: it is answering a prompt, not drawing a chip. */
   mode?: (pid: number) => ModeState | null;
+  codexSnapshot?: (sessionId: string) => CodexSnapshot | null;
 }
 
 /** Wraps `read` so a single buildSessionLive call never opens the same
@@ -305,10 +309,24 @@ export function buildSessionLive(
   // pane has no separate UI for the two (see LiveActivity's doc comment
   // above); `error` reads as idle, since there is nothing further for the
   // strip to say about it.
-  const activity: LiveActivity | null =
+  let activity: LiveActivity | null =
     rawActivity === 'waiting_permission' || rawActivity === 'waiting_input' ? 'waiting'
       : rawActivity === 'error' ? 'idle'
         : rawActivity;
+  const codex = target.provider === 'codex' ? deps.codexSnapshot?.(target.sessionId) ?? null : null;
+  if (codex?.prompts.length) activity = 'waiting';
+  else if (codex?.state === 'ready' && blocker && activity === 'waiting') {
+    // Codex hooks do not emit a resolver for every approval. A subscribed
+    // app-server's empty pending list is authoritative over a stale hook.
+    const withoutBlocker = deriveActivity({
+      lastTs: row.last_ts, lastKind: row.last_kind, blocker: null,
+      hasMatchedProcess: true, hasLiveSignal: processes.length > 0, now,
+      liveStatus: null, liveWaitingFor: null,
+    }).activity;
+    activity = withoutBlocker === 'error' ? 'idle'
+      : withoutBlocker === 'waiting_permission' || withoutBlocker === 'waiting_input' ? 'waiting'
+        : withoutBlocker;
+  }
 
   // `since` is sourced differently per provider because each has a
   // different notion of "when this turn started" available to it. Claude
@@ -354,7 +372,7 @@ export function buildSessionLive(
 
   return {
     version: 1, pid, sessionId: target.sessionId, activity, since,
-    events: row.events ?? 0, prompt, context, mode: readMode(activity),
+    events: row.events ?? 0, prompt, ...(codex ? { codex } : {}), context, mode: readMode(activity),
   };
 }
 
@@ -405,6 +423,7 @@ export interface WatchDeps {
    *  a watcher pointed at a process that is gone. */
   buildPayload: () => SessionLivePayload | null;
   send: (payload: SessionLivePayload) => void;
+  onClose?: () => void;
   /** Wraps fs.watch, injectable so unit tests never touch the real
    *  filesystem or leave a real watcher running past the test. */
   watch?: (path: string) => WatchHandle;
@@ -439,6 +458,7 @@ function teardownWatch(): void {
   if (!watchState) return;
   if (watchState.timer) clearTimeout(watchState.timer);
   if (watchState.watcher) watchState.watcher.close();
+  watchState.deps.onClose?.();
   watchState = null;
 }
 

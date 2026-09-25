@@ -8,6 +8,7 @@ import type { FileProbeResult, FileOpenResult } from '../main/files.ts';
 import type { StageResult } from '../main/staging.ts';
 import type { SessionLivePayload } from '../main/sessionLive.ts';
 import type { AnswerResult } from '../main/answer.ts';
+import type { CodexAnswerResult } from '../main/codexAppServer.ts';
 import type { ModeSetResult } from '../main/mode.ts';
 import type { Answer } from '../core/prompt.ts';
 import type { Mode } from '../core/mode.ts';
@@ -38,6 +39,7 @@ declare global {
       // and checks the answer and the pane itself; this typing narrows
       // nothing at the trust boundary.
       answerPrompt: (pid: number, promptId: string, answer: Answer) => Promise<AnswerResult>;
+      answerCodexPrompt: (pid: number, key: string, answer: string | Record<string, string>) => Promise<CodexAnswerResult>;
       // Switches the session's permission mode. Main resolves the provider,
       // validates the mode against that provider's own list and re-checks
       // every guard itself; this typing narrows nothing at the trust

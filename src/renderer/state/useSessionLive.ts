@@ -12,6 +12,7 @@ import type { SessionContext } from '../../core/usage.ts';
 // imports above.
 import type { Mode, ModeTone } from '../../core/mode.ts';
 import type { Provider } from '../../core/types.ts';
+import type { CodexSnapshot } from '../../core/codexPrompt.ts';
 
 /** One session's live state for the conversation pane -- mirrors
  *  src/main/sessionLive.ts's SessionLivePayload, minus the pid/sessionId/
@@ -29,6 +30,7 @@ export type SessionLive = {
    *  straight off the payload -- PromptCard.tsx renders it, WaitingCard.tsx
    *  is the fallback when this is null. */
   prompt: PromptView | null;
+  codex?: CodexSnapshot;
   /** Context window use for the conversation header (usage design, Part A/
    *  B) -- the same { usedTokens, windowTokens, leftPct } shape as
    *  OpenSession.context, or null (no session, or no count yet). This is
@@ -127,7 +129,8 @@ export function useSessionLive(pid: number | null): SessionLive | null {
       if (payload.pid !== pid) return;
       setState({
         activity: payload.activity, since: payload.since, events: payload.events,
-        prompt: payload.prompt ?? null, context: payload.context ?? null,
+        prompt: payload.prompt ?? null, ...(payload.codex ? { codex: payload.codex } : {}),
+        context: payload.context ?? null,
         mode: payload.mode ?? null,
       });
     });

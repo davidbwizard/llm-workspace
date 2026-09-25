@@ -53,6 +53,7 @@ import { usageSwitchState, setUsageSwitch, type UsageSwitchResult } from '../hoo
 import { withContext, defaultContextOpts, buildUsagePayload, type ContextOpts } from './usage.ts';
 import type { UsagePayload } from '../core/usage.ts';
 import { ingestSpool } from '../hooks/spool.ts';
+import { codexAppServer, type CodexAnswerResult } from './codexAppServer.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -1444,6 +1445,7 @@ export function registerIpc(
       buildPayload: () => validPid === null ? null
         : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), {
           cached: cachedPushOpenSessions,
+          codexSnapshot: sessionId => codexAppServer.snapshot(sessionId),
           ingestSpool: () => {
             const touched = new Set<string>();
             if (ingestSpool(db, spoolDir, 'claude', touched) > 0) {
@@ -1452,8 +1454,15 @@ export function registerIpc(
             }
           },
         }),
-      send: payload => { if (win && !win.isDestroyed()) win.webContents.send('session:live', payload); },
+      send: payload => {
+        if (proc?.provider === 'codex' && payload.sessionId) {
+          codexAppServer.watch(payload.sessionId, () => notifySessionChanged(new Set([payload.sessionId!])));
+        } else codexAppServer.stop();
+        if (win && !win.isDestroyed()) win.webContents.send('session:live', payload);
+      },
+      onClose: () => codexAppServer.stop(),
     };
+    const proc = validPid === null ? null : getCachedLiveProcesses().find(p => p.pid === validPid);
     return watchSessionFor(validPid, deps);
   });
   // An image a reply links to, as a data: URL. The session's folder comes
@@ -1562,6 +1571,17 @@ export function registerIpc(
         db, p, getCachedLiveProcesses(), Date.now(), { cached: cachedPushOpenSessions, mode: () => null },
       )?.prompt ?? null,
     }));
+  ipcMain.handle('session:codex:answer', (_event, pid: unknown, key: unknown, answer: unknown): CodexAnswerResult => {
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0)
+      return { status: 'refused', reason: 'invalid' };
+    const processes = getCachedLiveProcesses();
+    if (processes.find(p => p.pid === pid)?.provider !== 'codex')
+      return { status: 'refused', reason: 'stale' };
+    const target = resolveReattachTarget(pid, { cached: cachedPushOpenSessions, processes, read: readLiveSession });
+    return target?.provider === 'codex'
+      ? codexAppServer.answer(target.sessionId, key, answer)
+      : { status: 'refused', reason: 'stale' };
+  });
   // The mode switcher (src/main/mode.ts). The renderer names a pid and a
   // mode and nothing else: main resolves the provider itself, checks the
   // mode against THAT provider's list, refuses while a prompt card is up,

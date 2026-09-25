@@ -32,6 +32,8 @@ const api = {
   // presses nothing it cannot confirm; this typing narrows nothing.
   answerPrompt: (pid: number, promptId: string, answer: Answer) =>
     ipcRenderer.invoke('session:answer', pid, promptId, answer),
+  answerCodexPrompt: (pid: number, key: string, answer: string | Record<string, string>) =>
+    ipcRenderer.invoke('session:codex:answer', pid, key, answer),
   // Switches the session's permission mode (mode-switcher design §4). The
   // pid and the mode name are the renderer's whole say: main resolves the
   // provider itself, checks the mode against that provider's own list,

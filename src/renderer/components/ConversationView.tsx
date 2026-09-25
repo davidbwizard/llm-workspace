@@ -15,6 +15,7 @@ import { REFUSAL_TEXT } from './ReplyPopover.tsx';
 import { WorkingStrip } from './WorkingStrip.tsx';
 import { WaitingFallback } from './WaitingCard.tsx';
 import { PromptCard } from './PromptCard.tsx';
+import { CodexPromptCard } from './CodexPromptCard.tsx';
 import { ModeChip } from './ModeChip.tsx';
 import { AgentChip } from './AgentChip.tsx';
 import { useSettings } from '../state/settings.ts';
@@ -1440,7 +1441,10 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           WorkingStrip's own guard just above -- `live` is only ever
           non-null for a pid useSessionLive was actually asked to watch. */}
       {live?.activity === 'waiting' && pid !== null && (
-        live.prompt
+        provider === 'codex' && live.codex?.prompts.length
+          ? live.codex.prompts.map(prompt => <CodexPromptCard key={prompt.key} pid={pid} prompt={prompt}
+            onOpenTerminal={onOpenTerminal} />)
+          : live.prompt
           ? <PromptCard key={live.prompt.id} pid={pid} prompt={live.prompt} onOpenTerminal={onOpenTerminal} />
           : <WaitingFallback key={`waiting-${pid}`} provider={provider} hooksOn={hooksOn} onOpenTerminal={onOpenTerminal} />
       )}

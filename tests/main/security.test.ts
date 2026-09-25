@@ -68,7 +68,12 @@ describe('renderer security posture', () => {
       'session:answer',
       // session:image and session:attachments: read-only; their checks live
       // in src/main/images.ts and src/main/attachments.ts.
-      'session:attach', 'session:attachments', 'session:conversation', 'session:detach',
+      'session:attach', 'session:attachments',
+      // Codex answers: main resolves the pid to the subscribed thread and
+      // derives the response from its live server request, never renderer
+      // supplied permissions or a raw JSON-RPC payload.
+      'session:codex:answer',
+      'session:conversation', 'session:detach',
       // The only channels where a string a MODEL wrote reaches an OS call.
       // Every check is in src/main/files.ts (tests/main/files.test.ts), and
       // the call itself is shell.showItemInFolder -- asserted below.

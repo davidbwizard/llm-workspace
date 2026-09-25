@@ -196,6 +196,29 @@ describe('buildSessionLive', () => {
     expect(p?.activity).toBe('waiting');
   });
 
+  it('uses live Codex requests instead of a stale hook blocker', () => {
+    const db = openDb(':memory:');
+    insertBlocker(db, 'codex-1', '2026-09-17T10:00:15Z');
+    insertEvents(db, [ev({ provider: 'codex', sessionId: 'codex-1', kind: 'prompt.submitted',
+      ts: '2026-09-17T10:00:00Z', contentHash: 'codex-prompt' })]);
+    const processes = [proc({ pid: 4823, provider: 'codex', cwd: '/repo/codex' })];
+    const cached = [{ pid: 4823, provider: 'codex', cwd: '/repo/codex', sessionId: 'codex-1' } as OpenSession];
+    const now = Date.parse('2026-09-17T10:00:30Z');
+    const ready = buildSessionLive(db, 4823, processes, now, {
+      cached, codexSnapshot: () => ({ state: 'ready', prompts: [] }),
+    });
+    expect(ready?.activity).toBe('working');
+    const pending = buildSessionLive(db, 4823, processes, now, {
+      cached, codexSnapshot: () => ({ state: 'ready', prompts: [{
+        key: 'number:42', kind: 'command', threadId: 'codex-1', turnId: 'turn-1', itemId: 'item-1',
+        reason: null, command: 'npm test', cwd: '/repo', details: null, questions: null,
+        decisions: ['accept', 'decline'],
+      }] }),
+    });
+    expect(pending?.activity).toBe('waiting');
+    expect(pending?.codex?.prompts[0]?.key).toBe('number:42');
+  });
+
   // Final review I2/I4: a status file wins over a blocker even when its
   // status string is one this code does not recognise -- the blocker is
   // only consulted with no status file at all, same as the cards.
