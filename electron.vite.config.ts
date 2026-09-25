@@ -41,6 +41,11 @@ export default defineConfig({
     // every font with "outside of Vite serving allow list", and the whole app
     // silently renders in fallback faces. realpathSync is what makes this
     // work in both places without hard-coding a machine-specific path.
-    server: { fs: { allow: [resolve('.'), realpathSync(resolve('node_modules'))] } },
+    server: {
+      // A pilot worktree sharing Electron's profile must not reuse the main
+      // checkout's cached dev origin, even when that app is closed.
+      ...(process.env.FLEET_PILOT_PORT ? { port: Number(process.env.FLEET_PILOT_PORT), strictPort: true } : {}),
+      fs: { allow: [resolve('.'), realpathSync(resolve('node_modules'))] },
+    },
   },
 });
