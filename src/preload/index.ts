@@ -137,6 +137,11 @@ const api = {
     ipcRenderer.on('terminal:data', handler);
     return () => ipcRenderer.off('terminal:data', handler);
   },
+  onTerminalExit: (cb: (payload: { pid: number }) => void) => {
+    const handler = (_e: unknown, payload: { pid: number }) => cb(payload);
+    ipcRenderer.on('terminal:exit', handler);
+    return () => ipcRenderer.off('terminal:exit', handler);
+  },
   // The appearance choice, so the WINDOW follows it too -- nativeTheme
   // drives native scrollbars, the folder picker and the title bar, none of
   // which a data-theme attribute on the page can reach. Main checks the

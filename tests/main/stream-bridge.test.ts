@@ -25,6 +25,7 @@ function fakeWin(sent: unknown[]) {
  *  actual behaviour is asserted only against the real binary. */
 function fakePty() {
   const onDataHandlers: Array<(chunk: string) => void> = [];
+  const onExitHandlers: Array<(event: { exitCode: number; signal?: number }) => void> = [];
   const resizeCalls: Array<{ cols: number; rows: number }> = [];
   const writeCalls: string[] = [];
   const killCalls: Array<string | undefined> = [];
@@ -35,7 +36,7 @@ function fakePty() {
     process: 'tmux',
     handleFlowControl: false,
     onData: (cb: (chunk: string) => void) => { onDataHandlers.push(cb); return { dispose() {} }; },
-    onExit: () => ({ dispose() {} }),
+    onExit: (cb: (event: { exitCode: number; signal?: number }) => void) => { onExitHandlers.push(cb); return { dispose() {} }; },
     resize: (cols: number, rows: number) => { resizeCalls.push({ cols, rows }); },
     clear: () => {},
     write: (data: string) => { writeCalls.push(data); },
@@ -43,7 +44,7 @@ function fakePty() {
     pause: () => {},
     resume: () => {},
   } as unknown as IPty;
-  return { pty, onDataHandlers, resizeCalls, writeCalls, killCalls };
+  return { pty, onDataHandlers, onExitHandlers, resizeCalls, writeCalls, killCalls };
 }
 
 // Every fake-pty attachTerminal call below now reaches setSessionOption
@@ -267,6 +268,43 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     expect(await attachTerminal(4821, 80, 24, win, { has: () => true, spawn, setOption: noopOption })).toEqual({ status: 'attached' });
     expect(await attachTerminal(4821, 100, 40, win, { has: () => true, spawn, setOption: noopOption })).toEqual({ status: 'attached' });
     expect(calls).toHaveLength(1);
+  });
+
+  it('forgets an exited tmux client and tells the view to reconnect', async () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const instance = fakePty();
+    const { spawn } = fakeSpawn(instance);
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    const win = {
+      isDestroyed: () => false,
+      webContents: { send: (channel: string, payload: unknown) => sent.push({ channel, payload }) },
+    } as unknown as Parameters<typeof attachTerminal>[3];
+    await attachTerminal(4821, 80, 24, win, { has: () => true, spawn, setOption: noopOption });
+
+    instance.onExitHandlers[0]!({ exitCode: 1 });
+
+    expect(sent).toContainEqual({ channel: 'terminal:exit', payload: { pid: 4821 } });
+    expect(sendRawFor(4821, 'x', { has: () => true })).toEqual({ status: 'refused', reason: 'session_gone' });
+    expect(await attachTerminal(4821, 80, 24, win, { has: () => true, spawn, setOption: noopOption }))
+      .toEqual({ status: 'attached' });
+  });
+
+  it('does not ask the view to reconnect after an intentional detach', async () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const instance = fakePty();
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    const win = {
+      isDestroyed: () => false,
+      webContents: { send: (channel: string, payload: unknown) => sent.push({ channel, payload }) },
+    } as unknown as Parameters<typeof attachTerminal>[3];
+    await attachTerminal(4821, 80, 24, win, {
+      has: () => true, spawn: fakeSpawn(instance).spawn, setOption: noopOption,
+    });
+
+    detachTerminal(4821);
+    instance.onExitHandlers[0]!({ exitCode: 0 });
+
+    expect(sent).not.toContainEqual({ channel: 'terminal:exit', payload: { pid: 4821 } });
   });
 
   it("feeds the pty's own onData straight to the coalescer, which pushes terminal:data", async () => {

@@ -73,6 +73,7 @@ beforeEach(() => {
     resize: vi.fn().mockResolvedValue(undefined),
     sendRaw: vi.fn().mockResolvedValue(undefined),
     onTerminalData: vi.fn(() => () => {}),
+    onTerminalExit: vi.fn(() => () => {}),
     fileProbe: vi.fn(async (_pid: number, candidates: string[]) =>
       ({ ok: true as const, kinds: candidates.map(c => (c === 'KNOWN_ISSUES.md' ? 'markdown' as const : null)) })),
     fileOpen: (...args: unknown[]) => fileOpen(...args),

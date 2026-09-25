@@ -1155,6 +1155,16 @@ export async function attachTerminal(
   clientPty.onData(chunk => coalescer.push(chunk));
 
   attachments.set(pid, { name, pty: clientPty, coalescer });
+  clientPty.onExit(({ exitCode, signal }) => {
+    // detachTerminal removes the entry before killing the pty. Only an
+    // unexpected exit of the CURRENT client should ask the view to reconnect.
+    if (attachments.get(pid)?.pty !== clientPty) return;
+    attachments.delete(pid);
+    try { coalescer.flushNow(); }
+    catch (error) { console.error('terminal: flush after client exit failed:', error); }
+    console.warn('terminal: tmux client exited:', { pid, name, exitCode, signal });
+    if (!win.isDestroyed()) win.webContents.send('terminal:exit', { pid });
+  });
 
   return { status: 'attached' };
 }

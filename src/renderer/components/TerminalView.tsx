@@ -117,6 +117,23 @@ export function TerminalView({ pid }: { pid: number }) {
       if (p.pid !== pid) return;
       applyPayload(p);
     });
+    let recentExits = 0;
+    let lastExitAt = 0;
+    const unsubExit = api.onTerminalExit(({ pid: exitedPid }) => {
+      if (exitedPid !== pid) return;
+      // The replacement coalescer starts its own sequence at zero. tmux
+      // redraws the screen on attach, so the old stream has no gap to carry.
+      lastSeq = null;
+      setGapDetected(false);
+      const now = Date.now();
+      if (now - lastExitAt > 30_000) recentExits = 0;
+      lastExitAt = now;
+      if (++recentExits > 3) {
+        setRefusalText('Terminal connection lost. Switch to Conversation and back to retry.');
+        return;
+      }
+      attachOnce();
+    });
 
     /** Attaching is what spawns the pty at this size, so it MUST NOT run
      *  until the fit is trustworthy. Called from the animation frame above,
@@ -133,6 +150,10 @@ export function TerminalView({ pid }: { pid: number }) {
         const res = r as AttachResult;
         if (!alive) return;
         if (res.status === 'refused') setRefusalText(ATTACH_REFUSAL_TEXT[res.reason]);
+      }).catch(err => {
+        if (!alive) return;
+        console.error('Terminal attach failed:', err);
+        setRefusalText('Could not reach the app.');
       });
     }
 
@@ -141,6 +162,7 @@ export function TerminalView({ pid }: { pid: number }) {
     return () => {
       alive = false;
       unsub();
+      unsubExit();
       onData.dispose();
       onResize.dispose();
       cancelAnimationFrame(firstFrame);

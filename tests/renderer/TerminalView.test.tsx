@@ -51,6 +51,7 @@ class ResizeObserverStub {
 (globalThis as unknown as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver = ResizeObserverStub;
 
 let handler: ((p: unknown) => void) | null = null;
+let exitHandler: ((p: { pid: number }) => void) | null = null;
 
 beforeEach(() => {
   writes.length = 0;
@@ -58,6 +59,7 @@ beforeEach(() => {
   resizeCb = null;
   dataCb = null;
   handler = null;
+  exitHandler = null;
   webglShouldThrow = false;
   // The component attaches from inside an animation frame, deliberately: the
   // mount-tick fit measures the element before the rail has taken its share of
@@ -81,6 +83,7 @@ beforeEach(() => {
     resize: vi.fn(async () => ({ status: 'resized' })),
     sendRaw: vi.fn(async () => ({ status: 'sent' })),
     onTerminalData: (cb: (p: unknown) => void) => { handler = cb; return () => { handler = null; }; },
+    onTerminalExit: (cb: (p: { pid: number }) => void) => { exitHandler = cb; return () => { exitHandler = null; }; },
   };
 });
 
@@ -153,6 +156,40 @@ describe('TerminalView', () => {
     // back to null via the returned unsubscribe function -- if the cleanup
     // forgot to call it, handler would still be the live callback here.
     expect(handler).toBeNull();
+    expect(exitHandler).toBeNull();
+  });
+
+  it('reattaches when the tmux client exits while this terminal remains open', async () => {
+    render(<TerminalView pid={4821} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(window.fleet!.attach).toHaveBeenCalledTimes(1);
+
+    await act(async () => { exitHandler?.({ pid: 4821 }); await Promise.resolve(); });
+
+    expect(window.fleet!.attach).toHaveBeenCalledTimes(2);
+    expect(window.fleet!.attach).toHaveBeenLastCalledWith(4821, 80, 24);
+  });
+
+  it('starts a fresh sequence after reconnect because the new stream starts at zero', async () => {
+    const { container } = render(<TerminalView pid={4821} />);
+    await act(async () => { await Promise.resolve(); });
+    act(() => { handler?.({ version: 1, pid: 4821, seq: 5, data: 'before' }); });
+    await act(async () => { exitHandler?.({ pid: 4821 }); await Promise.resolve(); });
+    act(() => { handler?.({ version: 1, pid: 4821, seq: 0, data: 'after' }); });
+
+    expect(container.textContent).not.toMatch(/missing|gap|dropped/i);
+    expect(writes).toContain('after');
+  });
+
+  it('stops retrying and explains what to do if the tmux client keeps exiting', async () => {
+    const { container } = render(<TerminalView pid={4821} />);
+    await act(async () => { await Promise.resolve(); });
+    for (let n = 0; n < 4; n++) {
+      await act(async () => { exitHandler?.({ pid: 4821 }); await Promise.resolve(); });
+    }
+
+    expect(window.fleet!.attach).toHaveBeenCalledTimes(4); // initial plus three retries
+    expect(container.textContent).toMatch(/connection lost.*Conversation/i);
   });
 
   it('does not attach until the corrected fit has run, so the pty is spawned at the real width', async () => {
