@@ -229,7 +229,6 @@ export function LaunchBar({ onLaunched, disabled = false }: {
         // discovery resolves this pid to one; if the process dies first, the
         // binding is dropped and nothing is shown for it.
         if (wantedCategory !== '') bindPendingCategory(r.pid, wantedCategory);
-        setCwd('');
         cancelOptions();
         onLaunched(r.pid);
         return;

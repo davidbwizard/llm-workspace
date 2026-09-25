@@ -39,6 +39,22 @@ describe('LaunchBar', () => {
     expect(launch).toHaveBeenCalledWith('claude', '/tmp/proj', expect.any(Number), expect.any(Number), null);
   });
 
+  it('keeps the directory so a second session can launch there', async () => {
+    launch.mockResolvedValueOnce({ status: 'launched', pid: 4821 })
+      .mockResolvedValueOnce({ status: 'launched', pid: 4822 });
+    const onLaunched = vi.fn();
+    render(<LaunchBar onLaunched={onLaunched} />);
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+    await waitFor(() => expect(onLaunched).toHaveBeenCalledWith(4821));
+    expect((screen.getByLabelText('Working directory') as HTMLInputElement).value).toBe('/tmp/proj');
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+    await waitFor(() => expect(onLaunched).toHaveBeenCalledWith(4822));
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch).toHaveBeenLastCalledWith('codex', '/tmp/proj', expect.any(Number), expect.any(Number), null);
+  });
+
   it('sends the provider the user actually picked, not always the default', async () => {
     render(<LaunchBar onLaunched={() => {}} />);
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
