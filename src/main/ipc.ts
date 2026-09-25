@@ -1114,6 +1114,7 @@ type AttachDeps = {
  *  the first, which tmux would happily allow. */
 export async function attachTerminal(
   rawPid: unknown, cols: unknown, rows: unknown, win: BrowserWindow, deps: AttachDeps = {},
+  reconnects = 0,
 ): Promise<AttachResult> {
   if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) {
     return { status: 'refused', reason: 'invalid_pid' };
@@ -1163,7 +1164,24 @@ export async function attachTerminal(
     try { coalescer.flushNow(); }
     catch (error) { console.error('terminal: flush after client exit failed:', error); }
     console.warn('terminal: tmux client exited:', { pid, name, exitCode, signal });
-    if (!win.isDestroyed()) win.webContents.send('terminal:exit', { pid });
+    if (win.isDestroyed()) return;
+    const exhausted = reconnects >= 3;
+    if (!exhausted) {
+      // Do not depend on the renderer receiving the exit push: that is the
+      // very connection which may have dropped. The next tmux client redraws
+      // the full screen into the same view. attachTerminal's idempotency makes
+      // a simultaneous renderer retry harmless.
+      void attachTerminal(pid, clientPty.cols, clientPty.rows, win, deps, reconnects + 1)
+        .then(result => {
+          if (result.status === 'refused' && !win.isDestroyed())
+            win.webContents.send('terminal:exit', { pid, exhausted: true });
+        })
+        .catch(error => {
+          console.error('terminal: reconnect failed:', error);
+          if (!win.isDestroyed()) win.webContents.send('terminal:exit', { pid, exhausted: true });
+        });
+    }
+    win.webContents.send('terminal:exit', { pid, exhausted });
   });
 
   return { status: 'attached' };

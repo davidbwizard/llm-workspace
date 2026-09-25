@@ -270,10 +270,12 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('forgets an exited tmux client and tells the view to reconnect', async () => {
+  it('replaces an exited tmux client even if the view misses the exit event', async () => {
     registerSession(4821, 'llmws-claude-abc');
-    const instance = fakePty();
-    const { spawn } = fakeSpawn(instance);
+    const first = fakePty();
+    const second = fakePty();
+    let spawned = 0;
+    const spawn = (() => [first, second][spawned++]!.pty) as typeof realPtySpawn;
     const sent: Array<{ channel: string; payload: unknown }> = [];
     const win = {
       isDestroyed: () => false,
@@ -281,12 +283,28 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     } as unknown as Parameters<typeof attachTerminal>[3];
     await attachTerminal(4821, 80, 24, win, { has: () => true, spawn, setOption: noopOption });
 
-    instance.onExitHandlers[0]!({ exitCode: 1 });
+    first.onExitHandlers[0]!({ exitCode: 1 });
 
-    expect(sent).toContainEqual({ channel: 'terminal:exit', payload: { pid: 4821 } });
-    expect(sendRawFor(4821, 'x', { has: () => true })).toEqual({ status: 'refused', reason: 'session_gone' });
+    expect(spawned).toBe(2);
+    expect(sent).toContainEqual({ channel: 'terminal:exit', payload: { pid: 4821, exhausted: false } });
+    expect(sendRawFor(4821, 'x', { has: () => true })).toEqual({ status: 'sent' });
+    expect(second.writeCalls).toEqual(['x']);
     expect(await attachTerminal(4821, 80, 24, win, { has: () => true, spawn, setOption: noopOption }))
       .toEqual({ status: 'attached' });
+    expect(spawned).toBe(2);
+  });
+
+  it('stops after three replacement clients also exit', async () => {
+    registerSession(4821, 'llmws-claude-abc');
+    const clients = Array.from({ length: 4 }, () => fakePty());
+    let spawned = 0;
+    const spawn = (() => clients[spawned++]!.pty) as typeof realPtySpawn;
+    await attachTerminal(4821, 80, 24, fakeWin([]), { has: () => true, spawn, setOption: noopOption });
+
+    for (const client of clients) client.onExitHandlers[0]!({ exitCode: 1 });
+
+    expect(spawned).toBe(4); // initial client plus three attempts
+    expect(sendRawFor(4821, 'x', { has: () => true })).toEqual({ status: 'refused', reason: 'session_gone' });
   });
 
   it('does not ask the view to reconnect after an intentional detach', async () => {
@@ -304,7 +322,7 @@ describe('attachTerminal spawns a real tmux client (fake pty)', () => {
     detachTerminal(4821);
     instance.onExitHandlers[0]!({ exitCode: 0 });
 
-    expect(sent).not.toContainEqual({ channel: 'terminal:exit', payload: { pid: 4821 } });
+    expect(sent.some(message => message.channel === 'terminal:exit')).toBe(false);
   });
 
   it("feeds the pty's own onData straight to the coalescer, which pushes terminal:data", async () => {

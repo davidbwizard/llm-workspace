@@ -137,8 +137,8 @@ const api = {
     ipcRenderer.on('terminal:data', handler);
     return () => ipcRenderer.off('terminal:data', handler);
   },
-  onTerminalExit: (cb: (payload: { pid: number }) => void) => {
-    const handler = (_e: unknown, payload: { pid: number }) => cb(payload);
+  onTerminalExit: (cb: (payload: { pid: number; exhausted: boolean }) => void) => {
+    const handler = (_e: unknown, payload: { pid: number; exhausted: boolean }) => cb(payload);
     ipcRenderer.on('terminal:exit', handler);
     return () => ipcRenderer.off('terminal:exit', handler);
   },

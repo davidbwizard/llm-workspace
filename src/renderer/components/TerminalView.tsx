@@ -90,6 +90,12 @@ export function TerminalView({ pid }: { pid: number }) {
     let lastSeq: number | null = null;
 
     function applyPayload(p: TerminalDataPayload): void {
+      if (p.seq === 0 && lastSeq !== null) {
+        // A replacement tmux client has a fresh coalescer. Its redraw is a
+        // new baseline even when the exit notification never reached us.
+        lastSeq = null;
+        setGapDetected(false);
+      }
       // seq increments by exactly one per message (src/main/stream.ts's
       // makeCoalescer). A skip means a message was lost in transit -- say
       // so visibly rather than rendering the resulting gap as if nothing
@@ -117,21 +123,18 @@ export function TerminalView({ pid }: { pid: number }) {
       if (p.pid !== pid) return;
       applyPayload(p);
     });
-    let recentExits = 0;
-    let lastExitAt = 0;
-    const unsubExit = api.onTerminalExit(({ pid: exitedPid }) => {
+    const unsubExit = api.onTerminalExit(({ pid: exitedPid, exhausted }) => {
       if (exitedPid !== pid) return;
       // The replacement coalescer starts its own sequence at zero. tmux
       // redraws the screen on attach, so the old stream has no gap to carry.
       lastSeq = null;
       setGapDetected(false);
-      const now = Date.now();
-      if (now - lastExitAt > 30_000) recentExits = 0;
-      lastExitAt = now;
-      if (++recentExits > 3) {
+      if (exhausted) {
         setRefusalText('Terminal connection lost. Switch to Conversation and back to retry.');
         return;
       }
+      // Main starts the replacement itself. This call confirms the view still
+      // wants it and is idempotent if main's replacement is already attached.
       attachOnce();
     });
 

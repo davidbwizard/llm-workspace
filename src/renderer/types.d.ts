@@ -97,7 +97,7 @@ declare global {
       // see preload/index.ts's own comment on it.
       resume: (sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
       onTerminalData: (cb: (payload: TerminalDataPayload) => void) => () => void;
-      onTerminalExit: (cb: (payload: { pid: number }) => void) => () => void;
+      onTerminalExit: (cb: (payload: { pid: number; exhausted: boolean }) => void) => () => void;
       // Main validates the value against its own three literals
       // (applyThemeChoice); this typing narrows nothing at the trust
       // boundary itself.

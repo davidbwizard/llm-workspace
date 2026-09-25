@@ -51,7 +51,7 @@ class ResizeObserverStub {
 (globalThis as unknown as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver = ResizeObserverStub;
 
 let handler: ((p: unknown) => void) | null = null;
-let exitHandler: ((p: { pid: number }) => void) | null = null;
+let exitHandler: ((p: { pid: number; exhausted: boolean }) => void) | null = null;
 
 beforeEach(() => {
   writes.length = 0;
@@ -83,7 +83,7 @@ beforeEach(() => {
     resize: vi.fn(async () => ({ status: 'resized' })),
     sendRaw: vi.fn(async () => ({ status: 'sent' })),
     onTerminalData: (cb: (p: unknown) => void) => { handler = cb; return () => { handler = null; }; },
-    onTerminalExit: (cb: (p: { pid: number }) => void) => { exitHandler = cb; return () => { exitHandler = null; }; },
+    onTerminalExit: (cb: (p: { pid: number; exhausted: boolean }) => void) => { exitHandler = cb; return () => { exitHandler = null; }; },
   };
 });
 
@@ -164,7 +164,7 @@ describe('TerminalView', () => {
     await act(async () => { await Promise.resolve(); });
     expect(window.fleet!.attach).toHaveBeenCalledTimes(1);
 
-    await act(async () => { exitHandler?.({ pid: 4821 }); await Promise.resolve(); });
+    await act(async () => { exitHandler?.({ pid: 4821, exhausted: false }); await Promise.resolve(); });
 
     expect(window.fleet!.attach).toHaveBeenCalledTimes(2);
     expect(window.fleet!.attach).toHaveBeenLastCalledWith(4821, 80, 24);
@@ -174,18 +174,28 @@ describe('TerminalView', () => {
     const { container } = render(<TerminalView pid={4821} />);
     await act(async () => { await Promise.resolve(); });
     act(() => { handler?.({ version: 1, pid: 4821, seq: 5, data: 'before' }); });
-    await act(async () => { exitHandler?.({ pid: 4821 }); await Promise.resolve(); });
+    await act(async () => { exitHandler?.({ pid: 4821, exhausted: false }); await Promise.resolve(); });
     act(() => { handler?.({ version: 1, pid: 4821, seq: 0, data: 'after' }); });
 
     expect(container.textContent).not.toMatch(/missing|gap|dropped/i);
     expect(writes).toContain('after');
   });
 
+  it('recognizes a replacement stream at sequence zero even if the exit event was missed', async () => {
+    const { container } = render(<TerminalView pid={4821} />);
+    await act(async () => { await Promise.resolve(); });
+    act(() => {
+      handler?.({ version: 1, pid: 4821, seq: 5, data: 'before' });
+      handler?.({ version: 1, pid: 4821, seq: 0, data: 'after' });
+    });
+    expect(container.textContent).not.toMatch(/missing|gap|dropped/i);
+  });
+
   it('stops retrying and explains what to do if the tmux client keeps exiting', async () => {
     const { container } = render(<TerminalView pid={4821} />);
     await act(async () => { await Promise.resolve(); });
     for (let n = 0; n < 4; n++) {
-      await act(async () => { exitHandler?.({ pid: 4821 }); await Promise.resolve(); });
+      await act(async () => { exitHandler?.({ pid: 4821, exhausted: n === 3 }); await Promise.resolve(); });
     }
 
     expect(window.fleet!.attach).toHaveBeenCalledTimes(4); // initial plus three retries
