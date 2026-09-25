@@ -214,6 +214,13 @@
    stack. */
 .stack.open .stackmembers-inner {
   overflow: visible;
+  /* The companion to .stackmembers-inner's own min-height:0, and for the
+     same reason on the other axis. overflow:hidden was doing double duty:
+     it also let this grid item shrink below its content. Going visible
+     restores min-width:auto, so the box sized to its widest child (measured
+     503px against a 353px rail) and gave .railcards 170px of horizontal
+     scroll -- every card in the rail shifted sideways. */
+  min-width: 0;
   transition: overflow 0s linear var(--dur);
   transition-behavior: allow-discrete;
 }
