@@ -113,3 +113,72 @@ Not repeated in full here -- follow the pointer.
 
 ## Add app notifications
 - Add for finished prompts, and question prompts. 
+
+---
+
+## Preferences in a small database, not localStorage
+
+**Status: not started. Cause measured 2026-09-25, nothing built.**
+
+Favourites, settings, session groups, rail width and the first-run flag all
+live in the renderer's `localStorage`. That storage is keyed by the window's
+ORIGIN, and this app has more than one.
+
+### What goes wrong
+
+The dev app loads `ELECTRON_RENDERER_URL` (`http://localhost:5173`); the
+packaged app loads `file://`. Different origins, so they keep entirely
+separate copies -- favourites added in one never appear in the other.
+
+Worse, the dev origin is not stable. Vite's port is unpinned outside
+`FLEET_PILOT_PORT`, so a stale dev server sends the next launch to 5174,
+5175, and so on. Each new port is a new origin with empty storage: the app
+comes up with no favourites, default settings and a reset rail width, and
+nothing says why. Nothing is lost -- it is reading a different drawer.
+
+Measured, from `~/Library/Application Support/llm-workspace/Local
+Storage/leveldb`: four origins already hold this app's keys.
+
+    _file://                  the packaged app
+    _http://localhost:5173    dev
+    _http://localhost:5175
+    _http://localhost:5176
+
+The theme does not suffer from this, because it is the one preference kept
+outside the renderer -- `~/.llm-workspace/appearance.json`, read by main at
+startup. That file is the shape of the answer.
+
+### What to build
+
+A small store of its own under `~/.llm-workspace/`, read and written by
+main, exposed to the renderer over IPC. Five stores move onto it:
+`settings.ts`, `favourites.ts`, `groups.ts`, `firstRun.ts` and the rail
+width in `SessionRail.tsx` -- 17 call sites, all of them the `read()` and
+`write()` ends only. Each store's own validation stays exactly as it is.
+
+**Its own database, NOT `index.sqlite`.** `favourites.ts` records the
+standing ruling: these are "a per-viewer UI convenience, never fleet state
+-- nothing here belongs in the store/db". A separate file keeps that true
+while still being a database, and keeps a 600 MB transcript index from
+carrying the rail width.
+
+### What has to be solved first
+
+- **A synchronous first read.** Today `read()` is synchronous, so React has
+  every value at first paint. Behind async IPC the defaults render first and
+  the real values snap in after -- visible as the rail jumping and compact
+  cards flipping on every launch. Main must read the store before the window
+  loads and hand it over synchronously; that mechanism is the part to
+  prototype before committing to the work.
+- **Migration, done carefully.** On first run of the new build, copy what is
+  already in `localStorage` across. Getting this wrong wipes favourites
+  rather than merely failing, so it needs its own test.
+- Four test files (`settings`, `favourites`, `groups`, `SettingsModal`) mock
+  `localStorage` and would move with it.
+
+### Cheaper partial fix, if this is not started
+
+Pin the dev port (`port: 5173, strictPort: true`). It does not merge dev and
+packaged, but it stops the silent drift to 5175/5176. The trade is that a
+busy port then fails the dev server loudly instead of blanking preferences
+quietly.
