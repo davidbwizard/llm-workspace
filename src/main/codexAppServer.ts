@@ -295,13 +295,16 @@ export class CodexAppServer {
   private message(value: unknown, threadId: string): void {
     const m = record(value);
     if (!m) return;
-    if (m.id === 1) {
+    // Server requests may use the same numeric IDs as our setup calls.
+    // Only a JSON-RPC response (which has no method) can complete setup.
+    const isResponse = !Object.hasOwn(m, 'method');
+    if (m.id === 1 && isResponse) {
       if (m.error) { this.socket?.close(); return; }
       this.socket?.send({ method: 'initialized', params: {} });
       this.socket?.send({ id: 2, method: 'thread/resume', params: { threadId, excludeTurns: true } });
       return;
     }
-    if (m.id === 2) {
+    if (m.id === 2 && isResponse) {
       const result = record(m.result);
       const thread = record(result?.thread);
       if (m.error || thread?.id !== threadId) { this.socket?.close(); return; }

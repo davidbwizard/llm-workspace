@@ -53,10 +53,11 @@ describe('Codex app-server prompts', () => {
     expect(responseForCodexPrompt(request, { scope: 'One', reason: 'line\nenter' })).toBeNull();
   });
 
-  it('subscribes over the Unix WebSocket and resolves the exact live request', async () => {
+  it('subscribes over the Unix WebSocket and resolves requests whose ids overlap setup calls', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-codex-test-'));
     const path = join(dir, 'server.sock');
     const replies: unknown[] = [];
+    let resumes = 0;
     let send: (value: unknown) => void = () => {};
     const server = createServer(socket => {
       let bytes = Buffer.alloc(0);
@@ -91,10 +92,12 @@ describe('Codex app-server prompts', () => {
           bytes = bytes.subarray(offset + 4 + length);
           const message = JSON.parse(payload.toString()) as { id?: number; method?: string; result?: unknown };
           if (message.method === 'initialize') send({ id: 1, result: { userAgent: 'fake' } });
-          else if (message.method === 'thread/resume') send({ id: 2, result: { thread: { id: 'thread-1' } } });
-          else if (message.id === 42) {
+          else if (message.method === 'thread/resume') {
+            resumes++;
+            send({ id: 2, result: { thread: { id: 'thread-1' } } });
+          } else if (message.id === 42 || message.id === 1 || message.id === 2) {
             replies.push(message.result);
-            send({ method: 'serverRequest/resolved', params: { threadId: 'thread-1', requestId: 42 } });
+            send({ method: 'serverRequest/resolved', params: { threadId: 'thread-1', requestId: message.id } });
           }
         }
       });
@@ -110,6 +113,14 @@ describe('Codex app-server prompts', () => {
       expect(bridge.answer('thread-1', 'number:42', 'accept')).toEqual({ status: 'sent' });
       await vi.waitFor(() => expect(replies).toEqual([{ decision: 'accept' }]));
       await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(0));
+      for (const id of [1, 2]) {
+        send({ ...command, id });
+        await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts[0]?.key).toBe(`number:${id}`));
+        expect(bridge.answer('thread-1', `number:${id}`, 'accept')).toEqual({ status: 'sent' });
+        await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(0));
+      }
+      expect(replies).toEqual([{ decision: 'accept' }, { decision: 'accept' }, { decision: 'accept' }]);
+      expect(resumes).toBe(1);
     } finally {
       bridge.stop();
       await new Promise<void>(resolve => server.close(() => resolve()));
