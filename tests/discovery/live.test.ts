@@ -714,3 +714,82 @@ describe('discoverLiveProcesses: live session file', () => {
     expect(p).not.toHaveProperty('liveSession');
   });
 });
+
+// A `codex` process is not necessarily a Codex SESSION. The CLI runs its own
+// plumbing under the same binary name -- `codex app-server`, `codex sandbox`,
+// `codex app-server daemon` -- and those are siblings of each other under a
+// non-codex parent (the ChatGPT app's code-mode host, or launchd), so the
+// ancestry rule above cannot see them: none is an ancestor of another.
+//
+// Measured on this machine 2026-09-26: of eleven Codex processes outside
+// Fleet's own tmux sessions, exactly ONE was a session the user started. The
+// other ten were two app-server daemons, a pid-update loop, and six
+// ChatGPT-app helpers. They were listed as sessions, and -- because they
+// share a cwd with real work -- they crowded directories enough to make the
+// conversation view refuse to identify a transcript.
+describe('subcommand filtering (a codex session runs no subcommand)', () => {
+  const inspect = (pid: number, args: string) => ({
+    [`ps -o tty= -p ${pid}`]: 'ttys004\n',
+    [`ps -o ppid=,comm= -p ${pid}`]: '999 node_repl\n',
+    [`ps -o args= -p ${pid}`]: `${args}\n`,
+  });
+
+  it('drops codex app-server, sandbox and daemon, and keeps the real session beside them', async () => {
+    // The exact shape measured: three siblings under one non-codex parent.
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '1 codex\n2 codex\n3 codex\n4 codex\n',
+      ...inspect(1, '/Applications/ChatGPT.app/Contents/Resources/codex sandbox --full-auto'),
+      ...inspect(2, '/Applications/ChatGPT.app/Contents/Resources/codex app-server --analytics'),
+      ...inspect(3, '/Users/me/.codex/packages/app-server-daemon/bin/codex app-server daemon pid-update-loop'),
+      ...inspect(4, 'codex -c approvals_reviewer=user'),
+    });
+
+    const procs = await discoverLiveProcesses(exec);
+    expect(procs.map(p => p.pid)).toEqual([4]);
+  });
+
+  it('drops the ChatGPT app-server, whose subcommand sits AFTER a flag value', async () => {
+    // The real command line, measured: the subcommand is not in first
+    // position, so a first-non-flag-token rule misses it entirely.
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '8 codex\n',
+      ...inspect(8, '/Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled'),
+    });
+
+    const procs = await discoverLiveProcesses(exec);
+    expect(procs).toEqual([]);
+  });
+
+  it('keeps a session whose flag VALUE happens to read like a subcommand', async () => {
+    // `-c key=value` puts an arbitrary token on the command line. A bare
+    // subcommand is what disqualifies a process, never a flag's value.
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '5 codex\n',
+      ...inspect(5, 'codex -c sandbox_mode=workspace-write --remote unix:///tmp/x.sock'),
+    });
+
+    const procs = await discoverLiveProcesses(exec);
+    expect(procs.map(p => p.pid)).toEqual([5]);
+  });
+
+  it('keeps a pid whose args cannot be read, rather than dropping it', async () => {
+    // Same fail-soft discipline as every other lookup here: unknown must
+    // resolve to "keep", never to "looks suspicious, drop it".
+    const exec = fakeExec({ 'ps -axo pid=,comm=': '6 codex\n' });
+    const procs = await discoverLiveProcesses(exec);
+    expect(procs.map(p => p.pid)).toEqual([6]);
+  });
+
+  it('never applies subcommand filtering to claude', async () => {
+    // The rule is about the codex CLI's own subcommand surface. Nothing
+    // here should reach into the other provider's command line.
+    const exec = fakeExec({
+      'ps -axo pid=,comm=': '7 claude\n',
+      'ps -o tty= -p 7': 'ttys001\n',
+      'ps -o ppid=,comm= -p 7': '1 iTerm2\n',
+      'ps -o args= -p 7': 'claude exec something\n',
+    });
+    const procs = await discoverLiveProcesses(exec, NO_SESSION_FILE);
+    expect(procs.map(p => p.pid)).toEqual([7]);
+  });
+});

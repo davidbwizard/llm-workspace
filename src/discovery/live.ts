@@ -202,6 +202,56 @@ async function walkProcessChain(pid: number, exec: ExecFn, maxDepth = 12): Promi
 interface InspectedPid {
   process: LiveProcess;
   ancestorPids: number[];
+  /** True when this pid runs the codex binary but is plumbing rather than a
+   *  session -- see isCodexPlumbing. */
+  plumbing: boolean;
+}
+
+/** codex subcommands that are NOT an interactive session. Deliberately a
+ *  short, measured list rather than "every subcommand": `codex resume` and
+ *  `codex fork` DO start interactive sessions, so a blanket rule would drop
+ *  real work. Each name here was observed running on this machine as a
+ *  helper, never as something a person was talking to.
+ *
+ *  Why this exists at all, when the ancestry rule above already drops a
+ *  session's own helpers: these run as SIBLINGS under a parent that is not
+ *  itself a codex process -- the ChatGPT desktop app's code-mode host, or
+ *  launchd for the daemon -- so no matched pid is any of their ancestors
+ *  and the ancestry rule cannot see them. Measured 2026-09-26: of eleven
+ *  codex processes outside Fleet's own tmux sessions, ONE was a session the
+ *  person started. The rest were two app-server daemons, a pid-update loop
+ *  and six ChatGPT-app helpers -- all listed as sessions, and all counted
+ *  as rivals when the conversation view tried to decide which transcript
+ *  belonged to a pane, which is how a real session's transcript came to be
+ *  refused as ambiguous. */
+const CODEX_PLUMBING = new Set(['app-server', 'sandbox', 'exec', 'exec-server', 'mcp', 'proxy']);
+
+/** Whether a codex command line names one of those.
+ *
+ *  It looks for the name ANYWHERE among the arguments, not just in the
+ *  first non-flag position. Measured against the real process: the ChatGPT
+ *  app runs `codex -c features.code_mode_host=true app-server ...`, so a
+ *  flag's value sits in front of the subcommand and a first-position rule
+ *  misses it. That is not a hypothetical -- it is the exact process that
+ *  survived the first version of this function.
+ *
+ *  Tokens containing `=` or `/` are skipped, which is what keeps a flag's
+ *  value from being mistaken for a subcommand: `-c sandbox_mode=...`
+ *  carries `=`, and a path like `-C /Users/.../sandbox` carries `/`.
+ *
+ *  Known limit, stated rather than hidden: a bare relative value that is
+ *  exactly one of these names -- `codex -C sandbox` -- would read as
+ *  plumbing and be dropped. Dropping a real session is the harmful
+ *  direction, so it is worth knowing; it stays acceptable because Fleet
+ *  always passes an absolute `-C`, and the alternative (tracking which
+ *  flags take values) is a list that rots against a CLI shipping daily.
+ *
+ *  Fail-soft, like every other lookup in this file: an args string that is
+ *  empty or unparseable reads as "not plumbing", so a pid whose `ps` call
+ *  came back empty is KEPT, never dropped on suspicion. */
+export function isCodexPlumbing(args: string): boolean {
+  return args.trim().split(/\s+/).slice(1)
+    .some(t => !t.startsWith('-') && !t.includes('=') && !t.includes('/') && CODEX_PLUMBING.has(t));
 }
 
 /** Inspect one pid, already known-live from pgrep for the given `provider`
@@ -215,11 +265,15 @@ interface InspectedPid {
  *  produces a LiveProcess, just with every derived field null/'unknown'
  *  (provider excepted) rather than the pid disappearing. */
 async function inspectPid(pid: number, provider: Provider, exec: ExecFn, deps: DiscoveryDeps): Promise<InspectedPid> {
-  const [ttyOut, cwdOut, statOut, walk] = await Promise.all([
+  const [ttyOut, cwdOut, statOut, walk, argsOut] = await Promise.all([
     exec('ps', ['-o', 'tty=', '-p', String(pid)]),
     exec('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']),
     exec('ps', ['-o', 'etime=,rss=', '-p', String(pid)]),
     walkProcessChain(pid, exec),
+    // Codex only: the claude CLI has no subcommand surface this rule is
+    // about, and reaching into the other provider's command line would be
+    // inventing a rule nothing measured.
+    provider === 'codex' ? exec('ps', ['-o', 'args=', '-p', String(pid)]) : Promise.resolve(''),
   ]);
   const ageSeconds = parseEtime(statOut);
   const liveSession = provider === 'claude' ? verifiedLiveSession(pid, ageSeconds, deps) : null;
@@ -235,6 +289,7 @@ async function inspectPid(pid: number, provider: Provider, exec: ExecFn, deps: D
       ...(liveSession ? { liveSession } : {}),
     },
     ancestorPids: walk.pids.slice(1), // walk.pids[0] is pid itself, not an ancestor
+    plumbing: provider === 'codex' && isCodexPlumbing(argsOut),
   };
 }
 
@@ -294,6 +349,7 @@ async function openRolloutsByPid(pids: number[], exec: ExecFn, codexRoot: string
  *  ancestry for is kept, not dropped. */
 function filterToSessions(inspected: InspectedPid[], matchedPids: ReadonlySet<number>): LiveProcess[] {
   return inspected
+    .filter(({ plumbing }) => !plumbing)
     .filter(({ ancestorPids }) => !ancestorPids.some(a => matchedPids.has(a)))
     .map(({ process }) => process);
 }
