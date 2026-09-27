@@ -1468,7 +1468,7 @@ describe('openSessionsLive', () => {
     expect(byPid.get(200)).toMatchObject({ match:'unique', sessionId:'short-claude' });
   });
 
-  it('keeps an adopted Codex match ambiguous without OS age or with two qualifying transcripts', () => {
+  it('stays ambiguous without a process age, and takes the newest transcript when it has one', () => {
     const db = openDb(':memory:');
     insertEvents(db, [
       ev({ provider:'codex', sessionId:'first', kind:'session.started', ts:at(8),
@@ -1482,10 +1482,64 @@ describe('openSessionsLive', () => {
       proc({ pid:100, provider:'codex', cwd:'/repo/shared', ageSeconds:null }), other,
     ], NOW, deps);
     expect(missingAge.find(o => o.pid === 100)).toMatchObject({ match:'ambiguous', sessionId:null });
+    // Two transcripts, both born AFTER this process started, and exactly
+    // one live Codex process at the cwd -- so they are most plausibly the
+    // same process's successive sessions (`/clear` mints a new id inside a
+    // running process), and the live conversation is the newest. That is
+    // the one-process fallback's stated purpose.
+    //
+    // This assertion previously expected 'ambiguous'. It was an artifact of
+    // the OS-age path, whose stricter "exactly one survivor" rule reached
+    // this case first and refused a situation the fallback was written to
+    // handle. With that path deleted, the fallback answers it as designed.
     const twoNew = openSessionsLive(db, [
       proc({ pid:100, provider:'codex', cwd:'/repo/shared', ageSeconds:10 * 60 }), other,
     ], NOW, deps);
-    expect(twoNew.find(o => o.pid === 100)).toMatchObject({ match:'ambiguous', sessionId:null });
+    expect(twoNew.find(o => o.pid === 100)).toMatchObject({ match:'unique', sessionId:'second' });
+  });
+
+  // Finding 2 of the 2026-09-26 review, reproduced: two live Codex panes in
+  // one cwd both resolved to the SAME transcript and both reported
+  // `unique`, i.e. certainty. Misattribution is worse than ambiguity here --
+  // the pane shows another session's conversation and its prompt card
+  // answers that other thread.
+  it('stays ambiguous when TWO live Codex processes share a cwd, rather than picking one', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ provider:'codex', sessionId:'older', kind:'session.started', ts:at(40),
+        payload:{ cwd:'/repo/shared' }, contentHash:'older' }),
+      ev({ provider:'codex', sessionId:'newer', kind:'session.started', ts:at(8),
+        payload:{ cwd:'/repo/shared' }, contentHash:'newer' }),
+    ]);
+    // pid 100's own transcript predates its current process (a `codex
+    // resume`), so a start-time cutoff filters it out and leaves exactly
+    // one survivor -- which belongs to the OTHER pane.
+    const open = openSessionsLive(db, [
+      proc({ pid:100, provider:'codex', cwd:'/repo/shared', ageSeconds:20 * 60 }),
+      proc({ pid:200, provider:'codex', cwd:'/repo/shared', ageSeconds:30 * 60 }),
+    ], NOW, { isTmux: () => true });
+    const byPid = new Map(open.map(o => [o.pid, o]));
+    expect(byPid.get(100)).toMatchObject({ match:'ambiguous', sessionId:null });
+    expect(byPid.get(200)).toMatchObject({ match:'ambiguous', sessionId:null });
+  });
+
+  // The over-strictness the same review identified: candidates are already
+  // provider-scoped (classifyMatch), so a Claude process can never compete
+  // for a Codex transcript -- yet counting processes per cwd without regard
+  // to provider let it block the Codex pane's fallback anyway.
+  it('lets a Codex pane use the one-process fallback when the only other process is Claude', () => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ provider:'codex', sessionId:'stale', kind:'session.started', ts:at(30),
+        payload:{ cwd:'/repo/mixed' }, contentHash:'stale' }),
+      ev({ provider:'codex', sessionId:'live', kind:'session.started', ts:at(5),
+        payload:{ cwd:'/repo/mixed' }, contentHash:'live' }),
+    ]);
+    const open = openSessionsLive(db, [
+      proc({ pid:100, provider:'codex', cwd:'/repo/mixed', ageSeconds:10 * 60 }),
+      proc({ pid:200, provider:'claude', cwd:'/repo/mixed', ageSeconds:40 * 60 }),
+    ], NOW, { isTmux: () => false });
+    expect(open.find(o => o.pid === 100)).toMatchObject({ match:'unique', sessionId:'live' });
   });
 
   it('uses the recorded launch time when available for a Codex process', () => {

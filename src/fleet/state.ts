@@ -951,23 +951,31 @@ export function openSessionsLive(
     .map(m => disconnectedRelays.has(m.pid)
       ? { ...m, quality: 'unknown' as const, sessionId: null, candidates: [] } : m);
 
-  // A Fleet-owned Codex pane can outlive this app's launch-time registry.
-  // Discovery still has its OS process age after restart, so use that as
-  // the cutoff for its ambiguous cwd match. A launch time this run actually
-  // recorded remains more precise; Claude keeps its existing path.
-  // ps rounds age to seconds; allow the same 5s skew as the general
-  // fallback below. Exactly one transcript must survive this cutoff.
+  // ps rounds age to seconds; allow that much skew wherever a process's
+  // start is compared against a transcript's earliest event.
   const START_TOLERANCE_MS = 5_000;
+
+  // Disambiguate an ambiguous match for a pid THIS APP launched: among the
+  // several sessions sharing that cwd, the app's own session is the one
+  // whose EARLIEST event lands at or after the launch time -- a session
+  // that already existed before the launch cannot be the one this pid just
+  // started.
+  //
+  // There was briefly a second source for this instant: a Codex pane's OS
+  // process age, used when the launch registry had been emptied by a
+  // restart. It is gone, and deliberately. It fired ONLY for an ambiguous
+  // Codex pane with two or more live processes at one cwd -- a
+  // Fleet-launched pane is already exact through its relay, and a lone
+  // process at a cwd is already covered by the fallback below -- which is
+  // precisely the case rule 1 exists to refuse. Reproduced on 2026-09-26:
+  // two Codex panes in one cwd both resolved to the SAME transcript and
+  // both reported `unique`. Certainty about the wrong conversation is worse
+  // than admitting ambiguity, because the pane's prompt card then answers
+  // another session's thread.
   const startByPid = new Map<number, number>();
-  for (let i = 0; i < matches.length; i++) {
-    const match = matches[i]!;
+  for (const match of matches) {
     if (match.quality !== 'ambiguous') continue;
-    const process = processes[i]!;
-    const age = process.ageSeconds;
-    const osStart = process.provider === 'codex' && isTmux(match.pid)
-      && typeof age === 'number' && Number.isFinite(age) && age >= 0
-      ? now - age * 1000 - START_TOLERANCE_MS : null;
-    const start = launchedAtForPid(match.pid) ?? osStart;
+    const start = launchedAtForPid(match.pid);
     if (start !== null) startByPid.set(match.pid, start);
   }
   const startKnownAmbiguousPids = new Set(startByPid.keys());
@@ -991,9 +999,20 @@ export function openSessionsLive(
   // first place): a cwd can have two live processes and five old
   // sessions, or one live process and five old sessions -- only the former
   // must stay ambiguous under this rule.
+  //
+  // Counted per cwd AND PROVIDER, not per cwd alone. A candidate list is
+  // already provider-scoped (classifyMatch filters `s.provider ===
+  // p.provider`), so a Claude process can never compete for a Codex
+  // transcript -- yet counting every provider together let it block the
+  // Codex pane's fallback anyway, which is the over-strictness that made
+  // the deleted OS-age path look necessary. Two processes of DIFFERENT
+  // providers at one cwd is the ordinary case on this machine and has a
+  // clear answer; two of the SAME provider is the one with no signal, and
+  // that is what must stay ambiguous.
   const pidCwdCounts = new Map<string, number>();
+  const cwdKey = (p: LiveProcess) => `${p.provider} ${p.cwd}`;
   for (const p of processes) {
-    if (p.cwd !== null) pidCwdCounts.set(p.cwd, (pidCwdCounts.get(p.cwd) ?? 0) + 1);
+    if (p.cwd !== null) pidCwdCounts.set(cwdKey(p), (pidCwdCounts.get(cwdKey(p)) ?? 0) + 1);
   }
   // classifyMatch returns one result per process, in the SAME order (see
   // the identical assumption in openSessions above) -- so `processes[i]`
@@ -1001,8 +1020,8 @@ export function openSessionsLive(
   const fallbackAmbiguousPids = new Set(
     matches.filter((m, i) => {
       if (m.quality !== 'ambiguous' || startByPid.has(m.pid)) return false;
-      const cwd = processes[i]!.cwd;
-      return cwd !== null && pidCwdCounts.get(cwd) === 1;
+      const p = processes[i]!;
+      return p.cwd !== null && pidCwdCounts.get(cwdKey(p)) === 1;
     }).map(m => m.pid));
 
   // One bounded query covering candidates from EITHER disambiguation path,
