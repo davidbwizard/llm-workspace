@@ -53,6 +53,65 @@ describe('Codex app-server prompts', () => {
     expect(responseForCodexPrompt(request, { scope: 'One', reason: 'line\nenter' })).toBeNull();
   });
 
+  // Review finding 4: an absent or dead app-server was completely silent.
+  // The close handler only spoke when the connection had already reached
+  // 'ready', so the two cases that matter said nothing -- a daemon that was
+  // never running (state 'connecting'), and one that died, which closes
+  // with no error argument at all. Meanwhile it reconnected every 5s
+  // forever, rebuilding and pushing the whole session-live payload twice
+  // per cycle.
+  it('reports an unreachable app-server once per outage, not once per retry', async () => {
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation(m => { errors.push(String(m)); });
+    let pushes = 0;
+    const missing = join(tmpdir(), `fleet-codex-absent-${Date.now()}.sock`);
+    const bridge = new CodexAppServer(missing, { retryMs: 10 });
+    try {
+      bridge.watch('thread-1', () => { pushes++; });
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+      const afterFirst = pushes;
+      // Long enough for many more retries at 10ms.
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain(missing);
+      expect(errors[0]).toContain('will not reach the conversation');
+      // Every later retry fails to the state it is already in, so nothing
+      // is pushed: no payload rebuild, no IPC, indefinitely.
+      expect(pushes).toBe(afterFirst);
+    } finally {
+      bridge.stop();
+      spy.mockRestore();
+    }
+  });
+
+  it('gives up on a socket that accepts the connection but never upgrades', async () => {
+    // A server that answers TCP and then says nothing left the bridge in
+    // 'connecting' with no retry scheduled and nothing logged -- where a
+    // changed initialize contract would land.
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation(m => { errors.push(String(m)); });
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-codex-mute-'));
+    const path = join(dir, 'mute.sock');
+    const accepted: import('node:net').Socket[] = [];
+    const server = createServer(socket => { accepted.push(socket); /* accept, then never reply */ });
+    await new Promise<void>(resolve => server.listen(path, resolve));
+    const bridge = new CodexAppServer(path, { retryMs: 10_000, handshakeMs: 30 });
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0), { timeout: 2000 });
+      expect(errors[0]).toContain('handshake');
+      expect(bridge.snapshot('thread-1')?.state).not.toBe('ready');
+    } finally {
+      bridge.stop();
+      spy.mockRestore();
+      // close() alone waits for live connections, and this server's whole
+      // point is that it never finishes one.
+      for (const socket of accepted) socket.destroy();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('subscribes over the Unix WebSocket and resolves requests whose ids overlap setup calls', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-codex-test-'));
     const path = join(dir, 'server.sock');

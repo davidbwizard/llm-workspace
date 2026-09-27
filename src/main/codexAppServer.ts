@@ -13,6 +13,14 @@ type Request = { id: RequestId; method: string; params: RecordValue };
 export type CodexAnswerResult = { status: 'sent' } | { status: 'refused'; reason: 'invalid' | 'stale' | 'unavailable' };
 
 const MAX_FRAME = 4 * 1024 * 1024;
+/** How long to wait between reconnection attempts once the app-server is
+ *  unreachable. Matches the original cadence; named so the log line can
+ *  quote it rather than repeat the number. */
+const RETRY_MS = 5_000;
+/** How long a connection may sit accepted-but-not-upgraded before it is
+ *  given up on. Generous against a busy daemon, finite against one that
+ *  will never answer. */
+const HANDSHAKE_TIMEOUT_MS = 10_000;
 const MAX_TEXT = 2000;
 const CONTROL = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/;
 // Keep line breaks and tabs in command previews: flattening a multi-line
@@ -222,11 +230,25 @@ export class CodexAppServer {
   private requests = new Map<string, { request: Request; sent: boolean }>();
   private socket: LocalWebSocket | null = null;
   private retry: NodeJS.Timeout | null = null;
+  private handshake: NodeJS.Timeout | null = null;
   private generation = 0;
   private changed: () => void = () => {};
+  /** Whether the current outage has already been reported. An absent daemon
+   *  is the DEFAULT state on any machine that has not launched Codex
+   *  through Fleet, so a line per retry would be several an hour, forever;
+   *  silence, which is what this replaced, meant the feature could be dead
+   *  for the life of the app with nothing to find. One line when it breaks
+   *  and one when it comes back is the whole signal. */
+  private outageReported = false;
+  private readonly retryMs: number;
+  private readonly handshakeMs: number;
 
   constructor(private readonly socketPath = join(process.env.CODEX_HOME || join(homedir(), '.codex'),
-    'app-server-control', 'app-server-control.sock')) {}
+    'app-server-control', 'app-server-control.sock'),
+  timings: { retryMs?: number; handshakeMs?: number } = {}) {
+    this.retryMs = timings.retryMs ?? RETRY_MS;
+    this.handshakeMs = timings.handshakeMs ?? HANDSHAKE_TIMEOUT_MS;
+  }
 
   watch(threadId: string, changed: () => void): void {
     if (this.threadId === threadId) { this.changed = changed; return; }
@@ -239,6 +261,9 @@ export class CodexAppServer {
     this.generation++;
     if (this.retry) clearTimeout(this.retry);
     this.retry = null;
+    if (this.handshake) clearTimeout(this.handshake);
+    this.handshake = null;
+    this.outageReported = false;
     this.socket?.close();
     this.socket = null;
     this.threadId = null;
@@ -269,12 +294,37 @@ export class CodexAppServer {
     }
   }
 
+  /** Moves to `next` and pushes ONLY on a real change. Every failed retry
+   *  used to re-announce 'unavailable', and each push rebuilds the whole
+   *  session-live payload and sends it over IPC -- twice per 5s cycle, for
+   *  as long as the daemon is absent, which is indefinitely. */
+  private setState(next: CodexSnapshot['state']): void {
+    if (this.state === next) return;
+    this.state = next;
+    this.changed();
+  }
+
   private connect(): void {
     const threadId = this.threadId;
     if (!threadId) return;
     const generation = ++this.generation;
-    this.state = 'connecting';
-    this.changed();
+    // 'connecting' only while there is still hope of a first connection.
+    // Once an outage is under way the honest state is 'unavailable', and
+    // saying so continuously -- rather than flipping unavailable ->
+    // connecting -> unavailable every cycle -- is what stops a retry from
+    // rebuilding and pushing the whole session-live payload twice per
+    // cycle for as long as the daemon is absent.
+    if (!this.outageReported) this.setState('connecting');
+    // A socket that accepts the connection and then never completes the
+    // upgrade leaves this in 'connecting' with nothing scheduled -- no
+    // retry, no log, no end. Measured: stuck for the whole observation
+    // window. This is where a changed `initialize` contract would land.
+    if (this.handshake) clearTimeout(this.handshake);
+    this.handshake = setTimeout(() => {
+      if (this.generation !== generation || this.state === 'ready') return;
+      this.report('Codex app-server did not complete its handshake');
+      this.socket?.close();
+    }, this.handshakeMs);
     this.socket = new LocalWebSocket(this.socketPath,
       () => this.socket?.send({ id: 1, method: 'initialize', params: {
         clientInfo: { name: 'fleet', title: 'Fleet', version: '0.1.0' },
@@ -283,13 +333,27 @@ export class CodexAppServer {
       value => { if (this.generation === generation) this.message(value, threadId); },
       error => {
         if (this.generation !== generation) return;
-        if (error && this.state === 'ready') console.error('Codex app-server connection closed:', error);
+        // Reported whatever the state was. The old guard only spoke when
+        // the connection had already reached 'ready', so the two cases that
+        // matter most said nothing: a daemon that was never there (state
+        // 'connecting'), and a daemon that died -- which closes with NO
+        // error argument at all, so it failed the guard even when ready.
+        this.report(error instanceof Error ? `Codex app-server unavailable: ${error.message}`
+          : 'Codex app-server connection closed');
         this.socket = null;
-        this.state = 'unavailable';
         this.requests.clear();
-        this.changed();
-        this.retry = setTimeout(() => { this.retry = null; this.connect(); }, 5000);
+        this.setState('unavailable');
+        this.retry = setTimeout(() => { this.retry = null; this.connect(); }, this.retryMs);
       });
+  }
+
+  /** One line per outage, not one per retry. */
+  private report(message: string): void {
+    if (this.outageReported) return;
+    this.outageReported = true;
+    console.error(`${message} -- retrying every ${this.retryMs / 1000}s. `
+      + 'Codex prompts will not reach the conversation until it is back '
+      + `(socket: ${this.socketPath}).`);
   }
 
   private message(value: unknown, threadId: string): void {
@@ -308,8 +372,12 @@ export class CodexAppServer {
       const result = record(m.result);
       const thread = record(result?.thread);
       if (m.error || thread?.id !== threadId) { this.socket?.close(); return; }
-      this.state = 'ready';
-      this.changed();
+      if (this.handshake) { clearTimeout(this.handshake); this.handshake = null; }
+      // Closing the loop the outage line opened: without this, the only
+      // record is a failure that appears never to have been resolved.
+      if (this.outageReported) console.error('Codex app-server reconnected.');
+      this.outageReported = false;
+      this.setState('ready');
       return;
     }
     if (m.method === 'serverRequest/resolved') {
