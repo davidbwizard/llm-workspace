@@ -58,8 +58,8 @@ describe('checkLetter', () => {
   });
 
   it('keeps attachments inside the project and away from secrets', () => {
-    expect(reason({ attachments: ['/etc/hosts'] })).toBe('attachment is outside the project: /etc/hosts');
-    expect(reason({ attachments: ['hosts-link'] })).toBe('attachment is outside the project: hosts-link');
+    expect(reason({ attachments: ['/etc/hosts'] })).toBe(`attachment is outside the project ${project}: /etc/hosts`);
+    expect(reason({ attachments: ['hosts-link'] })).toBe(`attachment is outside the project ${project}: hosts-link`);
     expect(reason({ attachments: ['.env'] })).toBe('attachment looks like a secret: .env');
     expect(reason({ attachments: ['.git/config'] })).toBe('attachment looks like a secret: .git/config');
     expect(reason({ attachments: ['docs'] })).toBe('attachment is not a file: docs');

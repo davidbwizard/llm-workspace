@@ -62,7 +62,7 @@ export function checkLetter(raw: any, now: number, specialists: string[]): Check
       return refuse(`attachment not found: ${p} (${errCode(e)})`);
     }
     const rel = relative(project, real);
-    if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return refuse(`attachment is outside the project: ${p}`);
+    if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return refuse(`attachment is outside the project ${project}: ${p}`);
     if (rel.split(sep).some(s => SECRET_DIRS.has(s)) || SECRET_NAMES.some(r => r.test(basename(rel)))) {
       return refuse(`attachment looks like a secret: ${p}`);
     }

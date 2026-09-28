@@ -13,7 +13,7 @@ let paths: MailPaths;
 beforeEach(() => { paths = mailPaths(realpathSync(mkdtempSync(join(tmpdir(), 'mail-slot-')))); });
 
 const opts = (over: Partial<SlotOptions> = {}): SlotOptions => ({
-  paths, sender: 'codex', project: '/work/app', env: {}, now: () => Date.parse('2026-09-28T18:00:00Z'),
+  paths, sender: 'codex', env: {}, now: () => Date.parse('2026-09-28T18:00:00Z'),
   sleep: async () => {}, waitMs: 0, ...over,
 });
 const sendTool = (o: SlotOptions) => slotTools(o)[0]!;
@@ -21,7 +21,7 @@ const checkTool = (o: SlotOptions) => slotTools(o)[1]!;
 
 describe('send_letter', () => {
   it('drops a letter in the inbox and returns its id', async () => {
-    const text = await sendTool(opts()).call({ to: 'claude-reviewer', subject: 'Plan', body: 'Review this plan.', attachments: ['plan.md'] });
+    const text = await sendTool(opts()).call({ to: 'claude-reviewer', subject: 'Plan', body: 'Review this plan.', project: '/work/app', attachments: ['plan.md'] });
     const [file] = readdirSync(paths.inbox);
     const letter = JSON.parse(readFileSync(join(paths.inbox, file!), 'utf8'));
     expect(text).toContain(letter.id);
@@ -34,7 +34,13 @@ describe('send_letter', () => {
   it('refuses inside a specialist and on bad arguments', async () => {
     await expect(sendTool(opts({ env: { FLEET_MAIL_SPECIALIST: 'x' } })).call({ to: 'a', subject: 'b', body: 'c' })).rejects.toThrow('Specialists cannot send mail.');
     await expect(sendTool(opts()).call({ to: 'a', subject: 'b' })).rejects.toBeInstanceOf(ToolRefusal);
-    await expect(sendTool(opts()).call({ to: 'a', subject: 'b', body: 'c', re: '../x' })).rejects.toBeInstanceOf(ToolRefusal);
+    await expect(sendTool(opts()).call({ to: 'a', subject: 'b', body: 'c', project: '/p', re: '../x' })).rejects.toBeInstanceOf(ToolRefusal);
+  });
+
+  it('needs an absolute project and says not to work around refusals', async () => {
+    await expect(sendTool(opts()).call({ to: 'a', subject: 'b', body: 'c' })).rejects.toBeInstanceOf(ToolRefusal);
+    await expect(sendTool(opts()).call({ to: 'a', subject: 'b', body: 'c', project: 'relative' })).rejects.toBeInstanceOf(ToolRefusal);
+    expect(sendTool(opts()).description).toMatch(/do not work around it/);
   });
 });
 
@@ -82,8 +88,8 @@ describe('slot to post office', () => {
       },
       listCodexMcpServers: async () => [], notify: () => {}, log: () => {},
     });
-    const o = opts({ sender: 'claude', project, now: Date.now });
-    const sent = await sendTool(o).call({ to: 'codex-reviewer', subject: 'Spec', body: 'Review it.', attachments: ['spec.md'] });
+    const o = opts({ sender: 'claude', now: Date.now });
+    const sent = await sendTool(o).call({ to: 'codex-reviewer', subject: 'Spec', body: 'Review it.', project, attachments: ['spec.md'] });
     const id = /[0-9a-f]{32}/.exec(sent)![0];
     office.receive(join(paths.inbox, `${id}.json`));
     await office.idle();

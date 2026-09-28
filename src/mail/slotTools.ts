@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import {
   FINAL_STATUSES, isLetterId, newLetterId, writeFileAtomic, type Letter, type MailPaths, type OutFile, type Sender,
 } from './files.ts';
@@ -8,7 +8,6 @@ import { ToolRefusal, type McpTool } from './mcp.ts';
 export interface SlotOptions {
   paths: MailPaths;
   sender: Sender;
-  project: string;
   env: NodeJS.ProcessEnv;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
@@ -32,21 +31,25 @@ function summarize(id: string, out: OutFile | null): string {
 export function slotTools(o: SlotOptions): McpTool[] {
   const send: McpTool = {
     name: 'send_letter',
-    description: 'Send one job to a Fleet specialist (for example "codex-reviewer" or "claude-reviewer"). Returns a letter id at once; collect the reply with check_mail. For the next review pass, set "re" to the last letter id, attach the revised file, and say in the body what you fixed and what you declined, and why. ' + RULES,
+    description: 'Send one job to a Fleet specialist (for example "codex-reviewer" or "claude-reviewer"). Returns a letter id at once; collect the reply with check_mail. For the next review pass, set "re" to the last letter id, attach the revised file, and say in the body what you fixed and what you declined, and why. Set project to the absolute path of your working folder. If a letter is refused, tell the user the reason; do not work around it (for example by copying files). ' + RULES,
     inputSchema: {
       type: 'object',
       properties: {
         to: { type: 'string', description: 'Specialist name' },
         subject: { type: 'string' },
         body: { type: 'string', description: 'What you want, and why' },
+        project: { type: 'string', description: 'Absolute path of your working folder' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'Project file paths, up to 5' },
         re: { type: 'string', description: 'Id of the letter this follows up' },
       },
-      required: ['to', 'subject', 'body'],
+      required: ['to', 'subject', 'body', 'project'],
     },
     call: async args => {
       if (o.env.FLEET_MAIL_SPECIALIST) throw new ToolRefusal('Specialists cannot send mail.');
-      const { to, subject, body, attachments = [], re } = args as any;
+      const { to, subject, body, project, attachments = [], re } = args as any;
+      if (typeof project !== 'string' || !isAbsolute(project)) {
+        throw new ToolRefusal('send_letter needs project: the absolute path of your working folder.');
+      }
       if (typeof to !== 'string' || typeof subject !== 'string' || typeof body !== 'string'
         || !Array.isArray(attachments) || !attachments.every((a: unknown) => typeof a === 'string')
         || (re !== undefined && !isLetterId(re))) {
@@ -54,7 +57,7 @@ export function slotTools(o: SlotOptions): McpTool[] {
       }
       const id = newLetterId();
       const letter: Letter = {
-        version: 1, id, from: { tool: o.sender, project: o.project }, to, subject, body, attachments,
+        version: 1, id, from: { tool: o.sender, project }, to, subject, body, attachments,
         re: re ?? null, sentAt: new Date(o.now()).toISOString(),
       };
       writeFileAtomic(join(o.paths.inbox, `${id}.json`), JSON.stringify(letter));
