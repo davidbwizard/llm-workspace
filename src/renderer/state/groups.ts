@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { readPref, writePref } from './prefsStorage.ts';
 
 /** The rail's grouping state: what categories exist, which session is in
  *  which, what order the rows sit in, and which stacks are unfolded.
@@ -125,7 +126,7 @@ export function normalizeGroups(raw: unknown): GroupsState {
 
 function read(): GroupsState {
   try {
-    const rawText = localStorage.getItem(GROUPS_STORAGE_KEY);
+    const rawText = readPref(GROUPS_STORAGE_KEY);
     if (rawText === null) return DEFAULT_GROUPS;
     return normalizeGroups(JSON.parse(rawText));
   } catch {
@@ -137,7 +138,7 @@ function read(): GroupsState {
  *  only copy of the change, gone on the next reload -- still better than
  *  throwing and losing the click entirely. */
 function write(s: GroupsState): void {
-  try { localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(s)); } catch { /* best-effort only */ }
+  writePref(GROUPS_STORAGE_KEY, JSON.stringify(s));
 }
 
 let current: GroupsState = read();

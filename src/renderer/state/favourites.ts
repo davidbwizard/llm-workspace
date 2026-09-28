@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { readPref, writePref } from './prefsStorage.ts';
 
 /** Favourite folders (quick-wins): a JSON array of absolute path strings,
  *  namespaced like this app's own settings/rail-width preferences (a
@@ -32,7 +33,7 @@ export function normalizeFavourites(raw: unknown): string[] {
 
 function read(): string[] {
   try {
-    const rawText = localStorage.getItem(FAVOURITES_STORAGE_KEY);
+    const rawText = readPref(FAVOURITES_STORAGE_KEY);
     if (rawText === null) return [];
     return normalizeFavourites(JSON.parse(rawText));
   } catch {
@@ -44,7 +45,7 @@ function read(): string[] {
  *  the only copy of the change, gone on the next reload -- still better
  *  than throwing and losing the click entirely. */
 function write(list: string[]): void {
-  try { localStorage.setItem(FAVOURITES_STORAGE_KEY, JSON.stringify(list)); } catch { /* best-effort only */ }
+  writePref(FAVOURITES_STORAGE_KEY, JSON.stringify(list));
 }
 
 let current: string[] = read();

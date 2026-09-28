@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { readPref, writePref } from '../state/prefsStorage.ts';
 // TYPE-only from state.ts: that module imports node:os and reaches the
 // database, neither of which exists in a sandboxed renderer. A type import is
 // erased at build so it costs nothing; the comparator itself comes from
@@ -33,7 +34,7 @@ const RAIL_DEFAULT_WIDTH = 180; // unchanged from the rail's old fixed width
 // How far one arrow-key press moves the handle -- a keyboard-only user
 // still needs many presses to span the min/max range, not one.
 const RAIL_KEY_STEP = 12;
-// A per-viewer UI preference (localStorage, not the store/db -- nothing
+// A per-viewer UI preference (main's preference store, not the fleet db -- nothing
 // here is fleet state), namespaced like this app's tmux session names
 // ('llmws-<provider>-...') so it can't collide with some other key an
 // unrelated part of the app might someday store on this same origin.
@@ -50,7 +51,7 @@ function clampRailWidth(w: number): number {
  *  taking the component down over. */
 function readStoredRailWidth(): number | null {
   try {
-    const raw = localStorage.getItem(RAIL_WIDTH_STORAGE_KEY);
+    const raw = readPref(RAIL_WIDTH_STORAGE_KEY);
     if (raw === null) return null;
     const n = Number(raw);
     return Number.isFinite(n) ? clampRailWidth(n) : null;
@@ -60,7 +61,7 @@ function readStoredRailWidth(): number | null {
 }
 
 function writeStoredRailWidth(w: number): void {
-  try { localStorage.setItem(RAIL_WIDTH_STORAGE_KEY, String(w)); } catch { /* best-effort only */ }
+  writePref(RAIL_WIDTH_STORAGE_KEY, String(w));
 }
 
 /** The card grid, collapsed to one column. Deliberately reuses

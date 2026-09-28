@@ -1,8 +1,10 @@
 // Whether this person has already been through the first-run screen.
 //
 // Per-viewer UI state, stored the same way settings.ts and favourites.ts
-// store theirs (namespaced localStorage, validated on every read, writes
-// best-effort). It is deliberately NOT in main: nothing before the renderer
+// store theirs (a namespaced key in main's preference store, validated on
+// every read, writes best-effort). It moved off localStorage because that
+// is keyed by the window's ORIGIN, and this app has several -- see
+// src/main/prefs.ts. It is deliberately NOT in main: nothing before the renderer
 // exists needs it, unlike the appearance mirror (src/main/appearance.ts),
 // which exists only because BrowserWindow's first frame is painted before
 // the renderer does.
@@ -10,6 +12,8 @@
 // There is no node import anywhere in this file, and there must not be:
 // a value import from main blanks the whole window, and
 // tests/renderer/bundle.test.ts now asserts it.
+
+import { readPref, writePref } from './prefsStorage.ts';
 
 export const FIRST_RUN_STORAGE_KEY = 'llmws.firstRunSeen';
 
@@ -19,7 +23,7 @@ export const FIRST_RUN_STORAGE_KEY = 'llmws.firstRunSeen';
  *  extra showing of a screen, never a silently skipped one. */
 export function hasSeenFirstRun(): boolean {
   try {
-    return localStorage.getItem(FIRST_RUN_STORAGE_KEY) === '1';
+    return readPref(FIRST_RUN_STORAGE_KEY) === '1';
   } catch {
     // Private window, blocked site data, or a throwing accessor. Showing
     // the screen again is the safe failure: it is a screen someone can
@@ -32,5 +36,5 @@ export function hasSeenFirstRun(): boolean {
 /** Best-effort, like every preference write in this app: a failed write
  *  costs one extra showing on the next launch, never this session. */
 export function markFirstRunSeen(): void {
-  try { localStorage.setItem(FIRST_RUN_STORAGE_KEY, '1'); } catch { /* best-effort only */ }
+  writePref(FIRST_RUN_STORAGE_KEY, '1');
 }
