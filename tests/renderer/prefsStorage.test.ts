@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { readPref, writePref, migratePrefsOnce } from '../../src/renderer/state/prefsStorage.ts';
+import {
+  readPref, writePref, migratePrefsOnce, resetPrefsForTests,
+} from '../../src/renderer/state/prefsStorage.ts';
 
 // Every other renderer test runs without window.fleet, so they all exercise
 // the localStorage FALLBACK. These are the ones that cover the path the app
@@ -11,11 +13,17 @@ const withApi = (over: Record<string, unknown> = {}) => {
     migratePrefs: vi.fn(async () => ({ taken: [], prefs: {} })),
     ...over,
   };
+  // FROZEN, exactly as the real thing is. contextBridge deep-freezes
+  // everything it passes into the renderer, so anything that assigns to a
+  // key of this object throws "Cannot assign to read only property" in the
+  // app. A plain mutable object here is what let that crash ship: the tests
+  // passed while the fleet view failed to render.
+  Object.freeze(api.prefs);
   (window as unknown as { fleet?: unknown }).fleet = api;
   return api;
 };
 
-beforeEach(() => { localStorage.clear(); });
+beforeEach(() => { localStorage.clear(); resetPrefsForTests(); });
 afterEach(() => { delete (window as unknown as { fleet?: unknown }).fleet; });
 
 describe('reading', () => {
@@ -58,12 +66,14 @@ describe('writing', () => {
     expect(localStorage.getItem('llmws:settings')).toBeNull();
   });
 
-  it('updates the snapshot so a read straight after sees the new value', () => {
-    // Without this, a read between the write and the IPC round trip would
-    // return the old value.
-    withApi({ prefs: { 'llmws:settings': '"old"' } });
-    writePref('llmws:settings', '"new"');
+  it('a read straight after a write sees the new value, without touching the frozen snapshot', () => {
+    // The IPC write is a promise, so without a local overlay this would
+    // return the old value until the next launch -- and assigning into the
+    // snapshot to avoid that is what crashed the fleet view.
+    const api = withApi({ prefs: Object.freeze({ 'llmws:settings': '"old"' }) });
+    expect(() => writePref('llmws:settings', '"new"')).not.toThrow();
     expect(readPref('llmws:settings')).toBe('"new"');
+    expect((api.prefs as Record<string, string>)['llmws:settings']).toBe('"old"');
   });
 
   it('writes to localStorage when there is no API, rather than dropping it', () => {
@@ -92,8 +102,9 @@ describe('the one-time migration', () => {
     expect(api.migratePrefs).toHaveBeenCalledWith(
       expect.objectContaining({ 'llmws:settings': '"mine"', unrelated: 'x' }));
     await new Promise(r => setTimeout(r, 0));
-    // Folded in, so a store reading later in this session needs no reload.
-    expect((api.prefs as Record<string, string>)['llmws:settings']).toBe('"mine"');
+    // Readable afterwards without a reload -- through the overlay, since the
+    // snapshot itself cannot be written to.
+    expect(readPref('llmws:settings')).toBe('"mine"');
     // Asserted HERE, in the one test where the migration actually runs:
     // migratePrefsOnce guards itself with a module-level flag, so a second
     // test calling it would no-op and pass even if this code deleted
