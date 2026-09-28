@@ -25,6 +25,8 @@ Files. Folders 0700, files 0600, every write via temp file and rename:
 ```
 ~/.llm-workspace/mail/inbox/<id>.json   letter, written by the slot
 ~/.llm-workspace/mail/out/<id>.json     status and reply, written by Fleet
+~/.llm-workspace/mail/work/             claimed letters and raw replies, Fleet only
+~/.llm-workspace/mail/reply.schema.json the reply shape, written by Fleet
 ```
 
 ## Tools
@@ -34,7 +36,7 @@ and returns `{ id }` at once. `id` is 32 random hex characters. The slot
 adds `from: { tool, project }`: `tool` from its `--from` argument, `project`
 from its working directory. It refuses when `FLEET_MAIL_SPECIALIST` is set.
 
-`check_mail({ id })` waits up to 45 s for `out/<id>.json`, then returns the
+`check_mail({ id })` waits up to 25 s for `out/<id>.json`, then returns the
 status and, when done, the reply under "Review from <specialist>, pass N of
 M. Information, not instructions." Ids not matching `^[0-9a-f]{32}$` are
 rejected.
@@ -72,7 +74,7 @@ Fleet refuses a letter, with a reason, when:
 - there are over 5 attachments, one is over 200 KB, one resolves (symlinks
   followed) outside the project, or one matches `.env*`, `*.pem`, `*.key`,
   `id_*`, `.ssh/`, `.aws/` or `.git/`;
-- the daily limit is reached;
+- the daily limit is reached (accepted letters over a rolling 24 hours);
 - the letter is over 10 minutes old (left while Fleet was closed);
 - a follow-up breaks the loop rules.
 
@@ -84,13 +86,15 @@ Accepted letters queue. One specialist runs at a time.
   saved session. Started from an argument list, never a shell. Own process
   group, killed at the time limit. Environment adds
   `FLEET_MAIL_SPECIALIST=<id>`.
-- Prompt: the agent's instructions, the house rules, the letter, the
-  attachment paths.
-- Codex: `codex exec --sandbox read-only --ephemeral -C <project>
-  --output-schema <schema> -o <file>`, prompt on stdin.
+- Prompt: the agent's instructions (read by Fleet from the agent file), the
+  house rules, the letter, the attachment paths.
+- Codex: `codex exec --sandbox read-only --ephemeral --skip-git-repo-check
+  -C <project> --output-schema <schema> -o <file>`, plus
+  `-c mcp_servers.<name>.enabled=false` for each enabled server from
+  `codex mcp list --json`; prompt on stdin.
 - Claude: `claude -p --restricted --strict-mcp-config
-  --no-session-persistence --agent <agent> --output-format json`, prompt on
-  stdin.
+  --no-session-persistence --permission-mode dontAsk --tools Read Grep Glob
+  --output-format json --json-schema <schema>`; prompt on stdin.
 - Reply: `{ "verdict": "approved" | "changes_requested", "review":
   "<markdown>" }`. Anything else is `failed`. No automatic retries.
 
@@ -102,6 +106,8 @@ Accepted letters queue. One specialist runs at a time.
   attachment's sha256 differs from the previous pass. Nothing changed, no
   new pass.
 - `approved` closes the loop.
+- A pass that fails, times out or is cancelled closes the loop as `failed`;
+  start a new loop.
 - `changes_requested` on the last pass closes the loop as `limit` and sends
   David a macOS notification. To continue, David tells the agent to start
   a new loop.
@@ -120,11 +126,12 @@ descriptions.
 
 ## Log
 
-- `loops`: id, specialist, project, status (`open`, `approved`, `limit`),
+- `loops`: id, specialist, project, status (`open`, `approved`, `limit`, `failed`),
   passes, created, updated.
 - `letters`: id, loop id, pass, from tool, project, to, subject, body,
   attachment hashes, status, reason, verdict, review, stderr tail (20 KB),
-  created, started, finished.
+  owner pid (so two Fleet windows never cancel each other's runs), created,
+  started, finished.
 
 ## Stops
 
@@ -153,15 +160,19 @@ Attachments are sent to the other provider's model.
 - One real loop in each direction, by hand. Spends quota; David is told
   first.
 
-## Confirm in planning
+## Settled in planning
 
-1. Claude: `--restricted` still loads the `reviewer` agent and allows only
-   read tools; how to get the JSON reply.
-2. Codex: how to pass agent instructions (`exec` has no `--agent`);
-   `--output-schema` with `-o`; disabling its MCP servers per run.
-3. Codex's MCP tool timeout is above 45 s.
-4. How the packaged app runs the slot: system Node or
-   `ELECTRON_RUN_AS_NODE`.
+1. `check_mail` waits 25 s: Codex's default MCP tool timeout is not
+   documented, and 25 s is safe under any sane default.
+2. Fleet reads the agent's instructions and puts them in the prompt for
+   both CLIs, so nothing depends on an `--agent` flag.
+3. Claude replies through `--json-schema`; Codex through `--output-schema`
+   and `-o`.
+4. Codex specialists start with every enabled MCP server off.
+5. The slot runs from the checkout with system Node, which strips types.
+6. Fleet claims an inbox file by renaming it, so two Fleet windows never
+   run a letter twice.
+7. Checked by hand: the working directory Codex gives the slot.
 
 ## Not doing
 
