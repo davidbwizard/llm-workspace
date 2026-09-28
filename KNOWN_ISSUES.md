@@ -4,6 +4,57 @@ Things that are wrong, or only true under conditions worth naming, with what
 is actually known rather than assumed. Each entry says how it was observed,
 so the next person does not have to rediscover it.
 
+## Every approved prompt stays open, so a busy session stops answering
+
+**Observed by David on 2026-09-28.** A card refused with "Claude is asking
+more than one thing at once -- answer in Terminal" while only one prompt was
+actually waiting. It is not random and it does not clear: once it starts for
+a session, every card in that session stays unanswerable.
+
+**The cause.** `openBlockers` (`src/store/signals.ts`) closes a blocker when
+it sees one of `RESOLVING` = `PostToolUse`, `PermissionDenied`,
+`ElicitationResult`. `HOOK_EVENTS` (`src/hooks/install.ts`) installs
+fourteen events and **PostToolUse is not among them**, so the only event
+that ever resolves a permission prompt is a denial. Approving one fires
+nothing the app listens for.
+
+So an approved prompt stays open for the whole `OPEN_BLOCKERS_WINDOW_MS`
+(24 hours). From the second onward, `buildPromptView`'s `multiplePrompts`
+guard (`src/main/answer.ts`) refuses every card in that session -- correctly,
+by its own rule, on a false premise.
+
+**Auto mode is the amplifier**, which is how David found it: in auto mode
+nearly everything is approved, so a session produces open blockers
+continuously and never a single resolver. Measured on his session
+`0ad8017f` -- eight distinct prompts in 24 hours, **zero** denials:
+
+    prompt b704cea2...   31 requests   0 denials
+    prompt c8f6a66a...   11 requests   0 denials
+    prompt 6dd9eca1...    2 requests   0 denials
+
+**Installing PostToolUse is necessary and NOT sufficient.** Measured by
+installing it temporarily and firing real tool calls: its payload carries
+both `prompt_id` and `tool_use_id`, and the spool extracts both (7 of 7).
+So the ids do correlate. But:
+
+- A `PermissionRequest` carries **only** `prompt_id` -- 73 events, not one
+  with a `tool_use_id` -- so it can only ever be keyed and resolved by it.
+- `prompt_id` identifies a **turn**, not a tool call: one of them covered 31
+  separate requests.
+- `openBlockers` gathers every resolver in the window BEFORE opening any
+  blocker, and never compares timestamps.
+
+Together those mean a tool completing early in a turn would clear the
+blocker for a prompt that opens later in the SAME turn. That trades a card
+that refuses to answer for one that hides a prompt genuinely waiting, which
+is the worse failure and must not be shipped.
+
+**The fix, when someone takes it:** install PostToolUse AND make a resolver
+clear only blockers that occurred before it. With ordering, a request at T1
+is cleared by a completion at T2, and a request at T3 stays open. The
+ordering gap is worth closing on its own -- nothing in `openBlockers` looks
+at time at all today.
+
 ## FIXED 2026-09-17: a single-line message to Codex sat in its composer, unsubmitted
 
 **Observed by David on 2026-09-16 at 21:28**, sending `Test`. The message
