@@ -1,12 +1,20 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createConnection, type Socket } from 'node:net';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import type { CodexPrompt, CodexQuestion, CodexSnapshot } from '../core/codexPrompt.ts';
+// The one definition of where the App Server daemon listens, shared with
+// the relay that Fleet's own Codex launches go through.
+import { codexDaemonSocket as defaultCodexSocketPath } from './codexRelayControl.ts';
+import { SESSION_NAME_HELP, SESSION_NAME_MAX, SESSION_NAME_SAFE } from '../core/sessionName.ts';
 
 /** One read-only subscription to the already-running Codex app-server. Only
  * an explicit answer from the conversation is sent back. The socket never
- * comes from the renderer, and no thread settings are changed on resume. */
+ * comes from the renderer, and no thread settings are changed on resume.
+ *
+ * setCodexThreadName at the foot of this file is the one exception to
+ * "read-only", and is not part of the subscription: a separate, short-lived
+ * connection that sets the name on ONE thread the person just named, then
+ * closes. It lives here so the WebSocket client below has exactly one
+ * implementation in this app. */
 type RecordValue = Record<string, unknown>;
 type RequestId = string | number;
 type Request = { id: RequestId; method: string; params: RecordValue };
@@ -243,8 +251,7 @@ export class CodexAppServer {
   private readonly retryMs: number;
   private readonly handshakeMs: number;
 
-  constructor(private readonly socketPath = join(process.env.CODEX_HOME || join(homedir(), '.codex'),
-    'app-server-control', 'app-server-control.sock'),
+  constructor(private readonly socketPath = defaultCodexSocketPath(),
   timings: { retryMs?: number; handshakeMs?: number } = {}) {
     this.retryMs = timings.retryMs ?? RETRY_MS;
     this.handshakeMs = timings.handshakeMs ?? HANDSHAKE_TIMEOUT_MS;
@@ -407,3 +414,107 @@ export class CodexAppServer {
 }
 
 export const codexAppServer = new CodexAppServer();
+
+export type CodexNameResult = { ok: true } | { ok: false; reason: string };
+
+/** The thread ids the App Server issues, same shape codexRelayControl.ts
+ *  accepts from tmux. Checked again here because this is the last place
+ *  before the id goes back out to the daemon. */
+const CODEX_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** How long the whole connect/initialize/set exchange may take. A daemon
+ *  that accepts the socket and then says nothing must not leave the caller
+ *  on a promise that never settles -- a launch is waiting on this one. */
+const SET_NAME_TIMEOUT_MS = 10_000;
+/** Enough of the daemon's own wording to be useful in a sentence the person
+ *  reads, and not enough to fill the launch bar. */
+const REASON_MAX = 200;
+
+const errorReason = (error: unknown): string => {
+  const message = display(record(error)?.message);
+  return message && message.trim() !== '' ? message.slice(0, REASON_MAX) : 'the Codex app-server refused it';
+};
+
+/** Sets the name Codex keeps for one thread (its `threads.name` column in
+ *  ~/.codex/state_5.sqlite -- the name the session card already displays).
+ *
+ *  `thread/name/set`, params `{ threadId, name }`, read from the generated
+ *  protocol schema (`codex app-server generate-json-schema`, checked
+ *  2026-09-28 against codex-cli 0.157.0) rather than guessed; its response
+ *  carries no fields, so success is "answered without an error".
+ *
+ *  A separate, short-lived connection, not the subscription above: it
+ *  belongs to a launch, not to whichever thread happens to be on screen,
+ *  and it must not disturb the watch the Conversation pane depends on.
+ *
+ *  The name is validated HERE as well as by the caller. This is the last
+ *  code that runs before it leaves this app for another tool's own state,
+ *  so it holds to exactly the rule a name on a command line does
+ *  (SESSION_NAME_SAFE) -- no looser, and nothing is opened at all when it
+ *  fails. */
+export function setCodexThreadName(threadId: string, name: string, opts: {
+  socketPath?: string; timeoutMs?: number;
+} = {}): Promise<CodexNameResult> {
+  if (!CODEX_THREAD_ID.test(threadId)) {
+    return Promise.resolve({ ok: false, reason: 'that thread id has an unexpected shape' });
+  }
+  if (name.length > SESSION_NAME_MAX || !SESSION_NAME_SAFE.test(name)) {
+    return Promise.resolve({ ok: false, reason: SESSION_NAME_HELP });
+  }
+  const socketPath = opts.socketPath ?? defaultCodexSocketPath();
+  const timeoutMs = opts.timeoutMs ?? SET_NAME_TIMEOUT_MS;
+  return new Promise<CodexNameResult>(resolve => {
+    let settled = false;
+    let socket: LocalWebSocket | null = null;
+    // Every exit runs through here: the socket is closed exactly once, the
+    // timer is cleared, and a second outcome (the close that follows our
+    // own close(), say) is dropped rather than resolving twice.
+    const finish = (result: CodexNameResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket?.close();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({
+      ok: false, reason: `the Codex app-server did not answer within ${timeoutMs / 1000}s`,
+    }), timeoutMs);
+    const send = (value: unknown): boolean => {
+      try { socket?.send(value); return true; }
+      catch (err) {
+        finish({ ok: false, reason: err instanceof Error ? err.message : 'the Codex app-server socket failed' });
+        return false;
+      }
+    };
+    // A constructor that throws would otherwise REJECT this promise rather
+    // than resolving it, which is a different contract from every other
+    // exit here -- one result type, never a throw.
+    try {
+      socket = new LocalWebSocket(socketPath,
+        () => { send({ id: 1, method: 'initialize', params: {
+          clientInfo: { name: 'fleet', title: 'Fleet', version: '0.1.0' },
+          capabilities: { experimentalApi: true },
+        } }); },
+        value => {
+          const m = record(value);
+          // Only a JSON-RPC response can advance this exchange. Server
+          // requests and notifications share the id space and are ignored
+          // -- the same trap the subscription's own `isResponse` guard
+          // exists for.
+          if (!m || Object.hasOwn(m, 'method')) return;
+          if (m.id === 1) {
+            if (m.error) { finish({ ok: false, reason: errorReason(m.error) }); return; }
+            if (!send({ method: 'initialized', params: {} })) return;
+            send({ id: 2, method: 'thread/name/set', params: { threadId, name } });
+            return;
+          }
+          if (m.id === 2) finish(m.error ? { ok: false, reason: errorReason(m.error) } : { ok: true });
+        },
+        error => finish({
+          ok: false,
+          reason: error instanceof Error ? error.message : 'the Codex app-server closed the connection',
+        }));
+    } catch (err) {
+      finish({ ok: false, reason: err instanceof Error ? err.message : 'the Codex app-server could not be reached' });
+    }
+  });
+}

@@ -9,8 +9,7 @@ import { useChecks } from '../state/useChecks.ts';
 // NOT from identity.ts beside SESSION_ID_SAFE, which imports node:crypto
 // (tests/renderer/bundle.test.ts).
 import {
-  SESSION_NAME_SAFE, SESSION_NAME_MAX, SESSION_NAME_HELP,
-  SESSION_NAME_CODEX_REASON, SESSION_NAME_PLACEHOLDER,
+  SESSION_NAME_SAFE, SESSION_NAME_MAX, SESSION_NAME_HELP, SESSION_NAME_PLACEHOLDER,
 } from '../../core/sessionName.ts';
 import { bindPendingCategory, categoryNames, MAX_CATEGORY_LENGTH } from '../state/groups.ts';
 import './LaunchBar.css';
@@ -79,13 +78,17 @@ export function LaunchBar({ onLaunched, disabled = false }: {
   const [name, setName] = useState('');
   const nameWrapRef = useRef<HTMLSpanElement | null>(null);
   const nameBtnRef = useRef<HTMLButtonElement | null>(null);
-  // Claude only: `codex --help` carries no launch-time name flag, so the
-  // field is disabled WITH THE REASON rather than hidden.
-  const nameable = provider === 'claude';
+  /** Whatever opened this panel, so focus goes back to it on every close
+   *  path. There are two openers now -- the chevron and any favourite chip
+   *  -- and a keyboard user who opened it from a chip must not be dropped
+   *  on the chevron instead. Falls back to the chevron, which is the one
+   *  opener that is always mounted. */
+  const openerRef = useRef<HTMLElement | null>(null);
   // A category set as the session starts -- the second of the two entry
   // points the launch control was built as a dropdown for. Unlike `name`
-  // above, this NEVER reaches the CLI: it is app-side only, which is why it
-  // stays usable for Codex, where the name field cannot be.
+  // above, this never leaves the app at all: it reaches neither a CLI nor a
+  // provider, which is why it has no character rules of its own beyond a
+  // length cap.
   const [category, setCategory] = useState('');
 
   // Favourite folders: state/favourites.ts is the one shared store
@@ -157,14 +160,9 @@ export function LaunchBar({ onLaunched, disabled = false }: {
 
   useEffect(() => {
     if (!nameOpen) return;
-    return () => { nameBtnRef.current?.focus(); };
+    return () => { (openerRef.current ?? nameBtnRef.current)?.focus(); };
   }, [nameOpen]);
 
-  /** The one path anything in this component starts a session through --
-   *  the Launch button (no argument, the typed/chosen folder field) AND a
-   *  favourite chip (its own stored path) both call this, rather than the
-   *  chip duplicating launch's own pending/error handling. Provider always
-   *  comes from the `provider` state below, currently-selected either way. */
   /** Closes the launch-options dropdown and throws away whatever was typed
    *  in it -- the ordinary "cancel discards" of any small panel, and the
    *  reason the main Launch half can stay unnamed without ever silently
@@ -176,17 +174,44 @@ export function LaunchBar({ onLaunched, disabled = false }: {
     setCategory('');
   }
 
-  async function launch(targetDir?: string, fromOptions = false): Promise<void> {
-    const dir = (targetDir ?? cwd).trim();
+  /** A favourite chip's whole job now: put its folder in the field and open
+   *  the launch options over it, so the session is NAMED AT BIRTH rather
+   *  than renamed later. It deliberately launches nothing on its own -- the
+   *  panel's own Launch (or Enter) does that, and Escape or a click outside
+   *  leaves nothing started.
+   *
+   *  The folder field is set, rather than the path being held aside, because
+   *  that field is this bar's one statement of what is about to launch:
+   *  opening a panel that will start /Users/me/proj while the field still
+   *  reads something else would be a lie. A cancelled panel leaves the
+   *  chosen folder behind in the field, which is the same thing clicking
+   *  "Choose…" and changing your mind already does. */
+  function openOptionsFor(dir: string, opener: HTMLElement): void {
+    setCwd(dir);
+    setName('');
+    setCategory('');
+    setMessage(null);
+    openerRef.current = opener;
+    setNameOpen(true);
+  }
+
+  /** The one path anything in this component starts a session through --
+   *  the Launch button, the panel's own Launch, and Enter in either of the
+   *  panel's fields. All of them launch the folder in the field; provider
+   *  always comes from the `provider` state above. */
+  async function launch(fromOptions = false): Promise<void> {
+    const dir = cwd.trim();
     if (blocked) { setMessage(launchable?.reason ?? 'That provider is not available right now.'); return; }
     if (dir === '') { setMessage('Choose a working directory first.'); return; }
-    // Only the dropdown's own two launch paths carry a name, and only for a
-    // provider that can take one. Trimmed first: surrounding spaces are a
+    // Only the dropdown's own launch paths carry a name -- for BOTH
+    // providers now: main applies a Codex name to the thread after launch
+    // (src/main/launch.ts), so there is no longer a provider that cannot
+    // take one. Trimmed first: surrounding spaces are a
     // typing artefact, not part of the name, and trimming them is the one
     // thing done TO the text -- everything else is accepted or refused as
     // typed. SESSION_NAME_SAFE would reject them, and refusing "  proj  "
     // as malformed would be pedantic rather than protective.
-    const wanted = fromOptions && nameable ? name.trim() : '';
+    const wanted = fromOptions ? name.trim() : '';
     // Gated on `nameOpen`, deliberately NOT on `fromOptions` the way `wanted`
     // above is. A category never reaches the CLI, so unlike the name it does
     // not need to distinguish which of the split button's two halves was
@@ -231,6 +256,12 @@ export function LaunchBar({ onLaunched, disabled = false }: {
         if (wantedCategory !== '') bindPendingCategory(r.pid, wantedCategory);
         cancelOptions();
         onLaunched(r.pid);
+        // A launch that started the session but could not do everything
+        // asked of it (a Codex name main could not apply) is still a
+        // launch: the session is selected either way. It says what it could
+        // not do, in the same place a failure's reason appears, rather than
+        // leaving the person to notice the missing name themselves.
+        if (r.warning) setMessage(r.warning);
         return;
       }
       setMessage(r.reason);
@@ -256,12 +287,13 @@ export function LaunchBar({ onLaunched, disabled = false }: {
           that cannot run is still selectable, so choosing it shows the
           reason rather than silently doing nothing -- which is the whole
           point of disabled-with-a-reason over hidden. */}
-      {/* Switching provider clears any typed name, so a name meant for
-          Claude can never be carried into a Codex launch -- and so the
-          disabled Codex field is never showing text that will be thrown
-          away anyway. */}
+      {/* Switching provider KEEPS a typed name. It used to clear it,
+          because the Codex field was disabled and a name carried into a
+          Codex launch would have been silently dropped; both providers take
+          a name now, so throwing away what someone typed would just be
+          losing their work. */}
       <select className="launchprovider" aria-label="Provider" value={provider} disabled={disabled}
-        onChange={e => { setProvider(e.target.value === 'codex' ? 'codex' : 'claude'); setName(''); }}>
+        onChange={e => setProvider(e.target.value === 'codex' ? 'codex' : 'claude')}>
         <option value="claude">
           Claude{readiness && !readiness.launch.claude.available ? ' (unavailable)' : ''}
         </option>
@@ -312,36 +344,42 @@ export function LaunchBar({ onLaunched, disabled = false }: {
             join this panel later without the icon becoming a lie. */}
         <button type="button" className="launchmore" ref={nameBtnRef} aria-label="Launch options"
           aria-haspopup="true" aria-expanded={nameOpen} disabled={pending || blocked}
-          onClick={() => { if (nameOpen) cancelOptions(); else setNameOpen(true); }}>
+          onClick={e => {
+            if (nameOpen) { cancelOptions(); return; }
+            openerRef.current = e.currentTarget;
+            setNameOpen(true);
+          }}>
           <Icon name="chevron-down" size={11} weight="bold" />
         </button>
         {nameOpen && (
           <div className="launchdrop" role="dialog" aria-label="Launch options">
-            <label className={nameable ? undefined : 'off'}>
+            <label>
               Session name
               {/* The placeholder is the kind of name Claude derives on its
                   own, so the field explains itself without help text.
                   Enter launches: this is not a <form> of its own (it sits
                   inside the bar's form, and a nested form is invalid HTML),
                   so Enter is handled here rather than by a submit. */}
-              <input type="text" value={name} disabled={!nameable || pending}
-                placeholder={nameable ? SESSION_NAME_PLACEHOLDER : 'Not available for Codex'}
+              <input type="text" value={name} disabled={pending}
+                placeholder={SESSION_NAME_PLACEHOLDER}
                 autoFocus
                 onChange={e => setName(e.target.value)}
                 onKeyDown={e => {
                   if (e.key !== 'Enter') return;
                   e.preventDefault();
-                  void launch(undefined, true);
+                  void launch(true);
                 }} />
             </label>
-            {/* Disabled WITH THE REASON, never hidden -- the same call this
-                app already makes for a missing dependency and for the mode
-                chip on a session it did not launch. Readable without
-                hovering: a tooltip explains nothing to anyone on a keyboard
-                or a screen reader. */}
-            {nameable
-              ? <small>Leave blank and Claude names it for you.</small>
-              : <small className="warn">{SESSION_NAME_CODEX_REASON}</small>}
+            {/* Usable for Codex too now: `codex` still has no name flag,
+                but main sets the name on the thread once the session is up
+                (src/main/launch.ts), so the field no longer has to be
+                disabled with a reason. What a blank leaves behind differs
+                by provider, so the line says which. */}
+            <small>
+              {provider === 'claude'
+                ? 'Leave blank and Claude names it for you.'
+                : 'Leave blank and the session stays unnamed until you name it in Codex.'}
+            </small>
             <label>
               Category
               {/* A text field with a datalist rather than a select: one
@@ -355,7 +393,7 @@ export function LaunchBar({ onLaunched, disabled = false }: {
                 onKeyDown={e => {
                   if (e.key !== 'Enter') return;
                   e.preventDefault();
-                  void launch(undefined, true);
+                  void launch(true);
                 }} />
               <datalist id="launchcats">
                 {categoryNames().map(n => <option key={n} value={n} />)}
@@ -369,10 +407,10 @@ export function LaunchBar({ onLaunched, disabled = false }: {
                   is still contained in the name, so speech input still
                   works. */}
               <button type="button" className="launchgo" disabled={pending || blocked}
-                aria-label="Launch with this name" onClick={() => { void launch(undefined, true); }}>
+                aria-label="Launch with this name" onClick={() => { void launch(true); }}>
                 Launch
               </button>
-              {nameable && <small>Enter to launch</small>}
+              <small>Enter to launch</small>
             </div>
           </div>
         )}
@@ -418,8 +456,10 @@ export function LaunchBar({ onLaunched, disabled = false }: {
       <div className="favrow" role="group" aria-label="Favourite folders">
         {favourites.map(path => (
           <span className="favchip" key={path} title={path}>
+            {/* Opens the launch options over this folder; it does NOT
+                launch on its own -- see openOptionsFor above. */}
             <button type="button" className="favchip-name" disabled={pending || blocked}
-              onClick={() => { void launch(path); }}>
+              onClick={e => openOptionsFor(path, e.currentTarget)}>
               {lastSegment(path)}
             </button>
             <button type="button" className="favchip-remove"

@@ -77,7 +77,6 @@
   font-size:12.5px; color:var(--ink-2); }
 /* Disabled with the reason attached, so the label dims with its field
    rather than the field alone looking broken beside a live label. */
-.launchdrop label.off { opacity:.55; }
 .launchdrop input { font-family:var(--f-mono); font-size:12px; color:var(--ink);
   background:var(--ground); border:1px solid var(--line); border-radius:6px; padding:7px 9px;
   /* min-width:0 so a long typed name scrolls inside the field instead of
@@ -85,10 +84,9 @@
   min-width:0; }
 .launchdrop input::placeholder { color:var(--faint); }
 .launchdrop small { font-size:11.5px; color:var(--faint); }
-.launchdrop small.warn { color:var(--signal); }
 /* The category field sits under the name field in the same panel and takes
    the same shape, so the two read as one set of launch options rather than
-   two mechanisms -- even though only one of them reaches the CLI. */
+   two mechanisms -- even though only one of them is sent to the provider. */
 .launchdrop datalist { display: none; }
 .launchdrop-row { display:flex; align-items:center; gap:8px; }
 /* Its own button again, not half of a split: square all four corners back. */

@@ -205,15 +205,59 @@ describe('LaunchBar', () => {
       expect(container.querySelector('.favrow')).toBeNull();
     });
 
-    it("launches the chip's folder, under the currently selected provider, through the same call the Launch button uses", async () => {
-      render(<LaunchBar onLaunched={() => {}} />);
-      fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
-      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/Users/me/proj' } });
+    // A chip used to launch on the spot. It now asks for a name first --
+    // the SAME launch-options panel the chevron opens, not a second form --
+    // so a session gets named at birth instead of renamed later.
+    function favourite(path = '/Users/me/proj'): void {
+      fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: path } });
       fireEvent.click(screen.getByRole('button', { name: 'Add to favourites' }));
       fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '' } });
+    }
+
+    it('asks for a name instead of launching the moment a chip is clicked', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      favourite();
+      expect(screen.queryByLabelText('Session name')).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: 'proj' }));
-      await waitFor(() =>
-        expect(launch).toHaveBeenCalledWith('codex', '/Users/me/proj', expect.any(Number), expect.any(Number), null));
+      expect(launch).not.toHaveBeenCalled();
+      expect(screen.getByLabelText('Session name')).toBeTruthy();
+      // The chip's folder is what the panel is about to launch, so the
+      // folder field says so rather than sitting empty or stale.
+      expect((screen.getByLabelText('Working directory') as HTMLInputElement).value)
+        .toBe('/Users/me/proj');
+    });
+
+    it("launches the chip's folder with the typed name, under the selected provider", async () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+      favourite();
+      fireEvent.click(screen.getByRole('button', { name: 'proj' }));
+      fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'FLEET STUFF' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+      await waitFor(() => expect(launch).toHaveBeenCalledWith(
+        'codex', '/Users/me/proj', expect.any(Number), expect.any(Number), 'FLEET STUFF'));
+    });
+
+    it('still launches from a chip when the name is left blank', async () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      favourite();
+      fireEvent.click(screen.getByRole('button', { name: 'proj' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+      await waitFor(() => expect(launch).toHaveBeenCalledWith(
+        'claude', '/Users/me/proj', expect.any(Number), expect.any(Number), null));
+    });
+
+    it('launches nothing when the name panel a chip opened is cancelled', () => {
+      render(<LaunchBar onLaunched={() => {}} />);
+      favourite();
+      const chip = screen.getByRole('button', { name: 'proj' });
+      fireEvent.click(chip);
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.queryByLabelText('Session name')).toBeNull();
+      expect(launch).not.toHaveBeenCalled();
+      // Focus goes back to whatever opened the panel -- the chip here, the
+      // chevron when the chevron opened it.
+      expect(document.activeElement).toBe(chip);
     });
 
     it('removes a favourite from its own × button', () => {
@@ -377,14 +421,51 @@ describe('LaunchBar: naming a session at launch', () => {
     expect(screen.getByLabelText('Category')).toBeTruthy();
   });
 
-  // The name field is disabled for Codex because the CLI has no name flag.
-  // A category never touches the CLI, so that reason does not carry over.
-  it('keeps the category field usable for Codex, where the name field is not', () => {
+  // The name field used to be disabled for Codex, because `codex` has no
+  // name flag -- it still has none, but the name no longer goes on the
+  // command line: main sets it on the thread over the App Server protocol
+  // Fleet already launches Codex through (src/main/launch.ts).
+  it('offers the name field for Codex too, not only Claude', () => {
     render(<LaunchBar onLaunched={() => {}} />);
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
     openOptions();
-    expect((screen.getByLabelText('Session name') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Session name') as HTMLInputElement).disabled).toBe(false);
     expect((screen.getByLabelText('Category') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('sends a typed name on a Codex launch rather than dropping it', async () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'FLEET STUFF' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
+    await waitFor(() => expect(launch)
+      .toHaveBeenCalledWith('codex', '/tmp/proj', expect.any(Number), expect.any(Number), 'FLEET STUFF'));
+  });
+
+  it('keeps a typed name when the provider is switched, since both take one now', () => {
+    render(<LaunchBar onLaunched={() => {}} />);
+    openOptions();
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'FLEET STUFF' } });
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    expect((screen.getByLabelText('Session name') as HTMLInputElement).value).toBe('FLEET STUFF');
+  });
+
+  // A launch that started the session but could not do everything asked of
+  // it is still a launch -- the session is selected -- but it says what it
+  // could not do, in the same place a failure's reason appears.
+  it('shows a warning from a launch that succeeded but could not set the name', async () => {
+    launch.mockResolvedValue({
+      status: 'launched', pid: 4821,
+      warning: 'Launched, but the session could not be named: no such thread.',
+    });
+    const onLaunched = vi.fn();
+    render(<LaunchBar onLaunched={onLaunched} />);
+    fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch' }));
+    await waitFor(() => expect(onLaunched).toHaveBeenCalledWith(4821));
+    expect(screen.getByText(/could not be named/i)).toBeTruthy();
   });
 
   it('offers the categories that already exist, without forcing one', () => {
@@ -604,17 +685,16 @@ describe('LaunchBar: naming a session at launch', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
-  // Disabled WITH THE REASON, never hidden -- the same call this app
-  // already makes for a missing dependency and for the mode chip on a
-  // session it did not launch.
-  it('disables the field for Codex and says why, rather than hiding it', () => {
+  // What a blank name leaves behind is not the same for both providers --
+  // Claude derives one, Codex leaves the session unnamed -- so the line
+  // under the field says which, instead of one sentence that is only true
+  // half the time.
+  it('says what a blank name means for the provider that is selected', () => {
     render(<LaunchBar onLaunched={() => {}} />);
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
     openOptions();
-    const field = screen.getByLabelText('Session name') as HTMLInputElement;
-    expect(field).toBeTruthy();
-    expect(field.disabled).toBe(true);
-    expect(screen.getByText(/Codex has no way to set a name when it starts/i)).toBeTruthy();
+    expect(screen.getByText(/Claude names it for you/i)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
+    expect(screen.getByText(/stays unnamed until you name it in Codex/i)).toBeTruthy();
   });
 
   it('still launches Codex from the dropdown, just without a name', async () => {
@@ -627,17 +707,18 @@ describe('LaunchBar: naming a session at launch', () => {
       expect(launch).toHaveBeenCalledWith('codex', '/tmp/proj', expect.any(Number), expect.any(Number), null));
   });
 
-  // A name typed while Claude was selected must not be smuggled into a
-  // Codex launch by switching the provider afterwards.
-  it('drops a typed name when the provider is switched to Codex', async () => {
+  // A name typed while Claude was selected used to be dropped on the way
+  // to a Codex launch, because Codex could not take one. It can now, so the
+  // name survives the switch instead of being thrown away.
+  it('carries a typed name through a switch to Codex', async () => {
     render(<LaunchBar onLaunched={() => {}} />);
     fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/tmp/proj' } });
     openOptions();
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'FLEET STUFF' } });
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'codex' } });
     fireEvent.click(screen.getByRole('button', { name: 'Launch with this name' }));
-    await waitFor(() =>
-      expect(launch).toHaveBeenCalledWith('codex', '/tmp/proj', expect.any(Number), expect.any(Number), null));
+    await waitFor(() => expect(launch)
+      .toHaveBeenCalledWith('codex', '/tmp/proj', expect.any(Number), expect.any(Number), 'FLEET STUFF'));
   });
 
   it('closes on Escape and returns focus to the chevron', () => {

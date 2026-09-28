@@ -655,3 +655,34 @@ one and compare what the reader makes of each.
 Do NOT loosen `reviewMatches` to make this pass. It exists so the app can
 never submit a review that disagrees with the card; weakening it before the
 cause is known trades a stall for a wrong answer, which is far worse.
+
+## A Codex session cannot be named at launch while its TUI is asking something (2026-09-28)
+
+Fleet names a Codex session by sending `thread/name/set` for the thread the
+TUI opened, once the relay reports which thread that is (`launchCodexSession`,
+`src/main/launch.ts`). That thread does not exist until the TUI reaches its
+first `thread/start` -- and a TUI that opens on one of codex's OWN prompts
+reaches it only when a person answers.
+
+**Measured, twice, 2026-09-28** (codex-cli 0.157.0, launched exactly the way
+Fleet does): both launches sat on
+
+    Update available · 0.157.0 -> 0.157.1
+    1. Update now  2. Skip  3. Skip until next version
+
+and published no thread id for the full 30s the probe waited. Sending one
+Escape to the pane cleared the prompt, and the id appeared **311ms** later.
+Setting the name on it then took **474ms** and the row in
+`~/.codex/state_5.sqlite` changed, so the protocol side works.
+
+**What the app does about it**: the wait is bounded at 5s and the launch
+still succeeds, carrying a `warning` the launch bar shows -- "Codex had not
+opened a thread yet. Answer anything it is asking in the terminal, then name
+it there." It is deliberately not waited out for longer: the person cannot
+answer the prompt until the session is on screen, and the session does not go
+on screen until the launch returns, so a longer wait is a longer freeze and
+never a name.
+
+**Not a silent failure, and must not become one.** If this is ever made to
+retry in the background, it needs a channel that can still tell the person it
+failed; `console.error` in main is not one.

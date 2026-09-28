@@ -1797,6 +1797,12 @@ export function registerIpc(
   // characters AND quotes the result, and this handler refuses on its
   // reason rather than launching an unnamed session and pretending the
   // name was applied. Absent/null is the ordinary unnamed launch.
+  //
+  // For Codex the name does NOT reach a shell -- `codex` has no name flag,
+  // so it is applied to the thread afterwards over the App Server protocol
+  // -- but it is put through the same launchCommand check here anyway, and
+  // through launchCodexSession's own check again before it is sent. It
+  // crosses into another tool's state either way.
   ipcMain.handle('session:launch', async (
     _event, provider: unknown, cwd: unknown, cols: unknown, rows: unknown, name: unknown,
   ) => {
@@ -1812,8 +1818,11 @@ export function registerIpc(
     }
     const command = launchCommand(provider, name ?? null);
     if (!command.ok) return { status: 'failed', reason: command.reason };
+    // Codex takes its name off the command line entirely (launchCommand's
+    // own doc comment): the validated name is handed to launchCodexSession,
+    // which sets it on the thread once the relay reports one.
     const result: LaunchResult = provider === 'codex'
-      ? await launchCodexSession(cwd, cols, rows)
+      ? await launchCodexSession(cwd, cols, rows, {}, name ?? null)
       : launchSession(provider, cwd, cols, rows, {}, command.command);
     if (onSessionLaunch && result.status === 'launched') setImmediate(onSessionLaunch);
     return result;

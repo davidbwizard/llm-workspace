@@ -45,14 +45,6 @@ export const SESSION_NAME_SAFE = new RegExp(
 export const SESSION_NAME_HELP =
   `Use letters, numbers, spaces, dots, dashes or underscores -- up to ${SESSION_NAME_MAX} characters, starting with a letter or number.`;
 
-/** Shown wherever the name field is disabled. `codex --help` carries no
- *  launch-time name flag (checked 2026-09-22), so the field is disabled
- *  WITH THIS REASON rather than hidden -- the same call this app already
- *  makes for a missing dependency and for the mode chip on a session it did
- *  not launch. */
-export const SESSION_NAME_CODEX_REASON =
-  'Codex has no way to set a name when it starts. Launch it, then rename it from the session.';
-
 /** The kind of name Claude derives for itself, used as the field's
  *  placeholder so the box explains itself without a line of help text. */
 export const SESSION_NAME_PLACEHOLDER = 'llm-workspace-4a';

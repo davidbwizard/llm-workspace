@@ -380,10 +380,25 @@ describe('launchCommand', () => {
     if (!overCap.ok) expect(overCap.reason).toMatch(new RegExp(String(SESSION_NAME_MAX)));
   });
 
-  it('refuses a name for Codex, and says why rather than dropping it silently', () => {
-    const r = launchCommand('codex', 'FLEET STUFF');
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toMatch(/Codex has no way to set a name when it starts/i);
+  // `codex --name` does not exist -- codex-cli 0.157.0's help has no such
+  // flag (`codex --help | grep -c -- '--name'` is 0, checked 2026-09-28), so
+  // a named Codex launch runs the BARE command and the name is applied
+  // afterwards over the app-server protocol (launchCodexSession below).
+  // This used to refuse the name outright; it no longer has to.
+  it('keeps a Codex name off the command line, since codex has no name flag', () => {
+    expect(launchCommand('codex', 'FLEET STUFF')).toEqual({ ok: true, command: 'codex' });
+  });
+
+  // The character set is the defence that matters for Codex: the name does
+  // not reach a shell there, but it does cross into another tool's own
+  // state database, so it is held to exactly the same rule.
+  it('refuses an unsafe name whichever provider asked for it', () => {
+    for (const provider of ['claude', 'codex'] as const) {
+      const unsafe = launchCommand(provider, 'proj; rm -rf ~');
+      expect(unsafe.ok).toBe(false);
+      if (!unsafe.ok) expect(unsafe.reason).toMatch(/letters, numbers/i);
+      expect(launchCommand(provider, 'a'.repeat(SESSION_NAME_MAX + 1)).ok).toBe(false);
+    }
   });
 
   // Each case is named for the character that makes it dangerous, so a
@@ -451,5 +466,85 @@ describe('launchSession with a name', () => {
       panePid: () => 4821,
     }, cmd.command);
     expect(calls[0]?.at(-1)).toBe("claude -n 'FLEET STUFF'");
+  });
+});
+
+// A Codex session can be named AT LAUNCH, even though `codex` itself takes
+// no name flag. Fleet already launches Codex through its own relay on the
+// App Server protocol, and that protocol has thread/name/set (params
+// {threadId, name}, read from `codex app-server generate-json-schema` on
+// 2026-09-28) -- so the name is applied to the thread once the relay
+// reports which thread the TUI actually opened.
+describe('launchCodexSession with a name', () => {
+  const base = {
+    startDaemon: async () => {}, startRelay: () => {}, waitRelay: async () => true,
+    socketHome: '/tmp/home', executable: '/bin/node', relayScript: '/tmp/relay.js',
+    exec: () => ({ ok: true as const, stdout: '' }),
+    panePid: () => 4821,
+  };
+  const THREAD = '01a0da0c-2964-76a2-bf2e-dbcbb26243df';
+
+  it('names the exact thread the relay reports, once that thread exists', async () => {
+    const setName = vi.fn(async () => ({ ok: true as const }));
+    const waitThread = vi.fn(async () => THREAD);
+    const result = await launchCodexSession('/tmp/pilot', 120, 40,
+      { ...base, waitThread, setName }, 'FLEET STUFF');
+    expect(result).toEqual({ status: 'launched', pid: 4821 });
+    expect(waitThread).toHaveBeenCalledWith(4821);
+    expect(setName).toHaveBeenCalledWith(THREAD, 'FLEET STUFF');
+  });
+
+  it('does not touch the app-server at all when no name was asked for', async () => {
+    const setName = vi.fn(async () => ({ ok: true as const }));
+    const waitThread = vi.fn(async () => THREAD);
+    expect(await launchCodexSession('/tmp/pilot', 120, 40, { ...base, waitThread, setName }))
+      .toEqual({ status: 'launched', pid: 4821 });
+    expect(waitThread).not.toHaveBeenCalled();
+    expect(setName).not.toHaveBeenCalled();
+  });
+
+  // The session is already running by the time any of this can fail, so
+  // 'failed' would be a lie -- but so would silence. The launch stands and
+  // carries the reason with it.
+  it('still launches, and says why, when the thread id never arrives', async () => {
+    const setName = vi.fn(async () => ({ ok: true as const }));
+    const result = await launchCodexSession('/tmp/pilot', 120, 40,
+      { ...base, waitThread: async () => null, setName }, 'FLEET STUFF');
+    expect(result.status).toBe('launched');
+    expect(result.status === 'launched' && result.warning).toMatch(/could not be named/i);
+    expect(setName).not.toHaveBeenCalled();
+  });
+
+  it('still launches, and quotes the app-server, when the name is refused', async () => {
+    const result = await launchCodexSession('/tmp/pilot', 120, 40, {
+      ...base, waitThread: async () => THREAD,
+      setName: async () => ({ ok: false as const, reason: 'no such thread' }),
+    }, 'FLEET STUFF');
+    expect(result.status).toBe('launched');
+    expect(result.status === 'launched' && result.warning).toMatch(/no such thread/);
+  });
+
+  it('still launches when setting the name throws, rather than failing the launch', async () => {
+    const result = await launchCodexSession('/tmp/pilot', 120, 40, {
+      ...base, waitThread: async () => THREAD,
+      setName: async () => { throw new Error('socket gone'); },
+    }, 'FLEET STUFF');
+    expect(result.status).toBe('launched');
+    expect(result.status === 'launched' && result.warning).toMatch(/socket gone/);
+  });
+
+  // The renderer's field and launchCommand both check this already; this is
+  // the third and last gate, here because the name crosses out of this app
+  // into another tool's own state. Nothing is spawned at all when it fails:
+  // a refusal after launching would leave a session nobody asked for.
+  it('refuses an unsafe name before spawning anything', async () => {
+    const startRelay = vi.fn();
+    const setName = vi.fn();
+    const result = await launchCodexSession('/tmp/pilot', 120, 40,
+      { ...base, startRelay, setName }, 'proj; danger');
+    expect(result.status).toBe('failed');
+    expect(result.status === 'failed' && result.reason).toMatch(/letters, numbers/i);
+    expect(startRelay).not.toHaveBeenCalled();
+    expect(setName).not.toHaveBeenCalled();
   });
 });
