@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
 import { mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  cancelOrphans, createLoop, getLetter, getLoop, insertLetter, latestPass, letterExists, lettersInLast24h,
+  cancelOrphans, createLoop, getLetter, getLoop, getLoopSession, insertLetter, setLoopSession, latestPass, letterExists, lettersInLast24h,
   openMailLog, updateLetter, updateLoop, type MailDb, type NewLetter,
 } from '../../src/mail/log.ts';
 
@@ -53,6 +54,31 @@ describe('mail log', () => {
       for (const f of [file, `${file}-wal`, `${file}-shm`]) expect([f, statSync(f).mode & 0o777]).toEqual([f, 0o600]);
     } finally {
       fileDb.close();
+    }
+  });
+
+  it('stores the loop session and the pass offset', () => {
+    expect(getLoopSession(db, 'L')).toEqual({ sessionId: null, tmux: null, transcript: null });
+    setLoopSession(db, 'L', { sessionId: 'u', tmux: 'llmws-claude-mail-L', transcript: '/t.jsonl' });
+    expect(getLoopSession(db, 'L')).toEqual({ sessionId: 'u', tmux: 'llmws-claude-mail-L', transcript: '/t.jsonl' });
+    insertLetter(db, row('a'));
+    updateLetter(db, 'a', { status: 'running', transcriptOffset: 42 });
+    expect(db.prepare('SELECT transcript_offset AS o FROM letters WHERE id = ?').get('a')).toEqual({ o: 42 });
+  });
+
+  it('adds the session columns to a log made before them', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'mail-old-')), 'mail.sqlite');
+    const old = new Database(file);
+    old.exec('CREATE TABLE loops (id TEXT PRIMARY KEY, specialist TEXT NOT NULL, project TEXT NOT NULL, from_tool TEXT NOT NULL, status TEXT NOT NULL, passes INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
+    old.exec('CREATE TABLE letters (id TEXT PRIMARY KEY, status TEXT NOT NULL, attachments TEXT NOT NULL, created_at INTEGER NOT NULL)');
+    old.close();
+    const upgraded = openMailLog(file);
+    try {
+      const cols = (t: string) => (upgraded.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map(c => c.name);
+      expect(cols('loops')).toEqual(expect.arrayContaining(['session_id', 'tmux', 'transcript']));
+      expect(cols('letters')).toContain('transcript_offset');
+    } finally {
+      upgraded.close();
     }
   });
 

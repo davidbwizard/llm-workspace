@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS loops (
   from_tool TEXT NOT NULL,
   status TEXT NOT NULL,
   passes INTEGER NOT NULL,
+  session_id TEXT,
+  tmux TEXT,
+  transcript TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -33,6 +36,7 @@ CREATE TABLE IF NOT EXISTS letters (
   review TEXT,
   stderr_tail TEXT,
   owner_pid INTEGER,
+  transcript_offset INTEGER,
   created_at INTEGER NOT NULL,
   started_at INTEGER,
   finished_at INTEGER
@@ -48,7 +52,29 @@ export function openMailLog(path: string): MailDb {
     chmodSync(path, 0o600);
   }
   db.exec(SCHEMA);
+  // Columns added after the first release, for logs created before them.
+  for (const [table, column, type] of ADDED_COLUMNS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some(c => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
   return db;
+}
+
+const ADDED_COLUMNS = [
+  ['loops', 'session_id', 'TEXT'], ['loops', 'tmux', 'TEXT'], ['loops', 'transcript', 'TEXT'],
+  ['letters', 'transcript_offset', 'INTEGER'],
+] as const;
+
+/** The live session a loop's passes go to. */
+export interface LoopSession { sessionId: string | null; tmux: string | null; transcript: string | null }
+
+export function getLoopSession(db: MailDb, loopId: string): LoopSession {
+  const r = db.prepare('SELECT session_id AS sessionId, tmux, transcript FROM loops WHERE id = ?').get(loopId) as LoopSession | undefined;
+  return r ?? { sessionId: null, tmux: null, transcript: null };
+}
+
+export function setLoopSession(db: MailDb, loopId: string, s: LoopSession): void {
+  db.prepare('UPDATE loops SET session_id = ?, tmux = ?, transcript = ? WHERE id = ?').run(s.sessionId, s.tmux, s.transcript, loopId);
 }
 
 export interface NewLetter {
@@ -92,6 +118,7 @@ export interface LetterUpdate {
   stderrTail?: string | null;
   startedAt?: number;
   finishedAt?: number;
+  transcriptOffset?: number;
 }
 
 export function insertLetter(db: MailDb, l: NewLetter): void {
@@ -118,11 +145,12 @@ export function updateLetter(db: MailDb, id: string, u: LetterUpdate): void {
   db.prepare(`UPDATE letters SET status = @status,
       reason = COALESCE(@reason, reason), verdict = COALESCE(@verdict, verdict), review = COALESCE(@review, review),
       stderr_tail = COALESCE(@stderrTail, stderr_tail), started_at = COALESCE(@startedAt, started_at),
-      finished_at = COALESCE(@finishedAt, finished_at)
+      finished_at = COALESCE(@finishedAt, finished_at), transcript_offset = COALESCE(@transcriptOffset, transcript_offset)
     WHERE id = @id`)
     .run({
       id, status: u.status, reason: u.reason ?? null, verdict: u.verdict ?? null, review: u.review ?? null,
       stderrTail: u.stderrTail ?? null, startedAt: u.startedAt ?? null, finishedAt: u.finishedAt ?? null,
+      transcriptOffset: u.transcriptOffset ?? null,
     });
 }
 
