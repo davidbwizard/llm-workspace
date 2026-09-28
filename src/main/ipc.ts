@@ -55,6 +55,7 @@ import type { UsagePayload } from '../core/usage.ts';
 import { ingestSpool } from '../hooks/spool.ts';
 import { codexAppServer, type CodexAnswerResult } from './codexAppServer.ts';
 import { codexRelayThreadForPid } from './codexRelayControl.ts';
+import { readAllPrefs, writePref, migratePrefs, type PrefsDb } from './prefs.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
  *  correction to the original brief: nothing history-related -- not a
@@ -1416,6 +1417,32 @@ export async function refreshChecks(win: BrowserWindow | null): Promise<Readines
   }
   if (win && !win.isDestroyed()) win.webContents.send('checks:update', readiness);
   return readiness;
+}
+
+/** The preference channels, registered separately because main opens that
+ *  store before the window exists (the preload reads it synchronously while
+ *  the window loads) rather than alongside the fleet database.
+ *
+ *  'prefs:all' is ipcMain.on with a returnValue, not handle: sendSync is the
+ *  only synchronous channel a sandboxed preload has, and every preference
+ *  store in the renderer expects its first read to be synchronous. It is
+ *  read-only and takes nothing from the renderer.
+ *
+ *  The other two take renderer data, and prefs.ts validates both -- the key
+ *  against a closed list, the value as bounded JSON -- so these signatures
+ *  narrow nothing at the trust boundary. */
+export function registerPrefsIpc(prefsDb: PrefsDb): void {
+  ipcMain.on('prefs:all', event => { event.returnValue = readAllPrefs(prefsDb); });
+  ipcMain.handle('prefs:set', (_event, key: unknown, value: unknown) => writePref(prefsDb, key, value));
+  ipcMain.handle('prefs:migrate', (_event, incoming: unknown) => {
+    const taken = migratePrefs(prefsDb, incoming);
+    // Said once, when it actually happens: this moves preferences a person
+    // set long ago into a new store, and a move that went wrong is worth
+    // being able to find afterwards. Silence here is also how a migration
+    // that never ran looks.
+    if (taken.length > 0) console.log('preferences migrated from localStorage:', taken.join(', '));
+    return { taken, prefs: readAllPrefs(prefsDb) };
+  });
 }
 
 export function registerIpc(

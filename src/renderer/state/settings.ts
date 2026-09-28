@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { readPref, writePref } from './prefsStorage.ts';
 
 /** The four per-viewer preferences the settings modal owns, and the app's
  *  first shared renderer store.
@@ -75,7 +76,7 @@ export function normalizeSettings(raw: unknown): Settings {
 
 function read(): Settings {
   try {
-    const rawText = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    const rawText = readPref(SETTINGS_STORAGE_KEY);
     if (rawText === null) return DEFAULT_SETTINGS;
     return normalizeSettings(JSON.parse(rawText));
   } catch {
@@ -84,7 +85,7 @@ function read(): Settings {
 }
 
 function write(s: Settings): void {
-  try { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(s)); } catch { /* best-effort only */ }
+  writePref(SETTINGS_STORAGE_KEY, JSON.stringify(s));
 }
 
 function same(a: Settings, b: Settings): boolean {

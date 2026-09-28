@@ -9,10 +9,11 @@ import { refreshHelperIfInstalled } from '../hooks/switch.ts';
 import { refreshStatusLineIfInstalled } from '../hooks/usageSwitch.ts';
 import { pruneSnapshots } from '../providers/claude/statusLine.ts';
 import { resolvePaths } from '../config.ts';
-import { registerIpc, pushFleet, refreshPushEnrichment, refreshChecks } from './ipc.ts';
+import { registerIpc, registerPrefsIpc, pushFleet, refreshPushEnrichment, refreshChecks } from './ipc.ts';
 import { refreshLiveProcesses } from '../discovery/live.ts';
 import { adoptRunningSessions } from './sessions.ts';
 import { readStoredTheme } from './appearance.ts';
+import { openPrefs, type PrefsDb } from './prefs.ts';
 import { notifySessionChanged, pushSessionLive, watchSessionFor, type WatchDeps } from './sessionLive.ts';
 import { contextMenuTemplate } from './contextMenu.ts';
 import { applyLoginPathOnce } from './loginPath.ts';
@@ -25,6 +26,7 @@ import { applyLoginPathOnce } from './loginPath.ts';
 const NOOP_WATCH_DEPS: WatchDeps = { processes: () => [], buildPayload: () => null, send: () => {} };
 
 let db: Db | null = null;
+let prefsDb: PrefsDb | null = null;
 let watcher: Watcher | null = null;
 let spoolTimer: NodeJS.Timeout | null = null;
 // Refreshes discovery/live.ts's process cache; buildFleetPayload reads that
@@ -263,6 +265,18 @@ app.whenReady().then(async () => {
   refreshStatusLineIfInstalled(paths, join(app.getAppPath(), 'src/hooks/statusline.sh'));
 
   db = openDb(paths.db);
+
+  // Opened BEFORE createWindow, because the preload reads it synchronously
+  // while the window loads: every preference store in the renderer expects
+  // its first read to be synchronous (useSyncExternalStore), and behind an
+  // async channel the defaults would paint first and the real values snap in
+  // after -- the rail visibly jumping on every launch.
+  //
+  // 'prefs:all' is therefore ipcMain.on with a returnValue, not handle:
+  // sendSync is the only synchronous channel a sandboxed preload has, and
+  // this window runs sandbox:true with no node access.
+  prefsDb = openPrefs(paths.prefs);
+  registerPrefsIpc(prefsDb);
 
   // Before createWindow, not after: backgroundColor below is read once, at
   // construction. shouldUseDarkColors then reflects this choice for an

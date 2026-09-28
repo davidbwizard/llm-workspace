@@ -25,6 +25,11 @@ export interface Paths {
   consent: string;
   /** "Usage and context": the status line snapshots (src/hooks/statusline.sh). */
   statusLineDir: string;
+  /** Per-viewer preferences (src/main/prefs.ts). Kept where the window's
+   *  ORIGIN cannot reach them -- localStorage is keyed by it, and this app
+   *  has several origins between dev, the packaged build and a drifting
+   *  Vite port. */
+  prefs: string;
   db: string;
 }
 
@@ -41,6 +46,7 @@ export function resolvePaths(home: string): Paths {
     appearance: join(home, '.llm-workspace/appearance.json'),
     consent: join(home, '.llm-workspace/consent.json'),
     statusLineDir: join(home, '.llm-workspace/statusline'),
+    prefs: join(home, '.llm-workspace/prefs.sqlite'),
     db: join(home, '.llm-workspace/index.sqlite'),
   };
 }

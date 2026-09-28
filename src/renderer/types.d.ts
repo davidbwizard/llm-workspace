@@ -117,6 +117,17 @@ declare global {
       hooksPreview: () => Promise<HooksPreview>;
       hooksSet: (on: boolean, token?: string) => Promise<HooksResult>;
       hooksDecline: () => Promise<{ decision: string }>;
+      // Per-viewer preferences, kept by main so the window's ORIGIN cannot
+      // partition them (src/main/prefs.ts). `prefs` is a snapshot the
+      // preload read ONCE and synchronously, so a store's first read stays
+      // synchronous; setPref and migratePrefs are ordinary async channels.
+      // Main validates the key against a closed list and the value as JSON;
+      // these typings narrow nothing at the trust boundary.
+      prefs: Record<string, string>;
+      setPref: (key: string, value: string) =>
+        Promise<{ ok: true } | { ok: false; reason: string }>;
+      migratePrefs: (incoming: Record<string, string>) =>
+        Promise<{ taken: string[]; prefs: Record<string, string> }>;
       consentGet: () => Promise<ConsentRecord>;
       // The dependency checks (first-run design §3-§5). checksGet answers
       // from main's cached sweep; checksRun re-probes (the Check again

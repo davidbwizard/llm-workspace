@@ -5,6 +5,16 @@ import type { Answer } from '../core/prompt.ts';
 /** The complete surface the renderer can reach. Every channel is named here
  *  and validated in main; there is deliberately no generic invoke, because one
  *  would let any renderer bug call any handler (spec §11.1). */
+function readPrefsOnce(): Record<string, string> {
+  try {
+    const value: unknown = ipcRenderer.sendSync('prefs:all');
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
 const api = {
   listFleet: () => ipcRenderer.invoke('fleet:list'),
   listHistory: (offset: number, limit: number) => ipcRenderer.invoke('fleet:history', offset, limit),
@@ -162,6 +172,26 @@ const api = {
   hooksPreview: () => ipcRenderer.invoke('hooks:preview'),
   hooksSet: (on: boolean, token?: string) => ipcRenderer.invoke('hooks:set', on, token),
   hooksDecline: () => ipcRenderer.invoke('hooks:decline'),
+  // Per-viewer preferences, read ONCE and synchronously here rather than
+  // over invoke. Every preference store in the renderer
+  // (useSyncExternalStore) expects its first read to be synchronous; behind
+  // a promise the defaults would paint first and the real values snap in
+  // after, which is the rail visibly jumping on every launch.
+  //
+  // sendSync is the only synchronous channel available: this window runs
+  // sandbox:true with no node access, so the preload cannot read the file
+  // itself. It runs after main has registered the handler (main opens the
+  // store before createWindow).
+  //
+  // Wrapped, and defaulting to {}: a preload that throws leaves a
+  // normal-looking window with no API at all (Task 5), so losing the rail
+  // width must never cost the whole app.
+  prefs: readPrefsOnce(),
+  setPref: (key: string, value: string) => ipcRenderer.invoke('prefs:set', key, value),
+  // The one-time move off localStorage. Only the renderer can read
+  // localStorage, so it hands the contents over; main decides what is
+  // storable and never overwrites a preference already there.
+  migratePrefs: (incoming: Record<string, string>) => ipcRenderer.invoke('prefs:migrate', incoming),
   consentGet: () => ipcRenderer.invoke('consent:get'),
   // The dependency checks (design §3-§5). checksGet answers from main's
   // cached sweep, so opening the panel is instant; checksRun is the Check

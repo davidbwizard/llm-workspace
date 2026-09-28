@@ -37,6 +37,17 @@ describe('renderer security posture', () => {
     expect(preload).not.toMatch(/\.\.\.args/);
   });
 
+  // 'prefs:all' is this app's ONLY synchronous channel and never appears in
+  // the invoke list above, so it gets its own guard rather than slipping
+  // through unenumerated. A sandboxed preload has no other way to give a
+  // preference store its first value synchronously; a promise there paints
+  // the defaults first and the rail visibly jumps on every launch. It is
+  // read-only and takes nothing from the renderer.
+  it('uses sendSync for exactly one read-only channel', () => {
+    const sync = [...preload.matchAll(/ipcRenderer\.sendSync\('([^']+)'/g)].map(m => m[1]);
+    expect(sync).toEqual(['prefs:all']);
+  });
+
   it('exposes only the enumerated channels', () => {
     const exposed = [...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/g)].map(m => m[1]);
     expect(exposed.sort()).toEqual([
@@ -63,6 +74,15 @@ describe('renderer security posture', () => {
       // (first-run design §6) -- so the app cannot edit a file the person
       // owns without having just shown them what it would put there.
       'hooks:decline', 'hooks:get', 'hooks:preview', 'hooks:set',
+      // Per-viewer preferences (src/main/prefs.ts), kept by main so the
+      // window's ORIGIN cannot partition them. 'prefs:all' is the one
+      // SYNCHRONOUS channel in this app -- a sandboxed preload has no other
+      // way to give a store its first value synchronously, and a promise
+      // there paints the defaults first. It is read-only. 'prefs:set' and
+      // 'prefs:migrate' take renderer data, and main validates both: the key
+      // against a closed list and the value as JSON, bounded, and migration
+      // never overwrites a preference already stored.
+      'prefs:migrate', 'prefs:set',
       // Quick answers: main re-derives the prompt and checks the answer and
       // the pane before any key -- see tests/main/answer.test.ts's guards.
       'session:answer',
