@@ -26,6 +26,19 @@ export interface SessionSpec {
 
 export type Reply = { verdict: Verdict; review: string };
 
+/** What the post office needs from Fleet to run a specialist session.
+ *  Methods returning `string | null` return null on success, else why not. */
+export interface SessionDriver {
+  open(runsOn: Sender, project: string, command: string, tmux: string): string | null;
+  alive(tmux: string): boolean;
+  typeLine(tmux: string, line: string): string | null;
+  claudeTranscript(project: string, sessionId: string): string;
+  findCodexRollout(marker: string, sinceMs: number): string | null;
+  /** 0 when the file does not exist yet. */
+  size(file: string): number;
+  readReply(runsOn: Sender, file: string, fromOffset: number): Reply | null;
+}
+
 /** The subject is agent text: no control characters, bounded length. */
 export const sessionName = (to: string, subject: string): string =>
   `Mail · ${to} · ${subject}`.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/ {2,}/g, ' ').trim().slice(0, 80);
