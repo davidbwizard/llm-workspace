@@ -44,7 +44,7 @@ export interface MailPaths {
   out: string;
   work: string;
   config: string;
-  schema: string;
+  letters: string;
 }
 
 export const defaultMailDir = (home: string): string => join(home, '.llm-workspace/mail');
@@ -56,7 +56,7 @@ export function mailPaths(dir: string): MailPaths {
     out: join(dir, 'out'),
     work: join(dir, 'work'),
     config: join(dir, 'config.json'),
-    schema: join(dir, 'reply.schema.json'),
+    letters: join(dir, 'letters'),
   };
 }
 

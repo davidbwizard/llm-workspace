@@ -5,12 +5,16 @@ import { readAgentInstructions } from './agent.ts';
 import { writeFileAtomic, type LetterStatus, type MailPaths, type OutFile } from './files.ts';
 import { checkLetter } from './letter.ts';
 import {
-  cancelOrphans, createLoop, getLetter, getLoop, insertLetter, latestPass, letterExists, lettersInLast24h,
-  updateLetter, updateLoop, type MailDb, type NewLetter,
+  cancelOrphans, createLoop, getLetter, getLoop, getLoopSession, insertLetter, latestPass, letterExists, lettersInLast24h,
+  setLoopSession, updateLetter, updateLoop, type MailDb, type NewLetter,
 } from './log.ts';
 import { followUpProblem, loopStatusAfter } from './loop.ts';
 import { loadMailConfig } from './mailConfig.ts';
-import { buildCommand, buildPrompt, parseReply, REPLY_SCHEMA, type Command, type RunHandle } from './runner.ts';
+import { buildPrompt } from './runner.ts';
+import {
+  codexSessionId, firstMessage, openCommand, passLine, resumeCommand, sessionName, VERDICT_RULE, writePassFile,
+  type Reply, type SessionDriver, type SessionSpec,
+} from './session.ts';
 
 export interface PostOfficeDeps {
   paths: MailPaths;
@@ -19,7 +23,10 @@ export interface PostOfficeDeps {
   now: () => number;
   pid: number;
   isAlive: (pid: number) => boolean;
-  run: (cmd: Command, stdin: string, timeoutMs: number, env: NodeJS.ProcessEnv) => RunHandle;
+  session: SessionDriver;
+  sleep: (ms: number) => Promise<void>;
+  /** A fresh UUID for a new Claude session. */
+  newSessionId: () => string;
   listCodexMcpServers: () => Promise<string[]>;
   notify: (title: string, body: string) => void;
   log: (message: string) => void;
@@ -47,18 +54,16 @@ export function isAlive(pid: number): boolean {
   }
 }
 
-const lastLine = (s: string): string => s.trim().split('\n').pop()?.slice(0, 300) ?? '';
+const POLL_MS = 2000;
 
 export function createPostOffice(d: PostOfficeDeps): PostOffice {
   const { paths, db } = d;
-  for (const dir of [paths.dir, paths.inbox, paths.out, paths.work]) {
+  for (const dir of [paths.dir, paths.inbox, paths.out, paths.work, paths.letters]) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
   }
-  writeFileAtomic(paths.schema, JSON.stringify(REPLY_SCHEMA));
 
   const queue: string[] = [];
-  let current: RunHandle | null = null;
   let running = false;
   let stopped = false;
   let broken: string | null = null;
@@ -150,64 +155,91 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
 
   const runLetter = async (id: string): Promise<void> => {
     const row = getLetter(db, id);
-    if (!row || row.status !== 'queued' || row.loopId === null || row.pass === null) return;
-    const loopId = row.loopId;
-    const pass = row.pass;
-    const finish = (status: LetterStatus, reason: string, stderrTail: string | null = null): void => {
-      updateLetter(db, id, { status, reason, stderrTail, finishedAt: d.now() });
+    if (!row || row.status !== 'queued' || row.loopId === null || row.pass === null || !row.project || !row.to || !row.fromTool) return;
+    const { loopId, pass, project, to } = { loopId: row.loopId, pass: row.pass, project: row.project, to: row.to };
+    const finish = (status: LetterStatus, reason: string): void => {
+      updateLetter(db, id, { status, reason, finishedAt: d.now() });
       updateLoop(db, loopId, 'failed', pass, d.now());
       publishFromLog(id);
     };
     const cfg = loadMailConfig(paths.config);
     if (!cfg.ok || !cfg.config.enabled) return finish('cancelled', 'mail was turned off before this ran');
     const config = cfg.config;
-    const specialist = config.specialists[row.to ?? ''];
-    if (!specialist) return finish('failed', `specialist "${row.to}" is no longer configured`);
+    const specialist = config.specialists[to];
+    if (!specialist) return finish('failed', `specialist "${to}" is no longer configured`);
     const instructions = readAgentInstructions(d.home, specialist);
     if (!instructions.ok) return finish('failed', instructions.reason);
+    const { runsOn } = specialist;
     let mcpServers: string[] = [];
-    if (specialist.runsOn === 'codex') {
+    if (runsOn === 'codex') {
       try {
         mcpServers = await d.listCodexMcpServers();
       } catch (e) {
         return finish('failed', `could not list Codex MCP servers: ${(e as Error).message}`);
       }
     }
-    const replyFile = join(paths.work, `${id}.reply.json`);
-    const cmd = buildCommand(specialist.runsOn, row.project!, paths.schema, replyFile, mcpServers);
-    const prompt = buildPrompt({
-      instructions: instructions.text, to: row.to!, fromTool: row.fromTool!, project: row.project!,
-      subject: row.subject ?? '', body: row.body ?? '', attachments: row.attachments.map(a => a.path),
-      pass, passLimit: config.passesPerLoop,
-    });
-    updateLetter(db, id, { status: 'running', startedAt: d.now() });
+    if (stopped) return;
+
+    const letterDir = join(paths.letters, loopId);
+    const file = writePassFile(letterDir, pass, `${buildPrompt({
+      instructions: instructions.text, to, fromTool: row.fromTool, project, subject: row.subject ?? '', body: row.body ?? '',
+      attachments: row.attachments.map(a => a.path), pass, passLimit: config.passesPerLoop,
+    })}\n\n${VERDICT_RULE}`);
+    let sess = getLoopSession(db, loopId);
+    const spec: SessionSpec = {
+      runsOn, project, loopId, name: sessionName(to, row.subject ?? ''), sessionId: sess.sessionId ?? '', letterDir, codexMcpOff: mcpServers,
+    };
+    const startedAt = d.now();
+    let fromOffset: number;
+    if (sess.tmux && d.session.alive(sess.tmux)) {
+      // The reviewer keeps its context: the next pass goes into the same session.
+      fromOffset = sess.transcript ? d.session.size(sess.transcript) : 0;
+      const err = d.session.typeLine(sess.tmux, passLine(pass, file));
+      if (err) return finish('failed', `could not type into the session: ${err}`);
+    } else {
+      const resuming = sess.sessionId !== null;
+      if (runsOn === 'claude' && !resuming) spec.sessionId = d.newSessionId();
+      const tmux = sess.tmux ?? `llmws-${runsOn}-mail-${loopId.slice(0, 8)}`;
+      const command = resuming ? resumeCommand(spec, passLine(pass, file)) : openCommand(spec, firstMessage(file));
+      const err = d.session.open(runsOn, project, command, tmux);
+      if (err) return finish('failed', `could not open the session: ${err}`);
+      const transcript = runsOn === 'claude' ? d.session.claudeTranscript(project, spec.sessionId) : sess.transcript;
+      fromOffset = transcript ? d.session.size(transcript) : 0;
+      sess = { sessionId: spec.sessionId || null, tmux, transcript };
+      setLoopSession(db, loopId, sess);
+    }
+    updateLetter(db, id, { status: 'running', startedAt, transcriptOffset: fromOffset });
     publishFromLog(id);
-    current = d.run(cmd, prompt, config.runMinutes * 60_000, { ...process.env, FLEET_MAIL_SPECIALIST: id });
-    const result = await current.done;
-    current = null;
-    if (stopped) return;   // Fleet is quitting; the next start marks this cancelled
-    let replyText: string | null = null;
-    try {
-      replyText = readFileSync(replyFile, 'utf8');
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') {
-        removeQuietly(replyFile);
-        return finish('failed', `could not read the reply (${code})`, result.stderrTail);
+
+    const deadline = startedAt + config.runMinutes * 60_000;
+    while (!stopped) {
+      if (!sess.transcript && runsOn === 'codex') {
+        const found = d.session.findCodexRollout(loopId, startedAt - 5_000);
+        if (found) {
+          sess = { ...sess, transcript: found, sessionId: codexSessionId(found) };
+          setLoopSession(db, loopId, sess);
+        }
       }
+      let reply: Reply | null = null;
+      if (sess.transcript) {
+        try {
+          reply = d.session.readReply(runsOn, sess.transcript, fromOffset);
+        } catch (e) {
+          return finish('failed', `could not read the session transcript: ${(e as Error).message}`);
+        }
+      }
+      if (reply) {
+        const loopStatus = loopStatusAfter(reply.verdict, pass, config.passesPerLoop);
+        updateLetter(db, id, { status: 'replied', verdict: reply.verdict, review: reply.review, finishedAt: d.now() });
+        updateLoop(db, loopId, loopStatus, pass, d.now());
+        publishFromLog(id);
+        if (loopStatus === 'limit') d.notify('Review loop hit its limit', `${row.subject}: ${to} still wants changes after ${pass} passes.`);
+        return;
+      }
+      if (d.now() >= deadline) return finish('timed_out', `no VERDICT line within ${config.runMinutes} minutes; the session is still open`);
+      await d.sleep(POLL_MS);
     }
-    removeQuietly(replyFile);
-    if (result.timedOut) return finish('timed_out', `ran past ${config.runMinutes} minutes`, result.stderrTail);
-    if (result.exitCode !== 0) {
-      return finish('failed', `${specialist.runsOn} exited with ${result.exitCode ?? 'an error'}: ${lastLine(result.stderrTail)}`, result.stderrTail);
-    }
-    const parsed = parseReply(specialist.runsOn, result.stdout, replyText);
-    if (!parsed.ok) return finish('failed', parsed.reason, result.stderrTail);
-    const loopStatus = loopStatusAfter(parsed.reply.verdict, pass, config.passesPerLoop);
-    updateLetter(db, id, { status: 'replied', verdict: parsed.reply.verdict, review: parsed.reply.review, stderrTail: result.stderrTail, finishedAt: d.now() });
-    updateLoop(db, loopId, loopStatus, pass, d.now());
-    publishFromLog(id);
-    if (loopStatus === 'limit') d.notify('Review loop hit its limit', `${row.subject}: ${row.to} still wants changes after ${pass} passes.`);
+    // Fleet is quitting: the next start marks this letter cancelled. The session stays open.
   };
 
   // One specialist at a time.
@@ -270,8 +302,8 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
       while (running || (queue.length > 0 && !stopped && !broken)) await new Promise(r => setTimeout(r, 5));
     },
     stop: () => {
+      // Specialist sessions are David's; Fleet never kills them.
       stopped = true;
-      current?.kill();
     },
   };
 }

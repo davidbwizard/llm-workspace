@@ -25,7 +25,7 @@ describe('mail files', () => {
   it('lays out the mail folder', () => {
     expect(mailPaths('/m')).toEqual({
       dir: '/m', inbox: '/m/inbox', out: '/m/out', work: '/m/work',
-      config: '/m/config.json', schema: '/m/reply.schema.json',
+      config: '/m/config.json', letters: '/m/letters',
     });
   });
 });

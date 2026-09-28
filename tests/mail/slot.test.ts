@@ -82,10 +82,12 @@ describe('slot to post office', () => {
     const db = openMailLog(':memory:');
     const office = createPostOffice({
       paths, db, home: join(root, 'home'), now: Date.now, pid: process.pid, isAlive: () => true,
-      run: cmd => {
-        writeFileSync(cmd.replyFile!, JSON.stringify({ verdict: 'approved', review: 'Clear and complete.' }));
-        return { done: Promise.resolve({ exitCode: 0, stdout: '', stderrTail: '', timedOut: false }), kill: () => {} };
+      session: {
+        open: () => null, alive: () => false, typeLine: () => null, claudeTranscript: () => '/t.jsonl',
+        findCodexRollout: () => '/t/rollout-01a0e976-4c0d-7b53-b74d-8929b2ef4e17.jsonl', size: () => 0,
+        readReply: () => ({ verdict: 'approved', review: 'Clear and complete.' }),
       },
+      sleep: async () => {}, newSessionId: () => '11111111-2222-3333-4444-555555555555',
       listCodexMcpServers: async () => [], notify: () => {}, log: () => {},
     });
     const o = opts({ sender: 'claude', now: Date.now });

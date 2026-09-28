@@ -1,12 +1,14 @@
 import { app, BrowserWindow, shell, nativeTheme, Menu, Notification } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync, existsSync, chmodSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { openDb, type Db } from '../store/db.ts';
 import { mailPaths } from '../mail/files.ts';
 import { openMailLog, type MailDb } from '../mail/log.ts';
 import { isAlive, startPostOffice, type PostOffice } from '../mail/postOffice.ts';
-import { listCodexMcpServers, runCommand } from '../mail/runner.ts';
+import { listCodexMcpServers } from '../mail/runner.ts';
+import { createFleetDriver } from '../mail/fleetDriver.ts';
 import { ingestAll, startWatcher, type Watcher, type WatchRoot } from '../watch/watcher.ts';
 import { ingestSpool, rotateSpool } from '../hooks/spool.ts';
 import { refreshHelperIfInstalled } from '../hooks/switch.ts';
@@ -278,7 +280,8 @@ app.whenReady().then(async () => {
     mailDb = openMailLog(paths.mailDb);
     postOffice = startPostOffice({
       paths: mailPaths(paths.mailDir), db: mailDb, home: homedir(), now: Date.now, pid: process.pid, isAlive,
-      run: runCommand, listCodexMcpServers,
+      session: createFleetDriver({}), sleep: ms => new Promise(r => setTimeout(r, ms)), newSessionId: randomUUID,
+      listCodexMcpServers,
       notify: (title, body) => new Notification({ title, body }).show(),
       log: message => console.error('Fleet Mail:', message),
     });

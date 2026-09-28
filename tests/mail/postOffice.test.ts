@@ -1,34 +1,40 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mailPaths, newLetterId, writeFileAtomic, type OutFile } from '../../src/mail/files.ts';
-import { createLoop, getLetter, insertLetter, openMailLog, type MailDb } from '../../src/mail/log.ts';
+import { createLoop, getLetter, getLoopSession, insertLetter, openMailLog, type MailDb } from '../../src/mail/log.ts';
 import { DEFAULT_CONFIG } from '../../src/mail/mailConfig.ts';
 import { createPostOffice, type PostOffice, type PostOfficeDeps } from '../../src/mail/postOffice.ts';
-import type { Command, Reply, RunHandle, RunResult } from '../../src/mail/runner.ts';
+import { VERDICT_RULE, type Reply, type SessionDriver } from '../../src/mail/session.ts';
+
+const SESSION_ID = '11111111-2222-3333-4444-555555555555';
+const ROLLOUT = '/t/rollout-2026-09-28T19-00-00-01a0e976-4c0d-7b53-b74d-8929b2ef4e17.jsonl';
 
 let root: string;
 let project: string;
 let db: MailDb;
-let replies: (Reply | RunResult)[];   // what the fake specialist does next
-let calls: { cmd: Command; stdin: string; env: NodeJS.ProcessEnv }[];
-let notes: string[];
 let now: number;
+let notes: string[];
+let opened: { runsOn: string; project: string; command: string; tmux: string }[];
+let typed: { tmux: string; line: string }[];
+let live: Set<string>;
+let replies: (Reply | null)[];   // what the reviewer's transcript shows next; null = no verdict yet
 
-function fakeRun(cmd: Command, stdin: string, _timeoutMs: number, env: NodeJS.ProcessEnv): RunHandle {
-  calls.push({ cmd, stdin, env });
-  const next = replies.shift() ?? { verdict: 'approved', review: 'Looks good.' };
-  if ('exitCode' in next) return { done: Promise.resolve(next), kill: () => {} };
-  if (cmd.replyFile) writeFileSync(cmd.replyFile, JSON.stringify(next));
-  const stdout = cmd.replyFile ? '' : JSON.stringify({ structured_output: next });
-  return { done: Promise.resolve({ exitCode: 0, stdout, stderrTail: '', timedOut: false }), kill: () => {} };
-}
+const driver = (): SessionDriver => ({
+  open: (runsOn, proj, command, tmux) => { opened.push({ runsOn, project: proj, command, tmux }); live.add(tmux); return null; },
+  alive: tmux => live.has(tmux),
+  typeLine: (tmux, line) => { typed.push({ tmux, line }); return null; },
+  claudeTranscript: (_p, id) => `/t/${id}.jsonl`,
+  findCodexRollout: () => ROLLOUT,
+  size: () => 0,
+  readReply: () => (replies.length ? replies.shift()! : { verdict: 'approved', review: 'Looks good.' }),
+});
 
 const deps = (over: Partial<PostOfficeDeps> = {}): PostOfficeDeps => ({
   paths: mailPaths(join(root, 'mail')), db, home: join(root, 'home'), now: () => now, pid: process.pid,
-  isAlive: () => true, run: fakeRun, listCodexMcpServers: async () => [], notify: (t, b) => { notes.push(`${t}: ${b}`); },
-  log: () => {}, ...over,
+  isAlive: () => true, session: driver(), sleep: async ms => { now += ms; }, newSessionId: () => SESSION_ID,
+  listCodexMcpServers: async () => [], notify: (t, b) => { notes.push(`${t}: ${b}`); }, log: () => {}, ...over,
 });
 
 const config = (over: Record<string, unknown>) =>
@@ -49,6 +55,7 @@ function send(office: PostOffice, over: Record<string, unknown> = {}): string {
 }
 
 const out = (id: string): OutFile => JSON.parse(readFileSync(join(root, 'mail/out', `${id}.json`), 'utf8'));
+const passText = (loopId: string, pass: number): string => readFileSync(join(root, 'mail/letters', loopId, `pass-${pass}.md`), 'utf8');
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'mail-po-')));
@@ -60,36 +67,77 @@ beforeEach(() => {
   writeFileSync(join(root, 'home/.codex/agents/reviewer.toml'), 'developer_instructions = """\nYou review specs.\n"""\n');
   writeFileSync(join(root, 'home/.claude/agents/reviewer.md'), '---\nname: reviewer\n---\nYou review specs.\n');
   db = openMailLog(':memory:');
-  replies = [];
-  calls = [];
-  notes = [];
   now = Date.parse('2026-09-28T18:00:00Z');
+  notes = [];
+  opened = [];
+  typed = [];
+  live = new Set();
+  replies = [];
 });
 afterEach(() => { db.close(); });
 
 describe('post office', () => {
-  it('runs one letter and returns the reply', async () => {
+  it('opens a Codex session for pass 1 and returns its reply', async () => {
     const office = createPostOffice(deps());
     office.receive(join(root, 'mail/inbox', `${'a'.repeat(32)}.json.123.tmp`));   // the slot's temp file: ignored
     replies.push({ verdict: 'changes_requested', review: 'Strong start. Tighten section 2.' });
     const id = send(office);
     await office.idle();
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.cmd.file).toBe('codex');
-    expect(calls[0]!.cmd.cwd).toBe(project);
-    expect(calls[0]!.env.FLEET_MAIL_SPECIALIST).toBe(id);
-    expect(calls[0]!.stdin).toContain('You review specs.');
-    expect(calls[0]!.stdin).toContain('Please review.');
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({ runsOn: 'codex', project, tmux: `llmws-codex-mail-${id.slice(0, 8)}` });
+    expect(opened[0]!.command).toContain(`FLEET_MAIL_SPECIALIST='${id}'`);
+    expect(opened[0]!.command).toContain('--sandbox read-only -a never');
+    const pass1 = passText(id, 1);
+    for (const part of ['You review specs.', 'Please review.', VERDICT_RULE]) expect(pass1).toContain(part);
     expect(out(id)).toMatchObject({ status: 'replied', verdict: 'changes_requested', pass: 1, passLimit: 4, loopStatus: 'open', specialist: 'codex-reviewer', project });
+    expect(getLoopSession(db, id)).toEqual({ sessionId: '01a0e976-4c0d-7b53-b74d-8929b2ef4e17', tmux: opened[0]!.tmux, transcript: ROLLOUT });
     expect(existsSync(join(root, 'mail/inbox', `${id}.json`))).toBe(false);
   });
 
-  it('closes the loop on approval', async () => {
+  it('opens a named, read-only Claude session and closes the loop on approval', async () => {
     const office = createPostOffice(deps());
     const id = send(office, { to: 'claude-reviewer' });
     await office.idle();
-    expect(calls[0]!.cmd.file).toBe('claude');
+    expect(opened[0]!.runsOn).toBe('claude');
+    expect(opened[0]!.command).toContain(`--session-id '${SESSION_ID}' -n 'Mail · claude-reviewer · Review the spec'`);
+    expect(opened[0]!.command).toContain('--tools Read Grep Glob');
+    expect(getLoopSession(db, id)).toMatchObject({ sessionId: SESSION_ID, transcript: `/t/${SESSION_ID}.jsonl` });
     expect(out(id)).toMatchObject({ status: 'replied', verdict: 'approved', loopStatus: 'approved' });
+  });
+
+  it('starts a Codex specialist with its MCP servers off', async () => {
+    const office = createPostOffice(deps({ listCodexMcpServers: async () => ['trello'] }));
+    send(office);
+    await office.idle();
+    expect(opened[0]!.command).toContain("-c 'mcp_servers.trello.enabled=false'");
+  });
+
+  it('sends pass 2 into the same session', async () => {
+    const office = createPostOffice(deps());
+    replies.push({ verdict: 'changes_requested', review: 'Fix A.' });
+    const first = send(office);
+    await office.idle();
+    writeFileSync(join(project, 'spec.md'), 'spec v2');
+    const second = send(office, { re: first, body: 'Fixed A.' });
+    await office.idle();
+    expect(opened).toHaveLength(1);
+    expect(typed).toEqual([{ tmux: opened[0]!.tmux, line: `Pass 2: read ${join(root, 'mail/letters', first, 'pass-2.md')} and do what it says.` }]);
+    expect(passText(first, 2)).toContain('Fixed A.');
+    expect(out(second)).toMatchObject({ status: 'replied', pass: 2 });
+  });
+
+  it('reopens a closed session with resume', async () => {
+    const office = createPostOffice(deps());
+    replies.push({ verdict: 'changes_requested', review: 'Fix A.' });
+    const first = send(office, { to: 'claude-reviewer' });
+    await office.idle();
+    live.clear();
+    writeFileSync(join(project, 'spec.md'), 'spec v2');
+    send(office, { to: 'claude-reviewer', re: first });
+    await office.idle();
+    expect(opened).toHaveLength(2);
+    expect(opened[1]!.command).toContain(`claude --resume '${SESSION_ID}' 'Pass 2: read`);
+    expect(opened[1]!.tmux).toBe(opened[0]!.tmux);
   });
 
   it('runs a loop to its pass limit and notifies David', async () => {
@@ -113,7 +161,8 @@ describe('post office', () => {
     await office.idle();
     expect(out(send(office, { re: first, body: 'Thanks!' })))
       .toMatchObject({ status: 'refused', reason: 'nothing changed since the last pass: attach the revised file' });
-    expect(calls).toHaveLength(1);
+    expect(opened).toHaveLength(1);
+    expect(typed).toHaveLength(0);
   });
 
   it('enforces the daily limit and the off switch', async () => {
@@ -124,15 +173,28 @@ describe('post office', () => {
     expect(out(send(office))).toMatchObject({ status: 'refused', reason: 'daily limit of 1 letters reached' });
     config({ enabled: false });
     expect(out(send(office))).toMatchObject({ status: 'refused', reason: 'mail is off' });
-    expect(calls).toHaveLength(1);
+    expect(opened).toHaveLength(1);
   });
 
-  it('marks a run that timed out and fails its loop', async () => {
-    const office = createPostOffice(deps());
-    replies.push({ exitCode: null, stdout: '', stderrTail: '', timedOut: true });
+  it('times out without closing the session', async () => {
+    const office = createPostOffice(deps({ session: { ...driver(), readReply: () => null } }));
     const id = send(office);
     await office.idle();
-    expect(out(id)).toMatchObject({ status: 'timed_out', reason: 'ran past 10 minutes', loopStatus: 'failed' });
+    expect(out(id)).toMatchObject({ status: 'timed_out', reason: expect.stringMatching(/the session is still open/), loopStatus: 'failed' });
+    expect(live.size).toBe(1);
+  });
+
+  it('fails one letter, not all mail, when its transcript cannot be read', async () => {
+    let fail = true;
+    const office = createPostOffice(deps({
+      session: { ...driver(), readReply: () => { if (fail) { fail = false; throw new Error('EACCES'); } return { verdict: 'approved', review: 'OK.' }; } },
+    }));
+    const first = send(office);
+    await office.idle();
+    expect(out(first)).toMatchObject({ status: 'failed', reason: expect.stringMatching(/could not read the session transcript/) });
+    const second = send(office);
+    await office.idle();
+    expect(out(second)).toMatchObject({ status: 'replied' });
   });
 
   it('runs a letter once when two Fleets watch the same inbox', async () => {
@@ -145,7 +207,7 @@ describe('post office', () => {
     b.receive(file);
     await a.idle();
     await b.idle();
-    expect(calls).toHaveLength(1);
+    expect(opened).toHaveLength(1);
   });
 
   it('cancels letters a stopped Fleet left behind, but not a live one', () => {
@@ -158,42 +220,14 @@ describe('post office', () => {
     expect(getLetter(db, 'e'.repeat(32))?.status).toBe('queued');
   });
 
-  it('starts a Codex specialist with its MCP servers off', async () => {
-    const office = createPostOffice(deps({ listCodexMcpServers: async () => ['trello'] }));
-    send(office);
-    await office.idle();
-    expect(calls[0]!.cmd.args).toContain('mcp_servers.trello.enabled=false');
-  });
-
-  it('fails one letter, not all mail, when its reply cannot be read', async () => {
-    let lock = true;
-    const office = createPostOffice(deps({
-      run: (cmd, stdin, t, env) => {
-        const handle = fakeRun(cmd, stdin, t, env);
-        if (lock && cmd.replyFile) { chmodSync(cmd.replyFile, 0o000); lock = false; }
-        return handle;
-      },
-    }));
-    const first = send(office);
-    await office.idle();
-    expect(out(first)).toMatchObject({ status: 'failed', reason: expect.stringMatching(/could not read the reply/) });
-    const second = send(office);
-    await office.idle();
-    expect(out(second)).toMatchObject({ status: 'replied' });
-  });
-
   it('tells every letter in hand when the log breaks mid-run', async () => {
-    let release: () => void = () => {};
-    const office = createPostOffice(deps({
-      run: (cmd, stdin, t, env) => {
-        const handle = fakeRun(cmd, stdin, t, env);
-        return { done: new Promise<RunResult>(r => { release = () => r(handle.done); }), kill: () => {} };
-      },
-    }));
+    let wake: () => void = () => {};
+    replies.push(null);
+    const office = createPostOffice(deps({ sleep: () => new Promise<void>(r => { wake = r; }) }));
     const first = send(office);
     const second = send(office);
     db.close();
-    release();
+    wake();
     await office.idle();
     expect(out(first)).toMatchObject({ status: 'failed', reason: expect.stringMatching(/^mail is off: /) });
     expect(out(second)).toMatchObject({ status: 'cancelled', reason: expect.stringMatching(/^mail is off: /) });
@@ -219,7 +253,7 @@ describe('post office', () => {
     const id = send(office);
     expect(out(id)).toMatchObject({ status: 'refused', reason: expect.stringMatching(/^mail is off: /) });
     expect(notes[0]).toMatch(/^Fleet Mail stopped: /);
-    expect(calls).toHaveLength(0);
+    expect(opened).toHaveLength(0);
     db = openMailLog(':memory:');   // for afterEach
   });
 });
