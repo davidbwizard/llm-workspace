@@ -48,6 +48,47 @@ export function lastStateDbError(): string | null {
  *  unrecognized schema returns null so the caller falls back to rollout-file
  *  parsing. The `state_5` name and migrations table say plainly that this
  *  schema is versioned and will change. */
+/** The names a PERSON gave these Codex threads, keyed by thread id.
+ *
+ *  `threads` carries two columns and only one of them belongs on a card.
+ *  `name` is what someone chose (988 of 1079 rows on this machine carry
+ *  one); `title` is Codex's own summary of the opening message -- "Review
+ *  Claude's plan before implementa...". OpenSession.name is documented as
+ *  the name "when a PERSON chose it", null when it was derived, which is
+ *  exactly the line between these two columns. So `title` is deliberately
+ *  not read here: showing it would put a machine-written sentence where the
+ *  folder name reads better, which is the same judgement chosenName already
+ *  makes for Claude.
+ *
+ *  Bounded to the ids asked for rather than the whole table, because this
+ *  runs on the render path: the full read above returns every thread the
+ *  machine has ever had.
+ *
+ *  Fail-soft throughout -- an empty map, never a throw. This is Codex's
+ *  database, not ours: it can be mid-write, locked, or a schema this
+ *  version has never seen, and none of that may cost the fleet its cards. */
+export function readCodexThreadNames(dbPath: string, ids: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const unique = [...new Set(ids)].filter(id => typeof id === 'string' && id.length > 0);
+  if (unique.length === 0 || !existsSync(dbPath)) return out;
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const rows = db.prepare(
+      `SELECT id, name FROM threads WHERE id IN (${unique.map(() => '?').join(',')})`,
+    ).all(...unique) as { id: unknown; name: unknown }[];
+    for (const row of rows) {
+      const name = typeof row.name === 'string' ? row.name.trim() : '';
+      if (name !== '' && typeof row.id === 'string') out.set(row.id, name);
+    }
+  } catch {
+    return new Map();
+  } finally {
+    try { db?.close(); } catch { /* nothing left to do */ }
+  }
+  return out;
+}
+
 export function readCodexThreads(dbPath: string): CodexThread[] | null {
   lastError = null;
   if (!existsSync(dbPath)) {

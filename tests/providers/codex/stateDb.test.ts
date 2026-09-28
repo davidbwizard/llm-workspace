@@ -3,7 +3,9 @@ import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readCodexThreads, readSpawnEdges, lastStateDbError } from '../../../src/providers/codex/stateDb.ts';
+import {
+  readCodexThreads, readSpawnEdges, lastStateDbError, readCodexThreadNames,
+} from '../../../src/providers/codex/stateDb.ts';
 
 let dir: string, dbPath: string;
 
@@ -16,7 +18,8 @@ beforeEach(() => {
       id TEXT PRIMARY KEY, rollout_path TEXT, created_at INTEGER, updated_at INTEGER,
       source TEXT, model_provider TEXT, cwd TEXT, title TEXT, cli_version TEXT,
       git_branch TEXT, git_sha TEXT, model TEXT, agent_nickname TEXT,
-      agent_role TEXT, thread_source TEXT, tokens_used INTEGER, archived INTEGER
+      agent_role TEXT, thread_source TEXT, tokens_used INTEGER, archived INTEGER,
+      name TEXT
     );
     CREATE TABLE thread_spawn_edges (
       parent_thread_id TEXT, child_thread_id TEXT, status TEXT
@@ -115,5 +118,54 @@ describe('lastStateDbError', () => {
     const p = join(dir, 'nope.sqlite');
     readSpawnEdges(p);
     expect(lastStateDbError()).toContain(p);
+  });
+});
+
+// Codex writes no live-session file, so its state database is the only place
+// a Codex card can learn the name someone gave a session.
+describe('readCodexThreadNames', () => {
+  const seed = (rows: [string, string | null, string | null][]) => {
+    const db = new Database(dbPath);
+    for (const [id, name, title] of rows) {
+      db.prepare('INSERT OR REPLACE INTO threads (id, name, title) VALUES (?, ?, ?)').run(id, name, title);
+    }
+    db.close();
+  };
+
+  it('returns the name a person chose', () => {
+    seed([['t1', 'Add game flow review', 'Review the plan before implementation']]);
+    expect(readCodexThreadNames(dbPath, ['t1']).get('t1')).toBe('Add game flow review');
+  });
+
+  it('never returns the derived title', () => {
+    // `title` is Codex's own summary of the opening message. OpenSession.name
+    // is the name "when a PERSON chose it" -- showing a machine-written
+    // sentence there would read worse than the folder, which is the same
+    // judgement chosenName already makes for Claude.
+    seed([['t2', null, 'Renderer preferences storage security review']]);
+    expect(readCodexThreadNames(dbPath, ['t2']).has('t2')).toBe(false);
+  });
+
+  it('treats an empty or whitespace name as no name', () => {
+    seed([['t3', '', null], ['t4', '   ', null]]);
+    const names = readCodexThreadNames(dbPath, ['t3', 't4']);
+    expect(names.size).toBe(0);
+  });
+
+  it('asks only for the ids given, and answers nothing for none', () => {
+    seed([['t5', 'Kept', null], ['t6', 'Other', null]]);
+    expect([...readCodexThreadNames(dbPath, ['t5']).keys()]).toEqual(['t5']);
+    expect(readCodexThreadNames(dbPath, []).size).toBe(0);
+  });
+
+  it('is empty rather than throwing when the database is absent or unreadable', () => {
+    // Codex owns this file: it can be mid-write, locked, or a schema this
+    // version has never seen, and none of that may cost the fleet its cards.
+    expect(readCodexThreadNames(join(dir, 'nope.sqlite'), ['t1']).size).toBe(0);
+    const broken = join(dir, 'broken.sqlite');
+    const db = new Database(broken);
+    db.exec('CREATE TABLE unrelated (x TEXT);');
+    db.close();
+    expect(readCodexThreadNames(broken, ['t1']).size).toBe(0);
   });
 });

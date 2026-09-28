@@ -707,7 +707,12 @@ export interface OpenSession {
 function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
   sessionId: string | null; lastProse: string | null; events: number | null; activity: Activity | null;
   agents?: number | null; liveAgents?: number | null;
-} | null, isTmux: (pid: number) => boolean): OpenSession {
+} | null, isTmux: (pid: number) => boolean,
+  /** The name a PERSON gave this CODEX thread, or null. Codex writes no
+   *  live-session file, so the Claude path below can never supply one; this
+   *  comes from Codex's own state database instead, and is null for every
+   *  Claude process. */
+  codexName: string | null = null): OpenSession {
   return {
     pid: p.pid,
     provider: p.provider,
@@ -717,7 +722,7 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
     // From this process's own live session file, never from a matched
     // session -- see OpenSession.name above for why that makes it
     // attributable on an ambiguous match, unlike lastProse/events below.
-    name: p.liveSession ? chosenName(p.liveSession) : null,
+    name: p.liveSession ? chosenName(p.liveSession) : codexName,
     ageSeconds: p.ageSeconds ?? null,
     rssBytes: p.rssBytes ?? null,
     match: m.quality,
@@ -909,10 +914,17 @@ export function openSessionsLive(
      *  adopted Codex tmux pane can use its OS age when this is null; all
      *  other missing timestamps keep the existing cwd fallback. */
     launchedAtForPid?: (pid: number) => number | null;
+    /** The names a PERSON gave these Codex threads, keyed by thread id.
+     *  Codex writes no live-session file, so `name` below is null for every
+     *  Codex process without this -- its names live in Codex's own state
+     *  database instead (src/providers/codex/stateDb.ts). Injected rather
+     *  than read here so this module keeps its one database. */
+    codexThreadNames?: (ids: string[]) => Map<string, string>;
   } = {},
 ): OpenSession[] {
   const isTmux = deps.isTmux ?? (() => false);
   const launchedAtForPid = deps.launchedAtForPid ?? (() => null);
+  const codexThreadNames = deps.codexThreadNames ?? (() => new Map<string, string>());
   const cwds = [...new Set(processes.map(p => p.cwd).filter((c): c is string => c !== null))];
 
   const candidateRows = cwds.length === 0 ? [] : db.prepare(`
@@ -947,6 +959,11 @@ export function openSessionsLive(
       else if (id !== null) exactCodexIds.set(p.pid, id);
     }
   }
+  // Only threads identified EXACTLY (a relay's recorded thread, or the
+  // rollout a process holds open) get a name. A cwd-matched guess must not
+  // put someone else's session name on this card -- the same discipline the
+  // ambiguity rules below keep for the conversation.
+  const codexNames = codexThreadNames([...exactCodexIds.values()]);
   const matches = applyExactMatches(processes, classifyMatch(processes, refs), exactCodexIds)
     .map(m => disconnectedRelays.has(m.pid)
       ? { ...m, quality: 'unknown' as const, sessionId: null, candidates: [] } : m);
@@ -1210,7 +1227,8 @@ export function openSessionsLive(
         : null;
       enrichment = { sessionId: m.sessionId!, lastProse: null, events: null, activity };
     }
-    return buildOpenSession(p, m, enrichment, isTmux);
+    return buildOpenSession(p, m, enrichment, isTmux,
+      p.provider === 'codex' ? codexNames.get(exactCodexIds.get(p.pid) ?? '') ?? null : null);
   }).sort(compareOpenSessions(
     o => junkCwdKind(o.cwd) !== null,
     o => { const ms = lastActiveMs(o); return ms === null ? null : -ms; }, // newest known timestamp first; unknown (null) sorts last

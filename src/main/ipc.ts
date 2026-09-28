@@ -55,6 +55,7 @@ import type { UsagePayload } from '../core/usage.ts';
 import { ingestSpool } from '../hooks/spool.ts';
 import { codexAppServer, type CodexAnswerResult } from './codexAppServer.ts';
 import { codexRelayThreadForPid } from './codexRelayControl.ts';
+import { readCodexThreadNames } from '../providers/codex/stateDb.ts';
 import { readAllPrefs, writePref, migratePrefs, type PrefsDb } from './prefs.ts';
 
 /** fleet:list's response, and fleet:update's push payload. David's
@@ -290,6 +291,12 @@ export function refreshPushEnrichment(
     db,
     openSessionsLive(db, processes, now, {
       isTmux: pidIsTmux, launchedAtForPid, codexThreadForPid: codexRelayThreadForPid,
+      // Codex keeps its session names in its own state database, not in a
+      // live-session file, so this is the only way a Codex card can show
+      // the name someone gave it. Bounded to the threads on screen and
+      // fail-soft (an empty map), because that database is Codex's, not
+      // ours -- it can be mid-write or a schema this version has not seen.
+      codexThreadNames: ids => readCodexThreadNames(resolvePaths(homedir()).codexStateDb, ids),
     }),
     contextOpts ?? defaultContextOpts(),
   );
