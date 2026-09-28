@@ -1,8 +1,12 @@
-import { app, BrowserWindow, shell, nativeTheme, Menu } from 'electron';
+import { app, BrowserWindow, shell, nativeTheme, Menu, Notification } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync, existsSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { openDb, type Db } from '../store/db.ts';
+import { mailPaths } from '../mail/files.ts';
+import { openMailLog, type MailDb } from '../mail/log.ts';
+import { isAlive, startPostOffice, type PostOffice } from '../mail/postOffice.ts';
+import { listCodexMcpServers, runCommand } from '../mail/runner.ts';
 import { ingestAll, startWatcher, type Watcher, type WatchRoot } from '../watch/watcher.ts';
 import { ingestSpool, rotateSpool } from '../hooks/spool.ts';
 import { refreshHelperIfInstalled } from '../hooks/switch.ts';
@@ -26,6 +30,8 @@ import { applyLoginPathOnce } from './loginPath.ts';
 const NOOP_WATCH_DEPS: WatchDeps = { processes: () => [], buildPayload: () => null, send: () => {} };
 
 let db: Db | null = null;
+let mailDb: MailDb | null = null;
+let postOffice: PostOffice | null = null;
 let prefsDb: PrefsDb | null = null;
 let watcher: Watcher | null = null;
 let spoolTimer: NodeJS.Timeout | null = null;
@@ -266,6 +272,20 @@ app.whenReady().then(async () => {
 
   db = openDb(paths.db);
 
+  // Fleet Mail. After applyLoginPathOnce, so codex and claude are on PATH.
+  // A failure turns mail off; it never stops Fleet starting.
+  try {
+    mailDb = openMailLog(paths.mailDb);
+    postOffice = startPostOffice({
+      paths: mailPaths(paths.mailDir), db: mailDb, home: homedir(), now: Date.now, pid: process.pid, isAlive,
+      run: runCommand, listCodexMcpServers,
+      notify: (title, body) => new Notification({ title, body }).show(),
+      log: message => console.error('Fleet Mail:', message),
+    });
+  } catch (e) {
+    console.error('Fleet Mail: could not start, mail is off:', e);
+  }
+
   // Opened BEFORE createWindow, because the preload reads it synchronously
   // while the window loads: every preference store in the renderer expects
   // its first read to be synchronous (useSyncExternalStore), and behind an
@@ -394,6 +414,9 @@ app.on('before-quit', () => {
   // 'closed' handler's own call to this (win.on('closed') above), since
   // before-quit runs regardless of whether that handler already fired.
   watchSessionFor(null, NOOP_WATCH_DEPS);
+  postOffice?.stop();
+  mailDb?.close();
+  mailDb = null;
   void watcher?.close();
   db?.close();
   // watcher.close() above is fire-and-forget (not awaited), so a watcher
