@@ -2,10 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import { openDb } from '../../src/store/db.ts';
 import { insertEvents } from '../../src/store/ingest.ts';
-import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions, activityFromLiveStatus, deriveActivity, sessionCwd } from '../../src/fleet/state.ts';
+import { fleetState, openSessions, openSessionsLive, fleetStatePage, compareOpenSessions, activityFromLiveStatus, deriveActivity, sessionCwd, attentionCount } from '../../src/fleet/state.ts';
 import type { NormalizedEvent } from '../../src/core/types.ts';
 import type { LiveProcess } from '../../src/discovery/parse.ts';
-import type { OpenSession } from '../../src/fleet/state.ts';
+import type { OpenSession, Activity } from '../../src/fleet/state.ts';
 import type { Blocker } from '../../src/store/signals.ts';
 
 const NOW = Date.parse('2026-09-10T12:00:00Z');
@@ -2170,5 +2170,37 @@ describe('sub-agent counts on open sessions', () => {
     expect(viaArray!.agents).toBe(viaLive!.agents);
     expect(viaArray!.liveAgents).toBe(viaLive!.liveAgents);
     expect(viaArray!.agents).toBe(2);
+  });
+});
+
+// The dock badge: how many sessions are waiting on the person. Takes the
+// same OpenSession rows the cards render from, so the badge and the rail
+// cannot disagree about who is waiting.
+describe('attentionCount', () => {
+  const rows = (...activities: (Activity | null)[]) => activities.map(activity => ({ activity }));
+
+  it('counts the two activities that mean someone is being waited on', () => {
+    expect(attentionCount(rows('waiting_permission', 'waiting_input'))).toBe(2);
+  });
+
+  it('ignores the activities that are not a question for the person', () => {
+    expect(attentionCount(rows('working', 'idle', null))).toBe(0);
+  });
+
+  it('does not count an error', () => {
+    // A state to notice, not a question blocking a session. Counting it
+    // would stop the badge meaning "this many are waiting for you".
+    expect(attentionCount(rows('error'))).toBe(0);
+  });
+
+  it('counts SESSIONS, not prompts', () => {
+    // A session waiting on three things is still one thing to go and deal
+    // with; a badge climbing faster than the list of cards would read as a
+    // queue that is not there.
+    expect(attentionCount(rows('waiting_permission', 'working', 'waiting_permission'))).toBe(2);
+  });
+
+  it('is zero for nothing at all, which is what clears the badge', () => {
+    expect(attentionCount([])).toBe(0);
   });
 });

@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { spawn as ptySpawn, type IPty } from 'node-pty';
 import type { Db } from '../store/db.ts';
 import {
-  openSessions, openSessionsLive, fleetStatePage, sessionCwd, type SessionState, type OpenSession,
+  openSessions, openSessionsLive, fleetStatePage, sessionCwd, attentionCount,
+  type SessionState, type OpenSession,
 } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
 import { sanitizeForTerminal, parseProcessChainHop, resolvePaths } from '../config.ts';
@@ -300,6 +301,24 @@ export function refreshPushEnrichment(
     }),
     contextOpts ?? defaultContextOpts(),
   );
+  setAttentionBadge(attentionCount(cachedPushOpenSessions));
+}
+
+/** The dock badge: how many sessions are waiting on the person.
+ *
+ *  Set here, where cachedPushOpenSessions is assigned, rather than in
+ *  pushFleet -- that returns early with no window, and the badge is most
+ *  useful precisely when the window is not in front of you.
+ *
+ *  0 clears it rather than drawing a zero. Guarded and best-effort: a badge
+ *  is a nicety, and no failure to draw one may take a sweep down with it.
+ *  app.dock is undefined off macOS, where setBadgeCount is a no-op anyway. */
+export function setAttentionBadge(count: number, setBadge = (n: number) => app.setBadgeCount(n)): void {
+  try {
+    setBadge(count > 0 ? count : 0);
+  } catch (error) {
+    console.error('could not set the dock badge:', error);
+  }
 }
 
 // freshLiveSession/resolveReattachTarget now live in src/main/sessionLive.ts

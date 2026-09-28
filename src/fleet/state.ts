@@ -18,6 +18,25 @@ export type Lifecycle = 'active' | 'disconnected' | 'ended';
 /** What is it doing? Current while active, LAST KNOWN while disconnected. */
 export type Activity = 'working' | 'waiting_permission' | 'waiting_input' | 'idle' | 'error';
 
+/** The two activities that mean a person is being waited on. `error` is
+ *  deliberately not one of them: it is a state to notice, not a question
+ *  blocking a session, and counting it would make the badge stop meaning
+ *  "this many are waiting for you". */
+const NEEDS_ATTENTION = new Set<Activity>(['waiting_permission', 'waiting_input']);
+
+/** How many open sessions are waiting on the person right now -- what the
+ *  dock badge shows.
+ *
+ *  Counts SESSIONS, not prompts: a session waiting on three things is still
+ *  one thing to go and deal with, and a badge that climbed faster than the
+ *  list of cards would read as a queue that is not there.
+ *
+ *  Takes the same OpenSession rows the cards are rendered from, so the
+ *  badge and the rail can never disagree about who is waiting. */
+export function attentionCount(sessions: readonly { activity: Activity | null }[]): number {
+  return sessions.reduce((n, s) => n + (s.activity !== null && NEEDS_ATTENTION.has(s.activity) ? 1 : 0), 0);
+}
+
 export interface SessionState {
   sessionId: string;
   runId: string | null;

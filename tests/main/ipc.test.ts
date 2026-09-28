@@ -10,6 +10,7 @@ import {
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
   killSession, ownProcessAncestry, revealSession, sendKeysFor, resolveReattachTarget,
   freshLiveSession, promptOpenFor, applyThemeChoice, PASTE_SETTLE_ATTEMPTS,
+  setAttentionBadge,
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry, tmuxNameForPid } from '../../src/main/sessions.ts';
 import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
@@ -1908,5 +1909,28 @@ describe('applyThemeChoice', () => {
     const mark = () => { touched = true; };
     expect(applyThemeChoice(raw, { setSource: mark, persist: mark })).toEqual({ status: 'refused' });
     expect(touched).toBe(false);
+  });
+});
+
+describe('the dock badge', () => {
+  it('draws the count when sessions are waiting', () => {
+    const setBadge = vi.fn();
+    setAttentionBadge(3, setBadge);
+    expect(setBadge).toHaveBeenCalledWith(3);
+  });
+
+  it('clears to 0 rather than drawing a zero badge', () => {
+    const setBadge = vi.fn();
+    setAttentionBadge(0, setBadge);
+    expect(setBadge).toHaveBeenCalledWith(0);
+  });
+
+  it('never lets a failed badge take a discovery sweep down with it', () => {
+    // A badge is a nicety. It is set from the same place the session list is
+    // refreshed, so a throw here would cost the fleet its sweep.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => setAttentionBadge(1, () => { throw new Error('no dock'); })).not.toThrow();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
   });
 });
