@@ -874,11 +874,48 @@ describe('OpenSessionCard', () => {
       expect(screen.getByRole('button', { name: /session actions/i })).toBeTruthy();
     });
 
-    it('opens the menu with the four documented items, favourites included', () => {
+    it('opens the menu with the documented items, favourites and copy-ids included', () => {
       const { container } = renderCompact({}, { onReveal: vi.fn(async () => {}) });
       fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
       expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
-        .toEqual(['Show in iTerm2', 'Reattach in app', 'Add to category', 'Add folder to favourites', 'Close session']);
+        .toEqual(['Show in iTerm2', 'Reattach in app', 'Copy session id and pid', 'Add to category', 'Add folder to favourites', 'Close session']);
+    });
+
+    // Identifying a session to another agent or a bug report otherwise
+    // means reading a uuid off the screen and retyping it.
+    it('copies both ids, because they answer different questions', async () => {
+      const writeText = vi.fn(async () => {});
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      renderCompact({ pid: 4242, sessionId: 'sess-abc' });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Copy session id and pid' }));
+      // The menu stays open: this item's only result IS its label, so
+      // closing it would hide the outcome. Awaiting that label is also what
+      // lets useCopy's deferred write land before the assertion below --
+      // it goes through a promise, so a synchronous check sees nothing.
+      await screen.findByRole('button', { name: 'Copied' });
+      expect(writeText).toHaveBeenCalledWith('pid 4242 session sess-abc');
+    });
+
+    it('copies the pid alone when the session has no id yet', async () => {
+      const writeText = vi.fn(async () => {});
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      renderCompact({ pid: 99, sessionId: null });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Copy pid' }));
+      await screen.findByRole('button', { name: 'Copied' });
+      expect(writeText).toHaveBeenCalledWith('pid 99');
+    });
+
+    it('says so when the copy failed, rather than claiming it worked', async () => {
+      // useCopy's whole contract: someone who believes an id is on their
+      // clipboard and pastes nothing is worse off than someone told plainly.
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText: vi.fn(async () => { throw new Error('denied'); }) }, configurable: true });
+      renderCompact({ pid: 7, sessionId: 'sess-x' });
+      fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Copy session id and pid' }));
+      await screen.findByRole('button', { name: 'Copy failed' });
     });
 
     it('omits Reattach for a session that is already tmux-backed, and Show in host with no host', () => {
@@ -889,7 +926,7 @@ describe('OpenSessionCard', () => {
       const { container } = renderCompact({ tmux: true, host: 'unknown' });
       fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
       expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
-        .toEqual(['Add to category', 'Add folder to favourites', 'Close session']);
+        .toEqual(['Copy session id and pid', 'Add to category', 'Add folder to favourites', 'Close session']);
     });
 
     it.each([
@@ -977,7 +1014,7 @@ describe('OpenSessionCard', () => {
         onReattach={neverReattach()} onResume={neverResume()} state={enrichedCompact} />);
       fireEvent.click(screen.getByRole('button', { name: /session actions/i }));
       expect([...container.querySelectorAll('.cardmenu-item')].map(b => b.textContent))
-        .toEqual(['Add to category', 'Add folder to favourites']);
+        .toEqual(['Copy session id and pid', 'Add to category', 'Add folder to favourites']);
       // Close/Reattach still render as their own visible pills, unaffected.
       expect(screen.getByRole('button', { name: /^Close, pid/ })).toBeTruthy();
     });

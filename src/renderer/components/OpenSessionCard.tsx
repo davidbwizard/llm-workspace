@@ -6,6 +6,7 @@ import { ProviderMark } from './ProviderMark.tsx';
 import { ContextChip } from './ContextChip.tsx';
 import { StatusIcon } from './StatusIcon.tsx';
 import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES } from '../state/favourites.ts';
+import { useCopy, COPY_LABEL } from '../state/useCopy.ts';
 import {
   useGroups, categoryNames, categoryOfSession, assignCategory, renameCategory,
   deleteCategory, categoryInUse, MAX_CATEGORY_LENGTH, MAX_CATEGORIES,
@@ -332,6 +333,9 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   // the same rule the Codex reattach text follows.
   useGroups();
   const sessionId = state.sessionId;
+  // Shared with every other copy button in the app, for its one rule: a
+  // copy that silently failed must never read as "Copied".
+  const idCopy = useCopy();
   const currentCategory = sessionId === null ? null : categoryOfSession(sessionId);
   const [catOpen, setCatOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -671,6 +675,26 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
                   Reattach in app
                 </button>
               )}
+              {/* Identifying a session to someone else -- another agent, a
+                  bug report, a person -- otherwise means reading a uuid off
+                  the screen and retyping it. Both ids go on the clipboard
+                  because they answer different questions: the pid is what
+                  tmux and this app's own channels take, the session id is
+                  what the transcript and the database are keyed by.
+
+                  This one deliberately does NOT close the menu. Every other
+                  item here is an action whose result is visible elsewhere;
+                  this one's result is the label itself, and closing the menu
+                  would hide the "Copy failed" that useCopy exists to
+                  report. */}
+              <button type="button" className="cardmenu-item"
+                onClick={() => idCopy.copy(sessionId === null
+                  ? `pid ${state.pid}`
+                  : `pid ${state.pid} session ${sessionId}`)}>
+                {idCopy.state === 'idle'
+                  ? (sessionId === null ? 'Copy pid' : 'Copy session id and pid')
+                  : COPY_LABEL[idCopy.state]}
+              </button>
               <button type="button" className="cardmenu-item"
                 disabled={sessionId === null}
                 aria-describedby={sessionId === null ? `catwhy-${state.pid}` : undefined}
