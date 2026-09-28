@@ -75,11 +75,11 @@ describe('post office', () => {
     const id = send(office);
     await office.idle();
     expect(calls).toHaveLength(1);
-    expect(calls[0].cmd.file).toBe('codex');
-    expect(calls[0].cmd.cwd).toBe(project);
-    expect(calls[0].env.FLEET_MAIL_SPECIALIST).toBe(id);
-    expect(calls[0].stdin).toContain('You review specs.');
-    expect(calls[0].stdin).toContain('Please review.');
+    expect(calls[0]!.cmd.file).toBe('codex');
+    expect(calls[0]!.cmd.cwd).toBe(project);
+    expect(calls[0]!.env.FLEET_MAIL_SPECIALIST).toBe(id);
+    expect(calls[0]!.stdin).toContain('You review specs.');
+    expect(calls[0]!.stdin).toContain('Please review.');
     expect(out(id)).toMatchObject({ status: 'replied', verdict: 'changes_requested', pass: 1, passLimit: 4, loopStatus: 'open', specialist: 'codex-reviewer' });
     expect(existsSync(join(root, 'mail/inbox', `${id}.json`))).toBe(false);
   });
@@ -88,7 +88,7 @@ describe('post office', () => {
     const office = createPostOffice(deps());
     const id = send(office, { to: 'claude-reviewer' });
     await office.idle();
-    expect(calls[0].cmd.file).toBe('claude');
+    expect(calls[0]!.cmd.file).toBe('claude');
     expect(out(id)).toMatchObject({ status: 'replied', verdict: 'approved', loopStatus: 'approved' });
   });
 

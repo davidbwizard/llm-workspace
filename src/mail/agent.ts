@@ -21,8 +21,8 @@ export function readAgentInstructions(home: string, s: Specialist): { ok: true; 
     return body ? { ok: true, text: body } : { ok: false, reason: `${file} has no instructions` };
   }
   // Only the one TOML form the agent files use. Anything else is refused, not guessed at.
-  const m = /^developer_instructions\s*=\s*"""\r?\n?([\s\S]*?)"""/m.exec(text);
-  if (!m) return { ok: false, reason: `${file} has no developer_instructions = """...""" block` };
-  if (m[1].includes('\\')) return { ok: false, reason: `${file}: backslash escapes in developer_instructions are not supported` };
-  return { ok: true, text: m[1].trim() };
+  const inner = /^developer_instructions\s*=\s*"""\r?\n?([\s\S]*?)"""/m.exec(text)?.[1];
+  if (inner === undefined) return { ok: false, reason: `${file} has no developer_instructions = """...""" block` };
+  if (inner.includes('\\')) return { ok: false, reason: `${file}: backslash escapes in developer_instructions are not supported` };
+  return { ok: true, text: inner.trim() };
 }
