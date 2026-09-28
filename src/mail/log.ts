@@ -34,7 +34,6 @@ CREATE TABLE IF NOT EXISTS letters (
   reason TEXT,
   verdict TEXT,
   review TEXT,
-  stderr_tail TEXT,
   owner_pid INTEGER,
   transcript_offset INTEGER,
   created_at INTEGER NOT NULL,
@@ -115,7 +114,6 @@ export interface LetterUpdate {
   reason?: string | null;
   verdict?: Verdict | null;
   review?: string | null;
-  stderrTail?: string | null;
   startedAt?: number;
   finishedAt?: number;
   transcriptOffset?: number;
@@ -144,12 +142,12 @@ export function getLetter(db: MailDb, id: string): LetterRow | null {
 export function updateLetter(db: MailDb, id: string, u: LetterUpdate): void {
   db.prepare(`UPDATE letters SET status = @status,
       reason = COALESCE(@reason, reason), verdict = COALESCE(@verdict, verdict), review = COALESCE(@review, review),
-      stderr_tail = COALESCE(@stderrTail, stderr_tail), started_at = COALESCE(@startedAt, started_at),
+      started_at = COALESCE(@startedAt, started_at),
       finished_at = COALESCE(@finishedAt, finished_at), transcript_offset = COALESCE(@transcriptOffset, transcript_offset)
     WHERE id = @id`)
     .run({
       id, status: u.status, reason: u.reason ?? null, verdict: u.verdict ?? null, review: u.review ?? null,
-      stderrTail: u.stderrTail ?? null, startedAt: u.startedAt ?? null, finishedAt: u.finishedAt ?? null,
+      startedAt: u.startedAt ?? null, finishedAt: u.finishedAt ?? null,
       transcriptOffset: u.transcriptOffset ?? null,
     });
 }

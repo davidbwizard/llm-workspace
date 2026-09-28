@@ -2692,5 +2692,6 @@ Keep every Part 1 post office test, re-pointed at `opened`/`typed` (the `env` ch
 - [ ] Set `passesPerLoop` to 2 in `~/.llm-workspace/mail/config.json`.
 - [ ] Run A, Claude to Codex (spends Codex quota; tell David first). A new Claude session in the repo asks codex-reviewer to review the spec, fixes what it agrees with, sends pass 2. Check: a "llmws-codex-mail-…" card appears in Fleet and shows the review happening; pass 2 is typed into the same session; the reply header names the project; the limit notification appears if pass 2 still asks for changes; `~/.llm-workspace/mail/letters/<loop>/` has pass-1.md and pass-2.md.
 - [ ] Run B, Codex to Claude (spends Claude quota; tell David first), 1 pass. Check: a "Mail · claude-reviewer · …" session appears live; its transcript is the `--session-id` file; closing it and sending a follow-up reopens it with `--resume` and the verdict is still found (Review Focus 1).
+- [ ] Run A, continued: close the Codex reviewer's session, send a pass, and check it reopens with `codex resume` and the verdict is found.
 - [ ] Trust prompts (Review Focus 5): note whether either TUI asked to trust the folder.
 - [ ] Stop the worktree app and confirm no orphaned Electron main from it.

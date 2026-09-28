@@ -193,8 +193,15 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
     let fromOffset: number;
     if (sess.tmux && d.session.alive(sess.tmux)) {
       // The reviewer keeps its context: the next pass goes into the same session.
-      fromOffset = sess.transcript ? d.session.size(sess.transcript) : 0;
-      const err = d.session.typeLine(sess.tmux, passLine(pass, file));
+      let queue = false;
+      try {
+        fromOffset = sess.transcript ? d.session.size(sess.transcript) : 0;
+        // A busy Codex does not submit on Enter; Tab queues the pass instead.
+        queue = runsOn === 'codex' && sess.transcript !== null && d.session.codexBusy(sess.transcript);
+      } catch (e) {
+        return finish('failed', `could not read the session transcript: ${(e as Error).message}`);
+      }
+      const err = d.session.typeLine(sess.tmux, passLine(pass, file), queue);
       if (err) return finish('failed', `could not type into the session: ${err}`);
     } else {
       const resuming = sess.sessionId !== null;
@@ -212,9 +219,16 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
     publishFromLog(id);
 
     const deadline = startedAt + config.runMinutes * 60_000;
+    const tmux = sess.tmux!;
+    let lastSize = -1;
     while (!stopped) {
       if (!sess.transcript && runsOn === 'codex') {
-        const found = d.session.findCodexRollout(loopId, startedAt - 5_000);
+        let found: string | null;
+        try {
+          found = d.session.findCodexRollout(file, startedAt - 5_000);
+        } catch (e) {
+          return finish('failed', `could not find the session transcript: ${(e as Error).message}`);
+        }
         if (found) {
           sess = { ...sess, transcript: found, sessionId: codexSessionId(found) };
           setLoopSession(db, loopId, sess);
@@ -223,7 +237,12 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
       let reply: Reply | null = null;
       if (sess.transcript) {
         try {
-          reply = d.session.readReply(runsOn, sess.transcript, fromOffset);
+          // Re-read only when the transcript has grown since the last look.
+          const size = d.session.size(sess.transcript);
+          if (size !== lastSize) {
+            lastSize = size;
+            reply = d.session.readReply(runsOn, sess.transcript, fromOffset);
+          }
         } catch (e) {
           return finish('failed', `could not read the session transcript: ${(e as Error).message}`);
         }
@@ -236,7 +255,8 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
         if (loopStatus === 'limit') d.notify('Review loop hit its limit', `${row.subject}: ${to} still wants changes after ${pass} passes.`);
         return;
       }
-      if (d.now() >= deadline) return finish('timed_out', `no VERDICT line within ${config.runMinutes} minutes; the session is still open`);
+      if (!d.session.alive(tmux)) return finish('failed', 'the session closed before replying');
+      if (d.now() >= deadline) return finish('timed_out', `no VERDICT line within ${config.runMinutes} minutes; the session is still open in Fleet`);
       await d.sleep(POLL_MS);
     }
     // Fleet is quitting: the next start marks this letter cancelled. The session stays open.

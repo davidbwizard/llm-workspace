@@ -31,7 +31,10 @@ export type Reply = { verdict: Verdict; review: string };
 export interface SessionDriver {
   open(runsOn: Sender, project: string, command: string, tmux: string): string | null;
   alive(tmux: string): boolean;
-  typeLine(tmux: string, line: string): string | null;
+  /** Pastes one line and submits it; `queue` sends Tab instead of Enter (a busy Codex). */
+  typeLine(tmux: string, line: string, queue: boolean): string | null;
+  /** Whether a Codex rollout's last turn is still running. */
+  codexBusy(file: string): boolean;
   claudeTranscript(project: string, sessionId: string): string;
   findCodexRollout(marker: string, sinceMs: number): string | null;
   /** 0 when the file does not exist yet. */
@@ -39,9 +42,10 @@ export interface SessionDriver {
   readReply(runsOn: Sender, file: string, fromOffset: number): Reply | null;
 }
 
-/** The subject is agent text: no control characters, bounded length. */
+/** The subject is agent text: no control, zero-width or direction-changing
+ *  characters, bounded length. */
 export const sessionName = (to: string, subject: string): string =>
-  `Mail · ${to} · ${subject}`.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/ {2,}/g, ' ').trim().slice(0, 80);
+  `Mail · ${to} · ${subject}`.replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]+/g, ' ').replace(/ {2,}/g, ' ').trim().slice(0, 80);
 
 export const passFile = (letterDir: string, pass: number): string => join(letterDir, `pass-${pass}.md`);
 
@@ -80,7 +84,8 @@ export function resumeCommand(s: SessionSpec, message: string): string {
     : `${env(s)} codex resume ${codexFlags(s)} ${q(s.sessionId)} ${q(message)}`;
 }
 
-const VERDICT = /^\s*[*_`]*\s*VERDICT\s*:\s*[*_`]*\s*(approved|changes_requested)\s*[*_`]*\s*$/i;
+// Tolerates what models add around it: a quote or list marker, bold, a full stop.
+const VERDICT = /^\s*(?:[>-]\s*)?[*_`]*\s*VERDICT\s*:\s*[*_`]*\s*(approved|changes_requested)\s*[*_`]*\s*[.!]?\s*[*_`]*\s*$/i;
 
 export function splitVerdict(text: string): Reply | null {
   const lines = text.trimEnd().split('\n');
@@ -129,24 +134,33 @@ function head(file: string): string {
   }
 }
 
-/** A Codex rollout written since `sinceMs` whose opening mentions `marker`
- *  (the loop id is in the first prompt's file path). */
+const isMissing = (e: unknown): boolean => (e as NodeJS.ErrnoException).code === 'ENOENT';
+
+/** The newest Codex rollout written since `sinceMs` whose opening mentions
+ *  `marker` -- the pass file's absolute path, which only the specialist's
+ *  first prompt contains (a Codex sender's own rollout holds the letter id). */
 export function findCodexRollout(root: string, marker: string, sinceMs: number, nowMs: number): string | null {
+  let best: { file: string; mtime: number } | null = null;
   for (const dir of new Set([dayDir(root, sinceMs), dayDir(root, nowMs)])) {
     let names: string[];
     try {
       names = readdirSync(dir);
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      if (isMissing(e)) continue;
       throw e;
     }
     for (const name of names) {
       if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) continue;
       const file = join(dir, name);
-      if (statSync(file).mtimeMs >= sinceMs && head(file).includes(marker)) return file;
+      try {
+        const mtime = statSync(file).mtimeMs;
+        if (mtime >= sinceMs && (!best || mtime > best.mtime) && head(file).includes(marker)) best = { file, mtime };
+      } catch (e) {
+        if (!isMissing(e)) throw e;   // removed between listing and reading
+      }
     }
   }
-  return null;
+  return best?.file ?? null;
 }
 
 export const codexSessionId = (rollout: string): string | null =>

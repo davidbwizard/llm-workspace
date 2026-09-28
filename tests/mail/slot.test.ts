@@ -83,7 +83,7 @@ describe('slot to post office', () => {
     const office = createPostOffice({
       paths, db, home: join(root, 'home'), now: Date.now, pid: process.pid, isAlive: () => true,
       session: {
-        open: () => null, alive: () => false, typeLine: () => null, claudeTranscript: () => '/t.jsonl',
+        open: () => null, alive: () => true, typeLine: () => null, codexBusy: () => false, claudeTranscript: () => '/t.jsonl',
         findCodexRollout: () => '/t/rollout-01a0e976-4c0d-7b53-b74d-8929b2ef4e17.jsonl', size: () => 0,
         readReply: () => ({ verdict: 'approved', review: 'Clear and complete.' }),
       },

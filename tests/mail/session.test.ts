@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -36,6 +36,7 @@ describe('commands', () => {
   it('names a session from the letter without control characters or length', () => {
     expect(sessionName('codex-reviewer', 'Spec\nreview\x1b[31m')).toBe('Mail · codex-reviewer · Spec review [31m');
     expect(sessionName('r', 's'.repeat(200)).length).toBe(80);
+    expect(sessionName('r', 'a\u202eb\u200bc\x85d')).toBe('Mail · r · a b c d');
   });
 
   it('writes pass files owner-only and names them in the messages', () => {
@@ -53,6 +54,9 @@ describe('replies', () => {
   it('reads a VERDICT line, bold or plain', () => {
     expect(splitVerdict('Good start.\nFix A.\n\nVERDICT: changes_requested')).toEqual({ verdict: 'changes_requested', review: 'Good start.\nFix A.' });
     expect(splitVerdict('All clear.\n**VERDICT: approved**\n')).toEqual({ verdict: 'approved', review: 'All clear.' });
+    expect(splitVerdict('Fine.\nVERDICT: approved.')).toEqual({ verdict: 'approved', review: 'Fine.' });
+    expect(splitVerdict('Fine.\n> VERDICT: approved')).toEqual({ verdict: 'approved', review: 'Fine.' });
+    expect(splitVerdict('Fix it.\n- **VERDICT: changes_requested**.')).toEqual({ verdict: 'changes_requested', review: 'Fix it.' });
     expect(splitVerdict('VERDICT: maybe')).toBeNull();
     expect(splitVerdict('No verdict here.')).toBeNull();
   });
@@ -101,5 +105,10 @@ describe('replies', () => {
     expect(codexSessionId(hit)).toBe('01a0e976-4c0d-7b53-b74d-8929b2ef4e17');
     expect(findCodexRollout(root, 'OTHER', now - 60_000, now)).toBeNull();
     expect(findCodexRollout(join(root, 'none'), 'LOOPID', now - 60_000, now)).toBeNull();
+    const newer = join(day, 'rollout-2026-09-28T19-00-02-01a0e976-4c0d-7b53-b74d-111111111111.jsonl');
+    writeFileSync(newer, 'read /m/letters/LOOPID/pass-1.md');
+    utimesSync(newer, new Date(now + 1000), new Date(now + 1000));
+    symlinkSync(join(day, 'gone'), join(day, 'rollout-2026-09-28T19-00-03-01a0e976-4c0d-7b53-b74d-222222222222.jsonl'));
+    expect(findCodexRollout(root, 'LOOPID', now - 60_000, now)).toBe(newer);
   });
 });

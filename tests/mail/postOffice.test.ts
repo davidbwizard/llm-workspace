@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mailPaths, newLetterId, writeFileAtomic, type OutFile } from '../../src/mail/files.ts';
-import { createLoop, getLetter, getLoopSession, insertLetter, openMailLog, type MailDb } from '../../src/mail/log.ts';
+import { createLoop, getLetter, getLoopSession, insertLetter, openMailLog, setLoopSession, type MailDb } from '../../src/mail/log.ts';
 import { DEFAULT_CONFIG } from '../../src/mail/mailConfig.ts';
 import { createPostOffice, type PostOffice, type PostOfficeDeps } from '../../src/mail/postOffice.ts';
 import { VERDICT_RULE, type Reply, type SessionDriver } from '../../src/mail/session.ts';
@@ -17,17 +17,22 @@ let db: MailDb;
 let now: number;
 let notes: string[];
 let opened: { runsOn: string; project: string; command: string; tmux: string }[];
-let typed: { tmux: string; line: string }[];
+let typed: { tmux: string; line: string; queue?: boolean }[];
+let calls: string[];
+let markers: string[];
+let grow: number;
+let busy: boolean;
 let live: Set<string>;
 let replies: (Reply | null)[];   // what the reviewer's transcript shows next; null = no verdict yet
 
 const driver = (): SessionDriver => ({
   open: (runsOn, proj, command, tmux) => { opened.push({ runsOn, project: proj, command, tmux }); live.add(tmux); return null; },
   alive: tmux => live.has(tmux),
-  typeLine: (tmux, line) => { typed.push({ tmux, line }); return null; },
+  typeLine: (tmux, line, queue) => { calls.push('type'); typed.push(queue ? { tmux, line, queue } : { tmux, line }); return null; },
   claudeTranscript: (_p, id) => `/t/${id}.jsonl`,
-  findCodexRollout: () => ROLLOUT,
-  size: () => 0,
+  findCodexRollout: marker => { markers.push(marker); return ROLLOUT; },
+  size: () => { calls.push('size'); return grow; },
+  codexBusy: () => busy,
   readReply: () => (replies.length ? replies.shift()! : { verdict: 'approved', review: 'Looks good.' }),
 });
 
@@ -73,6 +78,10 @@ beforeEach(() => {
   typed = [];
   live = new Set();
   replies = [];
+  calls = [];
+  markers = [];
+  grow = 0;
+  busy = false;
 });
 afterEach(() => { db.close(); });
 
@@ -124,6 +133,91 @@ describe('post office', () => {
     expect(typed).toEqual([{ tmux: opened[0]!.tmux, line: `Pass 2: read ${join(root, 'mail/letters', first, 'pass-2.md')} and do what it says.` }]);
     expect(passText(first, 2)).toContain('Fixed A.');
     expect(out(second)).toMatchObject({ status: 'replied', pass: 2 });
+  });
+
+  it('finds the Codex transcript by its pass file, not the letter id', async () => {
+    const office = createPostOffice(deps());
+    const id = send(office);
+    await office.idle();
+    expect(markers).toEqual([join(root, 'mail/letters', id, 'pass-1.md')]);
+  });
+
+  it('takes the reply offset before typing a pass, and records it', async () => {
+    const office = createPostOffice(deps());
+    replies.push({ verdict: 'changes_requested', review: 'Fix A.' });
+    const first = send(office);
+    await office.idle();
+    grow = 5000;
+    calls = [];
+    writeFileSync(join(project, 'spec.md'), 'spec v2');
+    const second = send(office, { re: first });
+    await office.idle();
+    expect(calls.slice(0, 2)).toEqual(['size', 'type']);
+    expect(db.prepare('SELECT transcript_offset AS o FROM letters WHERE id = ?').get(second)).toEqual({ o: 5000 });
+  });
+
+  it('queues the pass with Tab when the Codex reviewer is mid-turn', async () => {
+    const office = createPostOffice(deps());
+    replies.push({ verdict: 'changes_requested', review: 'Fix A.' });
+    const first = send(office);
+    await office.idle();
+    busy = true;
+    writeFileSync(join(project, 'spec.md'), 'spec v2');
+    send(office, { re: first });
+    await office.idle();
+    expect(typed[0]).toMatchObject({ queue: true });
+  });
+
+  it('reopens a closed Codex session with codex resume', async () => {
+    const office = createPostOffice(deps());
+    replies.push({ verdict: 'changes_requested', review: 'Fix A.' });
+    const first = send(office);
+    await office.idle();
+    live.clear();
+    writeFileSync(join(project, 'spec.md'), 'spec v2');
+    send(office, { re: first });
+    await office.idle();
+    expect(opened[1]!.command).toContain("codex resume --sandbox read-only -a never");
+    expect(opened[1]!.command).toContain("'01a0e976-4c0d-7b53-b74d-8929b2ef4e17' 'Pass 2: read");
+  });
+
+  it('fails a pass at once when its session closes before replying', async () => {
+    const office = createPostOffice(deps({ session: { ...driver(), readReply: () => { live.clear(); return null; } } }));
+    const started = now;
+    const id = send(office);
+    await office.idle();
+    expect(out(id)).toMatchObject({ status: 'failed', reason: 'the session closed before replying' });
+    expect(now - started).toBeLessThan(60_000);
+  });
+
+  it('stops watching on stop and leaves the letter for the next start', async () => {
+    let office: ReturnType<typeof createPostOffice> | null = null;
+    office = createPostOffice(deps({ session: { ...driver(), readReply: () => { office!.stop(); return null; } } }));
+    const id = send(office);
+    await office.idle();
+    expect(getLetter(db, id)?.status).toBe('running');
+    expect(live.size).toBe(1);
+  });
+
+  it('skips re-reading a transcript that has not grown', async () => {
+    let reads = 0;
+    const office = createPostOffice(deps({ session: { ...driver(), readReply: () => { reads += 1; return null; } } }));
+    send(office);
+    await office.idle();
+    expect(reads).toBe(1);
+  });
+
+  it('fails one letter, not all mail, when the Codex transcript search errors', async () => {
+    let fail = true;
+    const office = createPostOffice(deps({
+      session: { ...driver(), findCodexRollout: () => { if (fail) { fail = false; throw new Error('EACCES'); } return ROLLOUT; } },
+    }));
+    const first = send(office);
+    await office.idle();
+    expect(out(first)).toMatchObject({ status: 'failed', reason: expect.stringMatching(/could not find the session transcript/) });
+    const second = send(office);
+    await office.idle();
+    expect(out(second)).toMatchObject({ status: 'replied' });
   });
 
   it('reopens a closed session with resume', async () => {

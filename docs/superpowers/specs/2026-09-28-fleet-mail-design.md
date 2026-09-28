@@ -109,17 +109,23 @@ Accepted letters queue. One specialist runs at a time.
   letter, the attachment paths, and the rule to end the reply with exactly
   one line: `VERDICT: approved` or `VERDICT: changes_requested`.
 - Pass 1 is the session's first prompt: "Read <file> and do what it says."
-  Later passes are typed into the same session as one line. If the session
-  has closed, Fleet reopens it (`claude --resume` / `codex resume`, same
+  Later passes go into the same session as one line, delivered as a
+  bracketed paste (Codex does not submit typed bursts) and submitted with
+  Enter, or Tab when a Codex reviewer is mid-turn. If the session has
+  closed, Fleet reopens it (`claude --resume` / `codex resume`, same
   settings) with the pass as its first prompt. A pane in scroll mode is
   returned to input first.
 - Fleet reads the reply from the transcript, not the screen: Claude's is
   `~/.claude/projects/<project key>/<session id>.jsonl`; Codex's rollout is
-  found by the loop id in its first prompt. The reply is the first
-  assistant message after the pass was delivered that ends with a VERDICT
-  line; the review is that message.
-- No VERDICT within `runMinutes`: the letter is `timed_out`. Fleet never
-  kills the session; it stays open for David during and after the loop.
+  the newest one whose first prompt holds the pass file's path (a Codex
+  sender's own rollout holds the letter id, so the id is not used). The
+  reply is the first assistant message after the pass was delivered that
+  ends with a VERDICT line (a quote or list marker, bold and a full stop are
+  tolerated); the review is that message. The transcript is re-read only
+  when it has grown.
+- No VERDICT within `runMinutes`: the letter is `timed_out`. A session that
+  closes before replying fails the letter at once. Fleet never kills the
+  session; it stays open for David during and after the loop.
   Resuming it from Fleet gives it full tools again.
 
 ## Loops
@@ -154,8 +160,7 @@ descriptions.
 - `loops`: id, specialist, project, status (`open`, `approved`, `limit`, `failed`),
   passes, session id, tmux name, transcript path, created, updated.
 - `letters`: id, loop id, pass, from tool, project, to, subject, body,
-  attachment hashes, status, reason, verdict, review, stderr tail (20 KB),
-  owner pid (so two Fleet windows never cancel each other's runs),
+  attachment hashes, status, reason, verdict, review, owner pid (so two Fleet windows never cancel each other's runs),
   transcript offset (where this pass's reply search starts), created,
   started, finished.
 
