@@ -30,6 +30,7 @@ export interface OutFile {
   status: LetterStatus;
   reason: string | null;
   specialist: string | null;
+  project: string | null;
   pass: number | null;
   passLimit: number | null;
   verdict: Verdict | null;

@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   cancelOrphans, createLoop, getLetter, getLoop, insertLetter, latestPass, letterExists, lettersInLast24h,
   openMailLog, updateLetter, updateLoop, type MailDb, type NewLetter,
@@ -41,6 +44,16 @@ describe('mail log', () => {
     insertLetter(db, row('b', { loopId: null, status: 'refused' }));
     insertLetter(db, row('c', { createdAt: NOW - 86_400_001 }));
     expect(lettersInLast24h(db, NOW)).toBe(1);
+  });
+
+  it('keeps the log and its WAL files owner-only', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'mail-log-')), 'mail.sqlite');
+    const fileDb = openMailLog(file);
+    try {
+      for (const f of [file, `${file}-wal`, `${file}-shm`]) expect([f, statSync(f).mode & 0o777]).toEqual([f, 0o600]);
+    } finally {
+      fileDb.close();
+    }
   });
 
   it('cancels only letters whose Fleet is gone', () => {

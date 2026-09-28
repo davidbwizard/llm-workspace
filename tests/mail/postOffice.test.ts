@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mailPaths, newLetterId, writeFileAtomic, type OutFile } from '../../src/mail/files.ts';
@@ -27,7 +27,7 @@ function fakeRun(cmd: Command, stdin: string, _timeoutMs: number, env: NodeJS.Pr
 
 const deps = (over: Partial<PostOfficeDeps> = {}): PostOfficeDeps => ({
   paths: mailPaths(join(root, 'mail')), db, home: join(root, 'home'), now: () => now, pid: process.pid,
-  isAlive: () => true, run: fakeRun, listCodexMcpServers: () => [], notify: (t, b) => { notes.push(`${t}: ${b}`); },
+  isAlive: () => true, run: fakeRun, listCodexMcpServers: async () => [], notify: (t, b) => { notes.push(`${t}: ${b}`); },
   log: () => {}, ...over,
 });
 
@@ -80,7 +80,7 @@ describe('post office', () => {
     expect(calls[0]!.env.FLEET_MAIL_SPECIALIST).toBe(id);
     expect(calls[0]!.stdin).toContain('You review specs.');
     expect(calls[0]!.stdin).toContain('Please review.');
-    expect(out(id)).toMatchObject({ status: 'replied', verdict: 'changes_requested', pass: 1, passLimit: 4, loopStatus: 'open', specialist: 'codex-reviewer' });
+    expect(out(id)).toMatchObject({ status: 'replied', verdict: 'changes_requested', pass: 1, passLimit: 4, loopStatus: 'open', specialist: 'codex-reviewer', project });
     expect(existsSync(join(root, 'mail/inbox', `${id}.json`))).toBe(false);
   });
 
@@ -156,6 +156,61 @@ describe('post office', () => {
     createPostOffice(deps({ isAlive: pid => pid === 222 }));
     expect(out('d'.repeat(32))).toMatchObject({ status: 'cancelled', reason: 'Fleet stopped before this finished' });
     expect(getLetter(db, 'e'.repeat(32))?.status).toBe('queued');
+  });
+
+  it('starts a Codex specialist with its MCP servers off', async () => {
+    const office = createPostOffice(deps({ listCodexMcpServers: async () => ['trello'] }));
+    send(office);
+    await office.idle();
+    expect(calls[0]!.cmd.args).toContain('mcp_servers.trello.enabled=false');
+  });
+
+  it('fails one letter, not all mail, when its reply cannot be read', async () => {
+    let lock = true;
+    const office = createPostOffice(deps({
+      run: (cmd, stdin, t, env) => {
+        const handle = fakeRun(cmd, stdin, t, env);
+        if (lock && cmd.replyFile) { chmodSync(cmd.replyFile, 0o000); lock = false; }
+        return handle;
+      },
+    }));
+    const first = send(office);
+    await office.idle();
+    expect(out(first)).toMatchObject({ status: 'failed', reason: expect.stringMatching(/could not read the reply/) });
+    const second = send(office);
+    await office.idle();
+    expect(out(second)).toMatchObject({ status: 'replied' });
+  });
+
+  it('tells every letter in hand when the log breaks mid-run', async () => {
+    let release: () => void = () => {};
+    const office = createPostOffice(deps({
+      run: (cmd, stdin, t, env) => {
+        const handle = fakeRun(cmd, stdin, t, env);
+        return { done: new Promise<RunResult>(r => { release = () => r(handle.done); }), kill: () => {} };
+      },
+    }));
+    const first = send(office);
+    const second = send(office);
+    db.close();
+    release();
+    await office.idle();
+    expect(out(first)).toMatchObject({ status: 'failed', reason: expect.stringMatching(/^mail is off: /) });
+    expect(out(second)).toMatchObject({ status: 'cancelled', reason: expect.stringMatching(/^mail is off: /) });
+    db = openMailLog(':memory:');   // for afterEach
+  });
+
+  it('never throws out of receive, even when the notification fails', () => {
+    const office = createPostOffice(deps({ notify: () => { throw new Error('no notification centre'); } }));
+    db.close();
+    expect(() => send(office)).not.toThrow();
+    db = openMailLog(':memory:');   // for afterEach
+  });
+
+  it('refuses an oversized letter file without reading it', () => {
+    const office = createPostOffice(deps());
+    const id = send(office, { body: 'x'.repeat(300_000) });
+    expect(out(id)).toMatchObject({ status: 'refused', reason: 'letter file is over 256 KB' });
   });
 
   it('turns mail off when the log cannot be written', () => {

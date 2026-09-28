@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { isLetterId, type Letter } from './files.ts';
 
@@ -43,10 +44,14 @@ export function checkLetter(raw: any, now: number, specialists: string[]): Check
   let project: string;
   try {
     project = realpathSync(from.project);
+    if (!statSync(project).isDirectory()) return refuse('project is not a folder');
   } catch (e) {
     return refuse(`project folder not found (${errCode(e)})`);
   }
-  if (!statSync(project).isDirectory()) return refuse('project is not a folder');
+  // The likeliest result of a slot started in the wrong folder.
+  if (project === '/' || project === realpathSync(homedir())) {
+    return refuse('project is the home folder or the disk root; start the agent in a project folder');
+  }
 
   const checked: Attachment[] = [];
   for (const p of attachments as string[]) {
@@ -61,10 +66,16 @@ export function checkLetter(raw: any, now: number, specialists: string[]): Check
     if (rel.split(sep).some(s => SECRET_DIRS.has(s)) || SECRET_NAMES.some(r => r.test(basename(rel)))) {
       return refuse(`attachment looks like a secret: ${p}`);
     }
-    const st = statSync(real);
-    if (!st.isFile()) return refuse(`attachment is not a file: ${p}`);
-    if (st.size > LETTER_LIMITS.attachmentBytes) return refuse(`attachment is over 200 KB: ${p}`);
-    checked.push({ path: rel, sha256: createHash('sha256').update(readFileSync(real)).digest('hex'), bytes: st.size });
+    let content: Buffer;
+    try {
+      const st = statSync(real);
+      if (!st.isFile()) return refuse(`attachment is not a file: ${p}`);
+      if (st.size > LETTER_LIMITS.attachmentBytes) return refuse(`attachment is over 200 KB: ${p}`);
+      content = readFileSync(real);
+    } catch (e) {
+      return refuse(`attachment cannot be read: ${p} (${errCode(e)})`);
+    }
+    checked.push({ path: rel, sha256: createHash('sha256').update(content).digest('hex'), bytes: content.length });
   }
   return {
     ok: true,

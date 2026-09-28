@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkLetter } from '../../src/mail/letter.ts';
 
@@ -65,5 +65,22 @@ describe('checkLetter', () => {
     expect(reason({ attachments: ['docs'] })).toBe('attachment is not a file: docs');
     expect(reason({ attachments: ['big.md'] })).toBe('attachment is over 200 KB: big.md');
     expect(reason({ attachments: ['nope.md'] })).toBe('attachment not found: nope.md (ENOENT)');
+  });
+
+  it('refuses an unreadable attachment instead of throwing', () => {
+    const locked = join(project, 'locked.md');
+    writeFileSync(locked, 'locked');
+    chmodSync(locked, 0o000);
+    try {
+      expect(reason({ attachments: ['locked.md'] })).toBe('attachment cannot be read: locked.md (EACCES)');
+    } finally {
+      chmodSync(locked, 0o600);
+    }
+  });
+
+  it('refuses the home folder or the disk root as a project', () => {
+    const why = 'project is the home folder or the disk root; start the agent in a project folder';
+    expect(reason({ from: { tool: 'claude', project: homedir() }, attachments: [] })).toBe(why);
+    expect(reason({ from: { tool: 'claude', project: '/' }, attachments: [] })).toBe(why);
   });
 });

@@ -1,4 +1,5 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { Sender, Verdict } from './files.ts';
 
 export const REPLY_SCHEMA = {
@@ -77,11 +78,14 @@ export function parseCodexMcpList(json: string): string[] {
   });
 }
 
-export function listCodexMcpServers(): string[] {
-  return parseCodexMcpList(execFileSync('codex', ['mcp', 'list', '--json'], { encoding: 'utf8', timeout: 15_000 }));
+/** Async, so a slow `codex` never freezes Fleet's main process. */
+export async function listCodexMcpServers(): Promise<string[]> {
+  const { stdout } = await promisify(execFile)('codex', ['mcp', 'list', '--json'], { encoding: 'utf8', timeout: 15_000 });
+  return parseCodexMcpList(stdout);
 }
 
 export interface RunResult { exitCode: number | null; stdout: string; stderrTail: string; timedOut: boolean }
+/** `kill` ends the run at once: it is for Fleet quitting, which cannot wait to follow up. */
 export interface RunHandle { done: Promise<RunResult>; kill: () => void }
 
 const STDOUT_CAP = 1_000_000;
@@ -103,13 +107,16 @@ export function runCommand(cmd: Command, stdin: string, timeoutMs: number, env: 
   let stderr = '';
   let timedOut = false;
   let hardKill: NodeJS.Timeout | undefined;
-  const kill = () => {
-    if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-    const pid = child.pid;
+  const alive = (): boolean => child.pid !== undefined && child.exitCode === null && child.signalCode === null;
+  // The time limit asks first, then forces.
+  const terminate = () => {
+    if (!alive()) return;
+    const pid = child.pid!;
     signalGroup(pid, 'SIGTERM');
     hardKill = setTimeout(() => signalGroup(pid, 'SIGKILL'), 5000);
   };
-  const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
+  const kill = () => { if (alive()) signalGroup(child.pid!, 'SIGKILL'); };
+  const timer = setTimeout(() => { timedOut = true; terminate(); }, timeoutMs);
   child.stdout.on('data', (d: Buffer) => { if (stdout.length < STDOUT_CAP) stdout += d.toString('utf8'); });
   child.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString('utf8')).slice(-STDERR_TAIL); });
   // A child that exits before reading its prompt breaks the pipe; its exit code says why.

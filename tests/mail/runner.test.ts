@@ -90,6 +90,15 @@ describe('runCommand', () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
+  it('kill ends a run at once, even one that ignores SIGTERM', async () => {
+    const handle = runCommand(node("process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"), '', 60_000, process.env);
+    await new Promise(r => setTimeout(r, 300));
+    const killedAt = Date.now();
+    handle.kill();
+    await handle.done;
+    expect(Date.now() - killedAt).toBeLessThan(2_000);
+  });
+
   it('caps stdout', async () => {
     const r = await runCommand(node('process.stdout.write("x".repeat(3000000))'), '', 10_000, process.env).done;
     expect(r.stdout.length).toBeLessThanOrEqual(1_000_000 + 65_536);
