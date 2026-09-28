@@ -6,6 +6,7 @@ import type { Db } from './store/db.ts';
 import type { LiveProcess } from './discovery/parse.ts';
 import { classifyMatch, type SessionRef } from './discovery/match.ts';
 import { isOwnedHookCommand } from './hooks/install.ts';
+import { defaultMailDir } from './mail/files.ts';
 
 export interface Paths {
   claudeProjects: string;
@@ -30,6 +31,10 @@ export interface Paths {
    *  has several origins between dev, the packaged build and a drifting
    *  Vite port. */
   prefs: string;
+  /** Fleet Mail (src/mail): inbox, out, work, config.json. */
+  mailDir: string;
+  /** Fleet Mail's log. Its own file: index.sqlite is a rebuildable cache. */
+  mailDb: string;
   db: string;
 }
 
@@ -47,6 +52,8 @@ export function resolvePaths(home: string): Paths {
     consent: join(home, '.llm-workspace/consent.json'),
     statusLineDir: join(home, '.llm-workspace/statusline'),
     prefs: join(home, '.llm-workspace/prefs.sqlite'),
+    mailDir: defaultMailDir(home),
+    mailDb: join(home, '.llm-workspace/mail.sqlite'),
     db: join(home, '.llm-workspace/index.sqlite'),
   };
 }
