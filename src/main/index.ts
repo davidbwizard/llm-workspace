@@ -281,7 +281,8 @@ app.whenReady().then(async () => {
     postOffice = startPostOffice({
       paths: mailPaths(paths.mailDir), db: mailDb, home: homedir(), now: Date.now, pid: process.pid, isAlive,
       session: createFleetDriver({}), sleep: ms => new Promise(r => setTimeout(r, ms)), newSessionId: randomUUID,
-      listCodexMcpServers: project => readCodexServerNames(homedir(), project),
+      // Only the mail slot is switched off, so a reviewer cannot send mail; its other tools stay.
+      listCodexMcpServers: async project => (await readCodexServerNames(homedir(), project)).filter(n => n === 'fleet-mail'),
       notify: (title, body) => new Notification({ title, body }).show(),
       log: message => console.error('Fleet Mail:', message),
     });

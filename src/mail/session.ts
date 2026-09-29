@@ -63,11 +63,11 @@ const env = (s: SessionSpec): string => `env FLEET_MAIL_SPECIALIST=${q(s.loopId)
 const claudeFlags = (s: SessionSpec): string =>
   `--permission-mode dontAsk --strict-mcp-config --add-dir ${q(s.letterDir)} --tools Read Grep Glob`;
 // Any override makes Codex run standalone instead of joining the shared
-// daemon, so these settings hold. Plugins (context7, cua_repl, ...) go off
-// as features; a per-name override for a plugin server breaks Codex's config
-// load. Configured servers go off by name. (Probed 2026-09-28/29.)
+// daemon, so these settings hold. Plugins stay on (David's call, 2026-09-29:
+// he monitors Codex); only servers named in config.toml can be switched off
+// by name -- a plugin server switched off by name breaks Codex's config load.
 const codexFlags = (s: SessionSpec): string => [
-  '--sandbox read-only -a never --disable plugins --disable computer_use',
+  '--sandbox read-only -a never',
   `-c ${q('check_for_update_on_startup=false')}`,
   ...s.codexMcpOff.map(n => `-c ${q(`mcp_servers.${n}.enabled=false`)}`),
   `-C ${q(s.project)}`,

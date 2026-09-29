@@ -100,8 +100,11 @@ Accepted letters queue. One specialist runs at a time.
     <specialist> · <subject>" --permission-mode dontAsk --strict-mcp-config
     --add-dir <loop folder> --tools Read Grep Glob`.
   - Codex: `codex --sandbox read-only -a never -c
-    check_for_update_on_startup=false -c mcp_servers.<name>.enabled=false`
-    (each enabled server) `-C <project> "<first message>"`. Launched with
+    check_for_update_on_startup=false -c mcp_servers.fleet-mail.enabled=false
+    -C <project> "<first message>"`. Plugins and other tool servers stay on
+    (David's call: he monitors Codex); only the mail slot is switched off,
+    and only when `config.toml` defines it, since switching off a
+    plugin-provided server by name stops Codex from starting. Launched with
     overrides, Codex runs as its own process, not through the shared
     daemon, so these settings hold (probed 2026-09-28).
 - Each pass is written to `letters/<loop>/pass-<n>.md`: the agent's
