@@ -5,7 +5,7 @@ export interface McpTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  call: (args: Record<string, unknown>) => Promise<string>;
+  call: (args: Record<string, unknown>, meta?: Record<string, unknown>) => Promise<string>;
 }
 
 /** Thrown by a tool to refuse with a message the calling agent can act on. */
@@ -38,7 +38,9 @@ export async function handleMessage(msg: any, tools: McpTool[]): Promise<Respons
       if (!tool) return fail(-32602, `unknown tool ${String(msg.params?.name)}`);
       const args = msg.params?.arguments;
       try {
-        const text = await tool.call(args && typeof args === 'object' ? args : {});
+        const meta = msg.params?._meta;
+        const text = await tool.call(args && typeof args === 'object' ? args : {},
+          meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : undefined);
         return ok({ content: [{ type: 'text', text }] });
       } catch (e) {
         if (e instanceof ToolRefusal) return ok({ content: [{ type: 'text', text: e.message }], isError: true });

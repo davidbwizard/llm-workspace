@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
-import { isLetterId, type Letter } from './files.ts';
+import { isLetterId, MAX_META_CHARS, type Letter } from './files.ts';
 
 export const LETTER_LIMITS = {
   subjectChars: 200,
@@ -21,6 +21,8 @@ export type Checked = { ok: true; letter: Letter; attachments: Attachment[] } | 
 
 const refuse = (reason: string): Checked => ({ ok: false, reason });
 const isStr = (v: unknown): v is string => typeof v === 'string';
+const isSmallObject = (v: unknown): boolean =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) && JSON.stringify(v).length <= MAX_META_CHARS;
 const errCode = (e: unknown): string => (e as NodeJS.ErrnoException).code ?? 'error';
 
 /** Fleet's full check of an inbox letter. The slot checks almost nothing;
@@ -30,7 +32,9 @@ export function checkLetter(raw: any, now: number, specialists: string[]): Check
   const { version, id, from, to, subject, body, attachments = [], re = null, sentAt } = raw;
   if (version !== 1 || !isLetterId(id) || !isStr(to) || !isStr(subject) || !isStr(body) || !isStr(sentAt)
     || (from?.tool !== 'claude' && from?.tool !== 'codex') || !isStr(from?.project) || !isAbsolute(from.project)
-    || !Array.isArray(attachments) || !attachments.every(isStr) || (re !== null && !isLetterId(re))) {
+    || !Array.isArray(attachments) || !attachments.every(isStr) || (re !== null && !isLetterId(re))
+    || (from.pid !== undefined && !(Number.isSafeInteger(from.pid) && from.pid > 0))
+    || (from.meta !== undefined && !isSmallObject(from.meta))) {
     return refuse('letter is missing fields or has the wrong types');
   }
   const sent = Date.parse(sentAt);
@@ -79,7 +83,9 @@ export function checkLetter(raw: any, now: number, specialists: string[]): Check
   }
   return {
     ok: true,
-    letter: { version: 1, id, from: { tool: from.tool, project }, to, subject, body, attachments: checked.map(a => a.path), re, sentAt },
+    letter: {
+      version: 1, id, to,
+      from: { tool: from.tool, project, ...(from.pid !== undefined ? { pid: from.pid } : {}), ...(from.meta !== undefined ? { meta: from.meta } : {}) }, subject, body, attachments: checked.map(a => a.path), re, sentAt },
     attachments: checked,
   };
 }

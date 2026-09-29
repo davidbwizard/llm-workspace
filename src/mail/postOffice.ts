@@ -144,7 +144,8 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
         updateLoop(db, loopId, 'open', pass, now);
       }
       insertLetter(db, {
-        id, loopId, pass, fromTool: letter.from.tool, project: letter.from.project, to: letter.to, subject: letter.subject,
+        id, loopId, pass, fromTool: letter.from.tool, fromPid: letter.from.pid ?? null,
+        fromMeta: letter.from.meta ? JSON.stringify(letter.from.meta) : null, project: letter.from.project, to: letter.to, subject: letter.subject,
         body: letter.body, attachments, status: 'queued', reason: null, ownerPid: d.pid, createdAt: now,
       });
     })();

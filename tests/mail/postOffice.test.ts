@@ -117,6 +117,13 @@ describe('post office', () => {
     expect(out(id)).toMatchObject({ status: 'replied', verdict: 'approved', loopStatus: 'approved' });
   });
 
+  it('logs who sent each letter', async () => {
+    const office = createPostOffice(deps());
+    const id = send(office, { from: { tool: 'claude', project, pid: 777, meta: { thread: 't1' } } });
+    await office.idle();
+    expect(db.prepare('SELECT from_pid AS pid, from_meta AS meta FROM letters WHERE id = ?').get(id)).toEqual({ pid: 777, meta: '{"thread":"t1"}' });
+  });
+
   it('logs each command it opens', async () => {
     const office = createPostOffice(deps());
     send(office);

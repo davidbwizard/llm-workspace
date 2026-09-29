@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS letters (
   loop_id TEXT REFERENCES loops(id),
   pass INTEGER,
   from_tool TEXT,
+  from_pid INTEGER,
+  from_meta TEXT,
   project TEXT,
   to_specialist TEXT,
   subject TEXT,
@@ -61,7 +63,7 @@ export function openMailLog(path: string): MailDb {
 
 const ADDED_COLUMNS = [
   ['loops', 'session_id', 'TEXT'], ['loops', 'tmux', 'TEXT'], ['loops', 'transcript', 'TEXT'],
-  ['letters', 'transcript_offset', 'INTEGER'],
+  ['letters', 'transcript_offset', 'INTEGER'], ['letters', 'from_pid', 'INTEGER'], ['letters', 'from_meta', 'TEXT'],
 ] as const;
 
 /** The live session a loop's passes go to. */
@@ -81,6 +83,9 @@ export interface NewLetter {
   loopId: string | null;
   pass: number | null;
   fromTool: Sender | null;
+  fromPid?: number | null;
+  /** JSON of the tool call's `_meta`. */
+  fromMeta?: string | null;
   project: string | null;
   to: string | null;
   subject: string | null;
@@ -121,9 +126,9 @@ export interface LetterUpdate {
 
 export function insertLetter(db: MailDb, l: NewLetter): void {
   db.prepare(`INSERT INTO letters
-      (id, loop_id, pass, from_tool, project, to_specialist, subject, body, attachments, status, reason, owner_pid, created_at)
-    VALUES (@id, @loopId, @pass, @fromTool, @project, @to, @subject, @body, @attachments, @status, @reason, @ownerPid, @createdAt)`)
-    .run({ ...l, attachments: JSON.stringify(l.attachments) });
+      (id, loop_id, pass, from_tool, from_pid, from_meta, project, to_specialist, subject, body, attachments, status, reason, owner_pid, created_at)
+    VALUES (@id, @loopId, @pass, @fromTool, @fromPid, @fromMeta, @project, @to, @subject, @body, @attachments, @status, @reason, @ownerPid, @createdAt)`)
+    .run({ ...l, fromPid: l.fromPid ?? null, fromMeta: l.fromMeta ?? null, attachments: JSON.stringify(l.attachments) });
 }
 
 export function letterExists(db: MailDb, id: string): boolean {

@@ -1,13 +1,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import {
-  FINAL_STATUSES, isLetterId, newLetterId, writeFileAtomic, type Letter, type MailPaths, type OutFile, type Sender,
+  FINAL_STATUSES, isLetterId, MAX_META_CHARS, newLetterId, writeFileAtomic, type Letter, type MailPaths, type OutFile, type Sender,
 } from './files.ts';
 import { ToolRefusal, type McpTool } from './mcp.ts';
 
 export interface SlotOptions {
   paths: MailPaths;
   sender: Sender;
+  /** The sending CLI's process: the slot's parent. */
+  parentPid: number;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   waitMs: number;
@@ -27,6 +29,10 @@ function summarize(id: string, out: OutFile | null): string {
   return `Letter ${id}: ${out.status}. Call check_mail again.`;
 }
 
+/** The caller's metadata, when it is small enough to keep. */
+const keptMeta = (meta: Record<string, unknown> | undefined): { meta?: Record<string, unknown> } =>
+  meta && JSON.stringify(meta).length <= MAX_META_CHARS ? { meta } : {};
+
 export function slotTools(o: SlotOptions): McpTool[] {
   const send: McpTool = {
     name: 'send_letter',
@@ -43,7 +49,7 @@ export function slotTools(o: SlotOptions): McpTool[] {
       },
       required: ['to', 'subject', 'body', 'project'],
     },
-    call: async args => {
+    call: async (args, meta) => {
       const { to, subject, body, project, attachments = [], re } = args as any;
       if (typeof project !== 'string' || !isAbsolute(project)) {
         throw new ToolRefusal('send_letter needs project: the absolute path of your working folder.');
@@ -55,7 +61,7 @@ export function slotTools(o: SlotOptions): McpTool[] {
       }
       const id = newLetterId();
       const letter: Letter = {
-        version: 1, id, from: { tool: o.sender, project }, to, subject, body, attachments,
+        version: 1, id, from: { tool: o.sender, project, pid: o.parentPid, ...keptMeta(meta) }, to, subject, body, attachments,
         re: re ?? null, sentAt: new Date(o.now()).toISOString(),
       };
       writeFileAtomic(join(o.paths.inbox, `${id}.json`), JSON.stringify(letter));
@@ -78,6 +84,8 @@ export function slotTools(o: SlotOptions): McpTool[] {
         if ((out && FINAL_STATUSES.includes(out.status)) || o.now() >= deadline) break;
         await o.sleep(1000);
       }
+      // Read by the sender: its card's badge stops showing this reply as new.
+      if (out && FINAL_STATUSES.includes(out.status)) writeFileAtomic(join(o.paths.out, `${id}.read`), '');
       return summarize(id, out);
     },
   };

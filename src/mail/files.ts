@@ -15,7 +15,9 @@ export const FINAL_STATUSES: readonly LetterStatus[] = ['replied', 'refused', 'f
 export interface Letter {
   version: 1;
   id: string;
-  from: { tool: Sender; project: string };
+  /** `pid`: the sending CLI's process (the slot's parent). `meta`: the tool
+   *  call's `_meta`, which Codex fills; used to find a Codex sender's session. */
+  from: { tool: Sender; project: string; pid?: number; meta?: Record<string, unknown> };
   to: string;
   subject: string;
   body: string;
@@ -59,6 +61,9 @@ export function mailPaths(dir: string): MailPaths {
     letters: join(dir, 'letters'),
   };
 }
+
+/** Largest `from.meta` a letter may carry, as JSON. */
+export const MAX_META_CHARS = 4096;
 
 export const newLetterId = (): string => randomBytes(16).toString('hex');
 export const isLetterId = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{32}$/.test(v);

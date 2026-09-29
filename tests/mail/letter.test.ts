@@ -31,6 +31,11 @@ const reason = (over: Record<string, unknown>) => {
 };
 
 describe('checkLetter', () => {
+  it('keeps who sent it', () => {
+    const r = checkLetter(letter({ from: { tool: 'codex', project, pid: 777, meta: { thread: 't1' } } }), NOW, SPECIALISTS);
+    expect(r.ok && r.letter.from).toEqual({ tool: 'codex', project, pid: 777, meta: { thread: 't1' } });
+  });
+
   it('accepts a good letter and fingerprints its attachment', () => {
     expect(checkLetter(letter(), NOW, SPECIALISTS)).toEqual({
       ok: true,
@@ -46,6 +51,9 @@ describe('checkLetter', () => {
     expect(reason({ re: 'nope' })).toBe(wrong);
     expect(reason({ from: { tool: 'gemini', project } })).toBe(wrong);
     expect(reason({ from: { tool: 'claude', project: 'relative/path' } })).toBe(wrong);
+    expect(reason({ from: { tool: 'claude', project, pid: -1 } })).toBe(wrong);
+    expect(reason({ from: { tool: 'claude', project, meta: 'x' } })).toBe(wrong);
+    expect(reason({ from: { tool: 'claude', project, meta: { big: 'x'.repeat(5000) } } })).toBe(wrong);
   });
 
   it('refuses expired, oversized and misaddressed letters', () => {

@@ -18,6 +18,7 @@ if (at < 0 || (sender !== 'claude' && sender !== 'codex')) {
 const tools = slotTools({
   paths: mailPaths(defaultMailDir(homedir())),
   sender,
+  parentPid: process.ppid,
   now: Date.now,
   sleep: ms => new Promise(r => setTimeout(r, ms)),
   waitMs: 25_000,

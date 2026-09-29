@@ -25,6 +25,13 @@ describe('handleMessage', () => {
       .toEqual({ jsonrpc: '2.0', id: 4, result: { content: [{ type: 'text', text: 'hi' }] } });
   });
 
+  it("hands the call's _meta to the tool", async () => {
+    let seen: unknown = null;
+    const spy: McpTool = { name: 'spy', description: 'Spy', inputSchema: { type: 'object' }, call: async (_a, meta) => { seen = meta; return 'ok'; } };
+    await handleMessage({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'spy', arguments: {}, _meta: { 'x-codex-turn-metadata': { thread: 't1' } } } }, [spy]);
+    expect(seen).toEqual({ 'x-codex-turn-metadata': { thread: 't1' } });
+  });
+
   it('reports refusals as tool errors and unknowns as protocol errors', async () => {
     expect(await handleMessage({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'no', arguments: {} } }, tools))
       .toEqual({ jsonrpc: '2.0', id: 5, result: { content: [{ type: 'text', text: 'Not today.' }], isError: true } });
