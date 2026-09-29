@@ -74,6 +74,15 @@ export function getLoopSession(db: MailDb, loopId: string): LoopSession {
   return r ?? { sessionId: null, tmux: null, transcript: null };
 }
 
+/** The newest reviewer session another loop used for this specialist and
+ *  project, so a new review goes to the reviewer that already knows it. */
+export function latestLoopSession(db: MailDb, specialist: string, project: string, exceptLoopId: string): LoopSession | null {
+  const r = db.prepare(`SELECT session_id AS sessionId, tmux, transcript FROM loops
+    WHERE specialist = ? AND project = ? AND id != ? AND tmux IS NOT NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1`)
+    .get(specialist, project, exceptLoopId) as LoopSession | undefined;
+  return r ?? null;
+}
+
 export function setLoopSession(db: MailDb, loopId: string, s: LoopSession): void {
   db.prepare('UPDATE loops SET session_id = ?, tmux = ?, transcript = ? WHERE id = ?').run(s.sessionId, s.tmux, s.transcript, loopId);
 }

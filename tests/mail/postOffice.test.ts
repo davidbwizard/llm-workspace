@@ -238,6 +238,29 @@ describe('post office', () => {
     expect(out(second)).toMatchObject({ status: 'replied' });
   });
 
+  it('sends a new review to the same reviewer session for the project', async () => {
+    const office = createPostOffice(deps());
+    const first = send(office);
+    await office.idle();
+    const second = send(office, { subject: 'Another look' });
+    await office.idle();
+    expect(opened).toHaveLength(1);
+    expect(typed).toEqual([{ tmux: opened[0]!.tmux, line: `Pass 1: read ${join(root, 'mail/letters', second, 'pass-1.md')} and do what it says.` }]);
+    expect(getLoopSession(db, second)).toEqual(getLoopSession(db, first));
+    expect(out(second)).toMatchObject({ status: 'replied', pass: 1 });
+  });
+
+  it('reopens the project reviewer with resume when a new review finds it closed', async () => {
+    const office = createPostOffice(deps());
+    send(office, { to: 'claude-reviewer' });
+    await office.idle();
+    live.clear();
+    send(office, { to: 'claude-reviewer', subject: 'Another look' });
+    await office.idle();
+    expect(opened).toHaveLength(2);
+    expect(opened[1]!.command).toContain(`claude --resume '${SESSION_ID}' 'Pass 1: read`);
+  });
+
   it('reopens a closed session with resume', async () => {
     const office = createPostOffice(deps());
     replies.push({ verdict: 'changes_requested', review: 'Fix A.' });

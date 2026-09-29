@@ -5,7 +5,7 @@ import { readAgentInstructions } from './agent.ts';
 import { writeFileAtomic, type LetterStatus, type MailPaths, type OutFile } from './files.ts';
 import { checkLetter } from './letter.ts';
 import {
-  cancelOrphans, createLoop, getLetter, getLoop, getLoopSession, insertLetter, latestPass, letterExists, lettersInLast24h,
+  cancelOrphans, createLoop, getLetter, getLoop, getLoopSession, insertLetter, latestLoopSession, latestPass, letterExists, lettersInLast24h,
   setLoopSession, updateLetter, updateLoop, type MailDb, type NewLetter,
 } from './log.ts';
 import { followUpProblem, loopStatusAfter } from './loop.ts';
@@ -184,6 +184,15 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
       attachments: row.attachments.map(a => a.path), pass, passLimit: config.passesPerLoop,
     })}\n\n${VERDICT_RULE}`);
     let sess = getLoopSession(db, loopId);
+    // One reviewer per project and specialist: a new review goes to the
+    // session that already reviewed there (reopened with resume if closed).
+    if (sess.tmux === null) {
+      const prior = latestLoopSession(db, to, project, loopId);
+      if (prior) {
+        sess = prior;
+        setLoopSession(db, loopId, sess);
+      }
+    }
     const spec: SessionSpec = {
       runsOn, project, loopId, name: sessionName(to, row.subject ?? ''), sessionId: sess.sessionId ?? '', letterDir,
     };

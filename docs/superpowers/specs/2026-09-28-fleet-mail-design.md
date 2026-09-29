@@ -91,8 +91,9 @@ Accepted letters queue. One specialist runs at a time.
 
 ## Specialist sessions
 
-- Each loop gets one live session, opened the way Fleet's Launch button
-  opens one: a tmux session in the sender's project, shown in Fleet as a
+- Each project has one live session per specialist, shared by its loops, so
+  a new review goes to the reviewer that already knows the project. It is
+  opened the way Fleet's Launch button opens one: a tmux session in the sender's project, shown in Fleet as a
   card David can watch and type into.
 - It starts read-only for files, and may send mail itself (David, 2026-09-29:
   monitoring instead of restriction; the pass limit and daily cap are the brakes):
