@@ -13,7 +13,7 @@ let paths: MailPaths;
 beforeEach(() => { paths = mailPaths(realpathSync(mkdtempSync(join(tmpdir(), 'mail-slot-')))); });
 
 const opts = (over: Partial<SlotOptions> = {}): SlotOptions => ({
-  paths, sender: 'codex', env: {}, now: () => Date.parse('2026-09-28T18:00:00Z'),
+  paths, sender: 'codex', now: () => Date.parse('2026-09-28T18:00:00Z'),
   sleep: async () => {}, waitMs: 0, ...over,
 });
 const sendTool = (o: SlotOptions) => slotTools(o)[0]!;
@@ -31,8 +31,7 @@ describe('send_letter', () => {
     });
   });
 
-  it('refuses inside a specialist and on bad arguments', async () => {
-    await expect(sendTool(opts({ env: { FLEET_MAIL_SPECIALIST: 'x' } })).call({ to: 'a', subject: 'b', body: 'c' })).rejects.toThrow('Specialists cannot send mail.');
+  it('refuses bad arguments', async () => {
     await expect(sendTool(opts()).call({ to: 'a', subject: 'b' })).rejects.toBeInstanceOf(ToolRefusal);
     await expect(sendTool(opts()).call({ to: 'a', subject: 'b', body: 'c', project: '/p', re: '../x' })).rejects.toBeInstanceOf(ToolRefusal);
   });
@@ -88,7 +87,7 @@ describe('slot to post office', () => {
         readReply: () => ({ verdict: 'approved', review: 'Clear and complete.' }),
       },
       sleep: async () => {}, newSessionId: () => '11111111-2222-3333-4444-555555555555',
-      listCodexMcpServers: async () => [], notify: () => {}, log: () => {},
+      notify: () => {}, log: () => {},
     });
     const o = opts({ sender: 'claude', now: Date.now });
     const sent = await sendTool(o).call({ to: 'codex-reviewer', subject: 'Spec', body: 'Review it.', project, attachments: ['spec.md'] });
@@ -115,6 +114,26 @@ describe('slot process', () => {
     child.kill();
     expect(byId[1].result.serverInfo.name).toBe('fleet-mail');
     expect(byId[2].result.tools.map((t: { name: string }) => t.name)).toEqual(['send_letter', 'check_mail']);
+  });
+
+  it('lets a reviewer session send mail too', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'mail-home-'));
+    const child = spawn(process.execPath, [join(process.cwd(), 'src/mail/slot.ts'), '--from', 'codex'], {
+      stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, HOME: home, FLEET_MAIL_SPECIALIST: 'l'.repeat(32) },
+    });
+    let buf = '';
+    const got = new Promise<any>(resolveDone => child.stdout.on('data', d => {
+      buf += String(d);
+      const msg = buf.split('\n').filter(Boolean).map(l => JSON.parse(l)).find(m => m.id === 2);
+      if (msg) resolveDone(msg);
+    }));
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'send_letter', arguments: { to: 'claude-reviewer', subject: 's', body: 'b', project: '/p' } } })}\n`);
+    const reply = await got;
+    child.kill();
+    expect(reply.result.isError).toBeUndefined();
+    expect(reply.result.content[0].text).toMatch(/^Letter [0-9a-f]{32} sent to claude-reviewer/);
+    expect(readdirSync(join(home, '.llm-workspace/mail/inbox'))).toHaveLength(1);
   });
 
   it('never loads the database or the post office', () => {

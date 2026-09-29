@@ -21,7 +21,6 @@ export interface SessionSpec {
   /** Claude: a UUID Fleet chooses. Codex: its rollout's UUID, '' until found. */
   sessionId: string;
   letterDir: string;
-  codexMcpOff: string[];
 }
 
 export type Reply = { verdict: Verdict; review: string };
@@ -58,32 +57,28 @@ export function writePassFile(letterDir: string, pass: number, content: string):
 export const firstMessage = (file: string): string => `You are a Fleet Mail specialist. Read ${file} and do what it says.`;
 export const passLine = (pass: number, file: string): string => `Pass ${pass}: read ${file} and do what it says.`;
 
-const env = (s: SessionSpec): string => `env FLEET_MAIL_SPECIALIST=${q(s.loopId)}`;
-// Variadic --tools goes last so it cannot swallow anything after it.
+// Read-only built-in tools, plus the mail slot so a reviewer can send mail
+// too (David, 2026-09-29). Variadic --tools goes last so it cannot swallow
+// anything after it.
 const claudeFlags = (s: SessionSpec): string =>
-  `--permission-mode dontAsk --strict-mcp-config --add-dir ${q(s.letterDir)} --tools Read Grep Glob`;
+  `--permission-mode dontAsk --allowedTools mcp__fleet-mail --add-dir ${q(s.letterDir)} --tools Read Grep Glob`;
 // Any override makes Codex run standalone instead of joining the shared
-// daemon, so these settings hold. Plugins stay on (David's call, 2026-09-29:
-// he monitors Codex); only servers named in config.toml can be switched off
-// by name -- a plugin server switched off by name breaks Codex's config load.
-const codexFlags = (s: SessionSpec): string => [
-  '--sandbox read-only -a never',
-  `-c ${q('check_for_update_on_startup=false')}`,
-  ...s.codexMcpOff.map(n => `-c ${q(`mcp_servers.${n}.enabled=false`)}`),
-  `-C ${q(s.project)}`,
-].join(' ');
+// daemon, so these settings hold (probed 2026-09-28). Every tool server and
+// plugin stays on, the mail slot included (David's call, 2026-09-29).
+const codexFlags = (s: SessionSpec): string =>
+  `--sandbox read-only -a never -c ${q('check_for_update_on_startup=false')} -C ${q(s.project)}`;
 
 /** One shell string for tmux. Every value is quoted. */
 export function openCommand(s: SessionSpec, message: string): string {
   return s.runsOn === 'claude'
-    ? `${env(s)} claude ${q(message)} --session-id ${q(s.sessionId)} -n ${q(s.name)} ${claudeFlags(s)}`
-    : `${env(s)} codex ${codexFlags(s)} ${q(message)}`;
+    ? `claude ${q(message)} --session-id ${q(s.sessionId)} -n ${q(s.name)} ${claudeFlags(s)}`
+    : `codex ${codexFlags(s)} ${q(message)}`;
 }
 
 export function resumeCommand(s: SessionSpec, message: string): string {
   return s.runsOn === 'claude'
-    ? `${env(s)} claude --resume ${q(s.sessionId)} ${q(message)} ${claudeFlags(s)}`
-    : `${env(s)} codex resume ${codexFlags(s)} ${q(s.sessionId)} ${q(message)}`;
+    ? `claude --resume ${q(s.sessionId)} ${q(message)} ${claudeFlags(s)}`
+    : `codex resume ${codexFlags(s)} ${q(s.sessionId)} ${q(message)}`;
 }
 
 // Tolerates what models add around it: a quote or list marker, bold, a full stop.

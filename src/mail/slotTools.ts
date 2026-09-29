@@ -8,7 +8,6 @@ import { ToolRefusal, type McpTool } from './mcp.ts';
 export interface SlotOptions {
   paths: MailPaths;
   sender: Sender;
-  env: NodeJS.ProcessEnv;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   waitMs: number;
@@ -45,7 +44,6 @@ export function slotTools(o: SlotOptions): McpTool[] {
       required: ['to', 'subject', 'body', 'project'],
     },
     call: async args => {
-      if (o.env.FLEET_MAIL_SPECIALIST) throw new ToolRefusal('Specialists cannot send mail.');
       const { to, subject, body, project, attachments = [], re } = args as any;
       if (typeof project !== 'string' || !isAbsolute(project)) {
         throw new ToolRefusal('send_letter needs project: the absolute path of your working folder.');

@@ -27,8 +27,6 @@ export interface PostOfficeDeps {
   sleep: (ms: number) => Promise<void>;
   /** A fresh UUID for a new Claude session. */
   newSessionId: () => string;
-  /** Configured Codex MCP servers to switch off for a specialist in this project. */
-  listCodexMcpServers: (project: string) => Promise<string[]>;
   notify: (title: string, body: string) => void;
   log: (message: string) => void;
 }
@@ -171,15 +169,6 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
     const instructions = readAgentInstructions(d.home, specialist);
     if (!instructions.ok) return finish('failed', instructions.reason);
     const { runsOn } = specialist;
-    let mcpServers: string[] = [];
-    if (runsOn === 'codex') {
-      try {
-        mcpServers = await d.listCodexMcpServers(project);
-      } catch (e) {
-        return finish('failed', `could not read the Codex MCP settings: ${(e as Error).message}`);
-      }
-    }
-    if (stopped) return;
 
     const letterDir = join(paths.letters, loopId);
     const file = writePassFile(letterDir, pass, `${buildPrompt({
@@ -188,7 +177,7 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
     })}\n\n${VERDICT_RULE}`);
     let sess = getLoopSession(db, loopId);
     const spec: SessionSpec = {
-      runsOn, project, loopId, name: sessionName(to, row.subject ?? ''), sessionId: sess.sessionId ?? '', letterDir, codexMcpOff: mcpServers,
+      runsOn, project, loopId, name: sessionName(to, row.subject ?? ''), sessionId: sess.sessionId ?? '', letterDir,
     };
     const startedAt = d.now();
     let fromOffset: number;

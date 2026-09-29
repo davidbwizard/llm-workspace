@@ -94,17 +94,14 @@ Accepted letters queue. One specialist runs at a time.
 - Each loop gets one live session, opened the way Fleet's Launch button
   opens one: a tmux session in the sender's project, shown in Fleet as a
   card David can watch and type into.
-- It starts read-only, with no mail slot, and with
-  `FLEET_MAIL_SPECIALIST=<loop id>` in its environment:
+- It starts read-only for files, and may send mail itself (David, 2026-09-29:
+  monitoring instead of restriction; the pass limit and daily cap are the brakes):
   - Claude: `claude "<first message>" --session-id <uuid> -n "Mail ·
-    <specialist> · <subject>" --permission-mode dontAsk --strict-mcp-config
-    --add-dir <loop folder> --tools Read Grep Glob`.
+    <specialist> · <subject>" --permission-mode dontAsk --allowedTools
+    mcp__fleet-mail --add-dir <loop folder> --tools Read Grep Glob`.
   - Codex: `codex --sandbox read-only -a never -c
-    check_for_update_on_startup=false -c mcp_servers.fleet-mail.enabled=false
-    -C <project> "<first message>"`. Plugins and other tool servers stay on
-    (David's call: he monitors Codex); only the mail slot is switched off,
-    and only when `config.toml` defines it, since switching off a
-    plugin-provided server by name stops Codex from starting. Launched with
+    check_for_update_on_startup=false -C <project> "<first message>"`. Every
+    tool server and plugin stays on, the mail slot included. Launched with
     overrides, Codex runs as its own process, not through the shared
     daemon, so these settings hold (probed 2026-09-28).
 - Each pass is written to `letters/<loop>/pass-<n>.md`: the agent's
@@ -173,8 +170,8 @@ descriptions.
   running in tmux like every Fleet session. On restart, letters still
   `queued` or `running` become `cancelled`; their sessions stay open.
 - Daily cap, pass limit, one run at a time, run time limit.
-- Specialists cannot send: Claude runs with no MCP servers, Codex with the
-  mail slot switched off, and the slot refuses inside either.
+- Specialists may send mail too. Fleet's session badges show who is
+  mailing whom; the pass limit and the daily cap are the brakes.
 - A failed log write turns mail off. Nothing runs unrecorded.
 
 ## Setup

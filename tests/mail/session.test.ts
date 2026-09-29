@@ -9,22 +9,21 @@ import {
 
 const claude: SessionSpec = {
   runsOn: 'claude', project: '/p', loopId: 'l'.repeat(32), name: 'Mail · claude-reviewer · Spec',
-  sessionId: '11111111-2222-3333-4444-555555555555', letterDir: '/m/letters/L', codexMcpOff: [],
+  sessionId: '11111111-2222-3333-4444-555555555555', letterDir: '/m/letters/L',
 };
-const codex: SessionSpec = { ...claude, runsOn: 'codex', sessionId: '', codexMcpOff: ['trello'] };
+const codex: SessionSpec = { ...claude, runsOn: 'codex', sessionId: '' };
 
 describe('commands', () => {
   it('opens Claude read-only, named, with a fixed session id', () => {
     expect(openCommand(claude, 'Read /m/letters/L/pass-1.md')).toBe(
-      `env FLEET_MAIL_SPECIALIST='${'l'.repeat(32)}' claude 'Read /m/letters/L/pass-1.md' `
+      `claude 'Read /m/letters/L/pass-1.md' `
       + `--session-id '11111111-2222-3333-4444-555555555555' -n 'Mail · claude-reviewer · Spec' `
-      + `--permission-mode dontAsk --strict-mcp-config --add-dir '/m/letters/L' --tools Read Grep Glob`);
+      + `--permission-mode dontAsk --allowedTools mcp__fleet-mail --add-dir '/m/letters/L' --tools Read Grep Glob`);
   });
 
-  it('opens Codex standalone, read-only, with its MCP servers off and no update screen', () => {
+  it('opens Codex standalone and read-only, with no update screen', () => {
     expect(openCommand(codex, 'Read x')).toBe(
-      `env FLEET_MAIL_SPECIALIST='${'l'.repeat(32)}' codex --sandbox read-only -a never `
-      + `-c 'check_for_update_on_startup=false' -c 'mcp_servers.trello.enabled=false' -C '/p' 'Read x'`);
+      `codex --sandbox read-only -a never -c 'check_for_update_on_startup=false' -C '/p' 'Read x'`);
   });
 
   it('resumes with the same settings', () => {

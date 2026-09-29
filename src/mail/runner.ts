@@ -1,5 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { Sender } from './files.ts';
 
 export const HOUSE_RULES = [
@@ -32,37 +30,4 @@ export function buildPrompt(p: PromptInput): string {
     `Project: ${p.project}\nAttached files, relative to the project:\n${files}`,
     `Subject: ${p.subject}\n\n${p.body}`,
   ].join('\n\n');
-}
-
-/** The `[mcp_servers.<name>]` tables in a Codex config.toml. Subtables
- *  (`.env`) are skipped. A header this cannot turn into a safe override is
- *  refused, so no server is left on by accident. Plugin servers are not
- *  listed here: the specialist switches plugins off as a feature. */
-export function codexServerNames(toml: string): string[] {
-  const names: string[] = [];
-  for (const raw of toml.split('\n')) {
-    const line = raw.trim();
-    if (!line.startsWith('[mcp_servers')) continue;
-    const m = /^\[mcp_servers\.([A-Za-z0-9_-]+)(\.[A-Za-z0-9_.-]+)?\]$/.exec(line);
-    if (!m) throw new Error(`cannot switch off the Codex MCP server in ${line}`);
-    if (!m[2] && !names.includes(m[1]!)) names.push(m[1]!);
-  }
-  return names;
-}
-
-/** Servers from the user's and the project's Codex config. `codex mcp list`
- *  is no guide: it lists plugin servers too, and ignores `-c` overrides. */
-export async function readCodexServerNames(home: string, project: string): Promise<string[]> {
-  const names: string[] = [];
-  for (const file of [join(home, '.codex/config.toml'), join(project, '.codex/config.toml')]) {
-    let text: string;
-    try {
-      text = await readFile(file, 'utf8');
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      throw e;
-    }
-    for (const name of codexServerNames(text)) if (!names.includes(name)) names.push(name);
-  }
-  return names;
 }

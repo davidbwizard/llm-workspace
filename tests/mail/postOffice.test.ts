@@ -40,7 +40,7 @@ const driver = (): SessionDriver => ({
 const deps = (over: Partial<PostOfficeDeps> = {}): PostOfficeDeps => ({
   paths: mailPaths(join(root, 'mail')), db, home: join(root, 'home'), now: () => now, pid: process.pid,
   isAlive: () => true, session: driver(), sleep: async ms => { now += ms; }, newSessionId: () => SESSION_ID,
-  listCodexMcpServers: async () => [], notify: (t, b) => { notes.push(`${t}: ${b}`); }, log: m => { logs.push(m); }, ...over,
+  notify: (t, b) => { notes.push(`${t}: ${b}`); }, log: m => { logs.push(m); }, ...over,
 });
 
 const config = (over: Record<string, unknown>) =>
@@ -96,8 +96,8 @@ describe('post office', () => {
     await office.idle();
     expect(opened).toHaveLength(1);
     expect(opened[0]).toMatchObject({ runsOn: 'codex', project, tmux: `llmws-codex-mail-${id.slice(0, 8)}` });
-    expect(opened[0]!.command).toContain(`FLEET_MAIL_SPECIALIST='${id}'`);
     expect(opened[0]!.command).toContain('--sandbox read-only -a never');
+    expect(opened[0]!.command).not.toMatch(/FLEET_MAIL_SPECIALIST|mcp_servers/);
     const pass1 = passText(id, 1);
     for (const part of ['You review specs.', 'Please review.', VERDICT_RULE]) expect(pass1).toContain(part);
     expect(out(id)).toMatchObject({ status: 'replied', verdict: 'changes_requested', pass: 1, passLimit: 4, loopStatus: 'open', specialist: 'codex-reviewer', project });
@@ -111,18 +111,16 @@ describe('post office', () => {
     await office.idle();
     expect(opened[0]!.runsOn).toBe('claude');
     expect(opened[0]!.command).toContain(`--session-id '${SESSION_ID}' -n 'Mail · claude-reviewer · Review the spec'`);
-    expect(opened[0]!.command).toContain('--tools Read Grep Glob');
+    expect(opened[0]!.command).toContain('--allowedTools mcp__fleet-mail --add-dir');
+    expect(opened[0]!.command).not.toContain('--strict-mcp-config');
     expect(getLoopSession(db, id)).toMatchObject({ sessionId: SESSION_ID, transcript: `/t/${SESSION_ID}.jsonl` });
     expect(out(id)).toMatchObject({ status: 'replied', verdict: 'approved', loopStatus: 'approved' });
   });
 
-  it('starts a Codex specialist with its MCP servers off, and logs the command', async () => {
-    const asked: string[] = [];
-    const office = createPostOffice(deps({ listCodexMcpServers: async p => { asked.push(p); return ['trello']; } }));
+  it('logs each command it opens', async () => {
+    const office = createPostOffice(deps());
     send(office);
     await office.idle();
-    expect(asked).toEqual([project]);
-    expect(opened[0]!.command).toContain("-c 'mcp_servers.trello.enabled=false'");
     expect(logs).toContain(`opened ${opened[0]!.tmux}: ${opened[0]!.command}`);
   });
 
@@ -326,6 +324,7 @@ describe('post office', () => {
     const first = send(office);
     const second = send(office);
     db.close();
+    grow = 1;   // the reply lands after the log broke
     wake();
     await office.idle();
     expect(out(first)).toMatchObject({ status: 'failed', reason: expect.stringMatching(/^mail is off: /) });
