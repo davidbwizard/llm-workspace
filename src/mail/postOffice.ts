@@ -29,6 +29,8 @@ export interface PostOfficeDeps {
   newSessionId: () => string;
   notify: (title: string, body: string) => void;
   log: (message: string) => void;
+  /** Called after every status write, so the window's badges can refresh. */
+  onChange?: () => void;
 }
 
 export interface PostOffice {
@@ -74,6 +76,11 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
       writeFileAtomic(join(paths.out, `${out.id}.json`), JSON.stringify(out));
     } catch (e) {
       d.log(`could not write the status of ${out.id}: ${(e as Error).message}`);
+    }
+    try {
+      d.onChange?.();
+    } catch (e) {
+      d.log(`could not refresh the mail badges: ${(e as Error).message}`);
     }
   };
   const publishFinal = (id: string, status: LetterStatus, reason: string): void => publish({

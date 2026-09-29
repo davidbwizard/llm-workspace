@@ -124,6 +124,14 @@ describe('post office', () => {
     expect(db.prepare('SELECT from_pid AS pid, from_meta AS meta FROM letters WHERE id = ?').get(id)).toEqual({ pid: 777, meta: '{"thread":"t1"}' });
   });
 
+  it('tells Fleet each time a letter changes', async () => {
+    let changes = 0;
+    const office = createPostOffice(deps({ onChange: () => { changes += 1; } }));
+    send(office);
+    await office.idle();
+    expect(changes).toBeGreaterThanOrEqual(3);   // queued, running, replied
+  });
+
   it('logs each command it opens', async () => {
     const office = createPostOffice(deps());
     send(office);
