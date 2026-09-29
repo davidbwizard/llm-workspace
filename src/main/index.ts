@@ -8,10 +8,9 @@ import { mailBadges } from '../mail/badges.ts';
 import { mailPaths } from '../mail/files.ts';
 import { loadMailConfig } from '../mail/mailConfig.ts';
 import { pushMail, registerMailIpc, type BadgeMap } from './mailIpc.ts';
-import { panePid } from './tmux.ts';
 import { openMailLog, type MailDb } from '../mail/log.ts';
 import { isAlive, startPostOffice, type PostOffice } from '../mail/postOffice.ts';
-import { createFleetDriver } from '../mail/fleetDriver.ts';
+import { createFleetDriver, livePanePids } from '../mail/fleetDriver.ts';
 import { ingestAll, startWatcher, type Watcher, type WatchRoot } from '../watch/watcher.ts';
 import { ingestSpool, rotateSpool } from '../hooks/spool.ts';
 import { refreshHelperIfInstalled } from '../hooks/switch.ts';
@@ -46,7 +45,7 @@ function readMailBadges(): BadgeMap {
   const cfg = loadMailConfig(mailPaths(paths.mailDir).config);
   return mailBadges(mailDb, {
     isRead: id => existsSync(join(out, `${id}.read`)),
-    pidOfTmux: name => panePid(name),
+    pidOfTmux: livePanePids(),
     passLimit: cfg.ok ? cfg.config.passesPerLoop : 4,
     since: Date.now() - 86_400_000,
   });

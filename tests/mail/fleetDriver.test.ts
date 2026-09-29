@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createFleetDriver } from '../../src/mail/fleetDriver.ts';
+import { createFleetDriver, livePanePids } from '../../src/mail/fleetDriver.ts';
 
 let inputs: string[] = [];
 const recorder = (inMode: '0' | '1') => {
@@ -58,5 +58,34 @@ describe('fleet session driver', () => {
   it('reports a missing transcript as size 0', () => {
     const driver = createFleetDriver({});
     expect(driver.size(join(mkdtempSync(join(tmpdir(), 'mail-d-')), 'none.jsonl'))).toBe(0);
+  });
+});
+
+describe('live pane pids for the mail badges', () => {
+  // The badge read runs every few seconds over every recent loop, and a
+  // reviewer session is gone once its loop ends. Asking tmux about each gone
+  // one printed "can't find session" to the dev pane on every read.
+  it('lists sessions once and asks for a pane only on live ones', () => {
+    const calls: string[][] = [];
+    const exec = (args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'list-sessions') return { ok: true as const, stdout: 'llmws-codex-mail-live\nworkspace-app\n' };
+      return { ok: true as const, stdout: '4242\n' };
+    };
+    const pidOf = livePanePids(exec);
+    expect(pidOf('llmws-codex-mail-live')).toBe(4242);
+    expect(pidOf('llmws-codex-mail-gone')).toBeNull();
+    expect(pidOf('llmws-claude-gone')).toBeNull();
+    expect(calls).toEqual([
+      ['list-sessions', '-F', '#{session_name}'],
+      ['list-panes', '-t', '=llmws-codex-mail-live:', '-F', '#{pane_pid}'],
+    ]);
+  });
+
+  it('reads no tmux server as no live sessions', () => {
+    const calls: string[][] = [];
+    const pidOf = livePanePids(args => { calls.push(args); return { ok: false as const, error: 'no server running' }; });
+    expect(pidOf('llmws-codex-mail-live')).toBeNull();
+    expect(calls).toEqual([['list-sessions', '-F', '#{session_name}']]);
   });
 });

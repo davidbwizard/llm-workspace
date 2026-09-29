@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { launchSession } from '../main/launch.ts';
 import { codexBusyFromTail, ROLLOUT_TAIL_BYTES } from '../main/codexBusy.ts';
 import {
-  cancelCopyMode, capturePane, deleteBuffer, hasSession, loadBuffer, paneInMode, pasteBuffer, sendKeyName, type TmuxExec,
+  cancelCopyMode, capturePane, deleteBuffer, hasSession, listSessionNames, loadBuffer, paneInMode, panePid, pasteBuffer,
+  sendKeyName, type TmuxExec,
 } from '../main/tmux.ts';
 import { projectDir } from '../providers/claude/projectKey.ts';
 import { findCodexRollout, readReply, type SessionDriver } from './session.ts';
@@ -24,6 +25,15 @@ const SETTLE_ATTEMPTS = 10;
 const SETTLE_MS = 30;
 const blockFor = (ms: number): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 const isMissing = (e: unknown): boolean => (e as NodeJS.ErrnoException).code === 'ENOENT';
+
+/** A pane-pid lookup for one badge read. tmux lists its sessions once, and
+ *  only names still in that list are asked for a pane: a reviewer session is
+ *  gone once its loop ends, and asking about it anyway printed "can't find
+ *  session" to the app's stderr on every read. */
+export function livePanePids(exec?: TmuxExec): (name: string) => number | null {
+  const live = new Set(listSessionNames(exec));
+  return name => (live.has(name) ? panePid(name, exec) : null);
+}
 
 /** Specialist sessions go through Fleet's own launch and tmux helpers, so
  *  they appear as ordinary Fleet sessions and share their name guard. */
