@@ -336,7 +336,11 @@ export function SessionRail({
           best = { kind, label: el.dataset.attnLabel ?? '', direction: above ? 'up' : 'down' };
         }
       }
-      setOffscreen(best);
+      // Keep the old object when nothing changed. This effect runs after every
+      // render, so a fresh object here would trigger another render, and so on
+      // forever while a marked card is out of view.
+      setOffscreen(prev => (prev !== null && best !== null && prev.kind === best.kind
+        && prev.label === best.label && prev.direction === best.direction) ? prev : best);
     };
 
     const io = new IntersectionObserver(recompute, { root, threshold: 0 });
