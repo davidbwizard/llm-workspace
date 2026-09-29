@@ -178,3 +178,17 @@
 }
 
 .settingsrecheck .settingscaption { margin: 0; }
+
+/* Help, the last row of the list (option B of the Help mockup,
+   claude.ai/artifact/Pm1UjzEWrck2qvkGVjnNri): says Help in words and names
+   what is inside. The modal it opens is HelpModal.css. */
+.settingshelprow { display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+  font:inherit; color:var(--ink); background:transparent; border:1px solid var(--line);
+  border-radius:var(--r-sm); padding:11px 12px 11px 13px; cursor:pointer; }
+.settingshelprow:hover { background:var(--raised); }
+.settingshelprowicon, .settingshelprowcaret { display:flex; flex:none; }
+.settingshelprowicon { color:var(--ink-2); }
+.settingshelprowcaret { color:var(--muted); }
+.settingshelprow svg { display:block; }
+.settingshelprowtext { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
+.settingshelprowtext .settingshelp { font-size:12px; }

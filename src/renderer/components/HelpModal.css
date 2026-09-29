@@ -1,0 +1,73 @@
+/* src/renderer/components/HelpModal.css
+   The approved mockup's own CSS (claude.ai/artifact/Pm1UjzEWrck2qvkGVjnNri),
+   which was built from SettingsModal.css, HooksConsent.css,
+   DependencyChecks.css and MailBadge.css. Tokens only. The dialog shell,
+   header, close button and footer are SettingsModal.css's classes. */
+
+/* Wider than Settings, as in the mockup; wider again once there is a topic
+   list. Two classes so this wins over .settingsdlg's max-width whatever
+   order the stylesheets load in. */
+.settingsdlg.helpdlg { max-width:min(560px, calc(100vw - 32px)); }
+.settingsdlg.helpdlg-split { max-width:min(760px, calc(100vw - 32px)); }
+
+/* Same shell as .settingspanel, including its own scrolling kept inside. */
+.helppanel { display:flex; flex-direction:column; gap:20px;
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+  box-shadow:var(--shadow-pop); padding:20px 22px 18px; color:var(--ink);
+  max-height:80vh; overflow-y:auto; overscroll-behavior:contain; }
+
+/* Settings does not scroll behind Help (HelpModal.tsx's LOCK_CLASS). The app
+   behind Settings is already locked by Settings' own 'modal-open'. */
+:root.help-open .settingspanel { overflow:hidden; }
+
+.helphead { gap:8px; }
+.helphead .helpmark { display:inline-flex; color:var(--accent); }
+.helphead .helpmark svg { display:block; }
+
+.helptopic { display:flex; flex-direction:column; gap:20px; min-width:0; }
+.helptopichead { display:flex; flex-direction:column; gap:6px; padding-bottom:16px;
+  border-bottom:1px solid var(--line-soft); }
+.helptitle { margin:0; font-family:var(--f-display); font-variation-settings:var(--f-display-fx);
+  font-size:26px; font-weight:540; line-height:1.15; text-wrap:balance; }
+.helplede { margin:0; font-size:14px; line-height:1.55; color:var(--ink-2); max-width:62ch; }
+
+.helpsec { display:flex; flex-direction:column; gap:8px; }
+.helpsectitle { margin:0; display:flex; align-items:baseline; gap:8px; font-family:var(--f-mono);
+  font-size:11px; font-weight:400; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); }
+.helpstep { color:var(--accent); font-variant-numeric:tabular-nums; }
+.helptext { margin:0; font-size:13.5px; line-height:1.55; }
+.helplist { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:4px;
+  font-size:13.5px; line-height:1.55; }
+.helplist li::marker { color:var(--faint); }
+.helpnote { margin:0; font-size:12px; line-height:1.5; color:var(--muted); }
+.helpnote code, .helplist code { font-family:var(--f-mono); font-size:11.5px; background:var(--raised);
+  border-radius:4px; padding:1px 5px; }
+
+/* An example message, selectable by hand in case the clipboard refuses. */
+.helpmsg { display:flex; align-items:flex-start; gap:10px; background:var(--ground);
+  border:1px solid var(--line-soft); border-radius:var(--r-sm); padding:10px 10px 10px 12px; }
+.helpmsgtext { flex:1; min-width:0; margin:0; font-family:var(--f-mono); font-size:12px; line-height:1.6;
+  color:var(--ink); white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; }
+/* Same look and states as DependencyChecks' Copy button. */
+.helpcopy { flex:none; font-family:var(--f-mono); font-size:11px; color:var(--muted); background:none;
+  border:1px solid var(--line); border-radius:6px; padding:4px 10px; cursor:pointer; }
+.helpcopy:hover { color:var(--ink); }
+.helpcopy[data-state="copied"] { color:var(--accent); border-color:var(--accent); }
+.helpcopy[data-state="failed"] { color:var(--critical); border-color:var(--critical); }
+
+/* The real MailBadges (MailBadge.css), on a swatch so they read as examples. */
+.helpbadges { display:flex; flex-direction:column; gap:6px; margin-top:4px; }
+.helpbadge { display:flex; align-items:center; gap:10px; font-size:13px; line-height:1.45; color:var(--ink-2); }
+.helpbadge .mailbadge { min-width:60px; justify-content:center; padding:3px 8px;
+  border:1px solid var(--line-soft); border-radius:6px; background:var(--ground); }
+
+/* HooksConsent.css's fact list, at the mockup's slightly larger size. */
+.helppanel .hcfacts { gap:6px 14px; font-size:12.5px; line-height:1.5; }
+
+/* The topic list, only rendered once there are two or more topics. */
+.helpsplit { display:grid; grid-template-columns:168px minmax(0,1fr); gap:22px; }
+.helpnav { display:flex; flex-direction:column; gap:2px; padding-right:14px; border-right:1px solid var(--line-soft); }
+.helpnav button { text-align:left; font:inherit; font-size:13.5px; color:var(--ink-2); background:none; border:0;
+  border-radius:var(--r-sm); padding:7px 10px; cursor:pointer; }
+.helpnav button:hover { background:var(--raised); color:var(--ink); }
+.helpnav button[aria-current="true"] { background:var(--raised); color:var(--ink); font-weight:600; }

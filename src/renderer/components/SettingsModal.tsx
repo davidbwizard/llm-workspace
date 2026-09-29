@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   APPEARANCES, COMPACT_CARDS, DEFAULT_SETTINGS, MESSAGE_STYLES, TEXT_SIZES, setSettings, useSettings,
   type Appearance, type CompactCards, type MessageStyle, type TextSize,
@@ -6,6 +6,8 @@ import {
 import { ProviderMark } from './ProviderMark.tsx';
 import { DependencyChecks, CheckAgain } from './DependencyChecks.tsx';
 import { HooksConsent } from './HooksConsent.tsx';
+import { HelpModal } from './HelpModal.tsx';
+import { Icon } from './Icon.tsx';
 import { useChecks } from '../state/useChecks.ts';
 import './SettingsModal.css';
 
@@ -263,6 +265,25 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [usageError, setUsageError] = useState<string | null>(null);
   const [usageBusy, setUsageBusy] = useState(false);
 
+  // Help (option B of the Help mockup): opened from the last row of the
+  // list, over this dialog. Closed along with Settings, so Settings always
+  // reopens with Help shut.
+  const [helpOpen, setHelpOpen] = useState(false);
+  const helpRowRef = useRef<HTMLButtonElement | null>(null);
+  const helpWasOpen = useRef(false);
+  const closeHelp = useCallback(() => setHelpOpen(false), []);
+
+  useEffect(() => { if (!open) setHelpOpen(false); }, [open]);
+
+  // Back to the row Help was opened from. An effect rather than part of
+  // closeHelp: HelpModal is a child, so its effect has already closed its
+  // dialog by now, and Settings is no longer inert behind it.
+  useEffect(() => {
+    if (helpOpen) { helpWasOpen.current = true; return; }
+    if (helpWasOpen.current && open) helpRowRef.current?.focus();
+    helpWasOpen.current = false;
+  }, [helpOpen, open]);
+
   useEffect(() => {
     if (!open) return;
     const api = window.fleet;
@@ -321,7 +342,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   }, [open]);
 
   useEffect(() => {
-    if (!open) return;
+    // Steps aside while Help is open: this listens on the whole document,
+    // so one Escape would otherwise close Help and Settings together.
+    if (!open || helpOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       // preventDefault, then close through React: Chromium's own dialog
@@ -333,9 +356,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, onClose, helpOpen]);
 
   return (
+    <>
     <dialog
       ref={dialogRef}
       className="settingsdlg"
@@ -496,11 +520,25 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           </div>
         </section>
 
+        <section className="settingssection">
+          <button type="button" className="settingshelprow" ref={helpRowRef} onClick={() => setHelpOpen(true)}>
+            <span className="settingshelprowicon"><Icon name="info" size={18} /></span>
+            <span className="settingshelprowtext">
+              <span className="settingslabel">Help</span>{' '}
+              <span className="settingshelp">How to use Fleet Mail, step by step.</span>
+            </span>
+            <span className="settingshelprowcaret"><Icon name="caret-right" size={14} /></span>
+          </button>
+        </section>
+
         <div className="settingsfoot">
           <p className="settingscaption">{FOOTER_CAPTION}</p>
           <button type="button" className="settingsdone" onClick={onClose}>Done</button>
         </div>
       </div>
     </dialog>
+    {/* Beside this dialog, not inside it: see HelpModal's own note. */}
+    <HelpModal open={open && helpOpen} onClose={closeHelp} />
+    </>
   );
 }
