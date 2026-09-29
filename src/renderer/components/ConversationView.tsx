@@ -1,4 +1,4 @@
-import { Fragment, cloneElement, createContext, isValidElement, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type MutableRefObject, type ReactElement, type ReactNode } from 'react';
+import { Fragment, cloneElement, createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type MutableRefObject, type ReactElement, type ReactNode } from 'react';
 import Markdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationTurn } from '../../store/conversation.ts';
@@ -187,13 +187,19 @@ const urlTransform: UrlTransform = (url, key, node) =>
 // itself) makes the two modules mutually referential -- harmless here,
 // since both only ever call each other's exports from inside a render, well
 // after module evaluation finishes, never at module-top-level.
-export function MarkdownText({ text }: { text: string }) {
+//
+// Memoized: every window update re-renders the whole pane, and re-parsing
+// every reply's Markdown each time was ~70% of the window's CPU on a long
+// conversation (profiled 2026-09-29). Only `text` varies; the plugins,
+// components and urlTransform are module constants, and file links inside
+// still update through their context.
+export const MarkdownText = memo(function MarkdownText({ text }: { text: string }) {
   return (
     <Markdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={urlTransform}>
       {text}
     </Markdown>
   );
-}
+});
 
 /** "Sep 12" -- no year, no weekday. Shown once per day, on the divider above
  *  that day's first turn (see showDate in the render loop). Pinned to
