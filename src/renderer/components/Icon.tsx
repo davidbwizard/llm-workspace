@@ -1,4 +1,4 @@
-import { Bell, CaretDown, CircleNotch, Gear, Terminal, Warning } from '@phosphor-icons/react';
+import { Bell, CaretDown, CircleNotch, Gear, PaperPlaneRight, Terminal, Tray, Warning } from '@phosphor-icons/react';
 
 /** Phosphor, per the visual design doc §5. Its weight range carries state by
  *  weight and fill rather than hue alone, which matters because colour is
@@ -10,6 +10,8 @@ import { Bell, CaretDown, CircleNotch, Gear, Terminal, Warning } from '@phosphor
 const ICONS = {
   bell: Bell, 'chevron-down': CaretDown, gear: Gear, spinner: CircleNotch,
   terminal: Terminal, warning: Warning,
+  // Fleet Mail's card badges: letters sent, and a reviewer's inbox.
+  'paper-plane': PaperPlaneRight, tray: Tray,
 } as const;
 
 export type IconName = keyof typeof ICONS;

@@ -1,4 +1,5 @@
 import type { FleetListPayload, FleetHistoryPayload, KillResult, KeysResult } from '../main/ipc.ts';
+import type { MailBadge } from '../mail/badges.ts';
 import type { ConversationPage, ConversationCursor } from '../store/conversation.ts';
 import type { TerminalDataPayload } from '../main/stream.ts';
 import type { LaunchResult } from '../main/launch.ts';
@@ -32,6 +33,8 @@ declare global {
       killSession: (pid: number) => Promise<KillResult>;
       revealSession: (pid: number) => Promise<RevealResult>;
       onFleet: (cb: (payload: FleetListPayload) => void) => () => void;
+      mailBadges: () => Promise<Record<number, MailBadge[]>>;
+      onMail: (cb: (payload: Record<number, MailBadge[]>) => void) => () => void;
       // Main sanitises and revalidates pid and text on every call; this
       // typing narrows nothing at the trust boundary itself.
       sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }) => Promise<KeysResult>;

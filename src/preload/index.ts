@@ -33,6 +33,13 @@ const api = {
     ipcRenderer.on('fleet:update', handler);
     return () => ipcRenderer.off('fleet:update', handler);
   },
+  // Fleet Mail's card badges: asked for once, then pushed on every change.
+  mailBadges: () => ipcRenderer.invoke('mail:badges'),
+  onMail: (cb: (payload: unknown) => void) => {
+    const handler = (_e: unknown, payload: unknown) => cb(payload);
+    ipcRenderer.on('mail:update', handler);
+    return () => ipcRenderer.off('mail:update', handler);
+  },
   // Free-form text from the renderer: the first channel of its kind here.
   // Main sanitises and revalidates; the typing below narrows nothing.
   sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }) =>

@@ -74,6 +74,9 @@ describe('renderer security posture', () => {
       // (first-run design §6) -- so the app cannot edit a file the person
       // owns without having just shown them what it would put there.
       'hooks:decline', 'hooks:get', 'hooks:preview', 'hooks:set',
+      // Fleet Mail's card badges: read-only and argument-free; main answers
+      // from its own mail log (src/main/mailIpc.ts).
+      'mail:badges',
       // Per-viewer preferences (src/main/prefs.ts), kept by main so the
       // window's ORIGIN cannot partition them. 'prefs:all' is the one
       // SYNCHRONOUS channel in this app -- a sandboxed preload has no other
