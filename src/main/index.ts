@@ -7,7 +7,7 @@ import { openDb, type Db } from '../store/db.ts';
 import { mailPaths } from '../mail/files.ts';
 import { openMailLog, type MailDb } from '../mail/log.ts';
 import { isAlive, startPostOffice, type PostOffice } from '../mail/postOffice.ts';
-import { listCodexMcpServers } from '../mail/runner.ts';
+import { readCodexServerNames } from '../mail/runner.ts';
 import { createFleetDriver } from '../mail/fleetDriver.ts';
 import { ingestAll, startWatcher, type Watcher, type WatchRoot } from '../watch/watcher.ts';
 import { ingestSpool, rotateSpool } from '../hooks/spool.ts';
@@ -281,7 +281,7 @@ app.whenReady().then(async () => {
     postOffice = startPostOffice({
       paths: mailPaths(paths.mailDir), db: mailDb, home: homedir(), now: Date.now, pid: process.pid, isAlive,
       session: createFleetDriver({}), sleep: ms => new Promise(r => setTimeout(r, ms)), newSessionId: randomUUID,
-      listCodexMcpServers,
+      listCodexMcpServers: project => readCodexServerNames(homedir(), project),
       notify: (title, body) => new Notification({ title, body }).show(),
       log: message => console.error('Fleet Mail:', message),
     });

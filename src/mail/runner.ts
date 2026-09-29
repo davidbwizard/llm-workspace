@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { Sender } from './files.ts';
 
 export const HOUSE_RULES = [
@@ -34,20 +34,35 @@ export function buildPrompt(p: PromptInput): string {
   ].join('\n\n');
 }
 
-/** Names of Codex's enabled MCP servers, from `codex mcp list --json`. */
-export function parseCodexMcpList(json: string): string[] {
-  const list: unknown = JSON.parse(json);
-  if (!Array.isArray(list)) throw new Error('codex mcp list --json did not return a list');
-  return list.filter((s: any) => s?.enabled !== false).map((s: any) => {
-    if (typeof s?.name !== 'string' || !/^[A-Za-z0-9_-]+$/.test(s.name)) {
-      throw new Error(`cannot switch off Codex MCP server ${JSON.stringify(s?.name)}`);
-    }
-    return s.name;
-  });
+/** The `[mcp_servers.<name>]` tables in a Codex config.toml. Subtables
+ *  (`.env`) are skipped. A header this cannot turn into a safe override is
+ *  refused, so no server is left on by accident. Plugin servers are not
+ *  listed here: the specialist switches plugins off as a feature. */
+export function codexServerNames(toml: string): string[] {
+  const names: string[] = [];
+  for (const raw of toml.split('\n')) {
+    const line = raw.trim();
+    if (!line.startsWith('[mcp_servers')) continue;
+    const m = /^\[mcp_servers\.([A-Za-z0-9_-]+)(\.[A-Za-z0-9_.-]+)?\]$/.exec(line);
+    if (!m) throw new Error(`cannot switch off the Codex MCP server in ${line}`);
+    if (!m[2] && !names.includes(m[1]!)) names.push(m[1]!);
+  }
+  return names;
 }
 
-/** Async, so a slow `codex` never freezes Fleet's main process. */
-export async function listCodexMcpServers(): Promise<string[]> {
-  const { stdout } = await promisify(execFile)('codex', ['mcp', 'list', '--json'], { encoding: 'utf8', timeout: 15_000 });
-  return parseCodexMcpList(stdout);
+/** Servers from the user's and the project's Codex config. `codex mcp list`
+ *  is no guide: it lists plugin servers too, and ignores `-c` overrides. */
+export async function readCodexServerNames(home: string, project: string): Promise<string[]> {
+  const names: string[] = [];
+  for (const file of [join(home, '.codex/config.toml'), join(project, '.codex/config.toml')]) {
+    let text: string;
+    try {
+      text = await readFile(file, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw e;
+    }
+    for (const name of codexServerNames(text)) if (!names.includes(name)) names.push(name);
+  }
+  return names;
 }

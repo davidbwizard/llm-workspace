@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { buildPrompt, parseCodexMcpList, HOUSE_RULES } from '../../src/mail/runner.ts';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildPrompt, codexServerNames, readCodexServerNames, HOUSE_RULES } from '../../src/mail/runner.ts';
 
 describe('buildPrompt', () => {
   it('puts the rules before the letter and marks the letter as a request', () => {
@@ -15,14 +18,26 @@ describe('buildPrompt', () => {
   });
 });
 
-describe('parseCodexMcpList', () => {
-  it('names the enabled servers', () => {
-    expect(parseCodexMcpList(JSON.stringify([{ name: 'codex_app', enabled: false }, { name: 'trello', enabled: true }, { name: 'docs' }])))
-      .toEqual(['trello', 'docs']);
+describe('codexServerNames', () => {
+  it('names each configured server and skips subtables and plugins', () => {
+    const toml = '[mcp_servers.node_repl]\ncommand = "x"\n[mcp_servers.node_repl.env]\nA = "1"\n'
+      + '[plugins."context7@claude-plugins-official"]\nenabled = true\n  [mcp_servers.trello]\n';
+    expect(codexServerNames(toml)).toEqual(['node_repl', 'trello']);
   });
 
-  it('refuses output it cannot use safely', () => {
-    expect(() => parseCodexMcpList(JSON.stringify([{ name: 'a.b', enabled: true }]))).toThrow(/cannot switch off/);
-    expect(() => parseCodexMcpList('{}')).toThrow(/did not return a list/);
+  it('refuses a server header it cannot switch off safely', () => {
+    expect(() => codexServerNames('[mcp_servers."my server"]\n')).toThrow(/cannot switch off/);
+    expect(() => codexServerNames('[mcp_servers]\nx = {}\n')).toThrow(/cannot switch off/);
+  });
+
+  it('reads the home and project configs, and a missing file names none', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'mail-h-'));
+    const project = mkdtempSync(join(tmpdir(), 'mail-p-'));
+    expect(await readCodexServerNames(home, project)).toEqual([]);
+    mkdirSync(join(home, '.codex'));
+    mkdirSync(join(project, '.codex'));
+    writeFileSync(join(home, '.codex/config.toml'), '[mcp_servers.trello]\n');
+    writeFileSync(join(project, '.codex/config.toml'), '[mcp_servers.local-db]\n[mcp_servers.trello]\n');
+    expect(await readCodexServerNames(home, project)).toEqual(['trello', 'local-db']);
   });
 });

@@ -27,7 +27,8 @@ export interface PostOfficeDeps {
   sleep: (ms: number) => Promise<void>;
   /** A fresh UUID for a new Claude session. */
   newSessionId: () => string;
-  listCodexMcpServers: () => Promise<string[]>;
+  /** Configured Codex MCP servers to switch off for a specialist in this project. */
+  listCodexMcpServers: (project: string) => Promise<string[]>;
   notify: (title: string, body: string) => void;
   log: (message: string) => void;
 }
@@ -173,9 +174,9 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
     let mcpServers: string[] = [];
     if (runsOn === 'codex') {
       try {
-        mcpServers = await d.listCodexMcpServers();
+        mcpServers = await d.listCodexMcpServers(project);
       } catch (e) {
-        return finish('failed', `could not list Codex MCP servers: ${(e as Error).message}`);
+        return finish('failed', `could not read the Codex MCP settings: ${(e as Error).message}`);
       }
     }
     if (stopped) return;
@@ -208,6 +209,8 @@ export function createPostOffice(d: PostOfficeDeps): PostOffice {
       if (runsOn === 'claude' && !resuming) spec.sessionId = d.newSessionId();
       const tmux = sess.tmux ?? `llmws-${runsOn}-mail-${loopId.slice(0, 8)}`;
       const command = resuming ? resumeCommand(spec, passLine(pass, file)) : openCommand(spec, firstMessage(file));
+      // Logged so a session that dies on startup can be reproduced by hand.
+      d.log(`opened ${tmux}: ${command}`);
       const err = d.session.open(runsOn, project, command, tmux);
       if (err) return finish('failed', `could not open the session: ${err}`);
       const transcript = runsOn === 'claude' ? d.session.claudeTranscript(project, spec.sessionId) : sess.transcript;

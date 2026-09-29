@@ -23,13 +23,13 @@ describe('commands', () => {
 
   it('opens Codex standalone, read-only, with its MCP servers off and no update screen', () => {
     expect(openCommand(codex, 'Read x')).toBe(
-      `env FLEET_MAIL_SPECIALIST='${'l'.repeat(32)}' codex --sandbox read-only -a never `
+      `env FLEET_MAIL_SPECIALIST='${'l'.repeat(32)}' codex --sandbox read-only -a never --disable plugins --disable computer_use `
       + `-c 'check_for_update_on_startup=false' -c 'mcp_servers.trello.enabled=false' -C '/p' 'Read x'`);
   });
 
   it('resumes with the same settings', () => {
     expect(resumeCommand(claude, 'Pass 2')).toContain(`claude --resume '11111111-2222-3333-4444-555555555555' 'Pass 2' --permission-mode dontAsk`);
-    expect(resumeCommand({ ...codex, sessionId: 'abc' }, 'Pass 2')).toContain('codex resume --sandbox read-only -a never');
+    expect(resumeCommand({ ...codex, sessionId: 'abc' }, 'Pass 2')).toContain('codex resume --sandbox read-only -a never --disable plugins --disable computer_use');
     expect(resumeCommand({ ...codex, sessionId: 'abc' }, 'Pass 2')).toMatch(/-C '\/p' 'abc' 'Pass 2'$/);
   });
 

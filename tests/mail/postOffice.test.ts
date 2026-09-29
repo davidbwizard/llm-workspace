@@ -22,6 +22,7 @@ let calls: string[];
 let markers: string[];
 let grow: number;
 let busy: boolean;
+let logs: string[];
 let live: Set<string>;
 let replies: (Reply | null)[];   // what the reviewer's transcript shows next; null = no verdict yet
 
@@ -39,7 +40,7 @@ const driver = (): SessionDriver => ({
 const deps = (over: Partial<PostOfficeDeps> = {}): PostOfficeDeps => ({
   paths: mailPaths(join(root, 'mail')), db, home: join(root, 'home'), now: () => now, pid: process.pid,
   isAlive: () => true, session: driver(), sleep: async ms => { now += ms; }, newSessionId: () => SESSION_ID,
-  listCodexMcpServers: async () => [], notify: (t, b) => { notes.push(`${t}: ${b}`); }, log: () => {}, ...over,
+  listCodexMcpServers: async () => [], notify: (t, b) => { notes.push(`${t}: ${b}`); }, log: m => { logs.push(m); }, ...over,
 });
 
 const config = (over: Record<string, unknown>) =>
@@ -82,6 +83,7 @@ beforeEach(() => {
   markers = [];
   grow = 0;
   busy = false;
+  logs = [];
 });
 afterEach(() => { db.close(); });
 
@@ -114,11 +116,14 @@ describe('post office', () => {
     expect(out(id)).toMatchObject({ status: 'replied', verdict: 'approved', loopStatus: 'approved' });
   });
 
-  it('starts a Codex specialist with its MCP servers off', async () => {
-    const office = createPostOffice(deps({ listCodexMcpServers: async () => ['trello'] }));
+  it('starts a Codex specialist with its MCP servers off, and logs the command', async () => {
+    const asked: string[] = [];
+    const office = createPostOffice(deps({ listCodexMcpServers: async p => { asked.push(p); return ['trello']; } }));
     send(office);
     await office.idle();
+    expect(asked).toEqual([project]);
     expect(opened[0]!.command).toContain("-c 'mcp_servers.trello.enabled=false'");
+    expect(logs).toContain(`opened ${opened[0]!.tmux}: ${opened[0]!.command}`);
   });
 
   it('sends pass 2 into the same session', async () => {
