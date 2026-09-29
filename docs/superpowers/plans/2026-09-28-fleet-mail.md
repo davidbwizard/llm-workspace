@@ -2695,3 +2695,16 @@ Keep every Part 1 post office test, re-pointed at `opened`/`typed` (the `env` ch
 - [ ] Run A, continued: close the Codex reviewer's session, send a pass, and check it reopens with `codex resume` and the verdict is found.
 - [ ] Trust prompts (Review Focus 5): note whether either TUI asked to trust the folder.
 - [ ] Stop the worktree app and confirm no orphaned Electron main from it.
+
+---
+
+# Part 3: mail badges and open mail (David, 2026-09-29)
+
+David picked option B of the "Fleet Mail badges" mockups (https://claude.ai/artifact/NE1CiCZXUWByRp8H6e9wqd) and asked that reviewers may send mail too: monitoring instead of restriction. Executed natively, tests first; interfaces are listed per task.
+
+- **Task 15: reviewers can send.** Remove the slot's specialist refusal and the `FLEET_MAIL_SPECIALIST` variable. Codex reviewers keep every server (drop `codexServerNames`, `readCodexServerNames`, `listCodexMcpServers`, `SessionSpec.codexMcpOff`). Claude reviewers drop `--strict-mcp-config` and get `--allowedTools mcp__fleet-mail`. Brakes left: pass limit, daily cap.
+- **Task 16: who sent it.** The slot adds `from.pid` (its parent process) and `from.meta` (the tool call's `_meta`, at most 4 KB) to each letter; `checkLetter` validates both; the log stores `from_pid` and `from_meta`. `check_mail` leaves `out/<id>.read` once it has returned a final reply.
+- **Task 17: badge data.** `mailBadges(db, { isRead, pidOfTmux, passLimit, since })` returns option B's badges keyed by process id: senders (plane, reviews started, writing / fresh / idle) and reviewers (tray, pass of limit, writing / idle), each with hover text. The post office calls `onChange` after each status write; main pushes `mail:update` through its own `src/main/mailIpc.ts` (not `ipc.ts`: main's working tree holds someone's uncommitted ipc.ts change).
+- **Task 18: the badge.** `MailBadge` in the card's metrics row, styled as option B; preload exposes `mailBadges()` and `onMail()`; `useMail()` holds the map. Looked at in the running app before calling it done.
+
+Known gap: a Codex sender's slot runs under the shared daemon, so its parent is not its card. Task 16 records Codex's `_meta`; the next hands-on run shows whether it names the thread.
