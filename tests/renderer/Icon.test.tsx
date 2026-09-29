@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
-import { Bell, CaretDown, CircleNotch, Gear, Terminal, Warning } from '@phosphor-icons/react';
+import { Bell, CaretDown, CircleNotch, Gear, PaperPlaneRight, Terminal, Tray, Warning } from '@phosphor-icons/react';
 import { Icon, type IconName } from '../../src/renderer/components/Icon.tsx';
 
 /** The Phosphor component each name is expected to resolve to, imported
@@ -12,10 +12,10 @@ import { Icon, type IconName } from '../../src/renderer/components/Icon.tsx';
  *  the wrong glyph, not just two names collapsing onto the same one. */
 const EXPECTED = {
   bell: Bell, 'chevron-down': CaretDown, gear: Gear, spinner: CircleNotch,
-  terminal: Terminal, warning: Warning,
+  terminal: Terminal, warning: Warning, 'paper-plane': PaperPlaneRight, tray: Tray,
 } as const;
 
-const NAMES: readonly IconName[] = ['bell', 'chevron-down', 'gear', 'spinner', 'terminal', 'warning'];
+const NAMES: readonly IconName[] = ['bell', 'chevron-down', 'gear', 'spinner', 'terminal', 'warning', 'paper-plane', 'tray'];
 
 describe('Icon', () => {
   it.each(NAMES)('renders an svg element for "%s"', (name) => {

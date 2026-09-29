@@ -4,6 +4,8 @@ import type { KillResult, KillRefusalReason } from '../../main/ipc.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { ProviderMark } from './ProviderMark.tsx';
 import { ContextChip } from './ContextChip.tsx';
+import { MailBadges } from './MailBadge.tsx';
+import { useMailBadges } from '../state/useMail.ts';
 import { StatusIcon } from './StatusIcon.tsx';
 import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES } from '../state/favourites.ts';
 import { useCopy, COPY_LABEL } from '../state/useCopy.ts';
@@ -217,6 +219,7 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
   // Null unless there is genuinely something to show, so one test governs
   // both the element and the card's own `hasagents` marker below -- they
   // can never disagree about whether the row is carrying this.
+  const mail = useMailBadges(state.pid);
   const agentCount = state.agents != null && state.agents > 0 && state.liveAgents != null
     ? `${state.liveAgents} of ${state.agents} sub-agents running`
     : null;
@@ -597,6 +600,9 @@ export function OpenSessionCard({ state, onOpen, onKill, onReveal, onReattach, o
             (unlike events/procMeta above, which are full-card only) --
             hidden entirely when there is no count yet (ContextChip's own
             null check). */}
+        {/* Fleet Mail: wraps onto its own line when the row is full (.metrics
+            wraps), so it adds no width budget of its own. */}
+        <MailBadges badges={mail} />
         <ContextChip context={state.context} />
         {/* Status row, variant A. The icon is the status everywhere now --
             rail AND fleet grid (David: "Keep it consistent. Both fleet and

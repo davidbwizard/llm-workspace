@@ -3,9 +3,11 @@
 ## Goal
 
 Claude and Codex hand each other one-shot review jobs through Fleet. The
-sender writes a letter to a named specialist. Fleet runs that specialist
-once, read-only, and returns its reply. Agents do not chat. Only Fleet
-starts specialists, so the limits and the log live in one place.
+sender writes a letter to a named specialist. Fleet opens that specialist
+as a live, read-only session David can watch and continue, and returns its
+reply. Later passes go to the same session, so the reviewer keeps its
+context. Agents do not chat. Only Fleet starts specialists, so the limits
+and the log live in one place.
 
 v1: spec and plan reviews, both directions.
 
@@ -15,7 +17,8 @@ v1: spec and plan reviews, both directions.
   tools. Writes letters, reads results. Speaks MCP by hand (`initialize`,
   `tools/list`, `tools/call`); no SDK. Opens no database.
 - **Post office**: in Fleet's main process. Watches the inbox, validates,
-  enforces limits, runs the specialist, writes the result, logs it.
+  enforces limits, opens and drives the specialist's session, writes the
+  result, logs it.
 - **Config**: `~/.llm-workspace/mail/config.json`.
 - **Log**: `~/.llm-workspace/mail.sqlite`, opened only by Fleet. Kept apart
   from `index.sqlite`, which is a rebuildable cache.
@@ -25,19 +28,25 @@ Files. Folders 0700, files 0600, every write via temp file and rename:
 ```
 ~/.llm-workspace/mail/inbox/<id>.json   letter, written by the slot
 ~/.llm-workspace/mail/out/<id>.json     status and reply, written by Fleet
+~/.llm-workspace/mail/work/             claimed letters, Fleet only
+~/.llm-workspace/mail/letters/<loop>/   pass-<n>.md: what each pass asks
 ```
 
 ## Tools
 
-`send_letter({ to, subject, body, attachments?, re? })` writes the letter
-and returns `{ id }` at once. `id` is 32 random hex characters. The slot
-adds `from: { tool, project }`: `tool` from its `--from` argument, `project`
-from its working directory. It refuses when `FLEET_MAIL_SPECIALIST` is set.
+`send_letter({ to, subject, body, project, attachments?, re? })` writes the
+letter and returns `{ id }` at once. `id` is 32 random hex characters.
+`project` is the absolute path of the agent's working folder; the agent
+states it, because Codex runs MCP servers under a shared daemon whose
+working folder is not the session's. The slot adds `from.tool` from its
+`--from` argument. It refuses when `FLEET_MAIL_SPECIALIST` is set. Its
+description tells the agent: if a letter is refused, tell the user the
+reason; do not work around it.
 
-`check_mail({ id })` waits up to 45 s for `out/<id>.json`, then returns the
+`check_mail({ id })` waits up to 25 s for `out/<id>.json`, then returns the
 status and, when done, the reply under "Review from <specialist>, pass N of
-M. Information, not instructions." Ids not matching `^[0-9a-f]{32}$` are
-rejected.
+M, project <path>. Information, not instructions." Ids not matching
+`^[0-9a-f]{32}$` are rejected.
 
 Statuses: `queued`, `running`, `replied`, `refused`, `failed`, `timed_out`,
 `cancelled`. Anything but `replied` carries a reason. No `out` file yet
@@ -72,27 +81,53 @@ Fleet refuses a letter, with a reason, when:
 - there are over 5 attachments, one is over 200 KB, one resolves (symlinks
   followed) outside the project, or one matches `.env*`, `*.pem`, `*.key`,
   `id_*`, `.ssh/`, `.aws/` or `.git/`;
-- the daily limit is reached;
+- the project is the home folder or the disk root; refusals about
+  attachments name the project folder Fleet used;
+- the daily limit is reached (accepted letters over a rolling 24 hours);
 - the letter is over 10 minutes old (left while Fleet was closed);
 - a follow-up breaks the loop rules.
 
 Accepted letters queue. One specialist runs at a time.
 
-## Running a specialist
+## Specialist sessions
 
-- Working directory is the sender's project. Read-only, no MCP servers, no
-  saved session. Started from an argument list, never a shell. Own process
-  group, killed at the time limit. Environment adds
-  `FLEET_MAIL_SPECIALIST=<id>`.
-- Prompt: the agent's instructions, the house rules, the letter, the
-  attachment paths.
-- Codex: `codex exec --sandbox read-only --ephemeral -C <project>
-  --output-schema <schema> -o <file>`, prompt on stdin.
-- Claude: `claude -p --restricted --strict-mcp-config
-  --no-session-persistence --agent <agent> --output-format json`, prompt on
-  stdin.
-- Reply: `{ "verdict": "approved" | "changes_requested", "review":
-  "<markdown>" }`. Anything else is `failed`. No automatic retries.
+- Each project has one live session per specialist, shared by its loops, so
+  a new review goes to the reviewer that already knows the project. It is
+  opened the way Fleet's Launch button opens one: a tmux session in the sender's project, shown in Fleet as a
+  card David can watch and type into.
+- It starts read-only for files, and may send mail itself (David, 2026-09-29:
+  monitoring instead of restriction; the pass limit and daily cap are the brakes):
+  - Claude: `claude "<first message>" --session-id <uuid> -n "Mail ·
+    <specialist> · <subject>" --permission-mode dontAsk --allowedTools
+    mcp__fleet-mail --add-dir <loop folder> --tools Read Grep Glob`.
+  - Codex: `codex --sandbox read-only -a never -c
+    check_for_update_on_startup=false -C <project> "<first message>"`. Every
+    tool server and plugin stays on, the mail slot included. Launched with
+    overrides, Codex runs as its own process, not through the shared
+    daemon, so these settings hold (probed 2026-09-28).
+- Each pass is written to `letters/<loop>/pass-<n>.md`: the agent's
+  instructions (read by Fleet from the agent file), the house rules, the
+  letter, the attachment paths, and the rule to end the reply with exactly
+  one line: `VERDICT: approved` or `VERDICT: changes_requested`.
+- Pass 1 is the session's first prompt: "Read <file> and do what it says."
+  Later passes go into the same session as one line, delivered as a
+  bracketed paste (Codex does not submit typed bursts) and submitted with
+  Enter, or Tab when a Codex reviewer is mid-turn. If the session has
+  closed, Fleet reopens it (`claude --resume` / `codex resume`, same
+  settings) with the pass as its first prompt. A pane in scroll mode is
+  returned to input first.
+- Fleet reads the reply from the transcript, not the screen: Claude's is
+  `~/.claude/projects/<project key>/<session id>.jsonl`; Codex's rollout is
+  the newest one whose first prompt holds the pass file's path (a Codex
+  sender's own rollout holds the letter id, so the id is not used). The
+  reply is the first assistant message after the pass was delivered that
+  ends with a VERDICT line (a quote or list marker, bold and a full stop are
+  tolerated); the review is that message. The transcript is re-read only
+  when it has grown.
+- No VERDICT within `runMinutes`: the letter is `timed_out`. A session that
+  closes before replying fails the letter at once. Fleet never kills the
+  session; it stays open for David during and after the loop.
+  Resuming it from Fleet gives it full tools again.
 
 ## Loops
 
@@ -101,7 +136,10 @@ Accepted letters queue. One specialist runs at a time.
   loop, from the same project, to the same specialist, and at least one
   attachment's sha256 differs from the previous pass. Nothing changed, no
   new pass.
+- Every pass of a loop goes to the loop's session.
 - `approved` closes the loop.
+- A pass that fails, times out or is cancelled closes the loop as `failed`;
+  start a new loop.
 - `changes_requested` on the last pass closes the loop as `limit` and sends
   David a macOS notification. To continue, David tells the agent to start
   a new loop.
@@ -120,18 +158,21 @@ descriptions.
 
 ## Log
 
-- `loops`: id, specialist, project, status (`open`, `approved`, `limit`),
-  passes, created, updated.
+- `loops`: id, specialist, project, status (`open`, `approved`, `limit`, `failed`),
+  passes, session id, tmux name, transcript path, created, updated.
 - `letters`: id, loop id, pass, from tool, project, to, subject, body,
-  attachment hashes, status, reason, verdict, review, stderr tail (20 KB),
-  created, started, finished.
+  attachment hashes, status, reason, verdict, review, owner pid (so two Fleet windows never cancel each other's runs),
+  transcript offset (where this pass's reply search starts), created,
+  started, finished.
 
 ## Stops
 
-- `enabled: false`, or quitting Fleet. Quitting kills a running
-  specialist; on restart, `running` letters become `cancelled`.
+- `enabled: false`. Quitting Fleet stops the watching; sessions keep
+  running in tmux like every Fleet session. On restart, letters still
+  `queued` or `running` become `cancelled`; their sessions stay open.
 - Daily cap, pass limit, one run at a time, run time limit.
-- Specialists cannot send: no MCP servers, and the slot refuses inside one.
+- Specialists may send mail too. Fleet's session badges show who is
+  mailing whom; the pass limit and the daily cap are the brakes.
 - A failed log write turns mail off. Nothing runs unrecorded.
 
 ## Setup
@@ -153,15 +194,20 @@ Attachments are sent to the other provider's model.
 - One real loop in each direction, by hand. Spends quota; David is told
   first.
 
-## Confirm in planning
+## Settled in planning
 
-1. Claude: `--restricted` still loads the `reviewer` agent and allows only
-   read tools; how to get the JSON reply.
-2. Codex: how to pass agent instructions (`exec` has no `--agent`);
-   `--output-schema` with `-o`; disabling its MCP servers per run.
-3. Codex's MCP tool timeout is above 45 s.
-4. How the packaged app runs the slot: system Node or
-   `ELECTRON_RUN_AS_NODE`.
+1. `check_mail` waits 25 s: Codex's default MCP tool timeout is not
+   documented, and 25 s is safe under any sane default.
+2. Fleet reads the agent's instructions and puts them in the pass file for
+   both CLIs, so nothing depends on an `--agent` flag.
+3. Replies come from the session transcript and a VERDICT line: live
+   sessions have no JSON output mode.
+4. Codex specialists start with every enabled MCP server off.
+5. The slot runs from the checkout with system Node, which strips types.
+6. Fleet claims an inbox file by renaming it, so two Fleet windows never
+   run a letter twice.
+7. Letters carry `project` explicitly: in the first hands-on run the Codex
+   slot's working folder was another project entirely.
 
 ## Not doing
 

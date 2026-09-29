@@ -2282,3 +2282,429 @@ claude mcp add --scope user fleet-mail -- node <main checkout>/src/mail/slot.ts 
 codex mcp remove fleet-mail
 codex mcp add fleet-mail -- node <main checkout>/src/mail/slot.ts --from codex
 ```
+
+---
+
+# Part 2: live specialist sessions
+
+David's call after the first hands-on run: the reviewer must be a session he can watch and continue, not a hidden one-shot run. Spec sections "Specialist sessions", "Tools", "Loops", "Log" and "Stops" were updated to match. Part 1's letters, checks, loops, limits, log and slot stay; the headless runner is replaced.
+
+**Format note:** Part 2 lists interfaces, test code and the key implementation code. It is executed natively by its author right after writing, and David asked for quick and dry, so small glue is described rather than listed.
+
+**Settled by probes (2026-09-28, no quota):**
+- The Codex slot's working folder was another project entirely (it runs under the shared app-server daemon). Letters now carry `project`.
+- A Codex TUI launched with overrides (`--sandbox`, `-a`, `-c ...`) runs standalone: its MCP servers are its own children, in its own `-C` folder, and a per-server `enabled=false` holds. A bare `codex` joins the daemon.
+- `-c check_for_update_on_startup=false` skips the "Update available" screen that otherwise blocks a fresh Codex TUI.
+- `codex resume` takes `-c`, `-s`, `-C`, `-a`. Rollouts live at `~/.codex/sessions/YYYY/MM/DD/rollout-<local time>-<uuid>.jsonl`.
+
+**Global constraints (additions):** reuse Fleet's own `launchSession`, tmux helpers (`hasSession`, `paneInMode`, `cancelCopyMode`, `sendLiteral`, `sendKeyName`), `readTail`, `parseClaudeLines`, `parseCodexLines` and `projectDir`. Fleet never kills a specialist session.
+
+## Review Focus (Part 2)
+
+1. Claude `--resume` writes to a new transcript file instead of the same one. The reply search would never see the verdict. Check by hand in Task 14.
+2. David types into the reviewer session while a pass is running. The pass line queues in the TUI; the reply search starts at the offset taken before typing. Test: Task 12 "sends pass 2 into the same session".
+3. A pane left in tmux scroll mode swallows the typed pass. Test: Task 13 "leaves scroll mode before typing".
+4. The reviewer bolds or indents its VERDICT line. Test: Task 10 "reads a VERDICT line, bold or plain".
+5. The folder is new to Claude or Codex and the TUI asks to trust it first. The session waits visibly for David; the letter times out if nobody answers. Hand check in Task 14.
+
+---
+
+### Task 9: Letters name their project
+
+**Files:** modify `src/mail/slotTools.ts`, `src/mail/slot.ts`, `src/mail/letter.ts`; tests `tests/mail/slot.test.ts`, `tests/mail/letter.test.ts`.
+
+**Interfaces:** `SlotOptions` loses `project`. `send_letter` requires `project` (absolute path). Outside-project refusals read `attachment is outside the project <project>: <path>`.
+
+- [ ] **Step 1: failing tests**
+
+In `slot.test.ts`, drop `project` from `opts()`, pass `project: '/work/app'` to every `send_letter` call, and add:
+
+```ts
+  it('needs an absolute project and says not to work around refusals', async () => {
+    await expect(sendTool(opts()).call({ to: 'a', subject: 'b', body: 'c' })).rejects.toBeInstanceOf(ToolRefusal);
+    await expect(sendTool(opts()).call({ to: 'a', subject: 'b', body: 'c', project: 'relative' })).rejects.toBeInstanceOf(ToolRefusal);
+    expect(sendTool(opts()).description).toMatch(/do not work around it/);
+  });
+```
+
+In `letter.test.ts`, the two outside-project expectations become `` `attachment is outside the project ${project}: /etc/hosts` `` and `` `attachment is outside the project ${project}: hosts-link` ``.
+
+- [ ] **Step 2:** run `npx vitest run tests/mail --maxWorkers=2 --minWorkers=1`; expect the new and changed tests to fail.
+- [ ] **Step 3: implement.** In `send_letter`: add `project` to the schema properties and `required`; refuse unless `typeof project === 'string' && isAbsolute(project)` with "send_letter needs project: the absolute path of your working folder."; use it for `from.project`. Append to the description: "Set project to the absolute path of your working folder. If a letter is refused, tell the user the reason; do not work around it (for example by copying files)." In `slot.ts`, remove `project: process.cwd()`. In `letter.ts`, include `${project}` in the outside refusal.
+- [ ] **Step 4:** tests pass; `npx tsc --noEmit` clean. Commit `feat(mail): letters name their project`.
+
+---
+
+### Task 10: Session commands and reply reading
+
+**Files:** create `src/mail/session.ts`, test `tests/mail/session.test.ts`.
+
+**Interfaces (produced):**
+
+```ts
+export const VERDICT_RULE: string;
+export interface SessionSpec {
+  runsOn: Sender; project: string; loopId: string; name: string;
+  sessionId: string;        // Claude: UUID chosen by Fleet. Codex: its rollout's UUID, '' until found.
+  letterDir: string; codexMcpOff: string[];
+}
+export function passFile(letterDir: string, pass: number): string;           // <letterDir>/pass-<n>.md
+export function writePassFile(letterDir: string, pass: number, content: string): string;
+export function firstMessage(file: string): string;
+export function passLine(pass: number, file: string): string;
+export function openCommand(s: SessionSpec, message: string): string;       // one shell string for tmux
+export function resumeCommand(s: SessionSpec, message: string): string;
+export function splitVerdict(text: string): { verdict: Verdict; review: string } | null;
+export function findReply(events: NormalizedEvent[]): { verdict: Verdict; review: string } | null;
+export function readReply(runsOn: Sender, file: string, fromOffset: number): { verdict: Verdict; review: string } | null;
+export function findCodexRollout(root: string, marker: string, sinceMs: number, nowMs: number): string | null;
+export function codexSessionId(rollout: string): string | null;
+```
+
+- [ ] **Step 1: failing tests** (`tests/mail/session.test.ts`)
+
+```ts
+import { describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  codexSessionId, findCodexRollout, firstMessage, openCommand, passLine, readReply, resumeCommand,
+  splitVerdict, writePassFile, type SessionSpec,
+} from '../../src/mail/session.ts';
+
+const claude: SessionSpec = {
+  runsOn: 'claude', project: '/p', loopId: 'l'.repeat(32), name: 'Mail · claude-reviewer · Spec',
+  sessionId: '11111111-2222-3333-4444-555555555555', letterDir: '/m/letters/L', codexMcpOff: [],
+};
+const codex: SessionSpec = { ...claude, runsOn: 'codex', sessionId: '', codexMcpOff: ['trello'] };
+
+describe('commands', () => {
+  it('opens Claude read-only, named, with a fixed session id', () => {
+    expect(openCommand(claude, 'Read /m/letters/L/pass-1.md')).toBe(
+      `env FLEET_MAIL_SPECIALIST='${'l'.repeat(32)}' claude 'Read /m/letters/L/pass-1.md' `
+      + `--session-id '11111111-2222-3333-4444-555555555555' -n 'Mail · claude-reviewer · Spec' `
+      + `--permission-mode dontAsk --strict-mcp-config --add-dir '/m/letters/L' --tools Read Grep Glob`);
+  });
+  it('opens Codex standalone, read-only, with its MCP servers off and no update screen', () => {
+    expect(openCommand(codex, 'Read x')).toBe(
+      `env FLEET_MAIL_SPECIALIST='${'l'.repeat(32)}' codex --sandbox read-only -a never `
+      + `-c 'check_for_update_on_startup=false' -c 'mcp_servers.trello.enabled=false' -C '/p' 'Read x'`);
+  });
+  it('resumes with the same settings', () => {
+    expect(resumeCommand(claude, 'Pass 2')).toContain(`claude --resume '11111111-2222-3333-4444-555555555555' 'Pass 2' --permission-mode dontAsk`);
+    expect(resumeCommand({ ...codex, sessionId: 'abc' }, 'Pass 2')).toContain(`codex resume --sandbox read-only -a never`);
+    expect(resumeCommand({ ...codex, sessionId: 'abc' }, 'Pass 2')).toMatch(/-C '\/p' 'abc' 'Pass 2'$/);
+  });
+  it('writes pass files owner-only and names them in the messages', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'mail-s-')), 'L');
+    const file = writePassFile(dir, 2, 'hello');
+    expect(file).toBe(join(dir, 'pass-2.md'));
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(firstMessage(file)).toContain(file);
+    expect(passLine(2, file)).toBe(`Pass 2: read ${file} and do what it says.`);
+  });
+});
+
+describe('replies', () => {
+  it('reads a VERDICT line, bold or plain', () => {
+    expect(splitVerdict('Good start.\nFix A.\n\nVERDICT: changes_requested')).toEqual({ verdict: 'changes_requested', review: 'Good start.\nFix A.' });
+    expect(splitVerdict('All clear.\n**VERDICT: approved**\n')).toEqual({ verdict: 'approved', review: 'All clear.' });
+    expect(splitVerdict('VERDICT: maybe')).toBeNull();
+    expect(splitVerdict('No verdict here.')).toBeNull();
+  });
+
+  it('finds the reply in a Claude transcript after the offset', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'mail-t-')), 't.jsonl');
+    const line = (text: string) => JSON.stringify({
+      type: 'assistant', uuid: text.slice(0, 8), sessionId: 's', timestamp: '2026-09-28T19:00:00Z', cwd: '/p',
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+    });
+    const old = `${line('Old.\nVERDICT: approved')}\n`;
+    writeFileSync(file, `${old}${line('Checking the file.')}\n${line('Looks solid.\nVERDICT: changes_requested')}\n`);
+    expect(readReply('claude', file, Buffer.byteLength(old))).toEqual({ verdict: 'changes_requested', review: 'Looks solid.' });
+    expect(readReply('claude', file, 0)).toEqual({ verdict: 'approved', review: 'Old.' });
+  });
+
+  it('finds the reply in a Codex rollout', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'mail-t-')), 'r.jsonl');
+    writeFileSync(file, `${JSON.stringify({ timestamp: '2026-09-28T19:00:00Z', type: 'event_msg', payload: { type: 'agent_message', message: 'Tight spec.\nVERDICT: approved' } })}\n`);
+    expect(readReply('codex', file, 0)).toEqual({ verdict: 'approved', review: 'Tight spec.' });
+  });
+
+  it('finds a Codex rollout by the loop id in its first prompt', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mail-c-'));
+    const now = Date.parse('2026-09-28T19:00:00');
+    const day = join(root, '2026', '09', '28');
+    mkdirSync(day, { recursive: true });
+    const hit = join(day, 'rollout-2026-09-28T19-00-01-01a0e976-4c0d-7b53-b74d-8929b2ef4e17.jsonl');
+    const miss = join(day, 'rollout-2026-09-28T18-00-00-01a0e976-4c0d-7b53-b74d-000000000000.jsonl');
+    writeFileSync(hit, 'read /m/letters/LOOPID/pass-1.md');
+    writeFileSync(miss, 'read /m/letters/LOOPID/pass-1.md');
+    utimesSync(miss, new Date(now - 3_600_000), new Date(now - 3_600_000));
+    expect(findCodexRollout(root, 'LOOPID', now - 60_000, now)).toBe(hit);
+    expect(codexSessionId(hit)).toBe('01a0e976-4c0d-7b53-b74d-8929b2ef4e17');
+    expect(findCodexRollout(root, 'OTHER', now - 60_000, now)).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 2:** run it; expect failure (module missing).
+- [ ] **Step 3: implement `src/mail/session.ts`.** Key code:
+
+```ts
+const q = shellQuote;   // from '../main/launch.ts'
+export const VERDICT_RULE = 'End your reply with exactly one line on its own: VERDICT: approved, or VERDICT: changes_requested.';
+const VERDICT = /^\s*[*_`]*\s*VERDICT\s*:\s*[*_`]*\s*(approved|changes_requested)\s*[*_`]*\s*$/i;
+
+export function openCommand(s: SessionSpec, message: string): string {
+  const env = `env FLEET_MAIL_SPECIALIST=${q(s.loopId)}`;
+  if (s.runsOn === 'claude') {
+    return `${env} claude ${q(message)} --session-id ${q(s.sessionId)} -n ${q(s.name)} ${claudeFlags(s)}`;
+  }
+  return `${env} codex ${codexFlags(s)} ${q(message)}`;
+}
+export function resumeCommand(s: SessionSpec, message: string): string {
+  const env = `env FLEET_MAIL_SPECIALIST=${q(s.loopId)}`;
+  if (s.runsOn === 'claude') return `${env} claude --resume ${q(s.sessionId)} ${q(message)} ${claudeFlags(s)}`;
+  return `${env} codex resume ${codexFlags(s)} ${q(s.sessionId)} ${q(message)}`;
+}
+// Variadic --tools goes last so it cannot swallow anything after it.
+const claudeFlags = (s: SessionSpec) => `--permission-mode dontAsk --strict-mcp-config --add-dir ${q(s.letterDir)} --tools Read Grep Glob`;
+const codexFlags = (s: SessionSpec) => ['--sandbox read-only -a never', `-c ${q('check_for_update_on_startup=false')}`,
+  ...s.codexMcpOff.map(n => `-c ${q(`mcp_servers.${n}.enabled=false`)}`), `-C ${q(s.project)}`].join(' ');
+
+export function splitVerdict(text: string) {
+  const lines = text.trimEnd().split('\n');
+  const m = VERDICT.exec(lines[lines.length - 1] ?? '');
+  return m ? { verdict: m[1]!.toLowerCase() as Verdict, review: lines.slice(0, -1).join('\n').trim() } : null;
+}
+// The first assistant message ending in a VERDICT line. If that message is only the
+// VERDICT line, the review is the assistant message before it.
+export function findReply(events: NormalizedEvent[]) { ... }
+export function readReply(runsOn: Sender, file: string, fromOffset: number) {
+  let tail;
+  try { tail = readTail(file, fromOffset, null); } catch (e) { if (code(e) === 'ENOENT') return null; throw e; }
+  return findReply((runsOn === 'claude' ? parseClaudeLines : parseCodexLines)(tail.lines, file));
+}
+```
+
+`findCodexRollout` looks only in the day folders (local date) of `sinceMs` and `nowMs`, skips files with `mtimeMs < sinceMs`, and reads each candidate's first 256 KB for the marker. `codexSessionId` takes the trailing UUID of the file name. `writePassFile` uses `writeFileAtomic`.
+
+- [ ] **Step 4:** tests pass; tsc clean. Commit `feat(mail): session commands and transcript replies`.
+
+---
+
+### Task 11: Log the loop's session
+
+**Files:** modify `src/mail/log.ts`; test `tests/mail/log.test.ts`.
+
+**Interfaces:** `interface LoopSession { sessionId: string | null; tmux: string | null; transcript: string | null }`, `getLoopSession(db, loopId): LoopSession`, `setLoopSession(db, loopId, s: LoopSession): void`, `LetterUpdate.transcriptOffset?: number`. New columns: `loops.session_id`, `loops.tmux`, `loops.transcript`, `letters.transcript_offset`, added to `SCHEMA` and, for a log made by Part 1, by `ALTER TABLE ... ADD COLUMN` when `PRAGMA table_info` lacks them.
+
+- [ ] **Step 1: failing tests**
+
+```ts
+  it('stores the loop session and the pass offset', () => {
+    expect(getLoopSession(db, 'L')).toEqual({ sessionId: null, tmux: null, transcript: null });
+    setLoopSession(db, 'L', { sessionId: 'u', tmux: 'llmws-claude-mail-L', transcript: '/t.jsonl' });
+    expect(getLoopSession(db, 'L')).toEqual({ sessionId: 'u', tmux: 'llmws-claude-mail-L', transcript: '/t.jsonl' });
+    insertLetter(db, row('a'));
+    updateLetter(db, 'a', { status: 'running', transcriptOffset: 42 });
+    expect(db.prepare('SELECT transcript_offset AS o FROM letters WHERE id = ?').get('a')).toEqual({ o: 42 });
+  });
+
+  it('adds the session columns to a log made before them', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'mail-old-')), 'mail.sqlite');
+    const old = new Database(file);
+    old.exec('CREATE TABLE loops (id TEXT PRIMARY KEY, specialist TEXT NOT NULL, project TEXT NOT NULL, from_tool TEXT NOT NULL, status TEXT NOT NULL, passes INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
+    old.close();
+    const upgraded = openMailLog(file);
+    const cols = (upgraded.prepare('PRAGMA table_info(loops)').all() as { name: string }[]).map(c => c.name);
+    expect(cols).toEqual(expect.arrayContaining(['session_id', 'tmux', 'transcript']));
+    upgraded.close();
+  });
+```
+
+(`import Database from 'better-sqlite3'` at the top of the test.)
+
+- [ ] **Steps 2-4:** fail, implement, pass, tsc clean. Commit `feat(mail): log each loop's session`.
+
+---
+
+### Task 12: The post office drives sessions
+
+**Files:** modify `src/mail/postOffice.ts`, `src/mail/files.ts` (`MailPaths.schema` becomes `letters`: `<dir>/letters`), `src/mail/runner.ts` (delete `REPLY_SCHEMA`, `buildCommand`, `Command`, `runCommand`, `RunResult`, `RunHandle`, `parseReply`, `Reply`; keep `HOUSE_RULES`, `PromptInput`, `buildPrompt`, `parseCodexMcpList`, `listCodexMcpServers`); tests `tests/mail/postOffice.test.ts`, `tests/mail/runner.test.ts`, `tests/mail/files.test.ts`, `tests/mail/slot.test.ts`.
+
+**Interfaces:**
+
+```ts
+export interface SessionDriver {
+  open(runsOn: Sender, project: string, command: string, tmux: string): string | null;   // null = opened, else why not
+  alive(tmux: string): boolean;
+  typeLine(tmux: string, line: string): string | null;
+  claudeTranscript(project: string, sessionId: string): string;
+  findCodexRollout(marker: string, sinceMs: number): string | null;
+  size(file: string): number;                                                              // 0 when missing
+  readReply(runsOn: Sender, file: string, fromOffset: number): { verdict: Verdict; review: string } | null;
+}
+// PostOfficeDeps: `run` is replaced by `session: SessionDriver`, `sleep(ms): Promise<void>`, `newSessionId(): string`.
+```
+
+`runLetter`, after the agent instructions and Codex MCP list:
+
+```ts
+    let sess = getLoopSession(db, loopId);
+    const letterDir = join(paths.letters, loopId);
+    const file = writePassFile(letterDir, pass, `${buildPrompt({ ...promptInput })}\n\n${VERDICT_RULE}`);
+    const spec: SessionSpec = { runsOn, project, loopId, name: `Mail · ${row.to} · ${row.subject}`,
+      sessionId: sess.sessionId ?? '', letterDir, codexMcpOff: mcpServers };
+    const startedAt = d.now();
+    let fromOffset: number;
+    if (sess.tmux && d.session.alive(sess.tmux)) {
+      fromOffset = sess.transcript ? d.session.size(sess.transcript) : 0;
+      const err = d.session.typeLine(sess.tmux, passLine(pass, file));
+      if (err) return finish('failed', `could not type into the session: ${err}`);
+    } else {
+      const resuming = sess.sessionId !== null;
+      if (runsOn === 'claude' && !resuming) spec.sessionId = d.newSessionId();
+      const tmux = sess.tmux ?? `llmws-${runsOn}-mail-${loopId.slice(0, 8)}`;
+      const err = d.session.open(runsOn, project,
+        resuming ? resumeCommand(spec, passLine(pass, file)) : openCommand(spec, firstMessage(file)), tmux);
+      if (err) return finish('failed', `could not open the session: ${err}`);
+      const transcript = runsOn === 'claude' ? d.session.claudeTranscript(project, spec.sessionId) : sess.transcript;
+      fromOffset = transcript ? d.session.size(transcript) : 0;
+      sess = { sessionId: spec.sessionId || null, tmux, transcript };
+      setLoopSession(db, loopId, sess);
+    }
+    updateLetter(db, id, { status: 'running', startedAt, transcriptOffset: fromOffset });
+    publishFromLog(id);
+    const deadline = startedAt + config.runMinutes * 60_000;
+    while (!stopped) {
+      if (!sess.transcript && runsOn === 'codex') {
+        const found = d.session.findCodexRollout(loopId, startedAt - 5_000);
+        if (found) { sess = { ...sess, transcript: found, sessionId: codexSessionId(found) }; setLoopSession(db, loopId, sess); }
+      }
+      const reply = sess.transcript ? d.session.readReply(runsOn, sess.transcript, fromOffset) : null;
+      if (reply) { /* same as Part 1: replied, loop status, notify at limit */ return; }
+      if (d.now() >= deadline) return finish('timed_out', `no VERDICT line within ${config.runMinutes} minutes; the session is still open`);
+      await d.sleep(2000);
+    }
+```
+
+`stop()` only sets `stopped`; nothing is killed. `breakMail`'s in-flight handling is unchanged.
+
+- [ ] **Step 1: failing tests.** Replace `fakeRun` with a fake driver:
+
+```ts
+let opened: { runsOn: string; project: string; command: string; tmux: string }[];
+let typed: { tmux: string; line: string }[];
+let live: Set<string>;
+let replies: ({ verdict: 'approved' | 'changes_requested'; review: string } | null)[];
+const driver = (): SessionDriver => ({
+  open: (runsOn, project, command, tmux) => { opened.push({ runsOn, project, command, tmux }); live.add(tmux); return null; },
+  alive: tmux => live.has(tmux),
+  typeLine: (tmux, line) => { typed.push({ tmux, line }); return null; },
+  claudeTranscript: (_p, id) => `/t/${id}.jsonl`,
+  findCodexRollout: marker => `/t/rollout-2026-09-28T19-00-00-01a0e976-4c0d-7b53-b74d-8929b2ef4e17.jsonl#${marker}`,
+  size: () => 0,
+  readReply: () => (replies.length ? replies.shift()! : { verdict: 'approved', review: 'Looks good.' }),
+});
+// deps(): session: driver(), sleep: async ms => { now += ms; }, newSessionId: () => '11111111-2222-3333-4444-555555555555'
+```
+
+Keep every Part 1 post office test, re-pointed at `opened`/`typed` (the `env` check becomes `opened[0].command` containing `FLEET_MAIL_SPECIALIST=`; the instructions check reads the pass file). A `null` reply means "not yet". Add:
+
+```ts
+  it('opens a named, read-only Claude session for pass 1', async () => {
+    const office = createPostOffice(deps());
+    send(office, { to: 'claude-reviewer' });
+    await office.idle();
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.command).toContain("--session-id '11111111-2222-3333-4444-555555555555' -n 'Mail · claude-reviewer · Review the spec'");
+    expect(opened[0]!.command).toContain('--tools Read Grep Glob');
+  });
+
+  it('sends pass 2 into the same session', async () => {
+    const office = createPostOffice(deps());
+    replies.push({ verdict: 'changes_requested', review: 'Fix A.' });
+    const first = send(office);
+    await office.idle();
+    writeFileSync(join(project, 'spec.md'), 'spec v2');
+    send(office, { re: first });
+    await office.idle();
+    expect(opened).toHaveLength(1);
+    expect(typed).toEqual([{ tmux: opened[0]!.tmux, line: expect.stringMatching(/^Pass 2: read .*pass-2\.md and do what it says\.$/) }]);
+  });
+
+  it('reopens a closed session with resume', async () => {
+    const office = createPostOffice(deps());
+    replies.push({ verdict: 'changes_requested', review: 'Fix A.' });
+    const first = send(office, { to: 'claude-reviewer' });
+    await office.idle();
+    live.clear();
+    writeFileSync(join(project, 'spec.md'), 'spec v2');
+    send(office, { to: 'claude-reviewer', re: first });
+    await office.idle();
+    expect(opened).toHaveLength(2);
+    expect(opened[1]!.command).toContain("claude --resume '11111111-2222-3333-4444-555555555555' 'Pass 2:");
+  });
+
+  it('times out without closing the session', async () => {
+    const office = createPostOffice(deps({ session: { ...driver(), readReply: () => null } }));
+    const id = send(office);
+    await office.idle();
+    expect(out(id)).toMatchObject({ status: 'timed_out', reason: expect.stringMatching(/the session is still open/) });
+    expect(live.size).toBe(1);
+  });
+```
+
+- [ ] **Steps 2-4:** fail, implement, pass; full mail suite and tsc clean. Commit `feat(mail): specialists are live sessions`.
+
+---
+
+### Task 13: Fleet's session driver
+
+**Files:** create `src/mail/fleetDriver.ts`, test `tests/mail/fleetDriver.test.ts`; modify `src/main/index.ts` (pass `session: createFleetDriver()`, `sleep`, `newSessionId: randomUUID`; drop `runCommand`).
+
+**Interfaces:** `createFleetDriver(exec?: TmuxExec): SessionDriver`. `open` calls `launchSession(runsOn, project, 120, 40, { exec }, command, tmux)` and returns `null` on `launched`, else the reason. `alive` is `hasSession`. `typeLine` cancels copy mode when `paneInMode` says `1`, then `sendLiteral` the line and `sendKeyName(tmux, 'Enter')`. `claudeTranscript` is `join(projectDir(project), `${id}.jsonl`)`. `findCodexRollout` looks under `~/.codex/sessions`. `size` is `statSync(file).size`, 0 on ENOENT. `readReply` is `session.ts`'s.
+
+- [ ] **Step 1: failing test**
+
+```ts
+  it('leaves scroll mode before typing', () => {
+    const calls: string[][] = [];
+    const exec = (args: string[]) => { calls.push(args); return { ok: true as const, stdout: args.includes('#{pane_in_mode}') ? '1\n' : '' }; };
+    expect(createFleetDriver(exec).typeLine('s', 'Pass 2: read /x and do what it says.')).toBeNull();
+    const verbs = calls.map(a => a[0]);
+    expect(verbs.indexOf('send-keys')).toBeGreaterThan(verbs.findIndex((v, i) => v === 'send-keys' && calls[i]!.includes('-X')));
+  });
+```
+
+(Shape the assertion to the tmux helpers' real argv once read; the point is: copy mode cancelled, then the line, then Enter.)
+
+- [ ] **Steps 2-4:** fail, implement, pass; full suite `npm test -- --maxWorkers=2 --minWorkers=1` and tsc clean. Commit `feat(mail): drive specialist sessions through Fleet's own launch and tmux`.
+
+---
+
+### Task 14: Hands-on, live
+
+- [ ] Restart the worktree app (`tmux kill-session -t fleet-mail-test`, then start it as in Task 7 step 4). Stop the old slot processes so both CLIs start the new one: `pkill -f "llm-workspace-mail/src/mail/slot.ts"` (only mail slots match).
+- [ ] Set `passesPerLoop` to 2 in `~/.llm-workspace/mail/config.json`.
+- [ ] Run A, Claude to Codex (spends Codex quota; tell David first). A new Claude session in the repo asks codex-reviewer to review the spec, fixes what it agrees with, sends pass 2. Check: a "llmws-codex-mail-…" card appears in Fleet and shows the review happening; pass 2 is typed into the same session; the reply header names the project; the limit notification appears if pass 2 still asks for changes; `~/.llm-workspace/mail/letters/<loop>/` has pass-1.md and pass-2.md.
+- [ ] Run B, Codex to Claude (spends Claude quota; tell David first), 1 pass. Check: a "Mail · claude-reviewer · …" session appears live; its transcript is the `--session-id` file; closing it and sending a follow-up reopens it with `--resume` and the verdict is still found (Review Focus 1).
+- [ ] Run A, continued: close the Codex reviewer's session, send a pass, and check it reopens with `codex resume` and the verdict is found.
+- [ ] Trust prompts (Review Focus 5): note whether either TUI asked to trust the folder.
+- [ ] Stop the worktree app and confirm no orphaned Electron main from it.
+
+---
+
+# Part 3: mail badges and open mail (David, 2026-09-29)
+
+David picked option B of the "Fleet Mail badges" mockups (https://claude.ai/artifact/NE1CiCZXUWByRp8H6e9wqd) and asked that reviewers may send mail too: monitoring instead of restriction. Executed natively, tests first; interfaces are listed per task.
+
+- **Task 15: reviewers can send.** Remove the slot's specialist refusal and the `FLEET_MAIL_SPECIALIST` variable. Codex reviewers keep every server (drop `codexServerNames`, `readCodexServerNames`, `listCodexMcpServers`, `SessionSpec.codexMcpOff`). Claude reviewers drop `--strict-mcp-config` and get `--allowedTools mcp__fleet-mail`. Brakes left: pass limit, daily cap.
+- **Task 16: who sent it.** The slot adds `from.pid` (its parent process) and `from.meta` (the tool call's `_meta`, at most 4 KB) to each letter; `checkLetter` validates both; the log stores `from_pid` and `from_meta`. `check_mail` leaves `out/<id>.read` once it has returned a final reply.
+- **Task 17: badge data.** `mailBadges(db, { isRead, pidOfTmux, passLimit, since })` returns option B's badges keyed by process id: senders (plane, reviews started, writing / fresh / idle) and reviewers (tray, pass of limit, writing / idle), each with hover text. The post office calls `onChange` after each status write; main pushes `mail:update` through its own `src/main/mailIpc.ts` (not `ipc.ts`: main's working tree holds someone's uncommitted ipc.ts change).
+- **Task 18: the badge.** `MailBadge` in the card's metrics row, styled as option B; preload exposes `mailBadges()` and `onMail()`; `useMail()` holds the map. Looked at in the running app before calling it done.
+
+Known gap: a Codex sender's slot runs under the shared daemon, so its parent is not its card. Task 16 records Codex's `_meta`; the next hands-on run shows whether it names the thread.

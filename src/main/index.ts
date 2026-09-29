@@ -1,8 +1,17 @@
-import { app, BrowserWindow, shell, nativeTheme, Menu } from 'electron';
+import { app, BrowserWindow, shell, nativeTheme, Menu, Notification } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync, existsSync, chmodSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { openDb, type Db } from '../store/db.ts';
+import { mailBadges } from '../mail/badges.ts';
+import { mailPaths } from '../mail/files.ts';
+import { loadMailConfig } from '../mail/mailConfig.ts';
+import { pushMail, registerMailIpc, type BadgeMap } from './mailIpc.ts';
+import { panePid } from './tmux.ts';
+import { openMailLog, type MailDb } from '../mail/log.ts';
+import { isAlive, startPostOffice, type PostOffice } from '../mail/postOffice.ts';
+import { createFleetDriver } from '../mail/fleetDriver.ts';
 import { ingestAll, startWatcher, type Watcher, type WatchRoot } from '../watch/watcher.ts';
 import { ingestSpool, rotateSpool } from '../hooks/spool.ts';
 import { refreshHelperIfInstalled } from '../hooks/switch.ts';
@@ -26,6 +35,35 @@ import { applyLoginPathOnce } from './loginPath.ts';
 const NOOP_WATCH_DEPS: WatchDeps = { processes: () => [], buildPayload: () => null, send: () => {} };
 
 let db: Db | null = null;
+let mailDb: MailDb | null = null;
+let postOffice: PostOffice | null = null;
+let mailPushTimer: NodeJS.Timeout | null = null;
+
+/** The mail badges for every card. Empty while mail is not running. */
+function readMailBadges(): BadgeMap {
+  if (!mailDb) return {};
+  const out = mailPaths(paths.mailDir).out;
+  const cfg = loadMailConfig(mailPaths(paths.mailDir).config);
+  return mailBadges(mailDb, {
+    isRead: id => existsSync(join(out, `${id}.read`)),
+    pidOfTmux: name => panePid(name),
+    passLimit: cfg.ok ? cfg.config.passesPerLoop : 4,
+    since: Date.now() - 86_400_000,
+  });
+}
+
+/** Coalesced: a burst of status writes becomes one push. */
+function scheduleMailPush(): void {
+  if (mailPushTimer) return;
+  mailPushTimer = setTimeout(() => {
+    mailPushTimer = null;
+    try {
+      pushMail(mainWindow, readMailBadges());
+    } catch (e) {
+      console.error('Fleet Mail: could not push badges:', e);
+    }
+  }, 250);
+}
 let prefsDb: PrefsDb | null = null;
 let watcher: Watcher | null = null;
 let spoolTimer: NodeJS.Timeout | null = null;
@@ -266,6 +304,22 @@ app.whenReady().then(async () => {
 
   db = openDb(paths.db);
 
+  // Fleet Mail. After applyLoginPathOnce, so codex and claude are on PATH.
+  // A failure turns mail off; it never stops Fleet starting.
+  try {
+    mailDb = openMailLog(paths.mailDb);
+    postOffice = startPostOffice({
+      paths: mailPaths(paths.mailDir), db: mailDb, home: homedir(), now: Date.now, pid: process.pid, isAlive,
+      session: createFleetDriver({}), sleep: ms => new Promise(r => setTimeout(r, ms)), newSessionId: randomUUID,
+      notify: (title, body) => new Notification({ title, body }).show(),
+      log: message => console.error('Fleet Mail:', message),
+      onChange: scheduleMailPush,
+    });
+    registerMailIpc(readMailBadges);
+  } catch (e) {
+    console.error('Fleet Mail: could not start, mail is off:', e);
+  }
+
   // Opened BEFORE createWindow, because the preload reads it synchronously
   // while the window loads: every preference store in the renderer expects
   // its first read to be synchronous (useSyncExternalStore), and behind an
@@ -319,6 +373,9 @@ app.whenReady().then(async () => {
   // same sweep-refresh-push a scheduled tick would, just immediately
   // rather than waiting out however much of the 5s interval is left.
   const pushAfterDiscoverySweep = () => {
+    // A read reply clears its green dot, and that happens in the mail slot,
+    // not here, so the badges also refresh on this sweep.
+    if (mailDb) scheduleMailPush();
     // Rebuilds the pid->tmux-name registry from tmux itself before this
     // sweep's own push -- synchronous and cheap (list-sessions plus one
     // list-panes per matched name), and the ONLY thing that makes a
@@ -394,6 +451,10 @@ app.on('before-quit', () => {
   // 'closed' handler's own call to this (win.on('closed') above), since
   // before-quit runs regardless of whether that handler already fired.
   watchSessionFor(null, NOOP_WATCH_DEPS);
+  if (mailPushTimer) clearTimeout(mailPushTimer);
+  postOffice?.stop();
+  mailDb?.close();
+  mailDb = null;
   void watcher?.close();
   db?.close();
   // watcher.close() above is fire-and-forget (not awaited), so a watcher
