@@ -9,6 +9,11 @@ import type { PromptChoice, ScreenExpect, ScreenRead } from '../core/prompt.ts';
  *  text (the anchor) as a pattern; anchor checks use `includes`. */
 
 const RULE_LINE = /^─+$/;
+/** The DASHED rule (U+254C), which is not the solid one above (U+2500).
+ *  Claude Code uses it to separate the sections inside a dialog -- the Write
+ *  and plan dialogs already did, and as of 2026-09-30 the Bash dialog does
+ *  too. See bashCommandEquals for why that matters. */
+const DASHED_RULE = /^╌+$/;
 const OPTION_LINE = /^\s*(❯\s*)?(\d+)\.\s+(.*)$/;
 const TAB_ROW = /^←.*→$/;
 const HEADER_LINE = /^[☐☒]\s+\S/;
@@ -221,6 +226,38 @@ function indentOf(line: string): number {
 function bashCommandEquals(above: string[], anchor: string, description: string | undefined): boolean {
   const headerIdx = above.findIndex((l) => l.trim() !== '');
   if (headerIdx === -1) return false;
+
+  // The RULED layout, measured live on 2026-09-30. Claude Code moved the
+  // Bash dialog from nesting the command under its header to laying every
+  // section out at the SAME indent, separated by dashed rules, with the
+  // description ABOVE the command rather than below it:
+  //
+  //      Bash command                 <- header,      indent 1
+  //      Push the branch              <- description, indent 1
+  //     +-------------------          <- dashed rule, indent 0
+  //      | git fetch origin ...       <- command,     indent 1
+  //      | git push origin ...
+  //     +-------------------
+  //      Ask rule Bash(git push *) overrides auto mode for this command.
+  //
+  // The indent-based run below finds nothing here, because nothing is
+  // deeper than the header -- so EVERY Bash prompt on that version read as
+  // anchor_not_found, which is how this was found. Checked first because it
+  // is unambiguous: the command is whatever sits between the first two
+  // rules, with no indentation to interpret.
+  const rules = above.flatMap((l, i) => (DASHED_RULE.test(l.trim()) ? [i] : []));
+  if (rules.length >= 2) {
+    const shown = bare(description?.trim() ? description : BASH_DEFAULT_DESCRIPTION);
+    const shownAbove = bare(above.slice(headerIdx + 1, rules[0]).join(''));
+    // The command must match EXACTLY -- it is the whole reason an anchor
+    // exists, and answering a prompt whose command is not the card's would
+    // be answering a different question. The description only corroborates,
+    // so a dialog that shows none at all is accepted rather than refused;
+    // anything else it shows still has to agree.
+    return unbordered(above.slice(rules[0]! + 1, rules[1])) === anchor
+      && (shownAbove === '' || shownAbove === shown);
+  }
+
   const headerIndent = indentOf(above[headerIdx] ?? '');
 
   const run: string[] = [];

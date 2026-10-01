@@ -563,6 +563,41 @@ describe('readPromptScreen -- plan dialogs', () => {
   });
 });
 
+// Claude Code changed the Bash permission dialog's layout. The command used
+// to be nested UNDER the header, and bashCommandEquals found it by looking
+// for lines indented deeper than the header. In the new layout every line
+// sits at the same indent and the sections are separated by the same rule
+// character the Write and plan dialogs already use, with the description
+// ABOVE the command rather than below it.
+//
+// Captured live on 2026-09-30 from a real prompt (text neutralised, indents
+// and borders kept). Measured: every line of the dialog is at indent 1, so
+// the old "deeper than the header" run comes back empty and the anchor is
+// never found -- i.e. EVERY Bash prompt on this version was unanswerable
+// from the card, not an intermittent failure.
+describe('readPromptScreen -- the ruled Bash layout', () => {
+  const CMD = 'git fetch origin 2>&1 | tail -1; git rev-list --left-right --count '
+    + 'HEAD...origin/exampleBranch && git push origin exampleBranch 2>&1 | tail -2';
+
+  it('finds a command the new layout rules off instead of indenting', () => {
+    const result = readPromptScreen(screen('118-perm-bash-ruled-layout'),
+      permExpect(CMD, 'Bash', 'Push the branch (triggers dev deploy)'));
+    expect(result.match).toBe(true);
+    if (!result.match || result.kind !== 'permission') throw new Error('expected permission match');
+    expect(result.choices.map(c => c.key)).toEqual(['1', '2', '3']);
+    expect(result.cursor).toBe('1');
+  });
+
+  it('still refuses when the command on screen is not the one the card holds', () => {
+    // The whole point of the anchor: the pane can show a different prompt
+    // from the card's, and answering that one would be answering the wrong
+    // question.
+    const result = readPromptScreen(screen('118-perm-bash-ruled-layout'),
+      permExpect('git switch -c some-other-branch', 'Bash', 'Push the branch (triggers dev deploy)'));
+    expect(result.match).toBe(false);
+  });
+});
+
 describe('readPromptScreen -- questions', () => {
   it('matches the first question with both headers unanswered', () => {
     const result = readPromptScreen(screen('10-ask-q1'), askExpect());
