@@ -1001,12 +1001,53 @@ describe('a single-select question with previews (110-112)', () => {
     return buildPromptView(ev, NAME, {});
   }
 
+  /** A plain question first, the preview one second -- the shape that was
+   *  measured live on 2026-10-01 (a two-question prompt whose second
+   *  question carried previews). */
+  function pairedPreviewView(): PromptView {
+    const ev = event(ASK, 'preview-q-pair');
+    const input = JSON.parse(readFileSync(new URL('preview-question-tool_input.json', EVENTS), 'utf8')) as {
+      questions: Record<string, unknown>[];
+    };
+    const preview = input.questions[0]!;
+    const plain = {
+      ...preview, question: 'Which button?', header: 'Button',
+      options: (preview.options as Record<string, unknown>[]).map(o => ({ label: o.label, description: o.description })),
+    };
+    ev.payload = { tool_name: 'AskUserQuestion', tool_input: { questions: [plain, preview] } };
+    return buildPromptView(ev, NAME, {});
+  }
+
   it('the fixture screen and the fixture payload are the same question', () => {
     const view = previewView();
     expect(view.answerable).toBe(true);
     expect(view.questions?.[0]?.options.map(o => o.label)).toEqual([
       'Inline, expandable', 'Side by side, like the terminal', 'Labels only, previews in the terminal',
     ]);
+  });
+
+  // The refusal above held only because that prompt has ONE question. The
+  // walk presses each question in turn, so on a real two-question prompt
+  // -- measured 2026-10-01 -- the earlier question was already answered by
+  // the time the preview one was reached. That left the dialog half
+  // answered, and the card locked out of it for good: every retry then
+  // failed the fresh-dialog guard and the rest had to be done in Terminal.
+  it('leaves an earlier question untouched when a later one asks for free text', async () => {
+    registered();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const view = pairedPreviewView();
+    const pane = fakePane([focus1()]);
+    const answer = { kind: 'questions', picks: [{ options: [0] }, { options: [], other: '10 most recent' }] };
+    expect(await answerPrompt(PID, view.id, answer, deps(pane, view)))
+      .toEqual({ status: 'refused', reason: 'invalid' });
+    expect(pane.keys()).toEqual([]);
+  });
+
+  it('still takes a normal pick on a preview question that follows a plain one', () => {
+    const view = pairedPreviewView();
+    expect(view.answerable).toBe(true);
+    expect(validateAnswer(view, { kind: 'questions', picks: [{ options: [0] }, { options: [1] }] }))
+      .toEqual({ kind: 'questions', picks: [{ options: [0] }, { options: [1] }] });
   });
 
   it('walks the cursor down to the pick and takes it with Enter -- never a digit', async () => {
@@ -1063,14 +1104,17 @@ describe('a single-select question with previews (110-112)', () => {
     expect(pane.keys()).toEqual(['Down', 'Down', 'Down']);
   });
 
+  // Refused by validateAnswer now, on the payload's own preview flag --
+  // so before the screen is even read, not on reaching the question.
   it('refuses free text on this layout before any key -- it has no "Type something." row', async () => {
     registered();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const view = previewView();
     const pane = fakePane([focus1()]);
     expect(await answerPrompt(PID, view.id, { kind: 'questions', picks: [{ options: [], other: 'my own answer' }] }, deps(pane, view)))
-      .toEqual({ status: 'refused', reason: 'unconfirmed' });
+      .toEqual({ status: 'refused', reason: 'invalid' });
     expect(pane.sent).toEqual([]);
+    expect(pane.captures).toEqual([]);
   });
 
   it('refuses Chat about this on this layout -- it is drawn with no number', async () => {

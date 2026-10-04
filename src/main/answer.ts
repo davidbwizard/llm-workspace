@@ -118,13 +118,18 @@ function readQuestions(raw: unknown): PromptQuestion[] {
   if (!Array.isArray(raw)) return [];
   return raw.map((q) => {
     const o = record(q) ?? {};
-    const options = Array.isArray(o.options)
-      ? o.options.map((opt) => {
-        const p = record(opt) ?? {};
-        return { label: str(p.label) ?? '', description: str(p.description) ?? '' };
-      })
-      : [];
-    return { question: str(o.question) ?? '', header: str(o.header) ?? '', multiSelect: o.multiSelect === true, options };
+    const raw = Array.isArray(o.options) ? o.options : [];
+    const options = raw.map((opt) => {
+      const p = record(opt) ?? {};
+      return { label: str(p.label) ?? '', description: str(p.description) ?? '' };
+    });
+    // One option with a preview puts the WHOLE question in the preview
+    // layout, so the flag is per question, not per option.
+    const preview = raw.some(opt => record(opt)?.preview !== undefined);
+    return {
+      question: str(o.question) ?? '', header: str(o.header) ?? '',
+      multiSelect: o.multiSelect === true, options, ...(preview ? { preview: true as const } : {}),
+    };
   });
 }
 
@@ -270,6 +275,11 @@ export function validateAnswer(view: PromptView, raw: unknown): Answer | null {
         picks.push({ options: [...indexes] });
       } else {
         if (indexes.length + (other === undefined ? 0 : 1) !== 1) return null;
+        // The preview layout draws no free-text row (fixture 110), so there
+        // is nothing to type into. Refused here, before any key: the walk
+        // reaches this question only after pressing the ones before it, and
+        // a half-answered dialog can no longer be answered from the card.
+        if (other !== undefined && q.preview) return null;
         if (other !== undefined && digitFor(q.options.length) === null) return null;
         picks.push(other === undefined ? { options: [...indexes] } : { options: [], other });
       }

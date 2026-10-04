@@ -5,8 +5,13 @@
 
 export type PromptKind = 'question' | 'permission' | 'plan';
 
+// preview: an option of this question carries a `preview` field in the hook
+// payload, which makes Claude Code draw the side-by-side layout for it
+// (options in a narrow left column, a bordered preview panel beside them).
+// That layout has no free-text row, so this question takes a pick only --
+// the card offers no "Something else" on it and validateAnswer refuses one.
 export type PromptQuestion = {
-  question: string; header: string; multiSelect: boolean;
+  question: string; header: string; multiSelect: boolean; preview?: true;
   options: { label: string; description: string }[];
 };
 

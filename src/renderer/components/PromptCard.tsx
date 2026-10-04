@@ -240,10 +240,15 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
             <small>{opt.description}</small>
           </label>
         ))}
-        {q.multiSelect ? (
+        {q.multiSelect || q.preview ? (
           // Task 3's option-B ruling: the multi-select free-text key
           // sequence was never measured, so main refuses it outright --
-          // no "Other" row is offered here at all.
+          // no "Other" row is offered here at all. A preview question is
+          // the same story for a different reason: that layout draws no
+          // free-text row, so there is nothing to type into (fixture 110).
+          // Offering the row anyway is what left a dialog half answered on
+          // 2026-10-01 -- the refusal landed only once the walk had reached
+          // the question, after the ones before it had been pressed.
           <p className="hint">To type your own answer, use Terminal.</p>
         ) : (
           <label className="opt">

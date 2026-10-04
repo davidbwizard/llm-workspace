@@ -66,6 +66,30 @@ describe('PromptCard -- questions', () => {
     expect(screen.getByText('To type your own answer, use Terminal.')).toBeTruthy();
   });
 
+  // A question whose options carry previews is drawn by Claude Code in the
+  // side-by-side layout, which has no free-text row -- main refuses `other`
+  // on it outright (validateAnswer), so the card must not offer a row that
+  // can only ever be rejected. Before 2026-10-01 it did, and the refusal
+  // landed mid-walk: the questions before it were already pressed, and the
+  // half-answered dialog could then only be finished in Terminal.
+  it('offers no Something else row on a single-select question with previews', () => {
+    setFleet();
+    const previewPrompt: PromptView = {
+      id: 'evt-4', kind: 'question', answerable: true, reason: null,
+      questions: [
+        { question: 'How much history?', header: 'History', multiSelect: false, preview: true,
+          options: [{ label: 'Most recent 20', description: '' }, { label: 'Everything, ever', description: '' }] },
+      ],
+    };
+    render(<PromptCard pid={4821} prompt={previewPrompt} onOpenTerminal={() => {}} />);
+
+    const q = within(screen.getByRole('group', { name: 'How much history?' }));
+    expect(q.getByRole('radio', { name: 'Most recent 20' })).toBeTruthy();
+    expect(q.getByRole('radio', { name: 'Everything, ever' })).toBeTruthy();
+    expect(q.queryByRole('radio', { name: 'Something else' })).toBeNull();
+    expect(screen.getByText('To type your own answer, use Terminal.')).toBeTruthy();
+  });
+
   it('disables Send answers until every question is answered', () => {
     setFleet();
     render(<PromptCard pid={4821} prompt={questionPrompt} onOpenTerminal={() => {}} />);
