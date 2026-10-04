@@ -1,6 +1,8 @@
 {
   "name": "llm-workspace",
   "version": "0.1.0",
+  "description": "Fleet watches local Claude Code and Codex sessions, and answers their prompts from one window.",
+  "author": "Brabbins <david@bluewizard.com>",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
