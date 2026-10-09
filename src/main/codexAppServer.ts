@@ -1,9 +1,11 @@
+import { isUtf8 } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
 import { createConnection, type Socket } from 'node:net';
 import type { CodexPrompt, CodexQuestion, CodexSnapshot } from '../core/codexPrompt.ts';
 // The one definition of where the App Server daemon listens, shared with
 // the relay that Fleet's own Codex launches go through.
 import { codexDaemonSocket as defaultCodexSocketPath } from './codexRelayControl.ts';
+import { codexFormFields, validCodexFormContent } from '../core/codexForm.ts';
 import { SESSION_NAME_HELP, SESSION_NAME_MAX, SESSION_NAME_SAFE } from '../core/sessionName.ts';
 
 /** One read-only subscription to the already-running Codex app-server. Only
@@ -35,8 +37,12 @@ const CONTROL = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/;
 // shell command would change what the person thinks they are approving.
 const CONTROL_DISPLAY = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]/g;
 const BIDI = /[\u202a-\u202e\u2066-\u2069\u200b\u2060\ufeff]/g;
-const display = (value: unknown): string | null => typeof value === 'string'
-  ? value.replace(CONTROL_DISPLAY, ' ').replace(BIDI, '').slice(0, 12000) : null;
+const TRUNCATED_PREVIEW = 'Preview truncated. Open Terminal to review all changes.';
+const display = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const text = value.replace(CONTROL_DISPLAY, ' ').replace(BIDI, '');
+  return text.length > 12000 ? `${text.slice(0, 12000)}…\n${TRUNCATED_PREVIEW}` : text;
+};
 const record = (value: unknown): RecordValue | null => value !== null && typeof value === 'object' && !Array.isArray(value)
   ? value as RecordValue : null;
 const requestKey = (id: RequestId): string => `${typeof id}:${id}`;
@@ -51,8 +57,10 @@ function asRequest(value: unknown): Request | null {
 
 export function viewCodexRequest(value: unknown, threadId: string): CodexPrompt | null {
   const req = asRequest(value);
-  if (!req || req.params.threadId !== threadId || typeof req.params.turnId !== 'string'
-    || typeof req.params.itemId !== 'string') return null;
+  if (!req || req.params.threadId !== threadId) return null;
+  const isMcp = req.method === 'mcpServer/elicitation/request';
+  if (isMcp ? (req.params.turnId !== null && typeof req.params.turnId !== 'string')
+    : (typeof req.params.turnId !== 'string' || typeof req.params.itemId !== 'string')) return null;
   const p = req.params;
   let kind: CodexPrompt['kind'];
   switch (req.method) {
@@ -60,7 +68,22 @@ export function viewCodexRequest(value: unknown, threadId: string): CodexPrompt 
     case 'item/fileChange/requestApproval': kind = 'file'; break;
     case 'item/permissions/requestApproval': kind = 'permissions'; break;
     case 'item/tool/requestUserInput': kind = 'questions'; break;
+    case 'mcpServer/elicitation/request': kind = 'elicitation'; break;
     default: return null;
+  }
+  let fields: CodexPrompt['fields'];
+  let fallback: string | undefined;
+  if (isMcp) {
+    fields = ['form', 'openai/form', 'openaiForm'].includes(String(p.mode))
+      ? codexFormFields(p.requestedSchema) ?? undefined : undefined;
+    if (!fields) {
+      kind = 'fallback';
+      fallback = p.mode === 'openai/userVerification'
+        ? 'Complete this verification in the native Codex client. Open Terminal to continue.'
+        : p.mode === 'url'
+          ? 'This request requires the native Codex client to open a verification page. Open Terminal to continue.'
+          : 'This form uses fields or constraints Fleet cannot safely display. Open Terminal to answer in Codex.';
+    }
   }
   let questions: CodexQuestion[] | null = null;
   if (kind === 'questions') {
@@ -74,7 +97,7 @@ export function viewCodexRequest(value: unknown, threadId: string): CodexPrompt 
       ids.add(q.id);
       if (q.options !== null && q.options !== undefined && !Array.isArray(q.options)) return null;
       const options = q.options === null || q.options === undefined ? null : Array.isArray(q.options)
-        ? q.options.map(rawOption => {
+        ? q.options.slice(0, 100).map(rawOption => {
           const o = record(rawOption);
           return o && typeof o.label === 'string' && typeof o.description === 'string'
             && display(o.label) === o.label
@@ -88,17 +111,49 @@ export function viewCodexRequest(value: unknown, threadId: string): CodexPrompt 
   }
   const standard = ['accept', 'acceptForSession', 'decline', 'cancel'] as const;
   const available = p.availableDecisions;
+  const actions = kind === 'command' || kind === 'file' ? commandActions(available, kind === 'command') : undefined;
   const offered = Array.isArray(available)
     ? standard.filter(d => available.includes(d)) : [...standard];
-  const network = record(p.networkApprovalContext);
   const details = kind === 'permissions' ? display(JSON.stringify(p.permissions ?? {}))
-    : network ? `${display(network.protocol) ?? 'Network'}: ${display(network.host) ?? ''}`
-      : kind === 'file' ? display(p.grantRoot) : null;
+    : kind === 'command' ? [p.networkApprovalContext ? `Network: ${display(JSON.stringify(p.networkApprovalContext))}` : null,
+      p.additionalPermissions ? `Additional permissions: ${display(JSON.stringify(p.additionalPermissions))}` : null].filter(Boolean).join('\n') || null
+      : kind === 'file' ? display(p.grantRoot) : isMcp ? [display(p.serverName), p.mode === 'url' ? display(p.url) : null].filter(Boolean).join('\n') : null;
+  if (kind === 'elicitation') {
+    const persist = record(p._meta)?.persist;
+    const session = fields?.length === 0 && (persist === 'session' || (Array.isArray(persist) && persist.includes('session')));
+    return { key: requestKey(req.id), kind, threadId, turnId: p.turnId as string | null, itemId: null,
+      reason: display(p.message), command: null, cwd: null, details, questions: null, decisions: [], fields,
+      actions: [{ id: 'accept', label: fields?.length ? 'Send answers' : 'Allow once' },
+        ...(session ? [{ id: 'acceptForSession', label: 'Allow for session' }] : []),
+        { id: 'decline', label: 'Deny' }, { id: 'cancel', label: 'Cancel' }] };
+  }
   return {
-    key: requestKey(req.id), kind, threadId, turnId: p.turnId as string, itemId: p.itemId as string,
-    reason: display(p.reason), command: display(p.command), cwd: display(p.cwd), details,
-    questions, decisions: kind === 'command' || kind === 'file' ? offered : [],
+    key: requestKey(req.id), kind, threadId, turnId: p.turnId as string | null, itemId: isMcp ? null : p.itemId as string,
+    reason: display(p.reason) ?? (isMcp ? display(p.message) ?? display(p.description) : null),
+    command: display(p.command), cwd: display(p.cwd), details,
+    questions, decisions: kind === 'command' || kind === 'file' ? offered : [], actions,
+    ...(kind === 'questions' ? { isBlocking: p.isBlocking !== false } : {}), ...(fallback ? { fallback } : {}),
   };
+}
+
+const DECISION_LABELS: Record<string, string> = {
+  accept: 'Allow once', acceptForSession: 'Allow for session', decline: 'Deny', cancel: 'Cancel turn',
+};
+function commandActions(available: unknown, structured: boolean): { id: string; label: string }[] {
+  const offered = Array.isArray(available) ? available.slice(0, 32) : Object.keys(DECISION_LABELS);
+  return offered.flatMap((value, i) => {
+    if (typeof value === 'string' && Object.hasOwn(DECISION_LABELS, value)) return [{ id: value, label: DECISION_LABELS[value]! }];
+    if (!structured) return [];
+    const v = record(value);
+    const exec = record(v?.acceptWithExecpolicyAmendment)?.execpolicy_amendment;
+    const network = record(record(v?.applyNetworkPolicyAmendment)?.network_policy_amendment);
+    if (v && Object.keys(v).length === 1 && Array.isArray(exec) && exec.length > 0 && exec.length <= 100
+      && exec.every(part => typeof part === 'string'))
+      return [{ id: `offered:${i}`, label: `Allow commands starting with ${display(exec.join(' '))}` }];
+    if (v && Object.keys(v).length === 1 && network && typeof network.host === 'string' && ['allow', 'deny'].includes(String(network.action)))
+      return [{ id: `offered:${i}`, label: `${network.action === 'allow' ? 'Allow' : 'Deny'} network access to ${display(network.host)}` }];
+    return [];
+  });
 }
 
 /** Derive the entire reply from the server request kept in main. Renderer
@@ -110,14 +165,30 @@ export function responseForCodexPrompt(value: unknown, answer: unknown): RecordV
   const view = viewCodexRequest(req, req.params.threadId as string);
   if (!view) return null;
   if (view.kind === 'command' || view.kind === 'file') {
-    return typeof answer === 'string' && view.decisions.includes(answer as typeof view.decisions[number])
-      ? { decision: answer } : null;
+    if (typeof answer !== 'string' || !view.actions?.some(a => a.id === answer)) return null;
+    const original = answer.startsWith('offered:')
+      ? (req.params.availableDecisions as unknown[])[Number(answer.slice(8))] : answer;
+    return { decision: original };
   }
   if (view.kind === 'permissions') {
     if (answer === 'deny') return { permissions: {}, scope: 'turn' };
     if (answer !== 'grantTurn' && answer !== 'grantSession') return null;
     const permissions = record(req.params.permissions);
-    return permissions ? { permissions, scope: answer === 'grantSession' ? 'session' : 'turn' } : null;
+    if (!permissions) return null;
+    const grant = Object.fromEntries(['network', 'fileSystem'].filter(k => permissions[k] != null).map(k => [k, permissions[k]]));
+    return { permissions: grant, scope: answer === 'grantSession' ? 'session' : 'turn' };
+  }
+  if (view.kind === 'fallback') return null;
+  if (view.kind === 'elicitation') {
+    const given = record(answer);
+    if (!given || Object.keys(given).some(k => k !== 'action' && k !== 'content')
+      || typeof given.action !== 'string' || !view.actions?.some(a => a.id === given.action)) return null;
+    const accept = given.action === 'accept' || given.action === 'acceptForSession';
+    if (!accept) return given.content === undefined ? { action: given.action, content: null, _meta: null } : null;
+    const fields = view.fields ?? [];
+    if (fields.length ? !validCodexFormContent(fields, given.content) : given.content !== undefined) return null;
+    return { action: 'accept', content: fields.length ? given.content : null,
+      _meta: given.action === 'acceptForSession' ? { persist: 'session' } : null };
   }
   const given = record(answer);
   if (!given || !view.questions || Object.keys(given).length !== view.questions.length) return null;
@@ -127,7 +198,7 @@ export function responseForCodexPrompt(value: unknown, answer: unknown): RecordV
     const text = given[q.id];
     if (typeof text !== 'string' || !text.trim() || text.length > MAX_TEXT || CONTROL.test(text)) return null;
     if (q.options && !q.options.some(o => o.label === text) && !q.isOther) return null;
-    answers[q.id] = { answers: [text.trim()] };
+    answers[q.id] = { answers: [q.options?.some(o => o.label === text) ? text : text.trim()] };
   }
   return { answers };
 }
@@ -140,6 +211,8 @@ class LocalWebSocket {
   private opened = false;
   private closed = false;
   private fragment: Buffer[] = [];
+  private fragmentSize = 0;
+  private fragmented = false;
   private key = randomBytes(16).toString('base64');
 
   constructor(path: string, private readonly onOpen: () => void,
@@ -157,12 +230,18 @@ class LocalWebSocket {
     if (this.closed) return;
     this.closed = true;
     this.socket.destroy();
+    this.buffer = Buffer.alloc(0);
+    this.fragment = [];
+    this.fragmentSize = 0;
     this.onClose(error);
   }
   close(): void { this.fail(); }
 
   private receive(bytes: Buffer): void {
     if (this.closed) return;
+    if (this.buffer.length + bytes.length > MAX_FRAME + 16384) {
+      this.fail(new Error('Codex receive buffer too large')); return;
+    }
     this.buffer = Buffer.concat([this.buffer, bytes]);
     if (!this.opened) {
       const end = this.buffer.indexOf('\r\n\r\n');
@@ -172,9 +251,19 @@ class LocalWebSocket {
       if (end < 0) return;
       const header = this.buffer.subarray(0, end).toString('latin1');
       const expected = createHash('sha1').update(`${this.key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
-      if (!/^HTTP\/1\.1 101\b/.test(header) || !header.toLowerCase().includes('upgrade: websocket')
-        || !header.toLowerCase().includes('connection: upgrade')
-        || !header.toLowerCase().includes(`sec-websocket-accept: ${expected.toLowerCase()}`)) {
+      const lines = header.split('\r\n');
+      const headers = new Map<string, string>();
+      let valid = /^HTTP\/1\.1 101(?: |$)/.test(lines.shift() ?? '');
+      for (const line of lines) {
+        const match = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*([^\r\n]*)$/.exec(line);
+        if (!match) { valid = false; break; }
+        const name = match[1]!.toLowerCase();
+        if (headers.has(name)) { valid = false; break; }
+        headers.set(name, match[2]!.trim());
+      }
+      if (!valid || headers.get('upgrade')?.toLowerCase() !== 'websocket'
+        || !headers.get('connection')?.split(',').some(t => t.trim().toLowerCase() === 'upgrade')
+        || headers.get('sec-websocket-accept') !== expected) {
         this.fail(new Error('Codex WebSocket handshake failed')); return;
       }
       this.buffer = this.buffer.subarray(end + 4);
@@ -184,9 +273,15 @@ class LocalWebSocket {
     while (this.buffer.length >= 2 && !this.closed) {
       const first = this.buffer[0]!;
       const second = this.buffer[1]!;
+      if (first & 0x70) { this.fail(new Error('Unexpected Codex RSV bits')); return; }
       if (second & 0x80) { this.fail(new Error('Masked server frame')); return; }
       const opcode = first & 15;
       const fin = (first & 0x80) !== 0;
+      const control = opcode >= 8;
+      if (control ? (!fin || ![8, 9, 10].includes(opcode))
+        : (opcode !== 0 && opcode !== 1) || (opcode === 0 ? !this.fragmented : this.fragmented)) {
+        this.fail(new Error('Invalid Codex frame sequence')); return;
+      }
       let len = second & 127;
       let offset = 2;
       if (len === 126) {
@@ -198,18 +293,31 @@ class LocalWebSocket {
         if (big > BigInt(MAX_FRAME)) { this.fail(new Error('Codex frame too large')); return; }
         len = Number(big); offset = 10;
       }
+      if (control && len > 125) { this.fail(new Error('Invalid Codex control size')); return; }
+      if (!control && (this.fragmentSize + len > MAX_FRAME || this.fragment.length >= 1024)) {
+        this.fail(new Error('Codex fragmented message too large')); return;
+      }
       if (len > MAX_FRAME) { this.fail(new Error('Codex frame too large')); return; }
       if (this.buffer.length < offset + len) return;
       const payload = this.buffer.subarray(offset, offset + len);
       this.buffer = this.buffer.subarray(offset + len);
-      if (opcode === 8) { this.fail(); return; }
+      if (opcode === 8) {
+        if (payload.length === 1 || (payload.length > 2 && !isUtf8(payload.subarray(2))))
+          this.fail(new Error('Invalid Codex close frame'));
+        else this.fail();
+        return;
+      }
       if (opcode === 9) { this.frame(10, payload); continue; }
       if (opcode === 10) continue;
       if (opcode !== 0 && opcode !== 1) { this.fail(new Error('Unsupported Codex frame')); return; }
-      this.fragment.push(payload);
+      this.fragment.push(Buffer.from(payload));
+      this.fragmentSize += len;
+      this.fragmented = !fin;
       if (!fin) continue;
       const complete = Buffer.concat(this.fragment);
       this.fragment = [];
+      this.fragmentSize = 0;
+      if (!isUtf8(complete)) { this.fail(new Error('Invalid Codex UTF-8')); return; }
       if (complete.length > MAX_FRAME) { this.fail(new Error('Codex message too large')); return; }
       try { this.onMessage(JSON.parse(complete.toString('utf8'))); }
       catch (err) { this.fail(err instanceof Error ? err : new Error('Invalid Codex JSON')); return; }
@@ -235,7 +343,10 @@ class LocalWebSocket {
 export class CodexAppServer {
   private threadId: string | null = null;
   private state: CodexSnapshot['state'] = 'unavailable';
-  private requests = new Map<string, { request: Request; sent: boolean }>();
+  private requests = new Map<string, { key: string; request: Request; sent: boolean; size: number }>();
+  private previews = new Map<string, string>();
+  private previewReads = new Map<string, string>();
+  private previewTurns = new Set<string>();
   private socket: LocalWebSocket | null = null;
   private retry: NodeJS.Timeout | null = null;
   private handshake: NodeJS.Timeout | null = null;
@@ -276,18 +387,26 @@ export class CodexAppServer {
     this.threadId = null;
     this.state = 'unavailable';
     this.requests.clear();
+    this.previews.clear();
+    this.previewReads.clear();
+    this.previewTurns.clear();
     this.changed = () => {};
   }
   snapshot(threadId: string): CodexSnapshot | null {
     if (threadId !== this.threadId) return null;
     return { state: this.state, prompts: [...this.requests.values()]
-      .map(({ request }) => viewCodexRequest(request, threadId)).filter((p): p is CodexPrompt => p !== null) };
+      .map(({ key, request }) => {
+        const view = viewCodexRequest(request, threadId);
+        if (!view) return null;
+        const preview = view.kind === 'file' ? this.previews.get(JSON.stringify([view.turnId, view.itemId])) : null;
+        return { ...view, key, ...(preview ? { details: [view.details, preview].filter(Boolean).join('\n') } : {}) };
+      }).filter((p): p is CodexPrompt => p !== null) };
   }
   answer(threadId: unknown, key: unknown, answer: unknown): CodexAnswerResult {
     if (typeof threadId !== 'string' || typeof key !== 'string' || threadId !== this.threadId)
       return { status: 'refused', reason: 'stale' };
     if (!this.socket || this.state !== 'ready') return { status: 'refused', reason: 'unavailable' };
-    const entry = this.requests.get(key);
+    const entry = [...this.requests.values()].find(e => e.key === key);
     if (!entry || entry.sent || entry.request.params.threadId !== threadId) return { status: 'refused', reason: 'stale' };
     const result = responseForCodexPrompt(entry.request, answer);
     if (!result) return { status: 'refused', reason: 'invalid' };
@@ -335,7 +454,7 @@ export class CodexAppServer {
     this.socket = new LocalWebSocket(this.socketPath,
       () => this.socket?.send({ id: 1, method: 'initialize', params: {
         clientInfo: { name: 'fleet', title: 'Fleet', version: '0.1.0' },
-        capabilities: { experimentalApi: true },
+        capabilities: { experimentalApi: true, extensions: { 'openai/form': {} } },
       } }),
       value => { if (this.generation === generation) this.message(value, threadId); },
       error => {
@@ -348,10 +467,34 @@ export class CodexAppServer {
         this.report(error instanceof Error ? `Codex app-server unavailable: ${error.message}`
           : 'Codex app-server connection closed');
         this.socket = null;
+        if (this.handshake) clearTimeout(this.handshake);
+        this.handshake = null;
         this.requests.clear();
+        this.previews.clear();
+        this.previewReads.clear();
+        this.previewTurns.clear();
         this.setState('unavailable');
         this.retry = setTimeout(() => { this.retry = null; this.connect(); }, this.retryMs);
       });
+  }
+
+  private rememberPreview(turnId: string, value: unknown): boolean {
+    const item = record(value);
+    if (item?.type !== 'fileChange' || typeof item.id !== 'string' || !Array.isArray(item.changes)) return false;
+    const key = JSON.stringify([turnId, item.id]);
+    let truncated = item.changes.length > 32;
+    const joined = item.changes.slice(0, 32).map(raw => {
+      const c = record(raw);
+      if (!c) return '';
+      if ([c.path, c.diff].some(v => typeof v === 'string' && v.length > 12000)) truncated = true;
+      return [display(c.path), display(c.diff)].filter(Boolean).join('\n');
+    }).filter(Boolean).join('\n');
+    truncated ||= joined.length > 12000;
+    const text = joined.slice(0, 12000) + (truncated ? `…\n${TRUNCATED_PREVIEW}` : '');
+    if (!text) return false;
+    if (!this.previews.has(key) && this.previews.size >= 64) this.previews.delete(this.previews.keys().next().value!);
+    this.previews.set(key, text);
+    return true;
   }
 
   /** One line per outage, not one per retry. */
@@ -387,12 +530,29 @@ export class CodexAppServer {
       this.setState('ready');
       return;
     }
+    if (isResponse && typeof m.id === 'string' && this.previewReads.has(m.id)) {
+      const turnId = this.previewReads.get(m.id)!;
+      this.previewReads.delete(m.id);
+      if (m.error) return; // Preview is optional; approval remains visible and answerable.
+      const data = record(m.result)?.data;
+      if (Array.isArray(data)) for (const entry of data.slice(0, 64)) {
+        const e = record(entry);
+        if (e?.turnId === turnId) this.rememberPreview(turnId, e.item);
+      }
+      this.changed();
+      return;
+    }
+    if (m.method === 'item/started') {
+      const params = record(m.params);
+      if (params?.threadId === threadId && typeof params.turnId === 'string'
+        && this.rememberPreview(params.turnId, params.item)) this.changed();
+      return;
+    }
     if (m.method === 'serverRequest/resolved') {
       const params = record(m.params);
       if (params?.threadId === threadId
         && (typeof params.requestId === 'string' || typeof params.requestId === 'number')) {
-        this.requests.delete(requestKey(params.requestId));
-        this.changed();
+        if (this.requests.delete(requestKey(params.requestId))) this.changed();
       }
       return;
     }
@@ -401,13 +561,35 @@ export class CodexAppServer {
       const turn = record(params?.turn);
       if (params?.threadId === threadId && typeof turn?.id === 'string') {
         for (const [key, entry] of this.requests) if (entry.request.params.turnId === turn.id) this.requests.delete(key);
+        this.previewTurns.delete(turn.id);
+        for (const [id, previewTurn] of this.previewReads) if (previewTurn === turn.id) this.previewReads.delete(id);
+        for (const key of this.previews.keys()) if (JSON.parse(key)[0] === turn.id) this.previews.delete(key);
         this.changed();
       }
       return;
     }
     const request = asRequest(m);
     if (request && viewCodexRequest(request, threadId)) {
-      this.requests.set(requestKey(request.id), { request, sent: false });
+      const id = requestKey(request.id);
+      if (this.requests.has(id)) return; // A replay cannot undo an already-sent answer.
+      const size = Buffer.byteLength(JSON.stringify(request));
+      if (size > 128 * 1024 || this.requests.size >= 128
+        || [...this.requests.values()].reduce((n, e) => n + e.size, size) > 8 * 1024 * 1024) {
+        this.report('Codex pending requests exceeded observer storage bounds');
+        this.socket?.close();
+        return;
+      }
+      this.requests.set(id, { key: randomBytes(24).toString('hex'), request, sent: false, size });
+      if (request.method === 'item/fileChange/requestApproval') {
+        const turnId = request.params.turnId as string;
+        if (!this.previews.has(JSON.stringify([turnId, request.params.itemId]))
+          && !this.previewTurns.has(turnId) && this.previewTurns.size < 8) {
+          this.previewTurns.add(turnId);
+          const readId = `fleet-preview:${randomBytes(16).toString('hex')}`;
+          this.previewReads.set(readId, turnId);
+          this.socket?.send({ id: readId, method: 'thread/items/list', params: { threadId, turnId, limit: 64, sortDirection: 'desc' } });
+        }
+      }
       this.changed();
     }
   }

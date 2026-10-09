@@ -8,6 +8,8 @@ import {
   CodexAppServer, responseForCodexPrompt, setCodexThreadName, viewCodexRequest,
 } from '../../src/main/codexAppServer.ts';
 
+import { promptDaemon, serverFrame } from '../helpers/codexServer.ts';
+
 const command = {
   id: 42,
   method: 'item/commandExecution/requestApproval',
@@ -53,6 +55,117 @@ describe('Codex app-server prompts', () => {
     expect(responseForCodexPrompt(request, { scope: 'Other', reason: 'Needed' })).toBeNull();
     expect(responseForCodexPrompt(request, { scope: 'One' })).toBeNull();
     expect(responseForCodexPrompt(request, { scope: 'One', reason: 'line\nenter' })).toBeNull();
+  });
+
+  it('preserves exact offered labels for nonblocking questions', () => {
+    const request = { id: 9, method: 'item/tool/requestUserInput', params: {
+      threadId: 'thread-1', turnId: 'turn-1', itemId: 'question', isBlocking: false,
+      questions: [{ id: 'q', question: 'Choose', options: [{ label: '  Exact  ', description: '' }] }],
+    } };
+    expect(viewCodexRequest(request, 'thread-1')).toMatchObject({ isBlocking: false });
+    expect(responseForCodexPrompt(request, { q: '  Exact  ' }))
+      .toEqual({ answers: { q: { answers: ['  Exact  '] } } });
+    expect(responseForCodexPrompt(request, { q: 'Exact' })).toBeNull();
+  });
+
+  it('omits null optional permission grant fields', () => {
+    const request = { ...command, method: 'item/permissions/requestApproval', params: {
+      ...command.params, permissions: { network: { enabled: true }, fileSystem: null },
+    } };
+    expect(responseForCodexPrompt(request, 'grantSession'))
+      .toEqual({ permissions: { network: { enabled: true } }, scope: 'session' });
+    expect(responseForCodexPrompt(request, { permissions: { network: { enabled: true } } })).toBeNull();
+  });
+
+  it('retains offered structured command decisions in main', () => {
+    const amendment = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['npm', 'test'] } };
+    const request = { ...command, params: { ...command.params,
+      additionalPermissions: { network: { enabled: true }, fileSystem: null },
+      availableDecisions: ['decline', amendment],
+    } };
+    const prompt = viewCodexRequest(request, 'thread-1')!;
+    expect(prompt.actions).toHaveLength(2);
+    const action = prompt.actions![1]!;
+    expect(action.label).toContain('npm');
+    expect(responseForCodexPrompt(request, action.id)).toEqual({ decision: amendment });
+    expect(responseForCodexPrompt(request, 'accept')).toBeNull();
+    expect(responseForCodexPrompt(request, amendment)).toBeNull();
+    expect(prompt.details).toContain('network');
+  });
+
+  it('marks bounded command and structured action previews as truncated', () => {
+    const long = 'x'.repeat(13000);
+    const request = { ...command, params: { ...command.params, command: long,
+      availableDecisions: [{ acceptWithExecpolicyAmendment: { execpolicy_amendment: [long] } }],
+    } };
+    const prompt = viewCodexRequest(request, 'thread-1')!;
+    expect(prompt.command).toMatch(/Preview truncated.*Open Terminal/);
+    expect(prompt.actions![0]!.label).toMatch(/Preview truncated.*Open Terminal/);
+  });
+
+  const elicitation = (schema: unknown, meta: unknown = null, mode = 'form') => ({
+    id: 'mcp-1', method: 'mcpServer/elicitation/request', params: {
+      threadId: 'thread-1', turnId: null, serverName: 'sample', mode,
+      message: 'Approve the tool', requestedSchema: schema, _meta: meta,
+    },
+  });
+
+  it.each(['form', 'openai/form', 'openaiForm'])('answers message-only %s MCP approvals with only offered session persistence', mode => {
+    const request = elicitation({ type: 'object', properties: {} }, { persist: ['session'] }, mode);
+    expect(viewCodexRequest(request, 'thread-1')).toMatchObject({ kind: 'elicitation', itemId: null, turnId: null });
+    expect(responseForCodexPrompt(request, { action: 'accept' }))
+      .toEqual({ action: 'accept', content: null, _meta: null });
+    expect(responseForCodexPrompt(request, { action: 'acceptForSession' }))
+      .toEqual({ action: 'accept', content: null, _meta: { persist: 'session' } });
+    expect(responseForCodexPrompt(request, { action: 'decline' }))
+      .toEqual({ action: 'decline', content: null, _meta: null });
+    expect(responseForCodexPrompt(elicitation(null), { action: 'acceptForSession' })).toBeNull();
+    expect(responseForCodexPrompt(request, { action: 'accept', _meta: { persist: 'always' } })).toBeNull();
+  });
+
+  it('validates required MCP primitive fields and constraints in main', () => {
+    const request = elicitation({ type: 'object', properties: {
+      name: { type: 'string', minLength: 2, maxLength: 5 },
+      count: { type: 'integer', minimum: 1, maximum: 4 },
+      enabled: { type: 'boolean' }, scope: { type: 'string', enum: ['one', 'all'] },
+    }, required: ['name', 'count', 'enabled', 'scope'] });
+    const content = { name: 'Alice', count: 2, enabled: false, scope: 'one' };
+    expect(responseForCodexPrompt(request, { action: 'accept', content }))
+      .toEqual({ action: 'accept', content, _meta: null });
+    for (const bad of [{ ...content, name: 'A' }, { ...content, count: 1.5 },
+      { ...content, enabled: 'true' }, { ...content, scope: 'injected' }, { ...content, extra: 'bad' },
+      { name: 'Alice', count: 2 }]) {
+      expect(responseForCodexPrompt(request, { action: 'accept', content: bad })).toBeNull();
+    }
+  });
+
+  it('validates own fields for reserved property names without using inherited data', () => {
+    const request = elicitation(JSON.parse('{"type":"object","properties":{"constructor":{"type":"string"},"__proto__":{"type":"boolean"}},"required":["constructor","__proto__"]}'));
+    expect(responseForCodexPrompt(request, { action: 'accept', content: {} })).toBeNull();
+    const content = JSON.parse('{"constructor":"chosen","__proto__":false}');
+    expect(responseForCodexPrompt(request, { action: 'accept', content })).toEqual({ action: 'accept', content, _meta: null });
+    const allowsEmpty = elicitation({ type: 'object', properties: { text: { type: 'string' } }, required: ['text'] });
+    expect(responseForCodexPrompt(allowsEmpty, { action: 'accept', content: { text: '' } }))
+      .toEqual({ action: 'accept', content: { text: '' }, _meta: null });
+  });
+
+  it('rejects non-object serialized content for an optional typed MCP form', () => {
+    const request = elicitation({ type: 'object', properties: { optional: { type: 'string' } } });
+    expect(responseForCodexPrompt(request, { action: 'accept', content: new Date('2026-01-01') })).toBeNull();
+  });
+
+  it.each([
+    { mode: 'url', url: 'https://example.com/verify', message: 'Verify' },
+    { mode: 'openai/userVerification', title: 'Verify', description: 'Native ceremony', challenge: 'secret' },
+    { mode: 'form', requestedSchema: { type: 'object', properties: { unsupported: { type: 'array' } } } },
+    { mode: 'form', requestedSchema: { type: 'object', properties: { code: { type: 'string', pattern: '[0-9]+' } } } },
+  ])('keeps unsupported/native requests visible without accepting them: %j', params => {
+    const request = { ...elicitation(null), params: { ...elicitation(null).params, ...params } };
+    const prompt = viewCodexRequest(request, 'thread-1');
+    expect(prompt).toMatchObject({ kind: 'fallback' });
+    expect(prompt?.fallback).toMatch(/Terminal/);
+    expect(JSON.stringify(prompt)).not.toContain('challenge');
+    expect(responseForCodexPrompt(request, { action: 'accept' })).toBeNull();
   });
 
   // Review finding 4: an absent or dead app-server was completely silent.
@@ -171,13 +284,13 @@ describe('Codex app-server prompts', () => {
       send(command);
       await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(1));
       expect(bridge.answer('other-thread', 'number:42', 'accept')).toEqual({ status: 'refused', reason: 'stale' });
-      expect(bridge.answer('thread-1', 'number:42', 'accept')).toEqual({ status: 'sent' });
+      expect(bridge.answer('thread-1', bridge.snapshot('thread-1')!.prompts[0]!.key, 'accept')).toEqual({ status: 'sent' });
       await vi.waitFor(() => expect(replies).toEqual([{ decision: 'accept' }]));
       await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(0));
       for (const id of [1, 2]) {
         send({ ...command, id });
-        await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts[0]?.key).toBe(`number:${id}`));
-        expect(bridge.answer('thread-1', `number:${id}`, 'accept')).toEqual({ status: 'sent' });
+        await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(1));
+        expect(bridge.answer('thread-1', bridge.snapshot('thread-1')!.prompts[0]!.key, 'accept')).toEqual({ status: 'sent' });
         await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(0));
       }
       expect(replies).toEqual([{ decision: 'accept' }, { decision: 'accept' }, { decision: 'accept' }]);
@@ -187,6 +300,187 @@ describe('Codex app-server prompts', () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Codex observer recovery', () => {
+  it('replays pending prompts on initial subscription, reconnect and a fresh observer; old handles refuse reused IDs', async () => {
+    const daemon = await promptDaemon();
+    daemon.pending.set(42, command);
+    let bridge = new CodexAppServer(daemon.path, { retryMs: 20 });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(1));
+      const firstKey = bridge.snapshot('thread-1')!.prompts[0]!.key;
+      daemon.disconnect();
+      await vi.waitFor(() => expect(daemon.connections).toHaveLength(2));
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(1));
+      const key = bridge.snapshot('thread-1')!.prompts[0]!.key;
+      expect(key).not.toBe(firstKey);
+      expect(bridge.answer('thread-1', firstKey, 'accept')).toEqual({ status: 'refused', reason: 'stale' });
+      bridge.stop();
+      bridge = new CodexAppServer(daemon.path);
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(1));
+      const freshKey = bridge.snapshot('thread-1')!.prompts[0]!.key;
+      expect(freshKey).not.toBe(key);
+      expect(bridge.answer('thread-1', freshKey, 'accept')).toEqual({ status: 'sent' });
+      await vi.waitFor(() => expect(daemon.replies).toMatchObject([{ id: 42, result: { decision: 'accept' } }]));
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(0));
+    } finally { bridge.stop(); await daemon.close(); errors.mockRestore(); }
+  });
+
+  it('does not resurrect an externally answered prompt after an outage', async () => {
+    const daemon = await promptDaemon();
+    daemon.pending.set(42, command);
+    const bridge = new CodexAppServer(daemon.path, { retryMs: 60 });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(1));
+      daemon.disconnect();
+      daemon.pending.clear(); // Native TUI answered while observer was absent.
+      await vi.waitFor(() => expect(daemon.connections).toHaveLength(2));
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.state).toBe('ready'));
+      expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(0);
+    } finally { bridge.stop(); await daemon.close(); errors.mockRestore(); }
+  });
+
+  it('does not reset sent requests on duplicate replay or include another thread', async () => {
+    const daemon = await promptDaemon({ holdAnswers: true });
+    const bridge = new CodexAppServer(daemon.path);
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.state).toBe('ready'));
+      daemon.send(command);
+      daemon.send({ ...command, id: 43, params: { ...command.params, threadId: 'child-thread' } });
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(1));
+      const key = bridge.snapshot('thread-1')!.prompts[0]!.key;
+      expect(bridge.answer('thread-1', key, 'accept')).toEqual({ status: 'sent' });
+      daemon.send(command);
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(bridge.answer('thread-1', key, 'accept')).toEqual({ status: 'refused', reason: 'stale' });
+      expect(daemon.replies).toHaveLength(1);
+      daemon.send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1' } } });
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(0));
+    } finally { bridge.stop(); await daemon.close(); }
+  });
+
+  it('reads one bounded current-turn page for a replayed file approval and matches the exact item', async () => {
+    const daemon = await promptDaemon({ items: [
+      { turnId: 'other-turn', item: { type: 'fileChange', id: 'item-1', changes: [{ path: 'wrong', diff: 'wrong turn' }] } },
+      { turnId: 'turn-1', item: { type: 'fileChange', id: 'item-1', changes: [{ path: 'a.ts', diff: '-before\n+after' }] } },
+    ] });
+    daemon.pending.set(42, { ...command, method: 'item/fileChange/requestApproval' });
+    const bridge = new CodexAppServer(daemon.path);
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts[0]?.details ?? '').toContain('-before\n+after'));
+      expect(daemon.methods.filter(m => m.method === 'thread/items/list')).toMatchObject([
+        { params: { threadId: 'thread-1', turnId: 'turn-1', limit: 64, sortDirection: 'desc' } },
+      ]);
+      expect(bridge.snapshot('thread-1')!.prompts[0]!.details).not.toContain('wrong turn');
+    } finally { bridge.stop(); await daemon.close(); }
+  });
+
+  it('releases completed-turn preview reads so a long subscription can hydrate subsequent approvals', async () => {
+    const daemon = await promptDaemon();
+    const bridge = new CodexAppServer(daemon.path);
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.state).toBe('ready'));
+      for (let i = 0; i < 9; i++) {
+        daemon.send({ ...command, method: 'item/fileChange/requestApproval', params: { ...command.params, turnId: `turn-${i}` } });
+        await vi.waitFor(() => expect(daemon.methods.filter(m => m.method === 'thread/items/list')).toHaveLength(i + 1));
+        daemon.send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: `turn-${i}` } } });
+        await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(0));
+      }
+    } finally { bridge.stop(); await daemon.close(); }
+  });
+
+  it.each([
+    Array.from({ length: 33 }, (_, i) => ({ path: `file-${i}.ts`, diff: '+new' })),
+    [{ path: 'large.ts', diff: '+' + 'x'.repeat(13000) }],
+  ].map(changes => [changes]))('marks truncated file previews so full approval scope is clear', async changes => {
+    const daemon = await promptDaemon();
+    const bridge = new CodexAppServer(daemon.path);
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.state).toBe('ready'));
+      daemon.send({ method: 'item/started', params: { threadId: 'thread-1', turnId: 'turn-1',
+        item: { type: 'fileChange', id: 'item-1', changes } } });
+      daemon.send({ ...command, method: 'item/fileChange/requestApproval' });
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts[0]?.details ?? '').toMatch(/Preview truncated.*Open Terminal/));
+    } finally { bridge.stop(); await daemon.close(); }
+  });
+
+  it('hydrates only the matching file item preview, including an event after the request', async () => {
+    const daemon = await promptDaemon();
+    const bridge = new CodexAppServer(daemon.path);
+    const started = (id: string, diff: string) => ({ method: 'item/started', params: {
+      threadId: 'thread-1', turnId: 'turn-1', item: { type: 'fileChange', id,
+        changes: [{ path: '/repo/a.ts', kind: { type: 'update', move_path: null }, diff }], status: 'inProgress' },
+    } });
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.state).toBe('ready'));
+      daemon.send(started('other-item', 'WRONG DIFF'));
+      daemon.send({ ...command, method: 'item/fileChange/requestApproval' });
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(1));
+      expect(bridge.snapshot('thread-1')!.prompts[0]!.details ?? '').not.toContain('WRONG DIFF');
+      daemon.send(started('item-1', '-old\n+new'));
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')!.prompts[0]!.details ?? '').toContain('-old\n+new'));
+    } finally { bridge.stop(); await daemon.close(); }
+  });
+});
+
+describe('Codex local WebSocket validation', () => {
+  it.each([
+    ['RSV', serverFrame(Buffer.from('{}'), 0xc1)],
+    ['orphan continuation', serverFrame(Buffer.from('{}'), 0x80)],
+    ['fragmented control', serverFrame(Buffer.alloc(0), 0x09)],
+    ['oversized control', serverFrame(Buffer.alloc(126), 0x89)],
+    ['invalid UTF-8', serverFrame(Buffer.from([0x22, 0xff, 0x22]))],
+    ['nested text fragment', Buffer.concat([serverFrame(Buffer.from('{"x":'), 0x01), serverFrame(Buffer.from('1}'))])],
+    ['fragment aggregate overflow', Buffer.concat([serverFrame(Buffer.alloc(3 * 1024 * 1024, 32), 0x01),
+      serverFrame(Buffer.alloc(2 * 1024 * 1024, 32), 0x00).subarray(0, 10)])],
+  ])('closes on %s before accepting more requests', async (_name, frame) => {
+    const daemon = await promptDaemon();
+    const bridge = new CodexAppServer(daemon.path, { retryMs: 10_000 });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.state).toBe('ready'));
+      daemon.raw(frame as Buffer);
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.state).toBe('unavailable'), { timeout: 1000 });
+      expect(bridge.snapshot('thread-1')?.prompts).toHaveLength(0);
+    } finally { bridge.stop(); await daemon.close(); errors.mockRestore(); }
+  });
+
+  it('accepts exact handshake tokens and valid fragmented UTF-8 with interleaved ping', async () => {
+    const daemon = await promptDaemon({ handshake: accept => `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n` });
+    const bridge = new CodexAppServer(daemon.path);
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.state).toBe('ready'));
+      const request = Buffer.from(JSON.stringify({ ...command, params: { ...command.params, command: 'echo café' } }));
+      const split = request.indexOf(Buffer.from('é')) + 1;
+      daemon.raw(Buffer.concat([serverFrame(request.subarray(0, split), 0x01),
+        serverFrame(Buffer.from('ping'), 0x89), serverFrame(request.subarray(split), 0x80)]));
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.prompts[0]?.command).toBe('echo café'));
+    } finally { bridge.stop(); await daemon.close(); }
+  });
+
+  it('rejects a handshake accept-token suffix instead of using substring matching', async () => {
+    const daemon = await promptDaemon({ handshake: accept => `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}suffix\r\n\r\n` });
+    const bridge = new CodexAppServer(daemon.path, { retryMs: 10_000 });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      bridge.watch('thread-1', () => {});
+      await vi.waitFor(() => expect(bridge.snapshot('thread-1')?.state).toBe('unavailable'));
+      expect(daemon.methods).toHaveLength(0);
+    } finally { bridge.stop(); await daemon.close(); errors.mockRestore(); }
   });
 });
 
