@@ -1953,12 +1953,35 @@ describe('fresh Fleet Codex send binding',()=>{
 
 describe('native Codex prompt overlay safety',()=>{
   beforeEach(()=>clearRegistry());
+  it('retains the legacy choice guard for an unmanaged Codex terminal',async()=>{
+    registerSession(11,'llmws-codex-unmanaged');
+    const send=vi.fn();
+    const result=await sendKeysWithCodexAdmission(11,'draft',{},undefined,{
+      has:()=>true,send,promptOpen:()=>true,provider:()=> 'codex',
+    });
+    expect(result).toEqual({status:'refused',reason:'prompt_open'});
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('sends after exact native admission despite a stale Claude choice gate',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');
+    const writes:string[][]=[];
+    const result=await sendKeysWithCodexAdmission(11,'Ok does this app have your fixes?',{},'01a0da03-b7a1-7542-a9b9-e325e92c221f',{
+      has:()=>true,send:args=>{writes.push(args);return {ok:true,stdout:''};},
+      capture:()=>({ok:true,stdout:writes.some(a=>a[0]==='paste-buffer')?'pasted':'screen'}),
+      finalCodexGuard:async()=>null,codexGuard:()=>null,codexSnapshot:()=>({state:'ready',prompts:[]}),
+      inputPending:()=>false,beginInput:()=>true,finishInput:()=>true,promptOpen:()=>true,
+    });
+    expect(result).toEqual({status:'sent',queued:false});
+    expect(writes.some(a=>a[0]==='send-keys')).toBe(true);
+  });
+
   it('refuses chat while an asynchronous question overlays the native composer',async()=>{
     registerSession(11,'llmws-codex-relay-aaaaaaaa');
     const send=vi.fn(()=>({ok:true as const,stdout:''}));
     const snapshot={state:'ready' as const,prompts:[{isBlocking:false,kind:'questions'} as any]};
     const result=await sendKeysWithCodexAdmission(11,'chat',{},'01a0da03-b7a1-7542-a9b9-e325e92c221f',{has:()=>true,send,capture:()=>({ok:true,stdout:''}),
-      finalCodexGuard:async()=>null,codexGuard:()=>null,codexSnapshot:()=>snapshot,promptOpen:()=>false});
+      finalCodexGuard:async()=>null,codexGuard:()=>null,codexSnapshot:()=>snapshot,promptOpen:()=>true});
     expect(result).toEqual({status:'refused',reason:'codex_prompt_open'});expect(send).not.toHaveBeenCalled();
   });
 });

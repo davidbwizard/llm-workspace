@@ -1,4 +1,5 @@
 import type { CodexConnection } from '../core/codexRecovery.ts';
+import type { CodexSnapshot } from '../core/codexPrompt.ts';
 import { tmpdir } from 'node:os';
 // Ordering lives in order.ts so the renderer can import it without dragging
 // this module's node:os and database imports along -- see that file's comment.
@@ -930,6 +931,8 @@ export function openSessionsLive(
     /** Exact identity observed from a Fleet Codex TUI's protocol relay.
      * false means a relay TUI is disconnected: do not guess by cwd. */
     codexThreadForPid?: (pid: number) => string | false | null;
+    /** Native prompt state for the currently subscribed exact Codex thread. */
+    codexSnapshot?: (sessionId: string) => CodexSnapshot | null;
     /** Launch timestamp for a pid THIS APP started (src/main/sessions.ts),
      *  or null after restart or for an ordinary discovered process. An
      *  adopted Codex tmux pane can use its OS age when this is null; all
@@ -1138,6 +1141,8 @@ export function openSessionsLive(
   // by process count, never by how many sessions share a cwd.
   const uniqueIds = [...new Set(
     resolvedMatches.filter((m): m is MatchResult & { sessionId: string } => m.quality === 'unique').map(m => m.sessionId))];
+  const providerBySession = new Map(resolvedMatches.flatMap((m, i) =>
+    m.quality === 'unique' ? [[m.sessionId!, processes[i]!.provider] as const] : []));
 
   // One live status (and waitingFor) per exactly-matched session, from its
   // process's file.
@@ -1213,12 +1218,18 @@ export function openSessionsLive(
     `).all(...uniqueIds) as any[];
 
     for (const r of rows) {
-      const blocker = liveStatusBySession.has(r.session_id) ? null : blockers.get(r.session_id) ?? null;
-      const { activity } = deriveActivity({
+      const provider = providerBySession.get(r.session_id);
+      const codex = provider === 'codex' ? deps.codexSnapshot?.(r.session_id) ?? null : null;
+      const blocker = liveStatusBySession.has(r.session_id) || codex?.state === 'ready' ? null
+        : blockers.get(r.session_id) ?? null;
+      let { activity } = deriveActivity({
         lastTs: r.last_ts, lastKind: r.last_kind, blocker, hasMatchedProcess: true, hasLiveSignal, now,
         liveStatus: liveStatusBySession.get(r.session_id) ?? null,
         liveWaitingFor: liveWaitingForBySession.get(r.session_id) ?? null,
       });
+      const pending = codex?.prompts.find(prompt => prompt.isBlocking !== false);
+      if (pending) activity = pending.kind === 'questions' || pending.kind === 'elicitation'
+        ? 'waiting_input' : 'waiting_permission';
       enrichmentById.set(r.session_id, {
         sessionId: r.session_id, lastProse: r.last_prose ?? null, events: r.events ?? 0, activity,
         agents: agentsById.get(r.session_id) ?? 0, liveAgents: liveAgentsById.get(r.session_id) ?? 0,

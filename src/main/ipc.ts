@@ -307,6 +307,7 @@ export function refreshPushEnrichment(
     db,
     openSessionsLive(db, processes, now, {
       isTmux: pidIsTmux, launchedAtForPid, codexThreadForPid: pid => codexDisplay.thread(pid),
+      codexSnapshot: sessionId => codexAppServer.snapshot(sessionId),
       // Codex keeps its session names in its own state database, not in a
       // live-session file, so this is the only way a Codex card can show
       // the name someone gave it. Bounded to the threads on screen and
@@ -971,7 +972,9 @@ export async function sendKeysWithCodexAdmission(
       return state?.prompts.length ? 'codex_prompt_open'
         : state?.state === 'ready' || idle?.status === 'idle' ? null : 'codex_not_ready';
     };
-    const steps = sendKeysSteps(pid, text, deps, images, files, expected);
+    // This managed path checks native Codex identity and pending requests at
+    // every guard. Claude's cached hook choice gate cannot override that proof.
+    const steps = sendKeysSteps(pid, text, { ...deps, promptOpen: () => false }, images, files, expected);
     let next = steps.next();
     while (!next.done) {
       let answer: KeysRefusalReason | boolean | null;

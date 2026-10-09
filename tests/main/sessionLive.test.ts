@@ -196,6 +196,19 @@ describe('buildSessionLive', () => {
     expect(p?.activity).toBe('waiting');
   });
 
+  it.each([null, 'child-agent'])('uses the ready exact Codex observer over an old approval hook (agent: %s)', agentId => {
+    const db = openDb(':memory:');
+    insertBlocker(db, 'codex-1', '2026-09-17T10:00:15Z');
+    db.prepare('UPDATE signal_events SET agent_id = ?').run(agentId);
+    insertEvents(db, [ev({provider:'codex',sessionId:'codex-1',kind:'prompt.submitted',ts:'2026-09-17T10:00:00Z'})]);
+    const processes = [proc({pid:4823,provider:'codex',cwd:'/repo/codex'})];
+    const cached = [{pid:4823,provider:'codex',cwd:'/repo/codex',sessionId:'codex-1'} as OpenSession];
+    const p = buildSessionLive(db,4823,processes,Date.parse('2026-09-17T10:00:30Z'),{
+      cached,codexSnapshot:()=>({state:'ready',prompts:[]}),
+    });
+    expect(p?.activity).toBe('working');
+  });
+
   it('uses live Codex requests instead of a stale hook blocker', () => {
     const db = openDb(':memory:');
     insertBlocker(db, 'codex-1', '2026-09-17T10:00:15Z');
