@@ -55,7 +55,7 @@ import { withContext, defaultContextOpts, buildUsagePayload, type ContextOpts } 
 import type { UsagePayload } from '../core/usage.ts';
 import { ingestSpool } from '../hooks/spool.ts';
 import { codexAppServer, readCodexInputState, type CodexInputState, type CodexAnswerResult } from './codexAppServer.ts';
-import { codexInput, codexRecovery, resolveOwnedCodexPid } from './codexRecoveryRuntime.ts';
+import { codexInput, codexRecovery, codexConnectionForPid, resolveOwnedCodexPid } from './codexRecoveryRuntime.ts';
 import type { CodexSnapshot } from '../core/codexPrompt.ts';
 import type { CodexReplacement, CodexRecoveryResult, CodexInputClearResult } from '../core/codexRecovery.ts';
 import { codexRelayThreadForPid, codexRelayInputRefusal, TUI_NAME } from './codexRelayControl.ts';
@@ -317,7 +317,7 @@ export function refreshPushEnrichment(
     contextOpts ?? defaultContextOpts(),
   );
   cachedPushOpenSessions = cachedPushOpenSessions.map(o => {
-    const connection = o.provider === 'codex' ? codexRecovery.connection(o.pid) : undefined;
+    const connection = o.provider === 'codex' ? codexConnectionForPid(o.pid) : undefined;
     return connection ? { ...o, codexConnection: connection } : o;
   });
   cachedCodexReplacements = visibleCodexReplacements(cachedPushOpenSessions, codexRecovery.replacements());
@@ -1698,7 +1698,7 @@ export function registerIpc(
         : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), {
           cached: cachedPushOpenSessions,
           codexSnapshot: sessionId => codexAppServer.snapshot(sessionId),
-          codexConnection: pid => codexRecovery.connection(pid),
+          codexConnection: pid => codexConnectionForPid(pid),
           ingestSpool: () => {
             const touched = new Set<string>();
             if (ingestSpool(db, spoolDir, 'claude', touched) > 0) {

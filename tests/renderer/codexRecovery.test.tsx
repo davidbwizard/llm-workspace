@@ -190,6 +190,25 @@ describe('exact Codex recovery', () => {
     expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true);
     expect(send).not.toHaveBeenCalled();
   });
+  it('preserves ordinary unmanaged Codex tmux sending without a recovery warning', async () => {
+    render(<ConversationView pid={1} sessionId={id} provider="codex" events={1} tmux onOpenTerminal={vi.fn()} />);
+    const box = screen.getByRole('textbox');
+    fireEvent.change(box, { target: { value: 'ordinary native session' } });
+    expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/connection cannot be verified/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(send).toHaveBeenCalledWith(1, 'ordinary native session', undefined, id));
+  });
+  it('keeps explicitly unresolved managed Codex tmux sessions blocked', () => {
+    render(view(1, id, { state: 'unknown', recoverable: false }));
+    const box = screen.getByRole('textbox');
+    expect((box as HTMLTextAreaElement).disabled).toBe(false);
+    fireEvent.change(box, { target: { value: 'hold while identity unknown' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/connection cannot be verified/)).toBeTruthy();
+    expect(send).not.toHaveBeenCalled();
+  });
   it('keeps disconnected draft editable and blocks ordinary sends', () => {
     render(view(1, id, { state: 'recovering', recoverable: true }));
     const box = screen.getByRole('textbox');

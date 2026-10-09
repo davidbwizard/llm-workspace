@@ -1,3 +1,4 @@
+import type { CodexConnection } from '../core/codexRecovery.ts';
 import { execFileSync } from 'node:child_process';
 import { lstatSync, unlinkSync, type Stats } from 'node:fs';
 import { createConnection } from 'node:net';
@@ -109,3 +110,19 @@ export const codexRecovery = new CodexRecovery({
       'Automatic reconnect could not restore this session. Your draft is still editable.');
   },
 });
+
+/** Undefined identifies an unmanaged/native session. A known managed name
+ * must remain explicitly unknown when fresh ownership resolution fails, so
+ * the UI never mistakes an unresolved Fleet terminal for the ordinary path.
+ * This metadata does not grant send/recovery authority; admission revalidates. */
+export function codexConnectionForPid(pid: number, deps: {
+  connection: (pid: number) => CodexConnection | undefined;
+  nameForPid: (pid: number) => string | null;
+} = { connection: pid => codexRecovery.connection(pid), nameForPid: tmuxNameForPid }): CodexConnection | undefined {
+  const connection = deps.connection(pid);
+  if (connection) return connection;
+  const name = deps.nameForPid(pid);
+  return name && TUI_NAME.test(name)
+    ? { state: 'unknown', recoverable: false, reason: 'The managed Codex terminal could not be verified.' }
+    : undefined;
+}

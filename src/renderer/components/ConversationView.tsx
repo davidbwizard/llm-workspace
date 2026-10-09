@@ -847,7 +847,9 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // arriving mid session-switch (see useSessionLive's own doc comment).
   const live = useSessionLive(pid, provider === 'codex' ? sessionId : undefined);
   const connection = live?.codexConnection ?? codexConnection;
-  const codexBlocked = provider === 'codex' && tmux && (!sessionId || connection?.state !== 'ready' || !!live?.codex?.prompts.length || live?.activity === 'waiting');
+  const codexBlocked = provider === 'codex' && tmux && (
+    (!!connection && (!sessionId || connection.state !== 'ready'))
+    || !!live?.codex?.prompts.length || live?.activity === 'waiting');
   const [retry, setRetry] = useState<{ pid: number | null; sessionId: string | null; pending: boolean; message: string | null } | null>(null);
   const retryState = retry?.pid === pid && retry.sessionId === sessionId ? retry : null;
   const inputPending = !!connection?.inputPending;
@@ -1446,7 +1448,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           : live?.activity === 'waiting'
           ? <WaitingFallback key={`waiting-${pid}`} provider={provider} hooksOn={hooksOn} onOpenTerminal={onOpenTerminal} /> : null
       )}
-      {provider === 'codex' && tmux && (
+      {provider === 'codex' && tmux && connection && (
         <div className="convconnection" role="status">
           {connection?.state === 'recovering' && <span>Reconnecting Codex… Your conversation and draft are kept.</span>}
           {connection?.state === 'failed' && <>
@@ -1469,7 +1471,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                 }
               }}>Retry reconnect</button>}
           </>}
-          {(!connection || connection.state === 'unknown') && <span>Codex connection cannot be verified. Open Terminal to check it.</span>}
+          {connection.state === 'unknown' && <span>Codex connection cannot be verified. Open Terminal to check it.</span>}
           {connection?.state !== 'ready' && <button type="button" className="convsend" onClick={onOpenTerminal}>Open Terminal</button>}
           {connection?.recoveryTerminalPid !== undefined && onOpenRecoveryTerminal &&
             <button type="button" className="convsend" onClick={() => onOpenRecoveryTerminal(connection.recoveryTerminalPid!)}>Open reconnect Terminal</button>}
