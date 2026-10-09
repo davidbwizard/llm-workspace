@@ -159,7 +159,8 @@ function createWindow(): void {
     })).popup();
   });
 
-  if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
+  // A packaged app must not inherit another project's development renderer.
+  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void win.loadFile(join(import.meta.dirname, '../renderer/index.html'));
 }
 
