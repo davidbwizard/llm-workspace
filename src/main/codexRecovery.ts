@@ -57,6 +57,29 @@ export class CodexRecovery {
   private repairAfter = new Map<string, number>();
   private known = new Set<string>();
   constructor(private readonly deps: RecoveryDeps) {}
+  /** Display-only evaluation of one completed inventory. No cached fact is
+   * installed in the coordinator used to authorize input or recovery. */
+  inspect(pids: number[], deps: Pick<RecoveryDeps, 'resolve' | 'resolveName' | 'read' | 'names' | 'inputPending'>): {
+    connections: Map<number, CodexConnection>; advancing: Set<number>; replacements: CodexReplacement[];
+  } {
+    const view = new CodexRecovery({ ...this.deps, ...deps });
+    view.results = new Map(this.results);
+    view.inFlight = new Map(this.inFlight);
+    view.known = new Set(this.known);
+    const connections = new Map<number, CodexConnection>();
+    const advancing = new Set<number>();
+    for (const pid of pids) {
+      const connection = view.connection(pid);
+      if (connection) connections.set(pid, connection);
+      if (view.needsAdvance(pid)) advancing.add(pid);
+    }
+    const replacements = view.replacements();
+    // A confirmed, ready successor owns automatic recovery now. Preserve
+    // the predecessor's native draft without repeatedly advancing it.
+    for (const replacement of replacements)
+      if (connections.get(replacement.pid)?.state === 'ready') advancing.delete(replacement.previousPid);
+    return { connections, advancing, replacements };
+  }
   private now(): number { return (this.deps.now ?? Date.now)(); }
   private metadata(name: string): RecoveryMetadata {
     return parseRecoveryMetadata(this.deps.read(name)) ?? { v: 1 };

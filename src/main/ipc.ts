@@ -55,7 +55,7 @@ import { withContext, defaultContextOpts, buildUsagePayload, type ContextOpts } 
 import type { UsagePayload } from '../core/usage.ts';
 import { ingestSpool } from '../hooks/spool.ts';
 import { codexAppServer, readCodexInputState, type CodexInputState, type CodexAnswerResult } from './codexAppServer.ts';
-import { codexInput, codexRecovery, codexConnectionForPid, resolveOwnedCodexPid } from './codexRecoveryRuntime.ts';
+import { codexInput, codexRecovery, codexDisplay, refreshCodexDisplay, resolveOwnedCodexPid } from './codexRecoveryRuntime.ts';
 import type { CodexSnapshot } from '../core/codexPrompt.ts';
 import type { CodexReplacement, CodexRecoveryResult, CodexInputClearResult } from '../core/codexRecovery.ts';
 import { codexRelayThreadForPid, codexRelayInputRefusal, TUI_NAME } from './codexRelayControl.ts';
@@ -306,7 +306,7 @@ export function refreshPushEnrichment(
   cachedPushOpenSessions = withContext(
     db,
     openSessionsLive(db, processes, now, {
-      isTmux: pidIsTmux, launchedAtForPid, codexThreadForPid: codexRelayThreadForPid,
+      isTmux: pidIsTmux, launchedAtForPid, codexThreadForPid: pid => codexDisplay.thread(pid),
       // Codex keeps its session names in its own state database, not in a
       // live-session file, so this is the only way a Codex card can show
       // the name someone gave it. Bounded to the threads on screen and
@@ -317,10 +317,10 @@ export function refreshPushEnrichment(
     contextOpts ?? defaultContextOpts(),
   );
   cachedPushOpenSessions = cachedPushOpenSessions.map(o => {
-    const connection = o.provider === 'codex' ? codexConnectionForPid(o.pid) : undefined;
+    const connection = o.provider === 'codex' ? codexDisplay.connection(o.pid) : undefined;
     return connection ? { ...o, codexConnection: connection } : o;
   });
-  cachedCodexReplacements = visibleCodexReplacements(cachedPushOpenSessions, codexRecovery.replacements());
+  cachedCodexReplacements = visibleCodexReplacements(cachedPushOpenSessions, codexDisplay.replacements());
   const preserved = new Set(cachedCodexReplacements.map(r => r.previousPid));
   cachedPushOpenSessions = cachedPushOpenSessions.filter(o => !preserved.has(o.pid));
   setAttentionBadge(attentionCount(cachedPushOpenSessions));
@@ -1698,7 +1698,17 @@ export function registerIpc(
         : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), {
           cached: cachedPushOpenSessions,
           codexSnapshot: sessionId => codexAppServer.snapshot(sessionId),
-          codexConnection: pid => codexConnectionForPid(pid),
+          codexConnection: pid => codexDisplay.connection(pid),
+          resolveReattachTarget: (pid, deps) => {
+            // Display identity may lag one sweep. Input handlers continue to
+            // use resolveReattachTarget's fresh binding and ownership checks.
+            const thread = codexDisplay.thread(pid);
+            if (thread !== null) {
+              const process = deps.processes.find(p => p.pid === pid && p.provider === 'codex');
+              return thread && process?.cwd ? { sessionId: thread, provider: 'codex', cwd: process.cwd } : null;
+            }
+            return resolveReattachTarget(pid, deps);
+          },
           ingestSpool: () => {
             const touched = new Set<string>();
             if (ingestSpool(db, spoolDir, 'claude', touched) > 0) {
@@ -1874,12 +1884,13 @@ export function registerIpc(
       }); },
     });
   });
-  ipcMain.handle('session:codex:input:clear', (event, pid: unknown, expected: unknown): CodexInputClearResult => {
+  ipcMain.handle('session:codex:input:clear', async (event, pid: unknown, expected: unknown): Promise<CodexInputClearResult> => {
     if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0 || typeof expected !== 'string')
       return { status: 'refused', reason: 'invalid' };
     const tui = resolveOwnedCodexPid(pid);
     if (!tui || tui.binding.threadId !== expected) return { status: 'refused', reason: 'stale' };
     if (!codexInput.clear(pid, expected)) return { status: 'refused', reason: 'unavailable' };
+    await refreshCodexDisplay(true);
     refreshPushEnrichment(db, getCachedLiveProcesses());
     pushFleet(BrowserWindow.fromWebContents(event.sender));
     pushSessionLive();
@@ -1889,6 +1900,7 @@ export function registerIpc(
     if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0)
       return { status: 'failed', reason: 'Invalid native Codex terminal.' };
     const result = await codexRecovery.recover(pid);
+    await refreshCodexDisplay(true);
     refreshPushEnrichment(db, getCachedLiveProcesses());
     pushFleet(BrowserWindow.fromWebContents(event.sender));
     pushSessionLive();

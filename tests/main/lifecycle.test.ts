@@ -169,14 +169,20 @@ describe('deferred ingest: answer before ingesting, not after', () => {
   // refreshes pushFleet's enrichment cache and pushes now, not just the
   // first.
   it('pushes an update after every discovery sweep, not only the first', () => {
-    const sweepBody = main.slice(main.search(/refreshLiveProcesses\(\)\.then\(/), main.search(/refreshLiveProcesses\(\)\.then\(/) + 300);
-    expect(sweepBody).toMatch(/refreshLiveProcesses\(\)\.then\(\s*processes\s*=>\s*{/);
-    const refreshAt = sweepBody.search(/refreshPushEnrichment\(db,\s*processes\)/);
-    const pushAt = sweepBody.search(/pushFleet\(mainWindow\)/);
-    expect(refreshAt).toBeGreaterThan(-1);
-    expect(pushAt).toBeGreaterThan(refreshAt); // cache refreshed BEFORE the push reads it
     const declAt = main.search(/const\s+pushAfterDiscoverySweep\s*=/);
     expect(declAt).toBeGreaterThan(-1);
+    const sweepBody = main.slice(declAt, main.indexOf('pushAfterDiscoverySweep();', declAt));
+    expect(sweepBody).toMatch(/refreshLiveProcesses\(\)\.then\(\s*async\s+processes\s*=>\s*{/);
+    const inventoryAt = sweepBody.indexOf('await refreshCodexDisplay()');
+    const refreshAt = sweepBody.search(/refreshPushEnrichment\(db,\s*processes\)/);
+    const pushAt = sweepBody.search(/pushFleet\(mainWindow\)/);
+    expect(inventoryAt).toBeGreaterThan(-1);
+    expect(refreshAt).toBeGreaterThan(inventoryAt);
+    expect(pushAt).toBeGreaterThan(refreshAt); // cache refreshed BEFORE the push reads it
+    // Overlapping timer/action triggers share a sweep until its asynchronous
+    // display/recovery work completes; the next tick can then start another.
+    expect(sweepBody.indexOf('if (discoveryInFlight) return discoveryInFlight')).toBeLessThan(sweepBody.indexOf('refreshLiveProcesses()'));
+    expect(sweepBody).toMatch(/\.finally\(\(\)\s*=>\s*{\s*discoveryInFlight\s*=\s*null/);
     // Called once immediately (the "first sweep" case) AND wired as the
     // interval's own callback (every subsequent sweep) -- not just handed
     // to setInterval, which would skip the first tick for 5s.

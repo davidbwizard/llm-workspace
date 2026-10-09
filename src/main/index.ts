@@ -19,7 +19,7 @@ import { pruneSnapshots } from '../providers/claude/statusLine.ts';
 import { resolvePaths } from '../config.ts';
 import { registerIpc, registerPrefsIpc, pushFleet, refreshPushEnrichment, refreshChecks } from './ipc.ts';
 import { refreshLiveProcesses } from '../discovery/live.ts';
-import { codexRecovery } from './codexRecoveryRuntime.ts';
+import { codexRecovery, codexDisplay, refreshCodexDisplay } from './codexRecoveryRuntime.ts';
 import { adoptRunningSessions } from './sessions.ts';
 import { readStoredTheme } from './appearance.ts';
 import { openPrefs, type PrefsDb } from './prefs.ts';
@@ -372,7 +372,9 @@ app.whenReady().then(async () => {
   // session:kill's post-kill refresh: a successful kill re-runs the exact
   // same sweep-refresh-push a scheduled tick would, just immediately
   // rather than waiting out however much of the 5s interval is left.
+  let discoveryInFlight: Promise<void> | null = null;
   const pushAfterDiscoverySweep = () => {
+    if (discoveryInFlight) return discoveryInFlight;
     // A read reply clears its green dot, and that happens in the mail slot,
     // not here, so the badges also refresh on this sweep.
     if (mailDb) scheduleMailPush();
@@ -385,7 +387,9 @@ app.whenReady().then(async () => {
     // if it ended between sweeps (see adoptRunningSessions' own doc
     // comment) -- run every 5s here, not just once at startup.
     adoptRunningSessions();
-    void refreshLiveProcesses().then(processes => {
+    discoveryInFlight = refreshLiveProcesses().then(async processes => {
+      if (!db) return;
+      await refreshCodexDisplay();
       if (!db) return;
       refreshPushEnrichment(db, processes);
       pushFleet(mainWindow);
@@ -395,14 +399,18 @@ app.whenReady().then(async () => {
       // getCachedLiveProcesses() was just refreshed above) and releases the
       // watch, rather than leaving an fs.watch pointed at a dead process.
       pushSessionLive();
-      const recovering = processes.filter(proc => proc.provider === 'codex' && codexRecovery.needsAdvance(proc.pid));
-      if (recovering.length) void Promise.all(recovering.map(proc => codexRecovery.recover(proc.pid))).then(() => {
+      const recovering = processes.filter(proc => proc.provider === 'codex' && codexDisplay.needsAdvance(proc.pid));
+      if (recovering.length) {
+        await Promise.all(recovering.map(proc => codexRecovery.recover(proc.pid)));
+        await refreshCodexDisplay();
         if (!db) return;
         refreshPushEnrichment(db, processes);
         pushFleet(mainWindow);
         pushSessionLive();
-      });
-    });
+      }
+    }).catch(error => console.error('Fleet discovery sweep failed:', error))
+      .finally(() => { discoveryInFlight = null; });
+    return discoveryInFlight;
   };
   pushAfterDiscoverySweep();
   discoveryTimer = setInterval(pushAfterDiscoverySweep, 5000);

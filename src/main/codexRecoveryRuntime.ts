@@ -1,5 +1,5 @@
-import type { CodexConnection } from '../core/codexRecovery.ts';
-import { execFileSync } from 'node:child_process';
+import { parseCodexBinding, CODEX_THREAD_ID, type CodexConnection, type CodexReplacement } from '../core/codexRecovery.ts';
+import { execFile, execFileSync } from 'node:child_process';
 import { lstatSync, unlinkSync, type Stats } from 'node:fs';
 import { createConnection } from 'node:net';
 import { dirname } from 'node:path';
@@ -110,6 +110,106 @@ export const codexRecovery = new CodexRecovery({
       'Automatic reconnect could not restore this session. Your draft is still editable.');
   },
 });
+
+type DisplayRead = (command: string, args: string[]) => Promise<string>;
+const readDisplay: DisplayRead = (command, args) => new Promise((resolve, reject) => {
+  execFile(command, args, { timeout: 5000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+    if (error) reject(error); else resolve(stdout);
+  });
+});
+/** One asynchronous, coalesced inventory per discovery sweep. Frequent UI
+ * pushes read only this snapshot; all outbound authority remains fresh. */
+export class CodexRecoveryDisplay {
+  private inFlight: Promise<void> | null = null;
+  private connections = new Map<number, CodexConnection>();
+  private threads = new Map<number, string | false>();
+  private advancing = new Set<number>();
+  private linked: CodexReplacement[] = [];
+  constructor(private readonly coordinator: CodexRecovery, private readonly deps: {
+    read?: DisplayRead; nameForPid?: (pid: number) => string | null;
+  } = {}) {}
+  connection(pid: number): CodexConnection | undefined {
+    return codexConnectionForPid(pid, {
+      connection: p => this.connections.get(p), nameForPid: this.deps.nameForPid ?? tmuxNameForPid,
+    });
+  }
+  thread(pid: number): string | false | null {
+    return this.threads.get(pid) ?? (TUI_NAME.test((this.deps.nameForPid ?? tmuxNameForPid)(pid) ?? '') ? false : null);
+  }
+  needsAdvance(pid: number): boolean { return this.advancing.has(pid); }
+  replacements(): CodexReplacement[] { return this.linked; }
+  refresh(afterMutation = false): Promise<void> {
+    // A sweep already in progress may have sampled before the mutation.
+    // Both its success and failure must be followed by a new inventory.
+    if (afterMutation && this.inFlight)
+      return this.inFlight.then(() => this.refresh(), () => this.refresh());
+    if (this.inFlight) return this.inFlight;
+    this.inFlight = this.load().catch((error: unknown) => {
+      this.connections.clear(); this.threads.clear(); this.advancing.clear(); this.linked = [];
+      throw error;
+    }).finally(() => { this.inFlight = null; });
+    return this.inFlight;
+  }
+  private async load(): Promise<void> {
+    const read = this.deps.read ?? readDisplay;
+    const format = ['#{session_name}', '#{pane_pid}', '#{pane_current_path}', '#{@llmws-codex-binding}',
+      '#{@llmws-codex-connected}', '#{@llmws-codex-thread}', `#{${RECOVERY_OPTION}}`, `#{${CODEX_INPUT_OPTION}}`].join('\t');
+    const raw = await read('tmux', ['list-panes', '-a', '-F', format]);
+    const panes = new Map<string, string[]>();
+    for (const line of raw.split('\n')) {
+      const fields = line.split('\t');
+      if (fields.length === 8 && fields[0] && !panes.has(fields[0])) panes.set(fields[0], fields);
+    }
+    const candidates = [...panes].filter(([name, fields]) => TUI_NAME.test(name) && /^[1-9]\d*$/.test(fields[1]!));
+    const processes = new Map<number, { command: string; args: string }>();
+    if (candidates.length) {
+      const output = await read('ps', ['-p', candidates.map(([, fields]) => fields[1]).join(','), '-o', 'pid=', '-o', 'comm=', '-o', 'args=']);
+      for (const line of output.split('\n')) {
+        const match = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+        if (match) processes.set(Number(match[1]), { command: match[2]!, args: match[3]! });
+      }
+    }
+    const owned = new Map<string, OwnedCodexTui>();
+    for (const [name, fields] of candidates) {
+      const pid = Number(fields[1]), cwd = fields[2]!;
+      const proc = processes.get(pid);
+      if (!Number.isSafeInteger(pid) || !proc || !cwd.startsWith('/') || cwd.includes('\0')
+        || !/(?:^|[/\s])(?:codex(?:-[^/\s]+)?|node)$/.test(proc.command)
+        || !/(?:^|[/\s])codex(?:\s|$)/.test(proc.args) || !proc.args.includes(`unix://${codexRelaySocket(name)}`)) continue;
+      const binding = parseCodexBinding(fields[3]!);
+      const relayAlive = panes.has(codexRelayName(name));
+      const legacyReady = fields[4] === '1' && CODEX_THREAD_ID.test(fields[5]!);
+      owned.set(name, { name, pid, cwd, binding: { name, binding, relayAlive,
+        threadId: fields[3] ? binding?.threadId ?? null : legacyReady ? fields[5]! : null,
+        ready: relayAlive && (fields[3] ? binding?.state === 'ready' : legacyReady),
+      } });
+    }
+    const byPid = new Map([...owned.values()].map(tui => [tui.pid, tui]));
+    const resolveName = (name: string) => owned.get(name) ?? null;
+    const resolve = (pid: number) => byPid.get(pid) ?? null;
+    const metadata = (name: string) => panes.get(name)?.[6] || null;
+    const input = new CodexInput({ resolve, resolveName, read: name => panes.get(name)?.[7] || null,
+      write: () => false, related: tui => {
+        const m = parseRecoveryMetadata(metadata(tui.name));
+        if (!m?.confirmed || !m.predecessor || m.expectedThreadId !== tui.binding.threadId) return [];
+        const old = resolveName(m.predecessor);
+        const previous = old ? parseRecoveryMetadata(metadata(old.name)) : null;
+        return previous?.successor === tui.name && previous.expectedThreadId === m.expectedThreadId ? [old!.name] : [];
+      } });
+    const view = this.coordinator.inspect([...byPid.keys()], {
+      resolve, resolveName, read: metadata, names: () => [...panes.keys()], inputPending: pid => input.pending(pid),
+    });
+    this.connections = view.connections; this.advancing = view.advancing; this.linked = view.replacements;
+    this.threads = new Map([...byPid].map(([pid, tui]) => [pid, tui.binding.threadId ?? false]));
+  }
+}
+export const codexDisplay = new CodexRecoveryDisplay(codexRecovery);
+/** A missing tmux server must not prevent ordinary sessions from displaying.
+ * refresh clears the snapshot before reporting failure, so this is fail-safe. */
+export async function refreshCodexDisplay(afterMutation = false): Promise<void> {
+  try { await codexDisplay.refresh(afterMutation); }
+  catch (error) { console.error('Fleet Codex display inventory failed:', error); }
+}
 
 /** Undefined identifies an unmanaged/native session. A known managed name
  * must remain explicitly unknown when fresh ownership resolution fails, so
