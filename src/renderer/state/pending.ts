@@ -73,7 +73,8 @@ export function pendingFor(pid: number, sessionId: string | null): Pending[] {
  * Removes a single pending entry by key from the given pid.
  */
 export function dropPending(pid: number, key: string): void {
-  const list = pending.get(pid);
+  const list = pending.get(pid)?.some(e => e.key === key)
+    ? pending.get(pid) : [...pending.values()].find(entries => entries.some(e => e.key === key));
   if (!list) return;
 
   const idx = list.findIndex(e => e.key === key);
@@ -173,11 +174,23 @@ export function tickIdle(pid: number, ms: number): void {
  * whether the send was queued due to the agent being busy.
  */
 export function markQueued(pid: number, key: string, queued: boolean): void {
-  const list = pending.get(pid);
+  const list = pending.get(pid)?.some(e => e.key === key)
+    ? pending.get(pid) : [...pending.values()].find(entries => entries.some(e => e.key === key));
   if (!list) return;
 
   const entry = list.find(e => e.key === key);
   if (entry) {
     entry.queued = queued;
   }
+}
+
+/** Only called for a main-validated exact-ID replacement. Keys stay stable so
+ * in-flight send results can settle an entry after its PID has changed. */
+export function remapPending(previousPid: number, pid: number, sessionId: string): void {
+  const entries = pending.get(previousPid);
+  if (!entries) return;
+  const moved = entries.filter(e => e.sessionId === sessionId);
+  const kept = entries.filter(e => e.sessionId !== sessionId);
+  if (kept.length) pending.set(previousPid, kept); else pending.delete(previousPid);
+  if (moved.length) pending.set(pid, [...(pending.get(pid) ?? []), ...moved]);
 }

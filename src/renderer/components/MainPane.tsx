@@ -126,6 +126,8 @@ export function MainPane({
   // makes React discard that stale render before it ever paints; the
   // ternary covers the one render where the setState calls have been made
   // but `liveContext`/`prevPid` themselves have not yet updated.
+  const [nativeTerminal, setNativeTerminal] = useState<{ ownerPid: number; pid: number; label: string } | null>(null);
+  const currentNativeTerminal = nativeTerminal?.ownerPid === selection?.pid ? nativeTerminal : null;
   const [liveContext, setLiveContext] = useState<SessionContext | null>(null);
   // The open file. Cleared on every pid change for the same reason
   // liveContext is: a document opened out of one session's folder must never
@@ -137,6 +139,7 @@ export function MainPane({
     setPrevPid(selection?.pid ?? null);
     setLiveContext(null);
     setViewer(null);
+    setNativeTerminal(null);
   }
   const currentLiveContext = (selection?.pid ?? null) !== prevPid ? null : liveContext;
 
@@ -334,20 +337,24 @@ export function MainPane({
               session. */}
           <ContextChip context={headerContext} />
           <span className="seg" role="group" aria-label="View">
-            <button type="button" aria-pressed={selection.view === 'conversation'}
-              onClick={() => onSetView('conversation')}>Conversation</button>
-            <button type="button" aria-pressed={selection.view === 'terminal'}
-              onClick={() => onSetView('terminal')}>Terminal</button>
+            <button type="button" aria-pressed={selection.view === 'conversation' && !currentNativeTerminal}
+              onClick={() => { setNativeTerminal(null); onSetView('conversation'); }}>Conversation</button>
+            <button type="button" aria-pressed={selection.view === 'terminal' || !!currentNativeTerminal}
+              onClick={() => { setNativeTerminal(null); onSetView('terminal'); }}>Terminal</button>
           </span>
         </header>
+        {currentNativeTerminal && <div className="native-terminal-note" role="status">
+          {currentNativeTerminal.label}
+          <button type="button" onClick={() => { setNativeTerminal(null); onSetView('conversation'); }}>Return to Conversation</button>
+        </div>}
         {/* The row the conversation and the side panel share, and the
             element the placement is measured on. position:relative
             (MainPane.css) is what the sheet's scrim is positioned against,
             so the sheet covers the conversation rather than the whole
             window. */}
         <div className="panebody" ref={setPaneBody}>
-        {selection.view === 'terminal'
-          ? <TerminalView pid={selection.pid} />
+        {selection.view === 'terminal' || currentNativeTerminal
+          ? <TerminalView pid={currentNativeTerminal?.pid ?? selection.pid} />
           // sessionId is `string | null` -- NOT coerced to '' here. Null is
           // the common case on a real workspace (many sessions can share one
           // cwd, which makes the match ambiguous), not an edge case, and
@@ -372,6 +379,9 @@ export function MainPane({
               // then disabled with a reason rather than removed (spec §7.1).
               pid={session ? selection.pid : null}
               tmux={session?.tmux ?? false}
+              codexConnection={session?.codexConnection}
+              onOpenPreviousTerminal={pid => setNativeTerminal({ ownerPid: selection.pid, pid, label: 'Previous Terminal — your current conversation stays selected.' })}
+              onOpenRecoveryTerminal={pid => setNativeTerminal({ ownerPid: selection.pid, pid, label: 'Reconnect Terminal — check native startup prompts, then return to Conversation.' })}
               // Usage design, Part B: the swept fallback and the report-
               // upward callback that keeps headerContext current -- see
               // their own doc comments on ConversationView's props.
@@ -392,7 +402,7 @@ export function MainPane({
             path in a reply, and a sheet floating over a live terminal
             would cover the thing being typed into. Switching back to
             Conversation brings it straight back. */}
-        {currentViewer && selection.view === 'conversation' && (
+        {currentViewer && selection.view === 'conversation' && !currentNativeTerminal && (
           <FileViewer
             file={currentViewer}
             mode={viewerMode}

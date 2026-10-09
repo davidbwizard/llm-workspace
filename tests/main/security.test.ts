@@ -96,6 +96,10 @@ describe('renderer security posture', () => {
       // derives the response from its live server request, never renderer
       // supplied permissions or a raw JSON-RPC payload.
       'session:codex:answer',
+      // Recovery accepts only a PID; main derives owned endpoint/thread.
+      // Input acknowledgment freshly checks that PID and the exact thread
+      // before clearing uncertainty; it never edits or replays native text.
+      'session:codex:input:clear', 'session:codex:recover',
       'session:conversation', 'session:detach',
       // The only channels where a string a MODEL wrote reaches an OS call.
       // Every check is in src/main/files.ts (tests/main/files.test.ts), and

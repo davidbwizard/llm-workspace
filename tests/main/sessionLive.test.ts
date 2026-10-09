@@ -219,6 +219,19 @@ describe('buildSessionLive', () => {
     expect(pending?.codex?.prompts[0]?.key).toBe('number:42');
   });
 
+  it('keeps asynchronous Codex questions visible while the turn keeps working',()=>{
+    const db=openDb(':memory:');
+    insertEvents(db,[ev({provider:'codex',sessionId:'codex-1',kind:'prompt.submitted',ts:'2026-09-17T10:00:00Z'})]);
+    const processes=[proc({pid:4823,provider:'codex',cwd:'/repo/codex'})];
+    const cached=[{pid:4823,provider:'codex',cwd:'/repo/codex',sessionId:'codex-1'} as OpenSession];
+    const result=buildSessionLive(db,4823,processes,Date.parse('2026-09-17T10:00:30Z'),{
+      cached,codexSnapshot:()=>({state:'ready',prompts:[{key:'q',kind:'questions',isBlocking:false,
+        threadId:'codex-1',turnId:'t',itemId:'i',reason:null,command:null,cwd:null,details:null,
+        questions:[],decisions:[]}]}),
+    });
+    expect(result?.activity).toBe('working');expect(result?.codex?.prompts).toHaveLength(1);
+  });
+
   // Final review I2/I4: a status file wins over a blocker even when its
   // status string is one this code does not recognise -- the blocker is
   // only consulted with no status file at all, same as the cards.

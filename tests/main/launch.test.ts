@@ -21,7 +21,7 @@ describe('launchCodexSession', () => {
     const tuiName = tmuxNameForPid(4821)!;
     expect(relay.mock.calls[0]![0]).toBe(`fleet-codex-relay-${tuiName.slice('llmws-codex-relay-'.length)}`);
     expect(calls[0]).toContain(tuiName);
-    expect(calls[0]!.at(-1)).toContain("codex -C '/tmp/pilot' --remote 'unix:///tmp/home/.llm-workspace/codex-relays/");
+    expect(calls[0]!.at(-1)).toContain("codex -c check_for_update_on_startup=false -C '/tmp/pilot' --remote 'unix:///tmp/home/.llm-workspace/codex-relays/");
   });
 
   it('does not create a TUI when the local relay cannot start', async () => {
@@ -546,5 +546,29 @@ describe('launchCodexSession with a name', () => {
     expect(result.status === 'failed' && result.reason).toMatch(/letters, numbers/i);
     expect(startRelay).not.toHaveBeenCalled();
     expect(setName).not.toHaveBeenCalled();
+  });
+});
+
+describe('exact Codex recovery launch', () => {
+  it('resumes only the validated UUID at the generated private endpoint, without prompt arguments', async () => {
+    const { launchCodexResume } = await import('../../src/main/launch.ts');
+    const commands: string[] = [];
+    const result = await launchCodexResume('/repo', '01a0da03-b7a1-7542-a9b9-e325e92c221f',
+      'llmws-codex-relay-11111111', 'llmws-codex-relay-22222222', 80, 24, {
+        startRelay: () => {}, waitRelay: async () => true, panePid: () => 123,
+        exec: args => { commands.push(args.at(-1)!); return { ok: true, stdout: '' }; },
+        socketHome: '/safe', executable: '/electron', relayScript: '/relay.js',
+      });
+    expect(result).toMatchObject({status:'launched',pid:123});
+    expect(commands[0]).toContain("codex resume -c check_for_update_on_startup=false -C '/repo' --remote 'unix:///safe/.llm-workspace/codex-relays/llmws-codex-relay-11111111.sock' '01a0da03-b7a1-7542-a9b9-e325e92c221f'");
+    expect(commands.join(' ')).not.toContain('--last');
+    expect(commands.join(' ')).toContain('predecessor');
+  });
+  it('refuses invalid recovery identifiers before spawning', async () => {
+    const { launchCodexResume } = await import('../../src/main/launch.ts');
+    const spawn = vi.fn();
+    expect(await launchCodexResume('/repo', 'bad;id', 'llmws-codex-relay-11111111',
+      'llmws-codex-relay-22222222',80,24,{startRelay:spawn})).toMatchObject({status:'failed'});
+    expect(spawn).not.toHaveBeenCalled();
   });
 });

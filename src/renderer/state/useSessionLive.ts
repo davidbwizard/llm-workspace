@@ -1,3 +1,4 @@
+import type { CodexConnection } from '../../core/codexRecovery.ts';
 import { useEffect, useState } from 'react';
 // Type-only, from src/core/**, not src/main/** -- the same rule this file's
 // own doc comment below states does not apply to a type-only import from
@@ -31,6 +32,8 @@ export type SessionLive = {
    *  is the fallback when this is null. */
   prompt: PromptView | null;
   codex?: CodexSnapshot;
+  codexConnection?: CodexConnection;
+  sessionId?: string | null;
   /** Context window use for the conversation header (usage design, Part A/
    *  B) -- the same { usedTokens, windowTokens, leftPct } shape as
    *  OpenSession.context, or null (no session, or no count yet). This is
@@ -84,7 +87,7 @@ export type { Mode, ModeTone };
  *  existing ConversationView test that predates this task, none of which
  *  mock watchSession/onSessionLive) both mean "cannot reach main for this",
  *  and both must leave the pane on its 5s-sweep backstop rather than throw. */
-export function useSessionLive(pid: number | null): SessionLive | null {
+export function useSessionLive(pid: number | null, expectedSessionId?: string | null): SessionLive | null {
   const [state, setState] = useState<SessionLive | null>(null);
 
   // Reset on every pid change, not just on the first mount: whatever the
@@ -99,11 +102,13 @@ export function useSessionLive(pid: number | null): SessionLive | null {
   // ternary below covers the one render where the two setState calls have
   // been made but `state`/`prevPid` themselves have not yet updated).
   const [prevPid, setPrevPid] = useState(pid);
-  if (pid !== prevPid) {
+  const [prevSessionId, setPrevSessionId] = useState(expectedSessionId);
+  if (pid !== prevPid || expectedSessionId !== prevSessionId) {
+    setPrevSessionId(expectedSessionId);
     setPrevPid(pid);
     setState(null);
   }
-  const current = pid !== prevPid ? null : state;
+  const current = pid !== prevPid || expectedSessionId !== prevSessionId ? null : state;
 
   useEffect(() => {
     const api = window.fleet;
@@ -127,9 +132,16 @@ export function useSessionLive(pid: number | null): SessionLive | null {
       // dropped rather than shown as if it belonged to the session now on
       // screen.
       if (payload.pid !== pid) return;
+      if (expectedSessionId !== undefined && payload.sessionId !== expectedSessionId) {
+        setState({ activity: null, since: null, events: 0, prompt: null, context: null, mode: null,
+          sessionId: payload.sessionId, codexConnection: { state: 'unknown', recoverable: false,
+            reason: 'The native terminal changed conversations.' } });
+        return;
+      }
       setState({
         activity: payload.activity, since: payload.since, events: payload.events,
         prompt: payload.prompt ?? null, ...(payload.codex ? { codex: payload.codex } : {}),
+        ...(payload.codexConnection ? { codexConnection: payload.codexConnection } : {}),
         context: payload.context ?? null,
         mode: payload.mode ?? null,
       });
@@ -142,7 +154,7 @@ export function useSessionLive(pid: number | null): SessionLive | null {
         err => console.error('session:watch failed:', err),
       );
     };
-  }, [pid]);
+  }, [pid, expectedSessionId]);
 
   return current;
 }

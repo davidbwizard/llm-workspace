@@ -2510,7 +2510,7 @@ describe('ConversationView -- the waiting card (Task 11)', () => {
     renderConv({ provider: 'codex' });
     await screen.findByLabelText('Message this session');
     push({ version: 1, pid: 4821, sessionId: 's1', activity: 'waiting', since: null, events: 1 });
-    await waitFor(() => expect(screen.getByPlaceholderText("Answer Codex's prompt above to keep typing")).toBeTruthy());
+    await waitFor(() => expect(screen.getByPlaceholderText("Draft a message; answer the Codex prompt before sending")).toBeTruthy());
   });
 
   // A real combination, not a contrived one: a session that has lost its

@@ -2204,3 +2204,19 @@ describe('attentionCount', () => {
     expect(attentionCount([])).toBe(0);
   });
 });
+
+describe('root conversation sidebar signals',()=>{
+  it('does not let a Codex child agent replace the main preview or completed turn',()=>{
+    const db=openDb(':memory:');
+    insertEvents(db,[
+      ev({provider:'codex',kind:'session.started',payload:{cwd:'/repo'},contentHash:'root-start',ts:at(3)}),
+      ev({provider:'codex',kind:'prose',payload:{text:'Main answer'},contentHash:'root-prose',ts:at(2)}),
+      ev({provider:'codex',kind:'turn.completed',contentHash:'root-end',ts:at(1)}),
+      ev({provider:'codex',agentId:'child',kind:'prose',payload:{text:'Child answer'},contentHash:'child',ts:at(0)}),
+    ]);
+    expect(fleetState(db,{now:NOW})[0]).toMatchObject({lastProse:'Main answer',activity:'idle'});
+    const processes:LiveProcess[]=[{pid:11,provider:'codex',cwd:'/repo',tty:null,host:'unknown',ageSeconds:1,rssBytes:null}];
+    expect(openSessionsLive(db,processes,NOW,{codexThreadForPid:()=> 's1'})[0])
+      .toMatchObject({lastProse:'Main answer',activity:'idle'});
+  });
+});

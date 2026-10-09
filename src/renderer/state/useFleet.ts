@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { remapDraft, pruneEmptyDrafts } from './drafts.ts';
+import { remapPending } from './pending.ts';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // FleetListPayload lives in main/ipc.ts, not fleet/state.ts -- OpenSession
 // (which state.ts does export) is the payload's element type, not the
 // payload itself. FleetView.tsx already imports it from here; matched for
@@ -28,10 +30,34 @@ export function useFleet() {
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
 
+  const lastPayload = useRef<FleetListPayload | null>(null);
+
   useEffect(() => {
     let alive = true;
+    let pushed = false;
     const api = window.fleet;
     if (!api) { setError('bridge unavailable'); return; }
+    const accept = (p: FleetListPayload) => {
+      if (!alive) return;
+      const verified = (p.codexReplacements ?? []).filter(r =>
+        Number.isSafeInteger(r.previousPid) && r.previousPid > 0 && Number.isSafeInteger(r.pid) && r.pid > 0
+        && r.previousPid !== r.pid && !!r.sessionId
+        && lastPayload.current?.openSessions.some(s => s.pid === r.previousPid && s.provider === 'codex' && (s.sessionId === null || s.sessionId === r.sessionId))
+        && p.openSessions.some(s => s.pid === r.pid && s.provider === 'codex' && s.sessionId === r.sessionId));
+      for (const r of verified) {
+        if (!lastPayload.current?.openSessions.some(s => s.pid === r.previousPid && s.sessionId === r.sessionId)) continue;
+        remapDraft(r.previousPid, r.pid, r.sessionId);
+        remapPending(r.previousPid, r.pid, r.sessionId);
+      }
+      setSelection(current => {
+        const replacement = verified.find(r => r.previousPid === current?.pid);
+        return current && replacement ? { ...current, pid: replacement.pid } : current;
+      });
+      lastPayload.current = p;
+      pruneEmptyDrafts();
+      setPayload(p);
+      setError(null);
+    };
     // Two-arg .then, not a bare .then/chained .catch: FleetView's own
     // former subscription (moved here by this task) called this out
     // explicitly -- ipcRenderer.invoke rejects, rather than hanging, when
@@ -40,10 +66,10 @@ export function useFleet() {
     // `payload` stays null forever, indistinguishable on screen from a
     // slow load. A specific message says why instead.
     void api.listFleet().then(
-      p => { if (alive) { setPayload(p); setError(null); } },
-      err => { if (alive) setError(err instanceof Error ? err.message : String(err)); },
+      p => { if (!pushed) accept(p); },
+      err => { if (alive && !pushed) setError(err instanceof Error ? err.message : String(err)); },
     );
-    const unsub = api.onFleet(p => { if (alive) { setPayload(p); setError(null); } });
+    const unsub = api.onFleet(p => { pushed = true; accept(p); });
     return () => { alive = false; unsub(); };
   }, []);
 

@@ -12,6 +12,11 @@ import './ReplyPopover.css';
  *  second, drifting copy -- these strings were settled against a real
  *  misfire during part 1 and are not casual wording. */
 export const REFUSAL_TEXT: Record<KeysRefusalReason, string> = {
+  codex_not_ready: 'Codex is reconnecting. Your draft is kept until the same conversation is ready.',
+  codex_identity_required: 'This Codex conversation cannot be verified. Open Terminal to check it.',
+  codex_identity_changed: 'Codex changed conversations. Your message was not sent.',
+  codex_prompt_open: 'Answer the Codex prompt above or in Terminal before sending this draft.',
+  codex_input_pending: 'Native input may already be in Terminal. Review it before sending again.',
   not_tmux: 'This session is not running inside tmux, so it cannot be typed into. Reattach it to reply.',
   attachment_gone: 'An attached image is no longer available. Remove it and attach it again.',
   session_gone: 'That session has ended.',
@@ -71,7 +76,8 @@ export function ReplyPopover({ pid, prompt, choice, tmux, hostLabel, onOpenTermi
     setMessage(null);
     const r: KeysResult | undefined = await window.fleet?.sendKeys(pid, text);
     if (r?.status === 'sent') { setText(''); onClose(); return; }
-    setMessage(r ? REFUSAL_TEXT[r.reason] : 'Could not reach the app.');
+    setMessage(r?.status === 'interrupted' ? 'Native input may already be in Terminal. Review it before sending again.'
+      : r ? REFUSAL_TEXT[r.reason] : 'Could not reach the app.');
   }
 
   return (

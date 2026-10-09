@@ -42,8 +42,11 @@ const api = {
   },
   // Free-form text from the renderer: the first channel of its kind here.
   // Main sanitises and revalidates; the typing below narrows nothing.
-  sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }) =>
-    ipcRenderer.invoke('session:keys', pid, text, attach),
+  sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }, expectedSessionId?: string) =>
+    ipcRenderer.invoke('session:keys', pid, text, attach, expectedSessionId),
+  recoverCodex: (pid: number) => ipcRenderer.invoke('session:codex:recover', pid),
+  clearCodexInput: (pid: number, expectedSessionId: string) =>
+    ipcRenderer.invoke('session:codex:input:clear', pid, expectedSessionId),
   // Answers the prompt Claude is waiting on (quick answers). Main
   // re-derives the prompt, checks the answer against it and the pane, and
   // presses nothing it cannot confirm; this typing narrows nothing.

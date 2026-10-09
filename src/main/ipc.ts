@@ -45,7 +45,7 @@ import type { Provider } from '../core/types.ts';
 import { launchSession, launchCodexSession, reattachSession, resumeSession, launchCommand, type LaunchResult } from './launch.ts';
 import { isCodexBusy } from './codexBusy.ts';
 import {
-  buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, notifySessionChanged, type WatchDeps,
+  pushSessionLive, buildSessionLive, watchSessionFor, freshLiveSession, resolveReattachTarget, notifySessionChanged, type WatchDeps,
 } from './sessionLive.ts';
 import { answerPrompt, type AnswerResult } from './answer.ts';
 import { setModeFor, readModeFor, type ModeSetResult } from './mode.ts';
@@ -54,8 +54,11 @@ import { usageSwitchState, setUsageSwitch, type UsageSwitchResult } from '../hoo
 import { withContext, defaultContextOpts, buildUsagePayload, type ContextOpts } from './usage.ts';
 import type { UsagePayload } from '../core/usage.ts';
 import { ingestSpool } from '../hooks/spool.ts';
-import { codexAppServer, type CodexAnswerResult } from './codexAppServer.ts';
-import { codexRelayThreadForPid } from './codexRelayControl.ts';
+import { codexAppServer, readCodexInputState, type CodexInputState, type CodexAnswerResult } from './codexAppServer.ts';
+import { codexInput, codexRecovery, resolveOwnedCodexPid } from './codexRecoveryRuntime.ts';
+import type { CodexSnapshot } from '../core/codexPrompt.ts';
+import type { CodexReplacement, CodexRecoveryResult, CodexInputClearResult } from '../core/codexRecovery.ts';
+import { codexRelayThreadForPid, codexRelayInputRefusal, TUI_NAME } from './codexRelayControl.ts';
 import { readCodexThreadNames } from '../providers/codex/stateDb.ts';
 import { readAllPrefs, writePref, migratePrefs, type PrefsDb } from './prefs.ts';
 
@@ -70,6 +73,7 @@ export interface FleetListPayload {
   version: 1;
   generatedAt: string;
   openSessions: OpenSession[];
+  codexReplacements?: CodexReplacement[];
 }
 
 /** fleet:history's response -- ONE PAGE of History, newest-first, plus the
@@ -189,7 +193,7 @@ export const OPEN_SESSION_STRUCTURAL_FIELDS = [
   'context',
   // Counts this app derives from its own index, never text a model or a
   // user wrote -- nothing to sanitise, same as `events` above.
-  'agents', 'liveAgents',
+  'agents', 'liveAgents', 'codexConnection',
 ] as const satisfies readonly (keyof OpenSession)[];
 
 /** Sanitises every field named in `fields` whose current value is a string
@@ -261,6 +265,17 @@ function pidIsTmux(pid: number): boolean {
  *  like discovery/live.ts's own process cache, until the first discovery
  *  sweep has actually run. */
 let cachedPushOpenSessions: OpenSession[] = [];
+let cachedCodexReplacements: CodexReplacement[] = [];
+
+/** Discovery may not contain a freshly launched successor until the next
+ * sweep. Keep the predecessor visible until its exact replacement card exists. */
+export function visibleCodexReplacements(open: OpenSession[], replacements: CodexReplacement[]): CodexReplacement[] {
+  const byPid = new Map(open.map(session => [session.pid, session]));
+  return replacements.filter(replacement => {
+    const next = byPid.get(replacement.pid);
+    return next?.provider === 'codex' && next.sessionId === replacement.sessionId;
+  });
+}
 
 /** Refreshes the cache pushFleet (below) reads, from a real
  *  openSessionsLive query -- called from src/main/index.ts's discovery
@@ -301,6 +316,13 @@ export function refreshPushEnrichment(
     }),
     contextOpts ?? defaultContextOpts(),
   );
+  cachedPushOpenSessions = cachedPushOpenSessions.map(o => {
+    const connection = o.provider === 'codex' ? codexRecovery.connection(o.pid) : undefined;
+    return connection ? { ...o, codexConnection: connection } : o;
+  });
+  cachedCodexReplacements = visibleCodexReplacements(cachedPushOpenSessions, codexRecovery.replacements());
+  const preserved = new Set(cachedCodexReplacements.map(r => r.previousPid));
+  cachedPushOpenSessions = cachedPushOpenSessions.filter(o => !preserved.has(o.pid));
   setAttentionBadge(attentionCount(cachedPushOpenSessions));
 }
 
@@ -373,6 +395,7 @@ export function buildFleetListPayload(): FleetListPayload {
     version: 1,
     generatedAt: new Date().toISOString(),
     openSessions: buildOpenSessions(getCachedLiveProcesses()),
+    codexReplacements: [],
   };
 }
 
@@ -747,12 +770,18 @@ export async function revealSession(rawPid: unknown, opts: {
   return { status: 'revealed' };
 }
 
-export type KeysRefusalReason = 'not_tmux' | 'session_gone' | 'invalid_pid' | 'prompt_open' | 'attachment_gone' | OutboundRefusal;
+export type KeysRefusalReason = 'codex_input_pending' | 'codex_prompt_open' | 'codex_not_ready' | 'codex_identity_required' | 'codex_identity_changed' | 'not_tmux' | 'session_gone' | 'invalid_pid' | 'prompt_open' | 'attachment_gone' | OutboundRefusal;
 export type KeysResult =
   | { status: 'sent'; queued: boolean }
-  | { status: 'refused'; reason: KeysRefusalReason };
+  | { status: 'refused'; reason: KeysRefusalReason }
+  | { status: 'interrupted'; reason: KeysRefusalReason };
 
 type KeysDeps = {
+  inputPending?: (pid: number) => boolean;
+  beginInput?: (pid: number, threadId: string) => boolean;
+  finishInput?: (pid: number, threadId: string) => boolean;
+  codexSnapshot?: (sessionId: string) => CodexSnapshot | null;
+  codexGuard?: (pid: number, expected: unknown) => 'codex_not_ready' | 'codex_identity_required' | 'codex_identity_changed' | null;
   has?: (n: string) => boolean;
   /** The tmux exec for every outbound call this function makes -- the
    *  keystroke pair AND the three-call paste path -- so a test captures all
@@ -883,12 +912,112 @@ function paneIsInCopyMode(name: string, capture?: (args: string[]) => TmuxResult
   return mode.ok && mode.stdout.trim() === '1';
 }
 
-/** The renderer sends a pid and text, never a session name. Refusals are
- *  returned, not thrown: the card has to be able to say WHY nothing happened,
- *  and "not_tmux" is the ordinary answer for a session running in plain iTerm. */
+type KeysStep = { kind: 'guard' } | { kind: 'settle'; name: string; before: string };
+type KeysSteps = Generator<KeysStep, KeysResult, KeysRefusalReason | boolean | null>;
+type CodexKeysDeps = KeysDeps & {
+  readInput?: (threadId: string) => Promise<CodexInputState>;
+  finalCodexGuard?: (pid: number, name: string, expected: unknown) => Promise<KeysRefusalReason | null>;
+};
+const codexSendTails = new Map<string, Promise<void>>();
+const observerTurn = async (): Promise<void> => {
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  await new Promise<void>(resolve => setImmediate(resolve));
+};
+
+/** One owned terminal gets one send at a time. Each checkpoint lets socket
+ * callbacks run before consulting prompt state or fresh native identity. */
+export async function sendKeysWithCodexAdmission(
+  pid: unknown, text: unknown, attachments: { images?: string[]; files?: string[] }, expected: unknown,
+  deps: CodexKeysDeps = {},
+): Promise<KeysResult> {
+  const images = attachments.images ?? [], files = attachments.files ?? [];
+  const name = typeof pid === 'number' ? tmuxNameForPid(pid) : null;
+  if (typeof pid !== 'number' || !name || !TUI_NAME.test(name))
+    return sendKeysFor(pid, text, deps, images, files, expected);
+  const previous = codexSendTails.get(name) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>(resolve => { release = resolve; });
+  codexSendTails.set(name, current);
+  await previous;
+  try {
+    const guard = async (): Promise<KeysRefusalReason | null> => {
+      await observerTurn();
+      if (tmuxNameForPid(pid) !== name) return 'codex_identity_changed';
+      const check = deps.codexGuard ?? ((p, id) => codexRecovery.inputRefusal(p, id));
+      let refusal: KeysRefusalReason | null = check(pid, expected);
+      if (refusal) return refusal;
+      // Ownership reads use synchronous tmux/ps; drain events queued during
+      // them before deciding that an empty observer list permits native input.
+      await observerTurn();
+      if (tmuxNameForPid(pid) !== name) return 'codex_identity_changed';
+      const snapshot = deps.codexSnapshot ?? (id => codexAppServer.snapshot(id));
+      let state = snapshot(expected as string);
+      if (state?.prompts.length) return 'codex_prompt_open';
+      let idle: CodexInputState | null = null;
+      if (state?.state !== 'ready') {
+        // A live blank thread may be unreadable by the subscriber. This fresh
+        // idle proof belongs only to this checkpoint, never to the whole send.
+        idle = await (deps.readInput ?? readCodexInputState)(expected as string);
+        await observerTurn();
+        refusal = check(pid, expected);
+        if (refusal || tmuxNameForPid(pid) !== name) return refusal ?? 'codex_identity_changed';
+        await observerTurn();
+      }
+      // This last asynchronous read closes the identity window opened by
+      // draining observer events. No yield follows the final prompt sample.
+      refusal = await (deps.finalCodexGuard ?? codexRelayInputRefusal)(pid, name, expected);
+      if (refusal || tmuxNameForPid(pid) !== name) return refusal ?? 'codex_identity_changed';
+      state = snapshot(expected as string);
+      return state?.prompts.length ? 'codex_prompt_open'
+        : state?.state === 'ready' || idle?.status === 'idle' ? null : 'codex_not_ready';
+    };
+    const steps = sendKeysSteps(pid, text, deps, images, files, expected);
+    let next = steps.next();
+    while (!next.done) {
+      let answer: KeysRefusalReason | boolean | null;
+      if (next.value.kind === 'guard') answer = await guard();
+      else {
+        answer = false;
+        for (let attempt = 0; attempt < PASTE_SETTLE_ATTEMPTS; attempt++) {
+          if (attempt > 0) await new Promise(resolve => setTimeout(resolve, PASTE_SETTLE_INTERVAL_MS));
+          // A refusal after native paste stays uncertain even if it clears
+          // before the next checkpoint; retain the durable input marker.
+          const refusal = await guard();
+          if (refusal) return { status: 'interrupted', reason: refusal };
+          const captured = capturePane(next.value.name, PASTE_SETTLE_CAPTURE_LINES, deps.capture);
+          if (!captured.ok) break;
+          if (captured.stdout !== next.value.before) { answer = true; break; }
+        }
+      }
+      next = steps.next(answer);
+    }
+    return next.value;
+  } finally {
+    release();
+    if (codexSendTails.get(name) === current) codexSendTails.delete(name);
+  }
+}
+
+/** Ordinary sessions preserve their synchronous native transport. Fleet
+ * Codex must use the serialized asynchronous admission path above. */
 export function sendKeysFor(
-  pid: unknown, raw: unknown, deps: KeysDeps = {}, images: string[] = [], files: string[] = [],
+  pid: unknown, raw: unknown, deps: KeysDeps = {}, images: string[] = [], files: string[] = [], expectedSessionId?: unknown,
 ): KeysResult {
+  if (typeof pid === 'number' && TUI_NAME.test(tmuxNameForPid(pid) ?? ''))
+    return { status: 'refused', reason: 'codex_not_ready' };
+  const steps = sendKeysSteps(pid, raw, deps, images, files, expectedSessionId);
+  let next = steps.next();
+  while (!next.done) {
+    const answer = next.value.kind === 'guard' ? null
+      : waitForPasteToSettle(next.value.name, next.value.before, deps.capture, deps.sleep ?? defaultSleep);
+    next = steps.next(answer);
+  }
+  return next.value;
+}
+
+function* sendKeysSteps(
+  pid: unknown, raw: unknown, deps: KeysDeps = {}, images: string[] = [], files: string[] = [], expectedSessionId?: unknown,
+): KeysSteps {
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
     return { status: 'refused', reason: 'invalid_pid' };
   }
@@ -917,6 +1046,13 @@ export function sendKeysFor(
   const name = resolveLiveTmux(pid, { has: deps.has });
   if (name === null) return { status: 'refused', reason: 'session_gone' };
 
+  const refusal = (yield { kind: 'guard' }) as KeysRefusalReason | null;
+  if (refusal) return { status: 'refused', reason: refusal };
+  const trackedCodex = TUI_NAME.test(name);
+  if (trackedCodex && (deps.inputPending ?? (pid => codexInput.pending(pid)))(pid))
+    return { status: 'refused', reason: 'codex_input_pending' };
+  let inputStarted = false;
+
   // A choice is open: typed text plus Enter would pick the highlighted
   // option, not what was typed. Refuse; the Terminal view answers it.
   const promptOpen = deps.promptOpen ?? (p => promptOpenFor(p, {
@@ -940,6 +1076,8 @@ export function sendKeysFor(
   // the pane, and a baseline taken first would make the settle loop trip
   // on that redraw rather than on the paste.
   if (paneIsInCopyMode(name, deps.capture)) {
+    const refusal = (yield { kind: 'guard' }) as KeysRefusalReason | null;
+    if (refusal) return { status: 'refused', reason: refusal };
     const left = cancelCopyMode(name, deps.send);
     if (!left.ok) {
       // The one place in this function where refusing beats sending. The
@@ -996,6 +1134,8 @@ export function sendKeysFor(
   ];
   let before = captured.stdout;
   for (const [i, chunk] of chunks.entries()) {
+    const refusal = (yield { kind: 'guard' }) as KeysRefusalReason | null;
+    if (refusal) return { status: inputStarted ? 'interrupted' : 'refused', reason: refusal };
     const buffer = nextPasteBuffer();
     const loaded = loadBuffer(name, buffer, chunk, deps.send);
     if (!loaded.ok) {
@@ -1004,7 +1144,29 @@ export function sendKeysFor(
       // earlier chunk may already sit in the input line; no Enter follows,
       // so nothing half-delivered is ever submitted.
       console.error('tmux load-buffer failed:', loaded.error);
-      return { status: 'refused', reason: 'session_gone' };
+      return { status: inputStarted ? 'interrupted' : 'refused', reason: 'session_gone' };
+    }
+    const beforePasteRefusal = (yield { kind: 'guard' }) as KeysRefusalReason | null;
+    if (beforePasteRefusal) {
+      const dropped = deleteBuffer(buffer, deps.send);
+      if (!dropped.ok) console.error('Could not remove unpasted input buffer:', dropped.error);
+      return { status: inputStarted ? 'interrupted' : 'refused', reason: beforePasteRefusal };
+    }
+    if (trackedCodex && !inputStarted) {
+      if (!(deps.beginInput ?? ((p, id) => codexInput.begin(p, id)))(pid, expectedSessionId as string)) {
+        const dropped = deleteBuffer(buffer, deps.send);
+        if (!dropped.ok) console.error('Could not remove unpasted input buffer:', dropped.error);
+        return { status: 'refused', reason: 'codex_not_ready' };
+      }
+      inputStarted = true;
+      // Persisting the marker also resolves ownership synchronously. Drain
+      // any modal events received during those reads before native paste.
+      const markerRefusal = (yield { kind: 'guard' }) as KeysRefusalReason | null;
+      if (markerRefusal) {
+        const dropped = deleteBuffer(buffer, deps.send);
+        if (!dropped.ok) console.error('Could not remove unpasted input buffer:', dropped.error);
+        return { status: 'interrupted', reason: markerRefusal };
+      }
     }
     const pasted = pasteBuffer(name, buffer, deps.send);
     if (!pasted.ok) {
@@ -1014,7 +1176,7 @@ export function sendKeysFor(
       // on the tmux server for as long as the server lives.
       const dropped = deleteBuffer(buffer, deps.send);
       if (!dropped.ok) console.error('tmux delete-buffer failed:', dropped.error);
-      return { status: 'refused', reason: 'session_gone' };
+      return { status: inputStarted ? 'interrupted' : 'refused', reason: 'session_gone' };
     }
     // The paste has landed as far as tmux is concerned, but the receiving
     // program (an Ink TUI) may still be mid-ingest of the bracketed-paste
@@ -1023,8 +1185,9 @@ export function sendKeysFor(
     // A timeout is logged, never turned into a refusal: the paste has
     // already landed either way, and refusing would invite a retry that
     // duplicates text already sitting in the pane's input line.
-    if (!waitForPasteToSettle(name, before, deps.capture, deps.sleep ?? defaultSleep)) {
-      console.error('tmux paste settle timed out, sending Enter anyway:', { pid, name });
+    if (!(yield { kind: 'settle', name, before })) {
+      console.error(trackedCodex ? 'tmux paste settle did not observe an input change:'
+        : 'tmux paste settle timed out, sending Enter anyway:', { pid, name });
     }
     // The next paste settles against what the pane shows now.
     if (i < chunks.length - 1) {
@@ -1058,14 +1221,19 @@ export function sendKeysFor(
   // affirmatively says codex -- unset, unresolvable (null), or any other
   // provider all fall back to Enter, same as an unset or null busy does.
   //
-  // The paste has already landed in the session by this point, so a failed
-  // key send is logged, not refused: refusing here would tell the user the
-  // send failed and invite a retry, which would submit a duplicate of text
-  // that is already sitting in the pane's input line.
+  // Input may already be in the native draft. Fleet Codex returns an
+  // interrupted result and retains its durable marker on guard/key failure,
+  // requiring explicit native draft handling before another send. Ordinary
+  // sessions preserve their existing key-send behavior.
   const queued = deps.busy?.(pid) === true;
   const key = queued && deps.provider?.(pid) === 'codex' ? 'Tab' : 'Enter';
+  const finalRefusal = (yield { kind: 'guard' }) as KeysRefusalReason | null;
+  if (finalRefusal) return { status: inputStarted ? 'interrupted' : 'refused', reason: finalRefusal };
   const entered = sendKeyName(name, key, deps.send);
   if (!entered.ok) console.error(`tmux send-keys (${key}) failed:`, entered.error);
+  if (inputStarted && (!entered.ok
+    || !(deps.finishInput ?? ((p, id) => codexInput.clear(p, id)))(pid, expectedSessionId as string)))
+    return { status: 'interrupted', reason: 'codex_input_pending' };
   return { status: 'sent', queued };
 }
 
@@ -1530,6 +1698,7 @@ export function registerIpc(
         : buildSessionLive(db, validPid, getCachedLiveProcesses(), Date.now(), {
           cached: cachedPushOpenSessions,
           codexSnapshot: sessionId => codexAppServer.snapshot(sessionId),
+          codexConnection: pid => codexRecovery.connection(pid),
           ingestSpool: () => {
             const touched = new Set<string>();
             if (ingestSpool(db, spoolDir, 'claude', touched) > 0) {
@@ -1624,7 +1793,7 @@ export function registerIpc(
   // other.
   const providerForPid = (pid: number): Provider | null =>
     getCachedLiveProcesses().find(p => p.pid === pid)?.provider ?? null;
-  ipcMain.handle('session:keys', (_event, pid: unknown, text: unknown, attach: unknown): KeysResult => {
+  ipcMain.handle('session:keys', async (_event, pid: unknown, text: unknown, attach: unknown, expectedSessionId: unknown): Promise<KeysResult> => {
     // Ids the stagers issued, resolved to the files they wrote. An id they
     // do not know (a stale chip after an app restart, or anything forged)
     // refuses the whole send rather than silently dropping an attachment.
@@ -1638,7 +1807,8 @@ export function registerIpc(
     const images = imageIds.map(id => stager.pathFor(id));
     const files = fileIds.map(id => fileStager.pathFor(id));
     if ([...images, ...files].some(p => p === null)) return gone;
-    return sendKeysFor(pid, text, { busy: busyForPid, provider: providerForPid }, images as string[], files as string[]);
+    return sendKeysWithCodexAdmission(pid, text, { images: images as string[], files: files as string[] }, expectedSessionId,
+      { busy: busyForPid, provider: providerForPid });
   });
   // Quick answers (src/main/answer.ts): answers the prompt Claude is
   // waiting on, by tmux keystrokes checked against the pane. Every argument
@@ -1661,6 +1831,11 @@ export function registerIpc(
     const processes = getCachedLiveProcesses();
     if (processes.find(p => p.pid === pid)?.provider !== 'codex')
       return { status: 'refused', reason: 'stale' };
+    const name = tmuxNameForPid(pid);
+    if (name && TUI_NAME.test(name)) {
+      const exact = resolveOwnedCodexPid(pid)?.binding.threadId;
+      return exact ? codexAppServer.answer(exact, key, answer) : { status: 'refused', reason: 'stale' };
+    }
     const target = resolveReattachTarget(pid, { cached: cachedPushOpenSessions, processes, read: readLiveSession });
     return target?.provider === 'codex'
       ? codexAppServer.answer(target.sessionId, key, answer)
@@ -1680,13 +1855,45 @@ export function registerIpc(
   // needs, but a mid-turn pane honours Shift+Tab (measured 2026-09-22 --
   // see ModeDeps.promptOpen), so refusing here only made the chip dead
   // while a session was working.
-  ipcMain.handle('session:mode:set', (_event, pid: unknown, mode: unknown): Promise<ModeSetResult> =>
-    setModeFor(pid, mode, {
+  ipcMain.handle('session:mode:set', (_event, pid: unknown, mode: unknown): Promise<ModeSetResult> => {
+    if (typeof pid === 'number' && TUI_NAME.test(tmuxNameForPid(pid) ?? '')
+      && codexRecovery.connection(pid)?.state !== 'ready')
+      return Promise.resolve({ status: 'refused', reason: 'unconfirmed' });
+    const initialThread = typeof pid === 'number' ? resolveOwnedCodexPid(pid)?.binding.threadId : undefined;
+    return setModeFor(pid, mode, {
       provider: providerForPid,
-      promptOpen: p => promptOpenFor(p, {
+      promptOpen: p => {
+        const exact = resolveOwnedCodexPid(p)?.binding.threadId;
+        if (initialThread && (codexRecovery.inputRefusal(p, initialThread) || exact !== initialThread)) return true;
+        if (exact) {
+          const snapshot = codexAppServer.snapshot(exact);
+          if (snapshot?.state !== 'ready' || snapshot.prompts.length) return true;
+        }
+        return promptOpenFor(p, {
         cached: cachedPushOpenSessions, processes: getCachedLiveProcesses(), read: readLiveSession,
-      }),
-    }));
+      }); },
+    });
+  });
+  ipcMain.handle('session:codex:input:clear', (event, pid: unknown, expected: unknown): CodexInputClearResult => {
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0 || typeof expected !== 'string')
+      return { status: 'refused', reason: 'invalid' };
+    const tui = resolveOwnedCodexPid(pid);
+    if (!tui || tui.binding.threadId !== expected) return { status: 'refused', reason: 'stale' };
+    if (!codexInput.clear(pid, expected)) return { status: 'refused', reason: 'unavailable' };
+    refreshPushEnrichment(db, getCachedLiveProcesses());
+    pushFleet(BrowserWindow.fromWebContents(event.sender));
+    pushSessionLive();
+    return { status: 'cleared' };
+  });
+  ipcMain.handle('session:codex:recover', async (event, pid: unknown): Promise<CodexRecoveryResult> => {
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0)
+      return { status: 'failed', reason: 'Invalid native Codex terminal.' };
+    const result = await codexRecovery.recover(pid);
+    refreshPushEnrichment(db, getCachedLiveProcesses());
+    pushFleet(BrowserWindow.fromWebContents(event.sender));
+    pushSessionLive();
+    return result;
+  });
   ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
 
   // Quick answers (src/hooks/switch.ts): the Settings switch's own reads
@@ -1887,6 +2094,6 @@ export function registerIpc(
 export function pushFleet(win: BrowserWindow | null): void {
   if (!win || win.isDestroyed()) return;
   const openSessions = cachedPushOpenSessions.map(o => sanitizeFields(o, OPEN_SESSION_SANITISED_FIELDS));
-  const payload: FleetListPayload = { version: 1, generatedAt: new Date().toISOString(), openSessions };
+  const payload: FleetListPayload = { version: 1, generatedAt: new Date().toISOString(), openSessions, codexReplacements: cachedCodexReplacements };
   win.webContents.send('fleet:update', payload);
 }

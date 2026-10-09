@@ -393,3 +393,17 @@ describe('setModeFor: the cap', () => {
     expect(errors).toHaveBeenCalledWith('session:mode refused', { pid: PID, reason: 'prompt_open' });
   });
 });
+
+
+describe('mode input guard freshness',()=>{
+  it('stops a mode cycle when a native question opens after the first press',async()=>{
+    const pane=cyclingPane('claude','auto');
+    const result=await setModeFor(PID,'plan',deps(pane,{promptOpen:()=>pane.btabs()>0}));
+    expect(result).toEqual({status:'refused',reason:'prompt_open'});expect(pane.btabs()).toBe(1);
+  });
+  it('rechecks native input permission before leaving copy mode',async()=>{
+    const pane=cyclingPane('claude','auto',{inMode:true});let checked=false;
+    const result=await setModeFor(PID,'plan',deps(pane,{promptOpen:()=>{const prior=checked;checked=true;return prior;}}));
+    expect(result).toEqual({status:'refused',reason:'prompt_open'});expect(pane.sent).toEqual([]);
+  });
+});

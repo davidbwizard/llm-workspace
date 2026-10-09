@@ -1,3 +1,5 @@
+import type { CodexConnection } from '../core/codexRecovery.ts';
+import { codexRelayBindingForPid } from './codexRelayControl.ts';
 import { watch as fsWatch } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -44,6 +46,7 @@ export type SessionLivePayload = {
   prompt: PromptView | null;
   /** Live Codex app-server requests for this exact thread, when subscribed. */
   codex?: CodexSnapshot;
+  codexConnection?: CodexConnection;
   /** Context window use for the conversation header (usage design, Part
    *  A) -- the same { usedTokens, windowTokens, leftPct } the session's
    *  card carries, or null (no session, or no count yet). */
@@ -107,6 +110,11 @@ export function resolveReattachTarget(
   const fresh = freshLiveSession(pid, deps.processes, deps.read);
   if (fresh) return { sessionId: fresh.sessionId, provider: 'claude', cwd: fresh.cwd };
 
+  const binding = codexRelayBindingForPid(pid);
+  if (binding) {
+    const process = deps.processes.find(p => p.pid === pid && p.provider === 'codex');
+    return binding.threadId && process?.cwd ? { sessionId: binding.threadId, provider: 'codex', cwd: process.cwd } : null;
+  }
   const open = deps.cached.find(o => o.pid === pid);
   if (!open || open.sessionId === null || open.cwd === null) return null;
   return { sessionId: open.sessionId, provider: open.provider, cwd: open.cwd };
@@ -162,6 +170,7 @@ export interface SessionLiveDeps {
    *  currentPrompt closure, src/main/ipc.ts) can pass `() => null` and skip
    *  the capture entirely: it is answering a prompt, not drawing a chip. */
   mode?: (pid: number) => ModeState | null;
+  codexConnection?: (pid: number) => CodexConnection | undefined;
   codexSnapshot?: (sessionId: string) => CodexSnapshot | null;
 }
 
@@ -243,27 +252,11 @@ export function buildSessionLive(
     };
   }
 
-  // `last_kind`/`events` deliberately read every row for this session_id,
-  // INCLUDING a Codex subagent thread's own rows (they share the root
-  // thread's session_id but carry a non-null agent_id -- src/providers/
-  // codex/parse.ts's threadAgentId). This matches fleetState's/
-  // openSessionsLive's own last_kind subquery (src/fleet/state.ts)
-  // exactly, unfiltered -- deriveActivity below is "the cards' activity
-  // rule" (see its doc comment), and the pane must be fed the identical
-  // signal or it could show a different state than the card for the same
-  // session at the same instant.
-  //
-  // `last_prompt_ts` is scoped to `agent_id IS NULL` on purpose, NOT
-  // matching that: it exists only to time "since" for a working Codex
-  // session (below), and the pane shows only the root thread's own
-  // messages (conversationFor, src/store/conversation.ts, applies the same
-  // agent_id IS NULL scope for the same reason) -- a subagent dispatched
-  // mid-turn can submit its own prompt.submitted row under the same
-  // session_id, and timing "since" from THAT would show a start time that
-  // does not correspond to anything the pane displays.
+  // Activity and the timer belong to the root conversation. Child rows
+  // contribute to event counts but never override a root turn boundary.
   const row = db.prepare(`
-    SELECT COUNT(*) AS events, MAX(ts) AS last_ts,
-      (SELECT k.kind FROM events k WHERE k.session_id = e.session_id
+    SELECT COUNT(*) AS events, MAX(CASE WHEN provider <> 'codex' OR agent_id IS NULL THEN ts END) AS last_ts,
+      (SELECT k.kind FROM events k WHERE k.session_id = e.session_id AND (k.provider <> 'codex' OR k.agent_id IS NULL)
         ORDER BY k.ts DESC, k.id DESC LIMIT 1) AS last_kind,
       (SELECT p.ts FROM events p WHERE p.session_id = e.session_id AND p.kind = 'prompt.submitted'
           AND p.agent_id IS NULL
@@ -314,7 +307,7 @@ export function buildSessionLive(
       : rawActivity === 'error' ? 'idle'
         : rawActivity;
   const codex = target.provider === 'codex' ? deps.codexSnapshot?.(target.sessionId) ?? null : null;
-  if (codex?.prompts.length) activity = 'waiting';
+  if (codex?.prompts.some(prompt => prompt.isBlocking !== false)) activity = 'waiting';
   else if (codex?.state === 'ready' && blocker && activity === 'waiting') {
     // Codex hooks do not emit a resolver for every approval. A subscribed
     // app-server's empty pending list is authoritative over a stale hook.
@@ -370,9 +363,11 @@ export function buildSessionLive(
     ? deps.context(target.sessionId, target.provider)
     : contextForSession(db, target.sessionId, target.provider, defaultContextOpts());
 
+  const codexConnection = deps.codexConnection?.(pid);
   return {
     version: 1, pid, sessionId: target.sessionId, activity, since,
-    events: row.events ?? 0, prompt, ...(codex ? { codex } : {}), context, mode: readMode(activity),
+    events: row.events ?? 0, prompt, ...(codex ? { codex } : {}),
+    ...(codexConnection ? { codexConnection } : {}), context, mode: readMode(activity),
   };
 }
 

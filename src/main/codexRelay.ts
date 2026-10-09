@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { TMUX_NAME } from './tmux.ts';
+import { parseCodexBinding, CODEX_THREAD_ID, type CodexBinding } from '../core/codexRecovery.ts';
 import { CodexThreadTracker, WebSocketRpcObserver } from './codexRelayProtocol.ts';
 
 // Standalone electron-vite entry. Fleet starts it under ELECTRON_RUN_AS_NODE
@@ -38,28 +39,65 @@ let active: Socket | null = null;
 let everSawTui = false;
 const startedAt = Date.now();
 
+function readOption(key: string): string | null {
+  try { return execFileSync('tmux', ['show-options', '-v', '-t', `=${tuiName}:`, key],
+    { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); }
+  catch { return null; }
+}
+function seedBinding(): CodexBinding | null {
+  const raw = readOption('@llmws-codex-binding');
+  if (raw !== null) return parseCodexBinding(raw);
+  const id = readOption('@llmws-codex-thread');
+  return readOption('@llmws-codex-connected') === '1' && id && CODEX_THREAD_ID.test(id)
+    ? { v: 1, state: 'disconnected', threadId: id, updatedAt: Date.now() } : null;
+}
+let priorBinding = seedBinding();
+// This is a freshly started relay, so an old ready option cannot describe
+// this connection. Persist safe prior identity until the native TUI resumes.
+if (tuiExists() && !setOption('@llmws-codex-binding', JSON.stringify(priorBinding
+  ? { ...priorBinding, state: priorBinding.threadId ? 'disconnected' : 'unknown', updatedAt: Date.now() }
+  : { v: 1, state: 'unknown', threadId: null, updatedAt: Date.now() }))) process.exit(1);
+
 const server = createServer(client => {
   if (active && !active.destroyed) { client.destroy(); return; }
   active = client;
   let backend: Socket;
+  let canForward = true;
   const tracker = new CodexThreadTracker(id => {
+    if (active !== client) return;
     if (id === null) { setOption('@llmws-codex-connected', '0'); return; }
     if (setOption('@llmws-codex-thread', id)) setOption('@llmws-codex-connected', '1');
     else setOption('@llmws-codex-connected', '0');
-  });
+  }, binding => {
+    if (active !== client) return;
+    priorBinding = binding;
+    if (!setOption('@llmws-codex-binding', JSON.stringify(binding))) {
+      canForward = false;
+      client.destroy();
+      // An unpersisted ready option must never outlive a failed writer.
+      // End only this relay; the native TUI retains its own draft/retries.
+      process.exit(1);
+    }
+  }, priorBinding);
   tracker.disconnected();
-  const fromTui = new WebSocketRpcObserver(true, value => tracker.fromTui(value), () => tracker.disconnected());
-  const fromServer = new WebSocketRpcObserver(false, value => tracker.fromServer(value), () => tracker.disconnected());
+  const fromTui = new WebSocketRpcObserver(true, value => tracker.fromTui(value), () => tracker.invalidated());
+  const fromServer = new WebSocketRpcObserver(false, value => tracker.fromServer(value), () => tracker.invalidated());
   try { backend = createConnection(backendPath); }
   catch (error) {
     console.error('Codex relay: App Server connection failed:', error);
     client.destroy();
     return;
   }
-  client.on('data', bytes => fromTui.feed(bytes));
-  backend.on('data', bytes => fromServer.feed(bytes));
-  client.pipe(backend);
-  backend.pipe(client);
+  client.on('data', bytes => {
+    fromTui.feed(bytes); // identity invalidation must precede forwarding
+    if (canForward && !backend.write(bytes)) client.pause();
+  });
+  backend.on('drain', () => client.resume());
+  backend.on('data', bytes => {
+    fromServer.feed(bytes);
+    if (canForward && !client.write(bytes)) backend.pause();
+  });
+  client.on('drain', () => backend.resume());
   client.on('close', () => { tracker.disconnected(); backend.destroy(); if (active === client) active = null; });
   backend.on('close', () => { tracker.disconnected(); client.destroy(); });
   client.on('error', error => console.error('Codex relay: TUI socket error:', error));

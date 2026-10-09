@@ -587,6 +587,7 @@ export class CodexAppServer {
           this.previewTurns.add(turnId);
           const readId = `fleet-preview:${randomBytes(16).toString('hex')}`;
           this.previewReads.set(readId, turnId);
+          // shortcut: inspect one current-turn page; revisit if older pending file approvals lack previews.
           this.socket?.send({ id: readId, method: 'thread/items/list', params: { threadId, turnId, limit: 64, sortDirection: 'desc' } });
         }
       }
@@ -698,5 +699,54 @@ export function setCodexThreadName(threadId: string, name: string, opts: {
     } catch (err) {
       finish({ ok: false, reason: err instanceof Error ? err.message : 'the Codex app-server could not be reached' });
     }
+  });
+}
+
+export type CodexInputState = { status: 'idle' | 'unavailable' };
+/** Blank live threads have no rollout and cannot yet be observer-resumed.
+ * A short metadata read admits only a positively idle exact native thread;
+ * this is never treated as a subscription or an empty replayed prompt list. */
+export function readCodexInputState(threadId: string, opts: {
+  socketPath?: string; timeoutMs?: number;
+} = {}): Promise<CodexInputState> {
+  if (!CODEX_THREAD_ID.test(threadId)) return Promise.resolve({ status: 'unavailable' });
+  const timeoutMs = Math.max(50, Math.min(opts.timeoutMs ?? 2000, 5000));
+  return new Promise(resolve => {
+    let socket: LocalWebSocket | null = null;
+    let settled = false;
+    let initialized = false;
+    const finish = (status: CodexInputState['status']): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket?.close();
+      resolve({ status });
+    };
+    const timer = setTimeout(() => finish('unavailable'), timeoutMs);
+    const send = (value: unknown): boolean => {
+      try { socket?.send(value); return true; }
+      catch { finish('unavailable'); return false; }
+    };
+    try {
+      socket = new LocalWebSocket(opts.socketPath ?? defaultCodexSocketPath(),
+        () => { send({ id: 1, method: 'initialize', params: {
+          clientInfo: { name: 'fleet', title: 'Fleet', version: '0.1.0' }, capabilities: { experimentalApi: true },
+        } }); },
+        value => {
+          const m = record(value);
+          if (!m || Object.hasOwn(m, 'method')) return;
+          if (m.id === 1 && !initialized) {
+            if (m.error || !record(m.result)) { finish('unavailable'); return; }
+            initialized = true;
+            if (!send({ method: 'initialized', params: {} })) return;
+            send({ id: 2, method: 'thread/read', params: { threadId, includeTurns: false } });
+          } else if (m.id === 2 && initialized) {
+            const thread = record(record(m.result)?.thread);
+            finish(!m.error && thread?.id === threadId && thread.ephemeral === false
+              && thread.canAcceptDirectInput === true && record(thread.status)?.type === 'idle' ? 'idle' : 'unavailable');
+          }
+        },
+        () => finish('unavailable'));
+    } catch { finish('unavailable'); }
   });
 }

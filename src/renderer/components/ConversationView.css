@@ -315,3 +315,6 @@ pre .fp {
 }
 
 pre .fp:hover { text-decoration-color: var(--accent); color: var(--accent); }
+
+.convconnection { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 16px; color: var(--muted); font-size: 12px; }
+.convconnection:empty { display: none; }

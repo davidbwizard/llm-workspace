@@ -90,3 +90,6 @@
 .panefav:hover { color:var(--ink); }
 .panefav[aria-pressed="true"] { color:var(--accent); }
 .panefav:disabled { opacity:.5; cursor:default; }
+
+.native-terminal-note { display: flex; align-items: center; gap: 12px; padding: 8px 12px; color: var(--muted); font-size: 12px; }
+.native-terminal-note button { margin-left: auto; }

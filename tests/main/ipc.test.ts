@@ -10,7 +10,7 @@ import {
   OPEN_SESSION_SANITISED_FIELDS, OPEN_SESSION_STRUCTURAL_FIELDS,
   killSession, ownProcessAncestry, revealSession, sendKeysFor, resolveReattachTarget,
   freshLiveSession, promptOpenFor, applyThemeChoice, PASTE_SETTLE_ATTEMPTS,
-  setAttentionBadge,
+  setAttentionBadge, sendKeysWithCodexAdmission, visibleCodexReplacements,
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry, tmuxNameForPid } from '../../src/main/sessions.ts';
 import { getCachedLiveProcesses, refreshLiveProcesses, type ExecFn } from '../../src/discovery/live.ts';
@@ -489,6 +489,7 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
     });
     const open = buildFleetListPayload().openSessions[0]!;
     const known = new Set<string>([...OPEN_SESSION_SANITISED_FIELDS, ...OPEN_SESSION_STRUCTURAL_FIELDS]);
+    known.delete('codexConnection'); // optional only for Fleet relay sessions
     expect(new Set(Object.keys(open))).toEqual(known);
   });
 
@@ -510,7 +511,7 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
     expect(OPEN_SESSION_SANITISED_FIELDS).toEqual(['cwd', 'project', 'lastProse', 'name']);
     expect(OPEN_SESSION_STRUCTURAL_FIELDS).toEqual([
       'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity', 'tmux',
-      'junk', 'context', 'agents', 'liveAgents',
+      'junk', 'context', 'agents', 'liveAgents', 'codexConnection',
     ]);
   });
 
@@ -1933,5 +1934,190 @@ describe('the dock badge', () => {
     expect(() => setAttentionBadge(1, () => { throw new Error('no dock'); })).not.toThrow();
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+describe('fresh Fleet Codex send binding',()=>{
+  beforeEach(()=>clearRegistry());
+  it('refuses stale or missing identity before any terminal mutation',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');
+    const send=vi.fn(()=>({ok:true as const,stdout:''}));
+    const capture=vi.fn(()=>({ok:true as const,stdout:''}));
+    const deps={has:()=>true,send,capture,promptOpen:()=>false,
+      finalCodexGuard:async()=>null,codexGuard:(_pid:number,expected:unknown)=> expected===undefined?'codex_identity_required' as const:'codex_identity_changed' as const};
+    expect(await sendKeysWithCodexAdmission(11,'draft',{},undefined,deps)).toEqual({status:'refused',reason:'codex_identity_required'});
+    expect(await sendKeysWithCodexAdmission(11,'draft',{},'01a0da03-b7a1-7542-a9b9-e325e92c221f',deps)).toEqual({status:'refused',reason:'codex_identity_changed'});
+    expect(send).not.toHaveBeenCalled();expect(capture).not.toHaveBeenCalled();
+  });
+});
+
+describe('native Codex prompt overlay safety',()=>{
+  beforeEach(()=>clearRegistry());
+  it('refuses chat while an asynchronous question overlays the native composer',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');
+    const send=vi.fn(()=>({ok:true as const,stdout:''}));
+    const snapshot={state:'ready' as const,prompts:[{isBlocking:false,kind:'questions'} as any]};
+    const result=await sendKeysWithCodexAdmission(11,'chat',{},'01a0da03-b7a1-7542-a9b9-e325e92c221f',{has:()=>true,send,capture:()=>({ok:true,stdout:''}),
+      finalCodexGuard:async()=>null,codexGuard:()=>null,codexSnapshot:()=>snapshot,promptOpen:()=>false});
+    expect(result).toEqual({status:'refused',reason:'codex_prompt_open'});expect(send).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('Codex input admission after observer loss',()=>{
+  beforeEach(()=>clearRegistry());
+  const ID='01a0da03-b7a1-7542-a9b9-e325e92c221f';
+  it('permits a new exact idle thread first message using bounded fresh metadata',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const writes:string[][]=[];
+    const result=await sendKeysWithCodexAdmission(11,'first message',{},ID,{
+      finalCodexGuard:async()=>null,codexGuard:()=>null,inputPending:()=>false,beginInput:()=>true,finishInput:()=>true,codexSnapshot:()=>null,readInput:async()=>({status:'idle'}),
+      has:()=>true,send:args=>{writes.push(args);return {ok:true,stdout:''};},
+      capture:()=>({ok:true,stdout:'screen'}),promptOpen:()=>false,sleep:()=>{},
+    });
+    expect(result).toEqual({status:'sent',queued:false});expect(writes.some(a=>a[0]==='paste-buffer')).toBe(true);
+  });
+  it('refuses an active or unreadable fallback before any terminal write',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const send=vi.fn();
+    expect(await sendKeysWithCodexAdmission(11,'draft',{},ID,{finalCodexGuard:async()=>null,codexGuard:()=>null,
+      inputPending:()=>false,beginInput:()=>true,finishInput:()=>true,codexSnapshot:()=>null,readInput:async()=>({status:'unavailable'}),send,has:()=>true}))
+      .toEqual({status:'refused',reason:'codex_not_ready'});expect(send).not.toHaveBeenCalled();
+  });
+  it('rechecks exact ready binding after the asynchronous metadata read',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');let switched=false;const send=vi.fn();
+    expect(await sendKeysWithCodexAdmission(11,'draft',{},ID,{
+      finalCodexGuard:async()=>null,codexGuard:()=>switched?'codex_identity_changed':null,inputPending:()=>false,codexSnapshot:()=>null,
+      readInput:async()=>{switched=true;return {status:'idle'};},send,has:()=>true,
+    })).toEqual({status:'refused',reason:'codex_identity_changed'});expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe('replacement discovery ordering',()=>{
+  it('publishes replacement only once the exact successor card is in this payload',()=>{
+    const replacement={previousPid:11,pid:22,sessionId:'exact'};
+    const old={pid:11,provider:'codex',sessionId:'exact'} as OpenSession;
+    expect(visibleCodexReplacements([old],[replacement])).toEqual([]);
+    expect(visibleCodexReplacements([old,{pid:22,provider:'codex',sessionId:'wrong'} as OpenSession],[replacement])).toEqual([]);
+    expect(visibleCodexReplacements([old,{pid:22,provider:'codex',sessionId:'exact'} as OpenSession],[replacement])).toEqual([replacement]);
+  });
+});
+
+
+describe('interrupted native input',()=>{
+  beforeEach(()=>clearRegistry());
+  const ID='01a0da03-b7a1-7542-a9b9-e325e92c221f';
+  function pane(){let pasted=false;const writes:string[][]=[];return {writes,isPasted:()=>pasted,
+    send:(args:string[])=>{writes.push(args);if(args[0]==='paste-buffer')pasted=true;return {ok:true as const,stdout:''};}};}
+  it('returns interrupted after a paste when readiness changes, and sends no submit key',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const p=pane();let pending=false;
+    const result=await sendKeysWithCodexAdmission(11,'draft',{},ID,{has:()=>true,send:p.send,capture:()=>({ok:true,stdout:'screen'}),sleep:()=>{},promptOpen:()=>false,
+      finalCodexGuard:async()=>null,codexGuard:()=>p.isPasted()?'codex_not_ready':null,codexSnapshot:()=>({state:'ready',prompts:[]}),
+      inputPending:()=>pending,beginInput:()=>{pending=true;return true;},finishInput:()=>{pending=false;return true;}});
+    expect(result).toEqual({status:'interrupted',reason:'codex_not_ready'});expect(pending).toBe(true);
+    expect(p.writes.some(a=>a[0]==='send-keys')).toBe(false);
+  });
+  it('keeps an uncertain submit failure pending instead of claiming sent or untouched',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const p=pane();
+    expect(await sendKeysWithCodexAdmission(11,'draft',{},ID,{has:()=>true,send:a=>a[0]==='send-keys'?{ok:false,error:'lost'}:p.send(a),
+      capture:()=>({ok:true,stdout:'screen'}),sleep:()=>{},promptOpen:()=>false,finalCodexGuard:async()=>null,codexGuard:()=>null,
+      codexSnapshot:()=>({state:'ready',prompts:[]}),inputPending:()=>false,beginInput:()=>true,finishInput:()=>true}))
+      .toEqual({status:'interrupted',reason:'codex_input_pending'});
+  });
+  it('does not paste when the durable marker cannot be written',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const p=pane();
+    expect(await sendKeysWithCodexAdmission(11,'draft',{},ID,{has:()=>true,send:p.send,capture:()=>({ok:true,stdout:'screen'}),promptOpen:()=>false,
+      finalCodexGuard:async()=>null,codexGuard:()=>null,codexSnapshot:()=>({state:'ready',prompts:[]}),inputPending:()=>false,beginInput:()=>false}))
+      .toEqual({status:'refused',reason:'codex_not_ready'});expect(p.isPasted()).toBe(false);
+  });
+});
+
+describe('asynchronous Fleet Codex native transport',()=>{
+  beforeEach(()=>clearRegistry());
+  const ID='01a0da03-b7a1-7542-a9b9-e325e92c221f';
+  function native(){
+    const writes:string[][]=[];let pending=false;
+    return {writes,deps:{has:()=>true,capture:()=>({ok:true as const,stdout:'screen'}),promptOpen:()=>false,
+      finalCodexGuard:async()=>null,codexGuard:()=>null,inputPending:()=>pending,beginInput:()=>{pending=true;return true;},finishInput:()=>{pending=false;return true;},
+      send:(args:string[])=>{writes.push(args);return {ok:true as const,stdout:''};}},pending:()=>pending};
+  }
+  it('processes a queued observer prompt after paste before any submit key',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const n=native();let prompt=false;
+    const result=await sendKeysWithCodexAdmission(11,'chat',{},ID,{...n.deps,
+      codexSnapshot:()=>({state:'ready',prompts:prompt?[{kind:'questions',isBlocking:false} as any]:[]}),
+      send:args=>{if(args[0]==='paste-buffer')setTimeout(()=>{prompt=true;},0);return n.deps.send(args);},
+    });
+    expect(prompt).toBe(true);expect(result).toEqual({status:'interrupted',reason:'codex_prompt_open'});
+    expect(n.pending()).toBe(true);expect(n.writes.some(a=>a[0]==='send-keys')).toBe(false);
+  });
+  it('rechecks identity after the final observer yield before submitting native input',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const n=native();let switched=false,final=false;
+    const result=await sendKeysWithCodexAdmission(11,'chat',{},ID,{...n.deps,
+      capture:()=>({ok:true,stdout:n.writes.some(a=>a[0]==='paste-buffer')?'pasted':'screen'}),
+      finalCodexGuard:async()=>switched?'codex_identity_changed':null,
+      busy:()=>{final=true;return false;},codexSnapshot:()=>({state:'ready',prompts:[]}),
+      codexGuard:()=>{if(switched)return 'codex_identity_changed';if(final)setTimeout(()=>{switched=true;},0);return null;},
+    });
+    expect(result).toEqual({status:'interrupted',reason:'codex_identity_changed'});expect(n.pending()).toBe(true);
+    expect(n.writes.some(a=>a[0]==='send-keys')).toBe(false);
+  });
+  it('observes a prompt delivered during the last asynchronous binding read',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const n=native();let prompt=false,pasted=false;
+    const result=await sendKeysWithCodexAdmission(11,'chat',{},ID,{...n.deps,
+      capture:()=>({ok:true,stdout:pasted?'pasted':'screen'}),
+      send:args=>{if(args[0]==='paste-buffer')pasted=true;return n.deps.send(args);},
+      finalCodexGuard:async()=>{if(pasted)await new Promise(resolve=>setTimeout(()=>{prompt=true;resolve(null);},0));return null;},
+      codexSnapshot:()=>({state:'ready',prompts:prompt?[{kind:'questions'} as any]:[]}),
+    });
+    expect(result).toEqual({status:'interrupted',reason:'codex_prompt_open'});expect(n.pending()).toBe(true);
+    expect(n.writes.some(a=>a[0]==='send-keys')).toBe(false);
+  });
+  it('drains prompt delivery queued during synchronous ownership reads',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const n=native();let prompt=false,queued=false;
+    const result=await sendKeysWithCodexAdmission(11,'chat',{},ID,{...n.deps,
+      codexGuard:()=>{if(!queued){queued=true;setTimeout(()=>{prompt=true;},0);}return null;},
+      codexSnapshot:()=>({state:'ready',prompts:prompt?[{kind:'questions'} as any]:[]}),
+    });
+    expect(result).toEqual({status:'refused',reason:'codex_prompt_open'});expect(n.writes).toEqual([]);
+  });
+  it('drains prompt delivery queued during the durable marker write before paste',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const n=native();let prompt=false;
+    const result=await sendKeysWithCodexAdmission(11,'chat',{},ID,{...n.deps,
+      beginInput:()=>{setTimeout(()=>{prompt=true;},0);return n.deps.beginInput();},
+      codexSnapshot:()=>({state:'ready',prompts:prompt?[{kind:'questions'} as any]:[]}),
+    });
+    expect(result).toEqual({status:'interrupted',reason:'codex_prompt_open'});expect(n.pending()).toBe(true);
+    expect(n.writes.some(a=>a[0]==='paste-buffer'||a[0]==='send-keys')).toBe(false);
+  });
+  it('keeps a settle refusal sticky even when the prompt subsequently resolves',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const n=native();let pasted=false,observed=false;
+    const result=await sendKeysWithCodexAdmission(11,'chat',{},ID,{...n.deps,
+      codexSnapshot:()=>{const prompt=pasted&&!observed;if(prompt)observed=true;
+        return {state:'ready',prompts:prompt?[{kind:'questions'} as any]:[]};},
+      send:args=>{if(args[0]==='paste-buffer')pasted=true;return n.deps.send(args);},
+    });
+    expect(result).toEqual({status:'interrupted',reason:'codex_prompt_open'});expect(n.pending()).toBe(true);
+    expect(n.writes.some(a=>a[0]==='send-keys')).toBe(false);
+  });
+  it('refuses the synchronous Fleet bypass before any native mutation',()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const n=native();
+    expect(sendKeysFor(11,'chat',n.deps,[],[],ID)).toEqual({status:'refused',reason:'codex_not_ready'});
+    expect(n.writes).toEqual([]);
+  });
+  it('never reuses a pre-paste idle metadata result after an observer loss',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const n=native();let pasted=false;
+    const result=await sendKeysWithCodexAdmission(11,'first',{},ID,{...n.deps,codexSnapshot:()=>null,
+      readInput:async()=>({status:pasted?'unavailable':'idle'}),send:args=>{if(args[0]==='paste-buffer')pasted=true;return n.deps.send(args);},
+    });
+    expect(result).toEqual({status:'interrupted',reason:'codex_not_ready'});expect(n.pending()).toBe(true);
+    expect(n.writes.some(a=>a[0]==='send-keys')).toBe(false);
+  });
+  it('serializes two sends before either can touch one native terminal',async()=>{
+    registerSession(11,'llmws-codex-relay-aaaaaaaa');const n=native();let admission=false;let release!:()=>void;
+    const hold=new Promise<void>(resolve=>{release=resolve;});
+    const deps={...n.deps,codexSnapshot:()=>null,readInput:async()=>{if(!admission){await hold;admission=true;}return {status:'idle' as const};}};
+    const first=sendKeysWithCodexAdmission(11,'one',{},ID,deps),second=sendKeysWithCodexAdmission(11,'two',{},ID,deps);
+    await new Promise(resolve=>setTimeout(resolve,10));expect(n.writes).toEqual([]);release();
+    await Promise.all([first,second]);
+    const edits=n.writes.filter(a=>a[0]==='paste-buffer'||a[0]==='send-keys').map(a=>a[0]);
+    expect(edits).toEqual(['paste-buffer','send-keys','paste-buffer','send-keys']);
   });
 });

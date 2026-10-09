@@ -1,3 +1,6 @@
+import type { CodexConnection } from '../../core/codexRecovery.ts';
+import { useDraft, updateDraft } from '../state/drafts.ts';
+export { clearDrafts } from '../state/drafts.ts';
 import { Fragment, cloneElement, createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type MutableRefObject, type ReactElement, type ReactNode } from 'react';
 import Markdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -297,54 +300,6 @@ export function mergeNewest(current: ConversationTurn[], incoming: ConversationT
   return merged;
 }
 
-/** Half-written messages, deliberately OUTSIDE the component.
- *
- *  Outliving the component is the entire purpose, not a side effect. The
- *  box's only offered remedy for a prompt_open refusal is Open Terminal,
- *  and MainPane renders ConversationView as a ternary branch against the
- *  Terminal view -- so taking the UI's own advice unmounts the component
- *  holding what was just typed. Kept in component state alone, answering
- *  the choice and switching back would silently lose the message, which is
- *  a worse outcome than the refusal it was trying to recover from.
- *
- *  Keyed by pid but STAMPED with the session id, and both must match before
- *  a draft is handed back. The pid alone is not an identity: the OS reuses
- *  pid numbers, and an app left running long enough will see a number it
- *  holds a draft for handed to an entirely different process. Restoring on
- *  the number alone would put one session's message in another session's
- *  box, where a single Enter sends it -- the same failure as the shared
- *  tmux buffer, reached by a slower route.
- *
- *  Cleared on a successful send and on nothing else, so a draft still
- *  survives an ordinary session switch. Bounded by the number of distinct
- *  pids typed into in one run of the app, which is small and does not
- *  outlive the window. */
-const drafts = new Map<number, { sessionId: string; text: string }>();
-
-/** The draft held for this pid, but only if it was typed in THIS session.
- *
- *  `sessionId` is null whenever the app cannot pin this process to one
- *  transcript -- no session shares its cwd, or several do. There is then no
- *  identity to check a draft against, so no draft is kept: a null would
- *  match the next null at the same pid, which is precisely the case this
- *  exists to prevent. Such sessions simply keep the behaviour they had
- *  before drafts existed, which is a loss of convenience, not a regression,
- *  and far cheaper than delivering a message to the wrong session. */
-function draftFor(pid: number | null, sessionId: string | null): string {
-  if (pid === null || sessionId === null) return '';
-  const held = drafts.get(pid);
-  return held?.sessionId === sessionId ? held.text : '';
-}
-
-/** Empties the draft store. Exists for test isolation and has no production
- *  caller: because `drafts` is module state rather than component state, it
- *  survives unmount by design, which also means it survives from one test
- *  to the next and would otherwise make tests order-dependent (a test that
- *  types without sending would leave that text in the next test's box). */
-export function clearDrafts(): void {
-  drafts.clear();
-}
-
 /** Mirrors MAX_REPLY_CHARS in src/main/outbound.ts, the actual enforcement
  *  for what a message can send. Redeclared here rather than imported:
  *  src/renderer/** must never import a VALUE out of src/main/** -- doing so
@@ -422,7 +377,7 @@ function readFile(file: File, as: 'dataUrl' | 'bytes'): Promise<string | ArrayBu
 
 type Attachment = { id: string; name: string; kind: AttachKind; thumb: string | null };
 
-function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liveAgents, onOpenTerminal, attachRef, onPendingChange, onPendingSent }: {
+function MessageBox({ pid, sessionId, tmux, provider, waiting, sendBlocked, inputPending, mode, agents, liveAgents, onOpenTerminal, attachRef, onPendingChange, onPendingSent }: {
   pid: number | null;
   /** The matched session's sub-agent pair, for the foot's chip. Both null
    *  whenever the pane's pid matches no session uniquely -- which is what
@@ -432,7 +387,7 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
   liveAgents: number | null;
   /** Which recorded session this pid is, used ONLY to prove a stored draft
    *  belongs to the session now on screen. Null when the app cannot tell,
-   *  which means no draft is kept -- see draftFor above. */
+   *  which means no draft is cached across instances. */
   sessionId: string | null;
   tmux: boolean;
   /** Whose prompt to name in the placeholder while `waiting` is true --
@@ -448,6 +403,8 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
    *  so answering in the Terminal and coming back finds it exactly as it
    *  was left. */
   waiting: boolean;
+  sendBlocked: boolean;
+  inputPending: boolean;
   /** The permission-mode chip's state, straight off the live push, or null
    *  when there is no chip to show. Threaded through this box rather than
    *  rendered beside it because the chip belongs to the composer's own
@@ -475,12 +432,24 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
 }) {
   // Seeded from the draft store, so a remount (Open Terminal and back, or a
   // session switch) restores what was typed rather than starting blank.
-  // ConversationView keys this component by pid, so the initialiser re-runs
-  // for the right session whenever the pid changes.
-  const [text, setText] = useState(() => draftFor(pid, sessionId));
-  const [message, setMessage] = useState<string | null>(null);
+  // The exact identity and validated replacement aliases own this state.
+  const stored = useDraft(pid, sessionId);
+  // Unverified identities get only instance-local composition; two unknown
+  // processes must never share cached drafts simply because their IDs are null.
+  const [localDraft, setLocalDraft] = useState(stored);
+  const draft = pid !== null && sessionId ? stored : localDraft;
+  const changeDraft = (update: (d: typeof draft) => typeof draft) => {
+    if (pid !== null && sessionId) updateDraft(pid, sessionId, update);
+    else setLocalDraft(update);
+  };
+  const { text, attachments, sending, message } = draft;
+  const setText = (text: string) => changeDraft(d => ({ ...d, text }));
+  const setMessage = (message: string | null) => changeDraft(d => ({ ...d, message }));
+  const setSending = (sending: boolean) => changeDraft(d => ({ ...d, sending }));
+  const setAttachments = (update: Attachment[] | ((a: Attachment[]) => Attachment[])) =>
+    changeDraft(d => ({ ...d, attachments: typeof update === 'function' ? update(d.attachments) : update }));
+  const unresolvedInput = inputPending || draft.interrupted;
   const [choiceOpen, setChoiceOpen] = useState(false);
-  const [sending, setSending] = useState(false);
   const boxRef = useRef<HTMLTextAreaElement | null>(null);
   /** Whether the previous render was mid-send, so the effect below can tell
    *  the send-settled transition from every other reason it runs. */
@@ -543,40 +512,46 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
   // ahead of `waiting` deliberately, since a session that is not even
   // running is a more fundamental reason than a prompt it cannot possibly
   // be showing.
-  const inputDisabled = disabledReason !== null || waiting || sending;
+  const inputDisabled = disabledReason !== null || (provider !== 'codex' && waiting) || sending;
+  const submitDisabled = inputDisabled || sendBlocked || unresolvedInput || draft.staging > 0;
   const placeholder = disabledReason ?? (waiting
-    ? `Answer ${PROVIDER_NAME[provider]}'s prompt above to keep typing`
+    ? provider === 'codex' ? 'Draft a message; answer the Codex prompt before sending'
+      : `Answer ${PROVIDER_NAME[provider]}'s prompt above to keep typing`
     : 'Message this session');
 
   // Attachments for the next send. Main holds the bytes (staged by id,
   // src/main/staging.ts); this keeps only the id, a name, the kind and, for
   // an image, a thumbnail.
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const canAttach = !inputDisabled;
 
   async function addFiles(files: File[]): Promise<void> {
-    for (const file of files) {
-      const kind: AttachKind = IMAGE_TYPES.has(file.type) ? 'image' : 'file';
-      const name = file.name || (kind === 'image' ? 'Pasted image' : 'Pasted file');
-      try {
-        const bytes = await readFile(file, 'bytes');
-        const r = kind === 'image'
-          ? await window.fleet?.stageImage(bytes)
-          : await window.fleet?.stageFile(bytes, name);
-        if (!r) { setMessage('Could not reach the app.'); continue; }
-        if (!r.ok) { setMessage(STAGE_TEXT[r.reason](name, kind)); continue; }
-        const thumb = kind === 'image' ? await readFile(file, 'dataUrl') : null;
-        let full = false;
-        setAttachments(a => {
-          if (a.length >= MAX_ATTACH) { full = true; return a; }
-          return [...a, { id: r.id, name, kind, thumb }];
-        });
-        if (full) setMessage(`At most ${MAX_ATTACH} attachments can go in one message.`);
-      } catch (err) {
-        console.error('Attaching a file failed:', err);
-        setMessage(STAGE_TEXT.failed(name, kind));
+    changeDraft(d => ({ ...d, staging: d.staging + 1 }));
+    try {
+      for (const file of files) {
+        const kind: AttachKind = IMAGE_TYPES.has(file.type) ? 'image' : 'file';
+        const name = file.name || (kind === 'image' ? 'Pasted image' : 'Pasted file');
+        try {
+          const bytes = await readFile(file, 'bytes');
+          const r = kind === 'image'
+            ? await window.fleet?.stageImage(bytes)
+            : await window.fleet?.stageFile(bytes, name);
+          if (!r) { setMessage('Could not reach the app.'); continue; }
+          if (!r.ok) { setMessage(STAGE_TEXT[r.reason](name, kind)); continue; }
+          const thumb = kind === 'image' ? await readFile(file, 'dataUrl') : null;
+          let full = false;
+          setAttachments(a => {
+            if (a.length >= MAX_ATTACH) { full = true; return a; }
+            return [...a, { id: r.id, name, kind, thumb }];
+          });
+          if (full) setMessage(`At most ${MAX_ATTACH} attachments can go in one message.`);
+        } catch (err) {
+          console.error('Attaching a file failed:', err);
+          setMessage(STAGE_TEXT.failed(name, kind));
+        }
       }
+    } finally {
+      changeDraft(d => ({ ...d, staging: Math.max(0, d.staging - 1) }));
     }
   }
 
@@ -589,7 +564,7 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
   });
 
   async function send(): Promise<void> {
-    if (pid === null || (text.trim() === '' && attachments.length === 0) || sending) return;
+    if (pid === null || (text.trim() === '' && attachments.length === 0) || submitDisabled) return;
     setSending(true);
     setMessage(null);
     setChoiceOpen(false);
@@ -601,29 +576,24 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
     const key = addPending(pid, { text, attachments, sentAt: Date.now(), queued: false, sessionId });
     setText('');
     setAttachments([]);
-    drafts.delete(pid);
     onPendingChange();
     onPendingSent();
     // Puts the box back exactly as it was before the optimistic clear
-    // above on a failed send -- the DRAFT store too, not just the visible
-    // text, since that clear deleted it as well. Without restoring it
-    // here, a prompt_open refusal's own remedy would break it: Open
-    // Terminal unmounts this component (MainPane's ternary, see the
-    // `drafts` doc comment above), and only the draft store, never
-    // component state, survives that.
+    // above on a failed send, including its shared cell so a successor
+    // or remounted Conversation sees the same text and attachments.
     const restoreDraft = () => {
       setText(text);
       setAttachments(attachments);
-      if (sessionId !== null) drafts.set(pid, { sessionId, text });
     };
     try {
       const attach = {
         images: attachments.filter(a => a.kind === 'image').map(a => a.id),
         files: attachments.filter(a => a.kind === 'file').map(a => a.id),
       };
-      const r: KeysResult | undefined = attachments.length
-        ? await window.fleet?.sendKeys(pid, text, attach)
-        : await window.fleet?.sendKeys(pid, text);
+      const r: KeysResult | undefined = provider === 'codex'
+        ? await window.fleet?.sendKeys(pid, text, attachments.length ? attach : undefined, sessionId ?? undefined)
+        : attachments.length ? await window.fleet?.sendKeys(pid, text, attach)
+          : await window.fleet?.sendKeys(pid, text);
       if (r?.status === 'sent') {
         // The entry itself already went up above, optimistically -- all
         // that is left to settle is its queued label, if any, until the
@@ -632,28 +602,26 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
         onPendingChange();
         return;
       }
-      // Nothing reached the session, so the conversation must not keep a
-      // message claiming otherwise: the entry comes back down, and the
-      // text and its attachments come back exactly as they were typed, for
-      // the person to fix (answer the choice, reattach) and press Enter
-      // again -- the same restore a refusal has always done here, just
-      // undoing the optimistic clear above as well now.
+      // A refusal or interrupted result cannot be shown as sent. Preserve
+      // text and attachments; uncertain native input requires review.
       dropPending(pid, key);
       onPendingChange();
       restoreDraft();
-      setMessage(r ? REFUSAL_TEXT[r.reason] : 'Could not reach the app.');
+      if (r?.status === 'interrupted') changeDraft(d => ({ ...d, interrupted: true }));
+      setMessage(r?.status === 'interrupted'
+        ? 'Native input may already be in Terminal. Review it before sending again.'
+        : r ? REFUSAL_TEXT[r.reason] : 'Could not reach the app.');
       setChoiceOpen(r?.status === 'refused' && r.reason === 'prompt_open');
     } catch (err) {
-      // A rejected sendKeys means the message did NOT go out, and the one
-      // thing that must never happen is the conversation looking like it
-      // did. Same restore as a returned refusal above, plus the log: never
-      // silent, and never a pending entry left claiming a message arrived
-      // that in fact never left this box.
+      // A rejected IPC cannot confirm whether native input was applied.
+      // Keep the draft, remove the optimistic entry and require native
+      // review for Codex before any further submission.
       dropPending(pid, key);
       onPendingChange();
       restoreDraft();
       console.error('Conversation message send failed:', err);
-      setMessage('Could not reach the app.');
+      if (provider === 'codex') changeDraft(d => ({ ...d, interrupted: true }));
+      setMessage(provider === 'codex' ? 'Delivery could not be confirmed. Review Terminal before sending again.' : 'Could not reach the app.');
     } finally {
       setSending(false);
     }
@@ -707,7 +675,6 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
           // Stamped with the session id, so this draft can only ever be
           // handed back to the session it was typed in. Not stored at all
           // when that id is unknown -- there would be nothing to check.
-          if (pid !== null && sessionId !== null) drafts.set(pid, { sessionId, text: e.target.value });
         }}
         // Enter sends, with no confirmation, however long the message
         // (spec §7.2). Shift+Enter is the line break, which is what makes
@@ -727,12 +694,9 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
         }}
       />
       {/* The composer's own send affordance (Conversation Pane Mockup's
-          `.composer .send`), alongside the existing Enter-to-send (spec
-          §7.2, unchanged). Disabled by the exact same `inputDisabled` as
-          the textarea above -- while the agent is waiting, or this session
-          cannot be typed into at all, there is nothing for either path to
-          do. */}
-      <button type="button" className="convsubmit" disabled={inputDisabled} onClick={() => void send()}>
+          `.composer .send`), alongside Enter-to-send. Codex drafts remain
+          editable while recovery or native prompts block submission. */}
+      <button type="button" className="convsubmit" disabled={submitDisabled} onClick={() => void send()}>
         Send
       </button>
       </div>
@@ -767,6 +731,25 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
           ConversationView.css's .convannounce, never `display:none`, which
           would also drop it from the accessibility tree. */}
       <p className="convannounce" role="status">{overAnnouncement}</p>
+      {unresolvedInput && (
+        <div className="convmsg" role="status">
+          Native input may already be in Terminal. Review it before sending again.
+          <button type="button" className="convsend" onClick={onOpenTerminal}>Review Terminal</button>
+          <button type="button" className="convsend" disabled={sending || !sessionId || pid === null}
+            onClick={async () => {
+              if (pid === null || !sessionId) return;
+              setSending(true);
+              try {
+                const result = await window.fleet?.clearCodexInput(pid, sessionId);
+                if (result?.status === 'cleared') changeDraft(d => ({ ...d, interrupted: false, message: null }));
+                else setMessage('Could not acknowledge the native draft. Check the current Terminal and try again.');
+              } catch (err) {
+                console.error('Acknowledging Codex native input failed:', err);
+                setMessage('Could not reach the app to acknowledge the native draft.');
+              } finally { setSending(false); }
+            }}>I handled the terminal draft</button>
+        </div>
+      )}
       {disabledReason !== null && <p className="convmsg">{disabledReason}</p>}
       {message !== null && (
         <p className="convmsg" role="status">
@@ -802,7 +785,10 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, mode, agents, liv
  *  in the moment right after it launches, before its first events are
  *  written and ingested; and no match info at all (match omitted) falls
  *  back to a neutral message rather than asserting either specific claim. */
-export function ConversationView({ sessionId, match, provider, events, pid, tmux, onOpenTerminal, context = null, onContext, agents = null, liveAgents = null }: {
+export function ConversationView({ sessionId, match, provider, events, pid, tmux, onOpenTerminal, context = null, onContext, agents = null, liveAgents = null, codexConnection, onOpenRecoveryTerminal, onOpenPreviousTerminal }: {
+  codexConnection?: CodexConnection;
+  onOpenRecoveryTerminal?: (pid: number) => void;
+  onOpenPreviousTerminal?: (pid: number) => void;
   sessionId: string | null;
   match?: MatchQuality;
   /** Which CLI this session is, so the agent's meta line carries that
@@ -859,7 +845,12 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // prop is still what recovers if the push channel never started (no
   // bridge, or main's fs.watch failed) or a payload was dropped for
   // arriving mid session-switch (see useSessionLive's own doc comment).
-  const live = useSessionLive(pid);
+  const live = useSessionLive(pid, provider === 'codex' ? sessionId : undefined);
+  const connection = live?.codexConnection ?? codexConnection;
+  const codexBlocked = provider === 'codex' && tmux && (!sessionId || connection?.state !== 'ready' || !!live?.codex?.prompts.length || live?.activity === 'waiting');
+  const [retry, setRetry] = useState<{ pid: number | null; sessionId: string | null; pending: boolean; message: string | null } | null>(null);
+  const retryState = retry?.pid === pid && retry.sessionId === sessionId ? retry : null;
+  const inputPending = !!connection?.inputPending;
   // Usage design, Part B: the freshest context this pane knows of -- once
   // any live payload has arrived for this pid, `live.context` wins outright
   // (main recomputes it on every push, ahead of the 5s sweep that keeps the
@@ -1446,20 +1437,52 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
           restarts it. `pid !== null` mirrors
           WorkingStrip's own guard just above -- `live` is only ever
           non-null for a pid useSessionLive was actually asked to watch. */}
-      {live?.activity === 'waiting' && pid !== null && (
-        provider === 'codex' && live.codex?.prompts.length
+      {pid !== null && (
+        provider === 'codex' && live?.codex?.prompts.length
           ? live.codex.prompts.map(prompt => <CodexPromptCard key={prompt.key} pid={pid} prompt={prompt}
             onOpenTerminal={onOpenTerminal} />)
-          : live.prompt
+          : live?.activity === 'waiting' && live.prompt
           ? <PromptCard key={live.prompt.id} pid={pid} prompt={live.prompt} onOpenTerminal={onOpenTerminal} />
-          : <WaitingFallback key={`waiting-${pid}`} provider={provider} hooksOn={hooksOn} onOpenTerminal={onOpenTerminal} />
+          : live?.activity === 'waiting'
+          ? <WaitingFallback key={`waiting-${pid}`} provider={provider} hooksOn={hooksOn} onOpenTerminal={onOpenTerminal} /> : null
+      )}
+      {provider === 'codex' && tmux && (
+        <div className="convconnection" role="status">
+          {connection?.state === 'recovering' && <span>Reconnecting Codex… Your conversation and draft are kept.</span>}
+          {connection?.state === 'failed' && <>
+            <span>{retryState?.message ?? connection.reason ?? 'Codex could not reconnect.'}</span>
+            {connection.recoverable && <button type="button" className="convsend" disabled={!!retryState?.pending}
+              onClick={async () => {
+                if (pid === null) return;
+                setRetry({ pid, sessionId, pending: true, message: null });
+                try {
+                  const result = await window.fleet?.recoverCodex(pid);
+                  // Selection remapping is exclusively driven by validated Fleet
+                  // replacement pairs. A late retry result never selects a PID.
+                  setRetry({ pid, sessionId, pending: false, message: result?.status === 'failed' ? result.reason
+                    : result?.status === 'recovering' ? 'Reconnecting Codex…'
+                      : result?.status === 'ready' && result.sessionId === sessionId ? 'Connected. Waiting for current session state…'
+                        : 'Could not verify the recovered conversation.' });
+                } catch (err) {
+                  console.error('Codex recovery failed:', err);
+                  setRetry({ pid, sessionId, pending: false, message: 'Could not reach the app to reconnect Codex.' });
+                }
+              }}>Retry reconnect</button>}
+          </>}
+          {(!connection || connection.state === 'unknown') && <span>Codex connection cannot be verified. Open Terminal to check it.</span>}
+          {connection?.state !== 'ready' && <button type="button" className="convsend" onClick={onOpenTerminal}>Open Terminal</button>}
+          {connection?.recoveryTerminalPid !== undefined && onOpenRecoveryTerminal &&
+            <button type="button" className="convsend" onClick={() => onOpenRecoveryTerminal(connection.recoveryTerminalPid!)}>Open reconnect Terminal</button>}
+          {connection?.previousTerminalPid !== undefined && onOpenPreviousTerminal &&
+            <button type="button" className="convsend" onClick={() => onOpenPreviousTerminal(connection.previousTerminalPid!)}>Open previous Terminal</button>}
+        </div>
       )}
       {/* Keyed by pid so switching session remounts the box: its draft,
           any standing refusal and the choice prompt all belong to the
           session that produced them, and none should carry over to the
           next one. */}
-      <MessageBox key={pid ?? 'none'} pid={pid} sessionId={sessionId} tmux={tmux} provider={provider}
-        waiting={live?.activity === 'waiting'} mode={live?.mode ?? null}
+      <MessageBox key={`${pid ?? 'none'}:${sessionId ?? 'unknown'}`} pid={pid} sessionId={sessionId} tmux={tmux} provider={provider}
+        waiting={live?.activity === 'waiting'} sendBlocked={codexBlocked || !!retryState?.pending} inputPending={inputPending} mode={live?.mode ?? null}
         agents={agents} liveAgents={liveAgents}
         onOpenTerminal={onOpenTerminal} attachRef={attachRef}
         onPendingChange={() => retickPending(t => t + 1)}

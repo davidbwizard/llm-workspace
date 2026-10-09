@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  CodexAppServer, responseForCodexPrompt, setCodexThreadName, viewCodexRequest,
+  CodexAppServer, readCodexInputState, responseForCodexPrompt, setCodexThreadName, viewCodexRequest,
 } from '../../src/main/codexAppServer.ts';
 
 import { promptDaemon, serverFrame } from '../helpers/codexServer.ts';
@@ -606,4 +606,38 @@ describe('setCodexThreadName', () => {
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.reason).toMatch(/thread id/i);
   });
+  it('reads exact idle input metadata without subscribing or changing the thread',async()=>{
+    const seen:Record<string,unknown>[]=[];
+    const fake=await fakeServer((message,send)=>{
+      seen.push(message);
+      if(message.method==='initialize') send({id:message.id,result:{}});
+      if(message.method==='thread/read') send({id:message.id,result:{thread:{id:THREAD,
+        status:{type:'idle'},canAcceptDirectInput:true,ephemeral:false}}});
+    });
+    try {
+      expect(await readCodexInputState(THREAD,{socketPath:fake.path})).toEqual({status:'idle'});
+      expect(seen.map(m=>m.method)).toEqual(['initialize','initialized','thread/read']);
+      expect(seen.at(-1)?.params).toEqual({threadId:THREAD,includeTurns:false});
+    } finally {await fake.close();}
+  });
+  it.each([
+    {id:THREAD,status:{type:'active'},canAcceptDirectInput:true,ephemeral:false},
+    {id:'01a0da04-34c5-7ba0-9266-524ffaa5d2fc',status:{type:'idle'},canAcceptDirectInput:true,ephemeral:false},
+    {id:THREAD,status:{type:'idle'},canAcceptDirectInput:false,ephemeral:false},
+    {id:THREAD,status:{type:'idle'},canAcceptDirectInput:true,ephemeral:true},
+    {id:THREAD,status:{type:'idle'}},
+  ])('never admits missing, active, wrong-thread or ephemeral input metadata',async thread=>{
+    const fake=await fakeServer((m,send)=>{
+      if(m.method==='initialize')send({id:m.id,result:{}});
+      if(m.method==='thread/read')send({id:m.id,result:{thread}});
+    });
+    try {expect(await readCodexInputState(THREAD,{socketPath:fake.path})).toEqual({status:'unavailable'});}
+    finally {await fake.close();}
+  });
+  it('bounds an input metadata read when daemon replies never arrive',async()=>{
+    const fake=await fakeServer(()=>{});
+    try {expect(await readCodexInputState(THREAD,{socketPath:fake.path,timeoutMs:50})).toEqual({status:'unavailable'});}
+    finally {await fake.close();}
+  });
+
 });

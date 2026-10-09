@@ -1,3 +1,4 @@
+import type { CodexConnection } from '../core/codexRecovery.ts';
 import { tmpdir } from 'node:os';
 // Ordering lives in order.ts so the renderer can import it without dragging
 // this module's node:os and database imports along -- see that file's comment.
@@ -344,7 +345,7 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
   //    replace this heuristic.
   const rows = db.prepare(`
     SELECT session_id, provider,
-      MAX(ts) last_ts,
+      MAX(CASE WHEN provider <> 'codex' OR agent_id IS NULL THEN ts END) last_ts,
       COUNT(*) events,
       COUNT(DISTINCT CASE WHEN kind='agent.spawned' THEN agent_id END) agents,
       (SELECT c.run_id FROM events c
@@ -354,10 +355,10 @@ export function fleetState(db: Db, opts: FleetOpts = {}): SessionState[] {
         WHERE c.session_id = e.session_id AND c.kind='session.started'
         ORDER BY c.ts DESC, c.id DESC LIMIT 1) cwd,
       (SELECT json_extract(payload,'$.text') FROM events p
-        WHERE p.session_id = e.session_id AND p.kind='prose'
+        WHERE p.session_id = e.session_id AND p.kind='prose' AND (p.provider <> 'codex' OR p.agent_id IS NULL)
         ORDER BY p.ts DESC, p.id DESC LIMIT 1) last_prose,
       (SELECT k.kind FROM events k
-        WHERE k.session_id = e.session_id
+        WHERE k.session_id = e.session_id AND (k.provider <> 'codex' OR k.agent_id IS NULL)
         ORDER BY k.ts DESC, k.id DESC LIMIT 1) last_kind
     FROM events e ${idFilter} GROUP BY session_id, provider`).all(...idParams) as any[];
 
@@ -604,6 +605,7 @@ export function fleetStatePage(
 }
 
 export interface OpenSession {
+  codexConnection?: CodexConnection;
   pid: number;
   /** Which provider's CLI this is. Straight from the process
    *  (LiveProcess.provider) -- known with certainty from the `pgrep -x
@@ -1199,12 +1201,12 @@ export function openSessionsLive(
     }
 
     const rows = db.prepare(`
-      SELECT session_id, COUNT(*) events, MAX(ts) last_ts,
+      SELECT session_id, COUNT(*) events, MAX(CASE WHEN provider <> 'codex' OR agent_id IS NULL THEN ts END) last_ts,
         (SELECT json_extract(payload,'$.text') FROM events p
-          WHERE p.session_id = e.session_id AND p.kind = 'prose'
+          WHERE p.session_id = e.session_id AND p.kind = 'prose' AND (p.provider <> 'codex' OR p.agent_id IS NULL)
           ORDER BY p.ts DESC, p.id DESC LIMIT 1) last_prose,
         (SELECT k.kind FROM events k
-          WHERE k.session_id = e.session_id
+          WHERE k.session_id = e.session_id AND (k.provider <> 'codex' OR k.agent_id IS NULL)
           ORDER BY k.ts DESC, k.id DESC LIMIT 1) last_kind
       FROM events e WHERE e.session_id IN (${uniqueIds.map(() => '?').join(',')})
       GROUP BY session_id

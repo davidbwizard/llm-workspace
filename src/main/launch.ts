@@ -4,6 +4,8 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import type { Provider } from '../core/types.ts';
 // Validated before any session id or name reaches tmux's shell string.
+import { CODEX_THREAD_ID } from '../core/codexRecovery.ts';
+import { TUI_NAME } from './codexRelayControl.ts';
 import { SESSION_ID_SAFE } from '../core/identity.ts';
 import { SESSION_NAME_SAFE, SESSION_NAME_MAX, SESSION_NAME_HELP } from '../core/sessionName.ts';
 import type { KillResult } from './ipc.ts';
@@ -11,7 +13,7 @@ import { newSession, setSessionOption, panePid as tmuxPanePid, type TmuxExec } f
 import { registerSession } from './sessions.ts';
 import {
   codexDaemonSocket, codexRelayName, codexRelaySocket,
-  waitForCodexRelaySocket, waitForCodexThreadId,
+  waitForCodexRelaySocket, waitForCodexThreadId, relayHasSession,
 } from './codexRelayControl.ts';
 import { setCodexThreadName, type CodexNameResult } from './codexAppServer.ts';
 
@@ -155,6 +157,7 @@ type CodexLaunchDeps = LaunchDeps & {
   startDaemon?: () => Promise<void>;
   startRelay?: (name: string, cwd: string, command: string) => void;
   waitRelay?: (path: string) => Promise<boolean>;
+  relayExists?: (name: string) => boolean;
   relayScript?: string;
   executable?: string;
   socketHome?: string;
@@ -199,35 +202,64 @@ export async function launchCodexSession(
     if (refusal !== null) return { status: 'failed', reason: refusal };
   }
   const tuiName = `llmws-codex-relay-${randomUUID().slice(0, 8)}`;
-  const relayName = codexRelayName(tuiName);
   const socket = codexRelaySocket(tuiName, deps.socketHome);
   let launched: LaunchResult;
   try {
     await (deps.startDaemon ?? (async () => {
       await execFileAsync('codex', ['app-server', 'daemon', 'start'], { timeout: 15000 });
     }))();
-    const relayCommand = `ELECTRON_RUN_AS_NODE=1 ${shellQuote(deps.executable ?? process.execPath)} `
-      + `${shellQuote(deps.relayScript ?? join(import.meta.dirname, 'codexRelay.js'))} `
-      + `${shellQuote(socket)} ${shellQuote(codexDaemonSocket())} ${shellQuote(tuiName)}`;
-    // `session`, not `name` -- this callback's first argument is the relay's
-    // tmux session name, and `name` is now this function's own parameter
-    // (the session name the person typed).
-    (deps.startRelay ?? ((session, dir, command) => {
-      execFileSync('tmux', ['new-session', '-d', '-s', session, '-c', dir, command], { timeout: 5000 });
-    }))(relayName, cwd, relayCommand);
-    if (!await (deps.waitRelay ?? waitForCodexRelaySocket)(socket)) {
-      return { status: 'failed', reason: 'Codex relay did not open its local socket' };
-    }
+    await startCodexRelay(tuiName, cwd, deps);
     launched = launchSession('codex', cwd, cols, rows, deps,
-      `codex -C ${shellQuote(cwd)} --remote ${shellQuote(`unix://${socket}`)}`, tuiName);
+      `codex -c check_for_update_on_startup=false -C ${shellQuote(cwd)} --remote ${shellQuote(`unix://${socket}`)}`, tuiName);
   } catch (error) {
-    return { status: 'failed', reason: `Could not start Codex relay: ${error instanceof Error ? error.message : String(error)}` };
+    return { status: 'failed', reason: error instanceof Error && error.message === 'Codex relay did not open its local socket'
+      ? error.message : `Could not start Codex relay: ${error instanceof Error ? error.message : String(error)}` };
   }
   // Deliberately OUTSIDE the try above: from here the session is running,
   // and nothing that happens next may be reported as a launch failure.
   if (launched.status !== 'launched' || wanted === '') return launched;
   const warning = await nameCodexThread(launched.pid, wanted, deps);
   return warning === null ? launched : { ...launched, warning };
+}
+
+/** Starts the same relay entry/arguments for initial launch and repair.
+ * Repair deliberately does not start or restart the shared daemon. */
+export async function startCodexRelay(tuiName: string, cwd: string, deps: CodexLaunchDeps = {}): Promise<void> {
+  const relayName = codexRelayName(tuiName);
+  const socket = codexRelaySocket(tuiName, deps.socketHome);
+  const relayCommand = `ELECTRON_RUN_AS_NODE=1 ${shellQuote(deps.executable ?? process.execPath)} `
+    + `${shellQuote(deps.relayScript ?? join(import.meta.dirname, 'codexRelay.js'))} `
+    + `${shellQuote(socket)} ${shellQuote(codexDaemonSocket())} ${shellQuote(tuiName)}`;
+  (deps.startRelay ?? ((session, dir, command) => {
+    execFileSync('tmux', ['new-session', '-d', '-s', session, '-c', dir, command], { timeout: 5000 });
+  }))(relayName, cwd, relayCommand);
+  if (!await (deps.waitRelay ?? waitForCodexRelaySocket)(socket))
+    throw new Error('Codex relay did not open its local socket');
+}
+
+/** An automatic replacement has one explicit thread UUID, never text or
+ * --last. Startup update checks are suppressed for this invocation only. */
+export async function launchCodexResume(
+  cwd: string, threadId: string, tuiName: string, predecessor: string,
+  cols: number, rows: number, deps: CodexLaunchDeps = {},
+): Promise<LaunchResult> {
+  if (!CODEX_THREAD_ID.test(threadId) || !TUI_NAME.test(tuiName) || !TUI_NAME.test(predecessor)
+    || tuiName === predecessor || !cwd.startsWith('/') || cwd.includes('\0'))
+    return { status: 'failed', reason: 'Invalid exact Codex recovery target.' };
+  try {
+    if (!(deps.relayExists ?? (deps.startRelay ? () => false : relayHasSession))(codexRelayName(tuiName)))
+      await startCodexRelay(tuiName, cwd, deps);
+    const socket = codexRelaySocket(tuiName, deps.socketHome);
+    const launched = launchSession('codex', cwd, cols, rows, deps,
+      `codex resume -c check_for_update_on_startup=false -C ${shellQuote(cwd)} --remote ${shellQuote(`unix://${socket}`)} ${shellQuote(threadId)}`, tuiName);
+    if (launched.status !== 'launched') return launched;
+    const recorded = setSessionOption(tuiName, '@llmws-codex-recovery',
+      JSON.stringify({ v: 1, predecessor, expectedThreadId: threadId }), deps.exec);
+    if (!recorded.ok) return { status: 'failed', reason: 'Resume terminal started, but its recovery link could not be persisted.' };
+    return launched;
+  } catch (error) {
+    return { status: 'failed', reason: `Could not resume Codex: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 /** Names the thread belonging to a Codex session that has ALREADY started.

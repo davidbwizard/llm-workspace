@@ -1,3 +1,4 @@
+import type { CodexBinding } from '../core/codexRecovery.ts';
 /** Observe only the TUI's thread-switch RPCs. The relay forwards bytes
  * independently of this observer, so losing observation never changes the
  * native TUI protocol. A lost observation does, however, unbind Conversation. */
@@ -13,7 +14,19 @@ const SWITCH_METHODS = new Set(['thread/start', 'thread/resume', 'thread/fork'])
 export class CodexThreadTracker {
   private pending = new Set<string>();
 
-  constructor(private readonly changed: (threadId: string | null) => void) {}
+  private binding: CodexBinding;
+  constructor(private readonly changed: (threadId: string | null) => void,
+    private readonly bindingChanged?: (binding: CodexBinding) => void,
+    seed?: CodexBinding | null) {
+    this.binding = seed ? { ...seed, state: seed.threadId ? 'disconnected' : 'unknown' }
+      : { v: 1, state: 'unknown', threadId: null, updatedAt: Date.now() };
+  }
+
+  private publish(state: CodexBinding['state'], threadId: string | null): void {
+    this.binding = { v: 1, state, threadId, updatedAt: Date.now() };
+    this.bindingChanged?.(this.binding);
+    this.changed(state === 'ready' ? threadId : null);
+  }
 
   fromTui(value: unknown): void {
     const message = object(value);
@@ -25,7 +38,7 @@ export class CodexThreadTracker {
     // A later switch supersedes any request that has not answered yet.
     this.pending.clear();
     this.pending.add(key);
-    this.changed(null);
+    this.publish('switching', null);
   }
 
   fromServer(value: unknown): void {
@@ -35,12 +48,18 @@ export class CodexThreadTracker {
     // An equal numeric ID is not a response to the TUI's switch request.
     if (!message || typeof message.method === 'string' || key === null || !this.pending.delete(key)) return;
     const id = object(object(message.result)?.thread)?.id;
-    this.changed(typeof id === 'string' && THREAD_ID.test(id) ? id : null);
+    this.publish(typeof id === 'string' && THREAD_ID.test(id) && !message.error ? 'ready' : 'unknown',
+      typeof id === 'string' && THREAD_ID.test(id) && !message.error ? id : null);
   }
 
   disconnected(): void {
     this.pending.clear();
-    this.changed(null);
+    this.publish(this.binding.threadId ? 'disconnected' : 'unknown', this.binding.threadId);
+  }
+
+  invalidated(): void {
+    this.pending.clear();
+    this.publish('unknown', null);
   }
 }
 

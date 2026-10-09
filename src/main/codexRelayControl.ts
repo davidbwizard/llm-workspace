@@ -1,10 +1,12 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { parseCodexBinding, CODEX_THREAD_ID, type CodexBinding } from '../core/codexRecovery.ts';
+import { panePid } from './tmux.ts';
 import { tmuxNameForPid } from './sessions.ts';
 
-const TUI_NAME = /^llmws-codex-relay-([0-9a-f]{8})$/;
+export const TUI_NAME = /^llmws-codex-relay-([0-9a-f]{8})$/;
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function codexRelayName(tuiName: string): string {
@@ -26,39 +28,86 @@ export function codexDaemonSocket(): string {
 type ReadOption = (name: string, option: string) => string | null;
 type HasSession = (name: string) => boolean;
 
-function hasSession(name: string): boolean {
+export function relayHasSession(name: string): boolean {
   try {
     execFileSync('tmux', ['has-session', '-t', `=${name}:`], { timeout: 5000, stdio: 'ignore' });
     return true;
   } catch { return false; }
 }
 
-function readOption(name: string, option: string): string | null {
+export function relayReadOption(name: string, option: string): string | null {
   try {
     return execFileSync('tmux', ['show-options', '-v', '-t', `=${name}:`, option],
-      { timeout: 5000 }).toString().trim();
+      { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
   } catch { return null; }
 }
 
-/** An exact thread ID is valid only while both the TUI and its relay are
- * alive and the relay has observed a successful TUI switch. No cwd or
- * timestamp inference is involved. The injected functions are for tests. */
-/** null: ordinary/legacy Codex process. false: Fleet relay TUI whose exact
- * thread is unavailable, which must never fall back to cwd guessing. */
-export function codexRelayThreadForPid(pid: number, deps: {
+export interface RelayBinding {
+  name: string;
+  threadId: string | null;
+  ready: boolean;
+  relayAlive: boolean;
+  binding: CodexBinding | null;
+}
+type BindingDeps = {
   nameForPid?: (pid: number) => string | null;
+  pidForName?: (name: string) => number | null;
   hasSession?: HasSession;
   readOption?: ReadOption;
-} = {}): string | false | null {
+};
+/** Read one atomic binding. Legacy connected0 cannot authorize resume: it
+ * could mean a rejected switch, rather than a physical socket loss. */
+export function codexRelayBindingForPid(pid: number, deps: BindingDeps = {}): RelayBinding | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   const name = (deps.nameForPid ?? tmuxNameForPid)(pid);
-  if (name === null || !TUI_NAME.test(name)) return null;
-  const has = deps.hasSession ?? hasSession;
-  if (!has(name) || !has(codexRelayName(name))) return false;
-  const read = deps.readOption ?? readOption;
-  if (read(name, '@llmws-codex-connected') !== '1') return false;
+  if (!name || !TUI_NAME.test(name)) return null;
+  const has = deps.hasSession ?? relayHasSession;
+  const read = deps.readOption ?? relayReadOption;
+  if (!has(name) || (deps.pidForName ?? panePid)(name) !== pid) return { name, threadId: null, ready: false, relayAlive: false, binding: null };
+  const relayAlive = has(codexRelayName(name));
+  const raw = read(name, '@llmws-codex-binding');
+  const binding = parseCodexBinding(raw);
+  if (raw !== null) return { name, binding, relayAlive, threadId: binding?.threadId ?? null,
+    ready: relayAlive && binding?.state === 'ready' };
   const id = read(name, '@llmws-codex-thread');
-  return id !== null && THREAD_ID.test(id) ? id : false;
+  const legacyReady = read(name, '@llmws-codex-connected') === '1' && !!id && CODEX_THREAD_ID.test(id);
+  return { name, binding: null, relayAlive, threadId: legacyReady ? id : null, ready: relayAlive && legacyReady };
+}
+type InputBindingRefusal = 'codex_not_ready' | 'codex_identity_required' | 'codex_identity_changed';
+type AsyncTmuxRead = (args: string[]) => Promise<{ ok: boolean; stdout?: string }>;
+const asyncTmuxRead: AsyncTmuxRead = args => new Promise(resolve => {
+  execFile('tmux', args, { timeout: 5000, maxBuffer: 16 * 1024 }, (error, stdout) =>
+    resolve(error ? { ok: false } : { ok: true, stdout }));
+});
+/** Final asynchronous sample: observer callbacks run while tmux reads the
+ * current owned pane and atomic binding. The caller checks its observer in
+ * the same JS turn after this resolves, with no later yield before input. */
+export async function codexRelayInputRefusal(pid: number, name: string, expected: unknown,
+  read: AsyncTmuxRead = asyncTmuxRead): Promise<InputBindingRefusal | null> {
+  if (!Number.isInteger(pid) || pid <= 0 || !TUI_NAME.test(name)) return 'codex_not_ready';
+  if (typeof expected !== 'string' || !CODEX_THREAD_ID.test(expected)) return 'codex_identity_required';
+  if (!(await read(['has-session', '-t', `=${codexRelayName(name)}:`])).ok) return 'codex_not_ready';
+  const result = await read(['display-message', '-p', '-t', `=${name}:`,
+    '#{pane_pid}\n#{@llmws-codex-binding}\n#{@llmws-codex-connected}\n#{@llmws-codex-thread}']);
+  if (!result.ok) return 'codex_not_ready';
+  const lines = result.stdout?.trimEnd().split('\n');
+  if (!lines || lines.length < 2 || lines.length > 4 || lines[0] !== String(pid)) return 'codex_not_ready';
+  const raw = lines[1]!;
+  if (raw) {
+    const binding = parseCodexBinding(raw);
+    if (!binding) return 'codex_not_ready';
+    if (binding.threadId !== expected) return 'codex_identity_changed';
+    return binding.state === 'ready' ? null : 'codex_not_ready';
+  }
+  if (lines[2] !== '1' || !lines[3] || !CODEX_THREAD_ID.test(lines[3])) return 'codex_not_ready';
+  return lines[3] === expected ? null : 'codex_identity_changed';
+}
+
+/** false prevents Fleet sessions falling through to cwd/time inference.
+ * Physical disconnect retains exact history identity but does not grant input. */
+export function codexRelayThreadForPid(pid: number, deps: BindingDeps = {}): string | false | null {
+  const binding = codexRelayBindingForPid(pid, deps);
+  return binding ? binding.threadId ?? false : null;
 }
 
 /** How long to wait for a freshly launched Fleet Codex TUI to report the

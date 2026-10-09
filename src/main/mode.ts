@@ -222,6 +222,7 @@ async function run(
   // so the mode is read first rather than the cancel sent blind.
   const inCopyMode = paneInMode(name, deps.capture);
   if (inCopyMode.ok && inCopyMode.stdout.trim() === '1') {
+    if (deps.promptOpen?.(pid) === true) return refuse(pid, 'prompt_open');
     const left = cancelCopyMode(name, deps.send);
     if (!left.ok) {
       console.error('session:mode could not leave copy-mode:', left.error);
@@ -244,6 +245,7 @@ async function run(
   // what the pane says NOW, so a mode changed in the terminal half way
   // through is simply the new starting point rather than a miscount.
   for (let pressed = 0; pressed < MODE_PRESS_CAP[provider]; pressed++) {
+    if (deps.promptOpen?.(pid) === true) return refuse(pid, 'prompt_open');
     const sent = sendKeyName(name, 'BTab', deps.send);
     if (!sent.ok) {
       // A failed send may still have reached the pane, so this stops here

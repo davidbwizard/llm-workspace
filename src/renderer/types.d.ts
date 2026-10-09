@@ -1,3 +1,4 @@
+import type { CodexRecoveryResult, CodexInputClearResult } from '../core/codexRecovery.ts';
 import type { FleetListPayload, FleetHistoryPayload, KillResult, KeysResult } from '../main/ipc.ts';
 import type { MailBadge } from '../mail/badges.ts';
 import type { ConversationPage, ConversationCursor } from '../store/conversation.ts';
@@ -38,7 +39,9 @@ declare global {
       onMail: (cb: (payload: Record<number, MailBadge[]>) => void) => () => void;
       // Main sanitises and revalidates pid and text on every call; this
       // typing narrows nothing at the trust boundary itself.
-      sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }) => Promise<KeysResult>;
+      sendKeys: (pid: number, text: string, attach?: { images: string[]; files: string[] }, expectedSessionId?: string) => Promise<KeysResult>;
+      recoverCodex: (pid: number) => Promise<CodexRecoveryResult>;
+      clearCodexInput: (pid: number, expectedSessionId: string) => Promise<CodexInputClearResult>;
       // Answers the prompt Claude is waiting on. Main re-derives the prompt
       // and checks the answer and the pane itself; this typing narrows
       // nothing at the trust boundary.
