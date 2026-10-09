@@ -87,6 +87,30 @@ export class CodexRecovery {
   private save(name: string, m: RecoveryMetadata): void {
     if (!this.deps.write(name, JSON.stringify(m))) throw new Error('Could not persist Codex recovery state.');
   }
+  /** The old allocator could leave successor+candidate together after a
+   * successor closed. Retire only that proven absent link, preserving the
+   * existing exact identity and candidate intent; the public parser stays strict. */
+  private retiredSuccessor(tui: OwnedCodexTui, raw: string): RecoveryMetadata | null {
+    if (raw.length > 2048 || !this.deps.names) return null;
+    let value: unknown;
+    try { value = JSON.parse(raw); } catch { return null; }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const { successor, ...rest } = value as Record<string, unknown>;
+    if (typeof successor !== 'string' || !TUI_NAME.test(successor) || successor === tui.name
+      || rest.predecessor !== undefined || rest.confirmed !== undefined) return null;
+    const m = parseRecoveryMetadata(JSON.stringify(rest));
+    if (!m || !m.expectedThreadId || m.expectedThreadId !== tui.binding.threadId
+      || m.candidate === successor || m.candidate === tui.name
+      || (!parseRecoveryMetadata(raw) && !m.candidate)) return null;
+    let names: string[];
+    try { names = this.deps.names(); } catch { return null; }
+    // Failed ownership resolution is not absence: a present but unresolved
+    // successor retains its link and native draft until it can be verified.
+    if (!names.includes(tui.name) || names.includes(successor)) return null;
+    const fresh = this.deps.resolveName(tui.name);
+    return fresh?.pid === tui.pid && fresh.binding.threadId === m.expectedThreadId
+      && this.deps.read(tui.name) === raw ? m : null;
+  }
   private replacement(old: OwnedCodexTui): OwnedCodexTui | null {
     const m = this.metadata(old.name);
     if (!m.successor || m.successor === old.name || !m.expectedThreadId || old.binding.threadId !== m.expectedThreadId) return null;
@@ -195,9 +219,13 @@ export class CodexRecovery {
     let tui = this.deps.resolveName(initial.name);
     if (!tui || tui.pid !== initial.pid) return { status: 'failed', reason: 'The native terminal changed during recovery.' };
     const raw = this.deps.read(tui.name);
-    if (raw !== null && !parseRecoveryMetadata(raw))
-      return { status: 'failed', reason: 'Codex recovery metadata is invalid; open the native terminal.' };
-    let m = this.metadata(tui.name);
+    let m = parseRecoveryMetadata(raw);
+    if (raw !== null && !m) {
+      m = this.retiredSuccessor(tui, raw);
+      if (!m) return { status: 'failed', reason: 'Codex recovery metadata is invalid; open the native terminal.' };
+      this.save(tui.name, m);
+    }
+    m ??= { v: 1 };
     const { parents, uncertain } = this.candidateParents(tui.name);
     if (uncertain) return { status: 'failed', reason: 'The native terminal inventory could not be verified.' };
     if (parents.length > 1) return { status: 'failed', reason: 'Conflicting replacement intents could not be verified.' };
@@ -211,6 +239,12 @@ export class CodexRecovery {
     const linked = this.replacement(tui);
     if (linked) return linked.binding.ready ? { status: 'ready', pid: linked.pid, sessionId: linked.binding.threadId! }
       : this.recover(linked.pid);
+    if (m.successor) {
+      const retired = raw === null ? null : this.retiredSuccessor(tui, raw);
+      if (!retired) return { status: 'failed', reason: 'The previous replacement terminal could not be verified.' };
+      m = retired;
+      this.save(tui.name, m);
+    }
     if (tui.binding.ready && !m.candidate) {
       if (m.confirmed && m.predecessor) {
         const old = this.deps.resolveName(m.predecessor);

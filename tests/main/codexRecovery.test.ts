@@ -1,5 +1,5 @@
 import { describe,it,expect,vi } from 'vitest';
-import { CodexRecovery, type RecoveryDeps } from '../../src/main/codexRecovery.ts';
+import { CodexRecovery, parseRecoveryMetadata, type RecoveryDeps } from '../../src/main/codexRecovery.ts';
 const ID='01a0da03-b7a1-7542-a9b9-e325e92c221f';
 const OTHER='01a0da04-34c5-7ba0-9266-524ffaa5d2fc';
 const OLD='llmws-codex-relay-aaaaaaaa', NEXT='llmws-codex-relay-bbbbbbbb';
@@ -18,6 +18,84 @@ function fixture(threadId: string|null=ID) {
   };
   return {deps,sessions,metadata,launched,setNow:(n:number)=>{now=n;}};
 }
+describe('retired Codex successor recovery',()=>{
+  const RETRY='llmws-codex-relay-cccccccc';
+  function retired(conflict=false) {
+    const f=fixture();f.sessions.get(OLD).binding.relayAlive=true;
+    f.deps.names=()=>[...f.sessions.keys()];f.setNow(130000);
+    f.deps.newName=vi.fn(()=>RETRY);
+    f.metadata.set(OLD,JSON.stringify({v:1,successor:NEXT,expectedThreadId:ID,nativeSince:1000,
+      ...(conflict?{candidate:RETRY,candidateSince:1000,launchSince:1000}:{})}));
+    return f;
+  }
+  it('retires a proven absent successor before persisting a new candidate intent',async()=>{
+    const f=retired();const r=new CodexRecovery(f.deps);
+    expect(await r.recover(11)).toMatchObject({status:'recovering'});
+    expect(parseRecoveryMetadata(f.metadata.get(OLD)!)).toMatchObject({candidate:RETRY,expectedThreadId:ID});
+    expect(JSON.parse(f.metadata.get(OLD)!)).not.toHaveProperty('successor');
+    expect(f.launched).toEqual([RETRY]);expect(f.sessions.has(OLD)).toBe(true);
+  });
+  it('repairs only the known successor/candidate conflict and reuses its durable allocation across restart',async()=>{
+    const f=retired(true);const original=f.metadata.get(OLD)!;
+    expect(parseRecoveryMetadata(original)).toBeNull();
+    expect(await new CodexRecovery(f.deps).recover(11)).toMatchObject({status:'recovering'});
+    expect(f.launched).toEqual([RETRY]);expect(f.deps.newName).not.toHaveBeenCalled();
+    expect(parseRecoveryMetadata(f.metadata.get(OLD)!)).toMatchObject({candidate:RETRY,expectedThreadId:ID});
+    await new CodexRecovery(f.deps).recover(11);expect(f.launched).toEqual([RETRY]);
+    f.sessions.get(RETRY).binding={name:RETRY,threadId:ID,ready:true,relayAlive:true,binding:null};
+    expect(await new CodexRecovery(f.deps).recover(11)).toEqual({status:'ready',pid:22,sessionId:ID});
+    expect(f.sessions.has(OLD)).toBe(true);
+  });
+  it('confirms a surviving exact candidate without allocating or launching another terminal',async()=>{
+    const f=retired(true);
+    f.sessions.set(RETRY,{pid:22,name:RETRY,cwd:'/repo',binding:{name:RETRY,threadId:ID,ready:true,relayAlive:true,binding:null}});
+    f.metadata.set(RETRY,JSON.stringify({v:1,predecessor:OLD,expectedThreadId:ID}));
+    expect(await new CodexRecovery(f.deps).recover(11)).toEqual({status:'ready',pid:22,sessionId:ID});
+    expect(f.launched).toEqual([]);expect(f.deps.newName).not.toHaveBeenCalled();
+  });
+  for(const conflict of [false,true]) {
+    for(const inventory of ['missing','failed','omits-current','successor-present'] as const)
+      it(`preserves ${conflict?'conflicting':'valid'} intent when inventory is ${inventory}`,async()=>{
+        const f=retired(conflict);const original=f.metadata.get(OLD);
+        if(inventory==='missing')delete f.deps.names;
+        else f.deps.names=()=>{if(inventory==='failed')throw new Error('tmux unavailable');return inventory==='omits-current'?[]:[OLD,NEXT];};
+        expect(await new CodexRecovery(f.deps).recover(11)).toMatchObject({status:'failed'});
+        expect(f.metadata.get(OLD)).toBe(original);expect(f.launched).toEqual([]);
+      });
+    it(`refuses ${conflict?'conflicting':'valid'} intent after exact current identity changes`,async()=>{
+      const f=retired(conflict);const original=f.metadata.get(OLD);f.sessions.get(OLD).binding.threadId=OTHER;
+      expect(await new CodexRecovery(f.deps).recover(11)).toMatchObject({status:'failed'});
+      expect(f.metadata.get(OLD)).toBe(original);expect(f.launched).toEqual([]);
+    });
+  }
+  for(const bad of [{candidateSince:'bad'},{predecessor:NEXT},{candidate:NEXT},{candidate:OLD},{successor:OLD},{expectedThreadId:OTHER}])
+    it(`does not normalize other malformed/ambiguous state ${JSON.stringify(bad)}`,async()=>{
+      const f=retired(true);f.metadata.set(OLD,JSON.stringify({...JSON.parse(f.metadata.get(OLD)!),...bad}));
+      const original=f.metadata.get(OLD);
+      expect(await new CodexRecovery(f.deps).recover(11)).toMatchObject({status:'failed'});
+      expect(f.metadata.get(OLD)).toBe(original);expect(f.launched).toEqual([]);
+    });
+  it('rechecks the owned PID and exact identity after the absence inventory',async()=>{
+    const f=retired(true);const original=f.metadata.get(OLD);
+    f.deps.names=()=>{f.sessions.set(OLD,{...f.sessions.get(OLD),pid:99});return [OLD];};
+    expect(await new CodexRecovery(f.deps).recover(11)).toMatchObject({status:'failed'});
+    expect(f.metadata.get(OLD)).toBe(original);expect(f.launched).toEqual([]);
+  });
+  it('does not overwrite metadata that changed during the absence inventory',async()=>{
+    const f=retired(true);const changed=JSON.stringify({v:1,expectedThreadId:OTHER});
+    f.deps.names=()=>{f.metadata.set(OLD,changed);return [OLD];};
+    expect(await new CodexRecovery(f.deps).recover(11)).toMatchObject({status:'failed'});
+    expect(f.metadata.get(OLD)).toBe(changed);expect(f.launched).toEqual([]);
+  });
+  it('preserves pending-input transfer refusal while normalizing the retired link',async()=>{
+    const f=retired(true);f.deps.transferInput=vi.fn(()=>false);
+    f.sessions.set(RETRY,{pid:22,name:RETRY,cwd:'/repo',binding:{threadId:ID,ready:true,relayAlive:true}});
+    f.metadata.set(RETRY,JSON.stringify({v:1,predecessor:OLD,expectedThreadId:ID}));
+    const r=new CodexRecovery(f.deps);expect(await r.recover(11)).toMatchObject({status:'failed'});
+    expect(r.replacements()).toEqual([]);expect(r.connection(22)?.state).not.toBe('ready');
+    expect(f.deps.transferInput).toHaveBeenCalledWith(OLD,RETRY,ID);expect(f.sessions.has(OLD)).toBe(true);
+  });
+});
 describe('Codex automatic recovery lifecycle',()=>{
   it('repairs unknown legacy TUI at same endpoint before refusing an exact replacement',async()=>{
     const f=fixture(null);const recovery=new CodexRecovery(f.deps);
