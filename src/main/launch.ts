@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
+import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Provider } from '../core/types.ts';
 // Validated before any session id or name reaches tmux's shell string.
@@ -16,6 +17,7 @@ import {
   waitForCodexRelaySocket, waitForCodexThreadId, relayHasSession,
 } from './codexRelayControl.ts';
 import { setCodexThreadName, type CodexNameResult } from './codexAppServer.ts';
+import { prepareCodexRelaySocket } from './codexRelaySocket.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -227,6 +229,12 @@ export async function launchCodexSession(
 export async function startCodexRelay(tuiName: string, cwd: string, deps: CodexLaunchDeps = {}): Promise<void> {
   const relayName = codexRelayName(tuiName);
   const socket = codexRelaySocket(tuiName, deps.socketHome);
+  let existing = false;
+  try { lstatSync(socket); existing = true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  // A reused candidate may retain a dead socket. New endpoints have no
+  // inode to remove; their relay creates its private directory at startup.
+  if (existing) await prepareCodexRelaySocket(socket);
   const relayCommand = `ELECTRON_RUN_AS_NODE=1 ${shellQuote(deps.executable ?? process.execPath)} `
     + `${shellQuote(deps.relayScript ?? join(import.meta.dirname, 'codexRelay.js'))} `
     + `${shellQuote(socket)} ${shellQuote(codexDaemonSocket())} ${shellQuote(tuiName)}`;
