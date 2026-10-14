@@ -1,7 +1,7 @@
 import { Image as ImageIcon } from '@phosphor-icons/react';
 import { MOBILE_IMAGE_BYTES, MOBILE_IMAGE_LIMIT } from '../../core/remote.ts';
 import { transcriptRefresh } from './refresh.ts';
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ConversationPage } from '../../store/conversation.ts';
 import type { SessionLivePayload } from '../../main/sessionLive.ts';
 import type { LaunchResult } from '../../main/launch.ts';
@@ -14,9 +14,11 @@ import { TerminalView } from '../components/TerminalView.tsx';
 import { MobileConnection } from './connection.ts';
 import { MobileSessionMenu } from './MobileSessionMenu.tsx';
 import { MobileSessionList } from './MobileSessionList.tsx';
+import { ActivityInbox, InboxNav } from '../components/ActivityInbox.tsx';
+import { createActivityInboxStore, findUnreadBoundary, useActivityInbox, type ReadBoundary } from '../state/activityInbox.ts';
 import { terminalBridge, unwrap } from './bridge.ts';
 import './mobile.css';
-export interface MobileSession { handle: string | null; pid: number; sessionId: string | null; provider: 'claude' | 'codex'; name?: string | null; cwd: string | null; activity?: string; controllable: boolean }
+export interface MobileSession { handle: string | null; pid: number; sessionId: string | null; provider: 'claude' | 'codex'; name?: string | null; cwd: string | null; activity?: string; events?: number | null; lastProse?: string | null; lastProseId?: number | null; project?: string; controllable: boolean }
 interface MobileProject { id: string; label: string; favorite?: boolean }
 interface Preview { id: string; label: string; url: string; available: boolean }
 const defaultConnection = new MobileConnection(typeof location === 'undefined' ? '' : location.origin);
@@ -26,6 +28,11 @@ function writeLocal(key: string, value: string) { localStorage.setItem(key, valu
 export function MobileApp({ connection = defaultConnection }: { connection?: MobileConnection }) {
   const state = useSyncExternalStore(connection.subscribe, connection.state);
   const [sessions, setSessions] = useState<MobileSession[]>([]);
+  const [inboxStore] = useState(() => createActivityInboxStore({ read: () => readLocal('fleet:mobile:activity-inbox') || null, write: raw => writeLocal('fleet:mobile:activity-inbox', raw) }));
+  const inbox = useActivityInbox(sessions, inboxStore);
+  const [latestRequest, setLatestRequest] = useState(0);
+  const [activityView, setActivityView] = useState<'fleet' | 'needs-you' | 'updates'>('fleet');
+  const [visit, setVisit] = useState<{ unread: boolean; boundary: ReadBoundary | null }>({ unread: false, boundary: null });
   const [selected, setSelected] = useState(() => readLocal('fleet:mobile:selection'));
   const [terminal, setTerminal] = useState(false); const [showRail, setShowRail] = useState(true);
   const [error, setError] = useState(''); const [newSession, setNewSession] = useState(false);
@@ -37,7 +44,9 @@ export function MobileApp({ connection = defaultConnection }: { connection?: Mob
   const [closing, setClosing] = useState(false);
   const retry = useRef(0);
   const session = sessions.find(row => (row.sessionId ?? String(row.pid)) === selected);
-  function select(row: MobileSession) {
+  function select(row: MobileSession, latest = false) {
+    if (latest) setLatestRequest(request => request + 1);
+    setVisit({ unread: inbox.isUnread(row), boundary: inbox.getBoundary(row) });
     const id = row.sessionId ?? String(row.pid); setSelected(id); setShowRail(false); setTerminal(false);
     try { writeLocal('fleet:mobile:selection', id); } catch { setError('This browser cannot save your selection.'); }
   }
@@ -88,17 +97,22 @@ export function MobileApp({ connection = defaultConnection }: { connection?: Mob
   return <div className="mobile-app" data-show-rail={showRail}>
     <header className="mobile-top"><h1>Fleet</h1><span role="status" data-state={state}>{state === 'ready' ? 'Connected to your Mac' : state === 'connecting' ? 'Connecting…' : 'Offline — reconnecting'}</span><button disabled={state !== 'ready'} onClick={() => void openLaunch()}>New session</button></header>
     {error && <div className="mobile-notice" role="alert">{error}<button aria-label="Dismiss message" onClick={() => setError('')}>×</button></div>}
+    <InboxNav active={activityView} fleetLabel="Sessions" needsCount={inbox.needsYou.length} updatesCount={inbox.updates.length} onChange={view => { setActivityView(view); setShowRail(true); }} />
     <div className="mobile-workspace">
-      <nav className="mobile-rail" aria-label="Sessions"><h2>Sessions <small>{sessions.length}</small></h2><MobileSessionList ready={state === 'ready'} sessions={sessions} selected={session} onSelect={select} />{!sessions.length && <p>{state === 'ready' ? 'No running sessions. Start one in a known project.' : 'Keep Fleet running on your Mac and connect this device to Tailscale.'}</p>}</nav>
-      <main className="mobile-main">{session ? <><div className="mobile-session-header"><button className="mobile-back" onClick={() => setShowRail(true)}>Sessions</button><h2>{session.name || session.cwd?.split('/').pop() || session.provider}</h2></div>
-        <Session key={session.handle ?? session.pid} session={session} terminal={terminal} connection={connection} ready={state === 'ready'} onTerminal={() => setTerminal(true)} onToggleTerminal={() => setTerminal(v => !v)} onClose={() => setCloseTarget(session)} onError={setError} />
+      <nav className="mobile-rail" aria-label="Sessions" hidden={activityView !== 'fleet'}><h2>Sessions <small>{sessions.length}</small></h2><MobileSessionList ready={state === 'ready'} sessions={sessions} selected={session} onSelect={select} />{!sessions.length && <p>{state === 'ready' ? 'No running sessions. Start one in a known project.' : 'Keep Fleet running on your Mac and connect this device to Tailscale.'}</p>}</nav>
+      {activityView !== 'fleet' && showRail && <section className="mobile-inbox">
+        {state !== 'ready' && <p className="mobile-inbox-offline">Offline — these are the last known updates. Reconnect to check requests.</p>}
+        <ActivityInbox kind={activityView} items={activityView === 'needs-you' ? inbox.needsYou : inbox.updates} onOpen={item => { const row = sessions.find(candidate => candidate.pid === item.pid && candidate.provider === item.provider); if (row) select(row, true); }} />
+      </section>}
+      <main className="mobile-main" hidden={activityView !== 'fleet' && showRail}>{session ? <><div className="mobile-session-header"><button className="mobile-back" onClick={() => setShowRail(true)}>{activityView === 'fleet' ? 'Sessions' : activityView === 'needs-you' ? 'Needs you' : 'Updates'}</button><h2>{session.name || session.cwd?.split('/').pop() || session.provider}</h2></div>
+        <Session key={session.handle ?? session.pid} session={session} terminal={terminal} connection={connection} ready={state === 'ready'} onTerminal={() => setTerminal(true)} onToggleTerminal={() => setTerminal(v => !v)} onClose={() => setCloseTarget(session)} onError={setError} visible={!showRail && !newSession && !closeTarget} latestRequest={latestRequest} unreadAtOpen={visit.unread} readBoundary={visit.boundary} onRead={lastAgent => inbox.markVisible(session, { lastAgentText: lastAgent.text, lastAgentId: lastAgent.id })} />
       </> : <p className="mobile-empty">Choose a session to pick up where you left off.</p>}</main>
     </div>
     {closeTarget && <div className="mobile-modal" role="dialog" aria-modal="true" aria-label="Close session"><div className="mobile-dialog"><h2>Close {closeTarget.name || closeTarget.cwd?.split('/').pop() || closeTarget.provider}?</h2><p>This stops the running {closeTarget.provider === 'codex' ? 'Codex' : 'Claude'} agent on your Mac, on every device. Work in progress may be interrupted.</p><div className="mobile-actions"><button autoFocus disabled={closing} onClick={() => setCloseTarget(null)}>Cancel</button><button className="mobile-danger" disabled={closing || state !== 'ready'} onClick={() => void closeSession()}>{closing ? 'Closing…' : 'Stop session'}</button></div></div></div>}
     {newSession && <div className="mobile-modal" role="dialog" aria-modal="true" aria-label="New session"><form onSubmit={e => { e.preventDefault(); void launch(); }}><h2>New session</h2><p>Runs on your Mac, available on every device.</p><label>Agent<select value={provider} onChange={e => setProvider(e.target.value as 'claude' | 'codex')}><option value="codex">Codex</option><option value="claude">Claude</option></select></label><div className="mobile-favorites"><h3>Favourites</h3>{projects.some(p => p.favorite) ? projects.filter(p => p.favorite).map(p => <button key={p.id} type="button" aria-pressed={project === p.id} onClick={() => setProject(p.id)}>{p.label}</button>) : <p>Star folders in desktop Fleet to keep them here.</p>}</div><label>Project<select value={project} onChange={e => setProject(e.target.value)}>{projects.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label><label>Session name (optional)<input value={sessionName} maxLength={64} placeholder="Name this session" onChange={e => setSessionName(e.target.value)} /></label>{!projects.length && <p>Open a project in Fleet on your Mac first.</p>}<div className="mobile-actions"><button type="button" disabled={launching} onClick={() => setNewSession(false)}>Cancel</button><button disabled={!project || launching || state !== 'ready'}>{launching ? 'Starting…' : 'Start session'}</button></div></form></div>}
   </div>;
 }
-function Session({ session, terminal, connection, ready, onTerminal, onToggleTerminal, onClose, onError }: { session: MobileSession; terminal: boolean; connection: MobileConnection; ready: boolean; onTerminal(): void; onToggleTerminal(): void; onClose(): void; onError(message: string): void }) {
+function Session({ session, terminal, connection, ready, onTerminal, onToggleTerminal, onClose, onError, visible, latestRequest, unreadAtOpen, readBoundary, onRead }: { session: MobileSession; terminal: boolean; connection: MobileConnection; ready: boolean; onTerminal(): void; onToggleTerminal(): void; onClose(): void; onError(message: string): void; visible: boolean; latestRequest: number; unreadAtOpen: boolean; readBoundary: ReadBoundary | null; onRead(turn: { id: number; text: string }): void }) {
   const [page, setPage] = useState<ConversationPage | null>(null); const [live, setLive] = useState<SessionLivePayload | null>(null);
   const [previews, setPreviews] = useState<Preview[]>([]); const [sending, setSending] = useState(false); const [loadingOlder, setLoadingOlder] = useState(false);
   const draftKey = `fleet:mobile:draft:${session.provider}:${session.sessionId ?? session.handle}`;
@@ -130,6 +144,18 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
     if (event === 'terminal:control' && p.pid === session.pid) setControlling(p.controlling === true);
   }), [connection, session.pid]);
   const scroll = useRef<HTMLDivElement>(null); const bottom = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === 'visible');
+  useEffect(() => {
+    const update = () => setDocumentVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', update);
+    return () => document.removeEventListener('visibilitychange', update);
+  }, []);
+  const lastAgent = page?.turns.findLast(turn => turn.role === 'assistant');
+  useEffect(() => {
+    if (ready && visible && documentVisible && !terminal && atBottom && lastAgent) onRead(lastAgent);
+  }, [ready, visible, documentVisible, terminal, atBottom, lastAgent, onRead]);
+  const unreadBoundary = unreadAtOpen ? findUnreadBoundary(page?.turns ?? [], readBoundary) : null;
   const prompts = useRef<HTMLFieldSetElement>(null);
   const reviewPending = useRef(false);
   function focusRequest() {
@@ -165,7 +191,12 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
     transcript.request(); const timer = setInterval(() => transcript.request(), 5000);
     return () => { alive = false; unsub(); transcript.close(); clearInterval(timer); void connection.request('watch', { handle: null }); };
   }, [connection, ready, session.handle, session.pid, session.sessionId, onError]);
-  useEffect(() => { if (bottom.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [page]);
+  useLayoutEffect(() => {
+    if (latestRequest === 0) return;
+    bottom.current = true; setAtBottom(true);
+    if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [latestRequest]);
+  useLayoutEffect(() => { if (bottom.current && scroll.current) { scroll.current.scrollTop = scroll.current.scrollHeight; setAtBottom(true); } }, [page, visible, terminal, documentVisible]);
   async function send() {
     if (sending || (!draft.trim() && !images.length)) return; setSending(true);
     try {
@@ -184,7 +215,7 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
     const priorHeight = scroll.current?.scrollHeight ?? 0;
     try {
       const next = unwrap<ConversationPage>(await connection.request('conversation', { handle: session.handle, cursor: page.nextCursor }));
-      bottom.current = false; setPage(p => ({ turns: [...next.turns.filter(t => !p?.turns.some(n => n.id === t.id)), ...(p?.turns ?? [])], nextCursor: next.nextCursor }));
+      bottom.current = false; setAtBottom(false); setPage(p => ({ turns: [...next.turns.filter(t => !p?.turns.some(n => n.id === t.id)), ...(p?.turns ?? [])], nextCursor: next.nextCursor }));
       requestAnimationFrame(() => { if (scroll.current) scroll.current.scrollTop += scroll.current.scrollHeight - priorHeight; });
     } catch (e) { onError(messageFor(e)); } finally { setLoadingOlder(false); }
   }
@@ -194,10 +225,10 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
   return <>
     {showPreviews && <section className="mobile-websites" aria-label="Project websites"><div className="mobile-website-heading"><h3>Websites</h3><button type="button" aria-label="Hide websites" onClick={() => setShowPreviews(false)}>×</button></div><div className="mobile-previews">{previews.map(p => p.available ? <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer">Open {p.label}</a> : <span key={p.id}>{p.label} — server unavailable</span>)}</div>{!previews.length && <p>No websites connected for this folder. On your Mac, add one in Fleet Settings → Remote access → Project previews. Keep its local development server running.</p>}<button disabled={!ready || checkingPreviews} onClick={() => void refreshPreviews()}>{checkingPreviews ? 'Checking…' : 'Refresh websites'}</button></section>}
     {terminal ? <><TerminalView key={String(ready)} pid={session.pid} bridge={bridge} /><div className="mobile-keys">{[['Esc', '\x1b'], ['Tab', '\t'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['Ctrl-C', '\x03'], ['Enter', '\r']].map(([label, data]) => <button key={label} disabled={!ready || !controlling} onClick={() => { void bridge.sendRaw(session.pid, data!).catch(e => onError(messageFor(e))); }}>{label}</button>)}</div></> : <>
-      <div className="mobile-transcript" ref={scroll} onScroll={() => { const el = scroll.current; if (el) bottom.current = el.scrollHeight - el.clientHeight - el.scrollTop < 100; }}>
+      <div className="mobile-transcript" ref={scroll} onScroll={() => { const el = scroll.current; if (el) { const remaining = el.scrollHeight - el.clientHeight - el.scrollTop; bottom.current = remaining < 100; setAtBottom(remaining <= 1); } }}>
         {page?.nextCursor && <button disabled={loadingOlder || !ready} onClick={() => void older()}>Load earlier messages</button>}
         {!page && <p>{ready ? 'Loading conversation…' : 'Reconnect to read the conversation.'}</p>}
-        {page?.turns.map(turn => <article key={turn.id} data-role={turn.role}><small>{turn.role === 'user' ? 'You' : session.provider}</small><MarkdownText text={turn.text} /></article>)}
+        {page?.turns.map(turn => <Fragment key={turn.id}>{unreadBoundary?.beforeTurnId === turn.id && <div className="mobile-new-since" role="separator">New since your last visit</div>}<article data-role={turn.role}><small>{turn.role === 'user' ? 'You' : session.provider}</small><MarkdownText text={turn.text} /></article></Fragment>)}
         <fieldset disabled={!ready} className="mobile-prompts" ref={prompts} tabIndex={-1} aria-label="Session requests">{ready && live?.prompt && <PromptCard pid={session.pid} prompt={live.prompt} onOpenTerminal={onTerminal} answerPrompt={(_pid, key, value) => answer('answerClaude', key, value)} />}{ready && live?.codex?.prompts.map(prompt => <CodexPromptCard key={prompt.key} pid={session.pid} prompt={prompt} onOpenTerminal={onTerminal} answerPrompt={(_pid, key, value) => answer('answerCodex', key, value)} />)}</fieldset>
       </div>
     </>}

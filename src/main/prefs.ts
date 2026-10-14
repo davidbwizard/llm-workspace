@@ -46,6 +46,7 @@ export type PrefsDb = Database.Database;
 export const PREF_KEYS = [
   'llmws:settings', 'llmws:groups', 'llmws:rail-width',
   'llmws.favourites', 'llmws.firstRunSeen',
+  'llmws:activity-inbox', 'llmws:notifications',
 ] as const;
 export type PrefKey = typeof PREF_KEYS[number];
 const ALLOWED = new Set<string>(PREF_KEYS);

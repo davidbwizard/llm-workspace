@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { tmpdir } from 'node:os';
-import { render, renderHook, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, renderHook, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { desktopInboxStore } from '../../src/renderer/state/activityInbox.ts';
+import type { OpenSession } from '../../src/fleet/state.ts';
 import { SessionRail } from '../../src/renderer/components/SessionRail.tsx';
 import { useRailSlots } from '../../src/renderer/state/useRailSlots.ts';
 import { setSettings, reloadSettings } from '../../src/renderer/state/settings.ts';
@@ -324,56 +326,27 @@ describe('SessionRail', () => {
   });
 
   describe('the unread indicator', () => {
-    it('shows nothing on first render -- a pre-existing event count is never reported as new', () => {
-      const { container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+    function fixture(prefix: string) { return (sessionsPlain as unknown as OpenSession[]).map(s => ({ ...s, sessionId: `${prefix}-${s.pid}` })); }
+    function rail(rows: OpenSession[], selectedPid = 1) { return <SessionRail sessions={rows} selectedPid={selectedPid} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />; }
+    it('baselines existing prose quietly and ignores tool event growth', () => {
+      const rows = fixture('quiet'); const { container, rerender } = render(rail(rows));
+      rerender(rail(rows.map(s => ({ ...s, events: 100 }))));
       expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
     });
-
-    it('flags a session whose events increase while it is not the current selection', () => {
-      const { rerender, container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+    it('flags new agent prose even for a selected session until its content is displayed', () => {
+      const rows = fixture('new-prose'); const next = rows.map(s => s.pid === 2 ? { ...s, lastProse: 'Finished the tests.' } : s);
+      const { container, rerender } = render(rail(rows)); rerender(rail(next));
       expect(container.querySelectorAll('.unread-dot')).toHaveLength(1);
-    });
-
-    // Mutation target: dropping the `s.pid !== selectedPid` guard (or
-    // never updating the baseline on selection) must fail this.
-    it('never flags the session currently being viewed, even as its own events grow', () => {
-      const { rerender, container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      rerender(<SessionRail sessions={sessionsPid1Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(rail(next, 2)); expect(container.querySelectorAll('.unread-dot')).toHaveLength(1);
+      act(() => desktopInboxStore.markVisible(next[1]!, { lastAgentText: 'Finished the tests.', lastAgentId: 12 }));
       expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
     });
-
-    // Distinct from the "never flags the currently selected session" test
-    // above: that one never looks away. This is the scenario its own doc
-    // comment in SessionRail.tsx calls out specifically -- a session that
-    // produced output while genuinely being viewed must not light up
-    // retroactively the moment you switch to something else, which only
-    // holds if the baseline is updated WHILE selected (SessionRail.tsx's
-    // effect), not merely suppressed by the render-time check for as
-    // long as it stays selected.
-    it('does not light up after you look away, having produced output while you were viewing it', () => {
-      const { rerender, container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      rerender(<SessionRail sessions={sessionsPid1Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      rerender(<SessionRail sessions={sessionsPid1Bumped} selectedPid={2} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
-    });
-
-    it('clears once the user selects the flagged session', () => {
-      const { rerender, container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      expect(container.querySelectorAll('.unread-dot')).toHaveLength(1);
-      rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={2} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
-    });
-
-    // Once selected, a later re-render (unrelated data refresh, still with
-    // events unchanged) must not resurrect the indicator for that same
-    // session -- the baseline recorded on selection has to stick.
-    it('stays cleared for the selected session across further re-renders', () => {
-      const { rerender, container } = render(<SessionRail sessions={sessions} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={2} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      rerender(<SessionRail sessions={sessionsPid2Bumped} selectedPid={2} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
-      expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
+    it('keeps a read receipt across further selections and remounts', () => {
+      const rows = fixture('read'); const next = rows.map(s => s.pid === 2 ? { ...s, lastProse: 'Done.' } : s);
+      const { container, rerender, unmount } = render(rail(rows)); rerender(rail(next));
+      act(() => desktopInboxStore.markVisible(next[1]!, { lastAgentText: 'Done.', lastAgentId: 15 }));
+      rerender(rail(next, 2)); expect(container.querySelectorAll('.unread-dot')).toHaveLength(0);
+      unmount(); const again = render(rail(next)); expect(again.container.querySelectorAll('.unread-dot')).toHaveLength(0);
     });
   });
 
@@ -405,10 +378,12 @@ describe('SessionRail', () => {
     // the row's position does not move because of it -- both halves of
     // what actually changed here, pinned in one test.
     it('flags an unread card but does not move its row', () => {
-      const { rerender, container } = render(<SessionRail sessions={sessionsPlain} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      const original = (sessionsPlain as unknown as OpenSession[]).map(s => ({ ...s, sessionId: `order-${s.pid}` }));
+      const updated = original.map(s => s.pid === 2 ? { ...s, lastProse: 'New prose' } : s);
+      const { rerender, container } = render(<SessionRail sessions={original} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
       const before = projectOrder(container);
       expect(before).toEqual(['llm-workspace', 'game-viewer']);
-      rerender(<SessionRail sessions={sessionsPlainPid2Bumped} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
+      rerender(<SessionRail sessions={updated} selectedPid={1} onSelect={() => {}} onKill={noopKill} onReattach={noopReattach} onResume={noopResume} side="left" />);
       // pid 2 is now unread -- the dot still fires...
       expect(container.querySelectorAll('.unread-dot')).toHaveLength(1);
       // ...but its row stays exactly where it was.

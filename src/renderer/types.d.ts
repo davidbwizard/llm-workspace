@@ -30,6 +30,11 @@ declare global {
     // straight through and throw at mount with no user-visible signal --
     // marking it optional forces every call site to check first.
     fleet?: {
+      notificationsGet?: () => Promise<import('../core/notifications.ts').NotificationStatus>;
+      notificationsSet?: (value: import('../core/notifications.ts').NotificationPreferences) => Promise<import('../core/notifications.ts').NotificationStatus>;
+      notificationsTest?: () => Promise<import('../core/notifications.ts').NotificationStatus>;
+      notificationTakeOpen?: () => Promise<import('../core/notifications.ts').NotificationTarget|null>;
+      onNotificationOpen?: (cb: (target:import('../core/notifications.ts').NotificationTarget) => void) => () => void;
       remoteGet?: () => Promise<import('../main/remote/lifecycle.ts').RemoteStatus>;
       remoteConfigure?: (config: unknown) => Promise<import('../main/remote/lifecycle.ts').RemoteStatus>;
       remoteEnable?: () => Promise<import('../main/remote/lifecycle.ts').RemoteStatus>;

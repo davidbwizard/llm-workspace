@@ -1,7 +1,7 @@
 import type { CodexConnection } from '../../core/codexRecovery.ts';
 import { useDraft, updateDraft } from '../state/drafts.ts';
 export { clearDrafts } from '../state/drafts.ts';
-import { Fragment, cloneElement, createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type MutableRefObject, type ReactElement, type ReactNode } from 'react';
+import { Fragment, cloneElement, createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentProps, type MutableRefObject, type ReactElement, type ReactNode } from 'react';
 import Markdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationTurn } from '../../store/conversation.ts';
@@ -26,6 +26,7 @@ import { useCopy, COPY_LABEL } from '../state/useCopy.ts';
 import { useSessionLive, type SessionMode } from '../state/useSessionLive.ts';
 import { addPending, pendingFor, dropPending, matchPending, markQueued, tickIdle, NOT_SEEN_AFTER_MS } from '../state/pending.ts';
 import './ConversationView.css';
+import { desktopInboxStore, findUnreadBoundary, inboxSessionKey, type InboxSession } from '../state/activityInbox.ts';
 
 /** Transcript text is untrusted, so markdown rendering is locked down:
  *  - No rehype-raw. react-markdown turns raw HTML into plain text, so it
@@ -785,7 +786,11 @@ function MessageBox({ pid, sessionId, tmux, provider, waiting, sendBlocked, inpu
  *  in the moment right after it launches, before its first events are
  *  written and ingested; and no match info at all (match omitted) falls
  *  back to a neutral message rather than asserting either specific claim. */
-export function ConversationView({ sessionId, match, provider, events, pid, tmux, onOpenTerminal, context = null, onContext, agents = null, liveAgents = null, codexConnection, onOpenRecoveryTerminal, onOpenPreviousTerminal }: {
+export function ConversationView({ unobscured = true, inboxSession, inboxStore = desktopInboxStore, sessionId, match, provider, events, pid, tmux, onOpenTerminal, context = null, onContext, agents = null, liveAgents = null, codexConnection, onOpenRecoveryTerminal, onOpenPreviousTerminal }: {
+  /** False while a sibling sheet covers this mounted transcript. */
+  unobscured?: boolean;
+  inboxSession?: InboxSession;
+  inboxStore?: typeof desktopInboxStore;
   codexConnection?: CodexConnection;
   onOpenRecoveryTerminal?: (pid: number) => void;
   onOpenPreviousTerminal?: (pid: number) => void;
@@ -836,6 +841,10 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   onContext?: (context: SessionContext | null) => void;
 }) {
   const settings = useSettings();
+  const inboxRevision = useSyncExternalStore(inboxStore.subscribe, inboxStore.getSnapshot, inboxStore.getSnapshot);
+  const inboxKey = inboxSession ? inboxSessionKey(inboxSession) : null;
+  const [visit, setVisit] = useState(() => ({ key: inboxKey, unread: inboxSession ? inboxStore.isUnread(inboxSession) : false, boundary: inboxSession ? inboxStore.getBoundary(inboxSession) : null }));
+  if (visit.key !== inboxKey) setVisit({ key: inboxKey, unread: inboxSession ? inboxStore.isUnread(inboxSession) : false, boundary: inboxSession ? inboxStore.getBoundary(inboxSession) : null });
   // Task 7 (2026-09-17-live-conversation-feedback): main can now push this
   // pid's live state within ~250ms (src/main/sessionLive.ts's
   // watchSessionFor/notifySessionChanged) instead of leaving the pane to
@@ -902,6 +911,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   // already does that).
   const pendingSentRef = useRef(false);
   const [page, setPage] = useState<ConversationPage | null>(null);
+  const pageOwnerRef = useRef<string | null>(null);
   // The message box registers here while it can take an image; the pane's
   // drop handler forwards dropped files to it.
   const attachRef = useRef<((files: File[]) => void) | null>(null);
@@ -948,6 +958,31 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
    *  and compared at resolve in place of this session-id comparison. */
   const sessionIdRef = useRef<string | null>(sessionId);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const newSince = findUnreadBoundary(page?.turns ?? [], visit.boundary);
+  const newSinceRef = useRef<HTMLDivElement | null>(null);
+  function recordVisible() {
+    const el = scrollerRef.current;
+    if (!inboxSession || !page || pageOwnerRef.current !== sessionId || sessionId !== inboxSession.sessionId || document.visibilityState !== 'visible' || !document.hasFocus() || !unobscured || document.documentElement.classList.contains('modal-open') || document.querySelector('dialog[open], [aria-modal="true"]') !== null || !el || !nearBottom(el, 1)) return;
+    const latest = [...page.turns].reverse().find(t => t.role === 'assistant');
+    if (latest) inboxStore.markVisible(inboxSession, { lastAgentText: latest.text, lastAgentId: latest.id });
+  }
+  useEffect(() => {
+    recordVisible();
+    const visible = () => recordVisible();
+    document.addEventListener('visibilitychange', visible);
+    window.addEventListener('focus', visible);
+    // Settings and file sheets share this root scroll-lock class. Closing
+    // one must retry the receipt even when no new transcript event arrives.
+    const overlays = new MutationObserver(visible);
+    overlays.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    document.addEventListener('close', visible, true);
+    return () => {
+      overlays.disconnect();
+      document.removeEventListener('close', visible, true);
+      document.removeEventListener('visibilitychange', visible);
+      window.removeEventListener('focus', visible);
+    };
+  }, [page, inboxSession, inboxStore, sessionId, inboxRevision, unobscured]);
   /** Set by loadMore immediately before a prepend commits, consumed by the
    *  layout effect below. A ref rather than state because it must be read
    *  in the same commit that wrote it, with no render in between. */
@@ -988,7 +1023,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     seenEventsRef.current = null;
     matchedTurnsRef.current = new Set();
     void window.fleet?.conversation(sessionId).then(p => {
-      if (alive) setPage(p);
+      if (alive) { pageOwnerRef.current = sessionId; setPage(p); }
     }).catch(err => {
       // Logged unconditionally -- an old fetch failing is real information
       // even once the reader has moved on and it can no longer act on the
@@ -1132,6 +1167,11 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     if (!landedRef.current) {
       landedRef.current = true;
       el.scrollTop = el.scrollHeight;
+      if (visit.unread && newSinceRef.current) {
+        newSinceRef.current.scrollIntoView?.({ block: 'start' });
+        newSinceRef.current.focus({ preventScroll: true });
+        stickyRef.current = nearBottom(el);
+      }
       lastTurnKeyRef.current = lastTurnKey(page.turns);
       return;
     }
@@ -1214,7 +1254,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
     const atBottom = nearBottom(e.currentTarget);
     stickyRef.current = atBottom;
-    if (atBottom) setMissedLatest(false);
+    if (atBottom) { setMissedLatest(false); recordVisible(); }
     if (nearOlderEdge(e.currentTarget)) loadMore();
   }
 
@@ -1223,6 +1263,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
     if (el !== null) el.scrollTop = el.scrollHeight;
     stickyRef.current = true;
     setMissedLatest(false);
+    recordVisible();
   }
 
   // One shape in every state (spec §7.1's reasoning, applied to the whole
@@ -1311,6 +1352,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
               // are none left.
               <p className="conv-end">Beginning of this session's recorded conversation.</p>
             )}
+            {visit.unread && newSince.unavailable && <p className="conv-unread-history">Unread replies. No exact previous read position is available in these loaded messages{nextCursor ? '; load older messages to find it' : ''}.</p>}
             {turns.map(t => {
               const date = formatDate(t.ts);
               const showDate = date !== prevDate;
@@ -1323,6 +1365,7 @@ export function ConversationView({ sessionId, match, provider, events, pid, tmux
                   // carries only the time.
                   <div className="conv-day" role="separator" aria-label={date}>{date}</div>
                 )}
+                {visit.unread && newSince.beforeTurnId === t.id && <div className="conv-new-since" role="separator" tabIndex={-1} ref={newSinceRef}>New since your last visit</div>}
                 <article className={`turn ${t.role}`}>
                   <div className="meta">
                     {t.role === 'user'

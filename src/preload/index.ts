@@ -16,6 +16,15 @@ function readPrefsOnce(): Record<string, string> {
 }
 
 const api = {
+  notificationsGet: () => ipcRenderer.invoke('notifications:get'),
+  notificationsSet: (value: unknown) => ipcRenderer.invoke('notifications:set', value),
+  notificationsTest: () => ipcRenderer.invoke('notifications:test'),
+  notificationTakeOpen: () => ipcRenderer.invoke('notifications:take-open'),
+  onNotificationOpen: (cb: (target: {provider:string; sessionId:string}) => void) => {
+    const listener = (_event:unknown, target:{provider:string;sessionId:string}) => cb(target);
+    ipcRenderer.on('notifications:open', listener);
+    return () => ipcRenderer.off('notifications:open', listener);
+  },
   remoteGet: () => ipcRenderer.invoke('remote:get'),
   remoteConfigure: (config: unknown) => ipcRenderer.invoke('remote:configure', config),
   remoteEnable: () => ipcRenderer.invoke('remote:enable'),

@@ -33,6 +33,7 @@ import { openPrefs, type PrefsDb } from './prefs.ts';
 import { notifySessionChanged, pushSessionLive, watchSessionFor, releaseAllSessionClients, type WatchDeps } from './sessionLive.ts';
 import { contextMenuTemplate } from './contextMenu.ts';
 import { applyLoginPathOnce } from './loginPath.ts';
+import { registerNotifications } from './notifications.ts';
 
 // The release-only shape of watchSessionFor's deps -- window close and
 // before-quit only ever call it with pid: null (stop watching), which
@@ -72,6 +73,7 @@ function scheduleMailPush(): void {
   }, 250);
 }
 let prefsDb: PrefsDb | null = null;
+let sessionNotifications: ReturnType<typeof registerNotifications> | null = null;
 let remoteAccess: RemoteLifecycle | null = null;
 let remoteShutdownComplete = false;
 let remoteShutdownStarted = false;
@@ -361,6 +363,10 @@ app.whenReady().then(async () => {
   // launched or reattached session gets the identical immediate refresh a
   // kill already does, rather than sitting stale in the rail for up to 5s.
   registerIpc(db, startBackgroundWork, () => pushAfterDiscoverySweep(), () => pushAfterDiscoverySweep());
+  sessionNotifications = registerNotifications({db:prefsDb, window:()=>mainWindow,
+    sessions:()=>fleetSessionOperations?.dependencies.list() ?? [],
+    open:()=>{ if (!mainWindow || mainWindow.isDestroyed()) createWindow(); else { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } },
+  });
   const remotePath = join(homedir(), '.llm-workspace', 'remote.json');
   remoteAccess = new RemoteLifecycle({
     read: () => readRemoteConfig(remotePath), save: config => { writeRemoteConfig(remotePath, config); },
@@ -424,6 +430,7 @@ app.whenReady().then(async () => {
       await refreshCodexDisplay();
       if (!db) return;
       refreshPushEnrichment(db, processes);
+      sessionNotifications?.observe(fleetSessionOperations?.dependencies.list() ?? []);
       pushFleet(mainWindow);
       // Runs even when nothing is watched (a no-op then -- see
       // pushSessionLive's own doc comment): this is also the trigger that
@@ -437,6 +444,7 @@ app.whenReady().then(async () => {
         await refreshCodexDisplay();
         if (!db) return;
         refreshPushEnrichment(db, processes);
+        sessionNotifications?.observe(fleetSessionOperations?.dependencies.list() ?? []);
         pushFleet(mainWindow);
         pushSessionLive();
       }
@@ -498,6 +506,7 @@ app.on('before-quit', event => {
     return;
   }
   releaseAllSessionClients();
+  sessionNotifications?.dispose();
   codexAppServer.stop();
   fleetTerminals.close();
   if (spoolTimer) clearInterval(spoolTimer);

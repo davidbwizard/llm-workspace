@@ -32,6 +32,7 @@ function renderConv(props: Partial<React.ComponentProps<typeof ConversationView>
 }
 
 beforeEach(() => {
+  vi.spyOn(document, 'hasFocus').mockReturnValue(true);
   // Drafts are module state in the component, kept there deliberately so
   // they survive unmount (see the `drafts` comment there). That also means
   // they survive between tests: without this reset, a test that types
@@ -2762,5 +2763,98 @@ describe('ConversationView -- the permission-mode chip', () => {
     fireEvent.click(container.querySelector('.modechip > button')!);
     expect(screen.getAllByRole('menuitemradio')).toHaveLength(2);
     expect(screen.getByRole('menuitem').textContent).toContain('Permissions');
+  });
+});
+
+describe('conversation read receipts', () => {
+  it('acknowledges only displayed visible content and places the exact saved boundary', async () => {
+    const { createActivityInboxStore } = await import('../../src/renderer/state/activityInbox.ts');
+    const store = createActivityInboxStore({ read: () => null, write: () => {} });
+    const old = { pid: 4821, sessionId: 's1', provider: 'claude', cwd: '/work', lastProse: 'Old reply', lastProseId: 1 };
+    store.observe([old]); store.markVisible(old, { lastAgentId: 1, lastAgentText: 'Old reply' });
+    const next = { ...old, lastProse: turns[1]!.text, lastProseId: 2 }; store.observe([next]);
+    window.fleet!.conversation = async () => ({ turns: [{ id: 1, ts: turns[0]!.ts, role: 'assistant' as const, text: 'Old reply' }, turns[1] as never], nextCursor: null });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    const { container } = renderConv({ inboxSession: next, inboxStore: store });
+    await screen.findByText('All green. Want me to commit?');
+    expect(store.isUnread(next)).toBe(true);
+    const marker = screen.getByText('New since your last visit');
+    expect(marker.nextElementSibling?.textContent).toContain('All green.');
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    fireEvent(document, new Event('visibilitychange'));
+    await waitFor(() => expect(store.isUnread(next)).toBe(false));
+    expect(container.querySelector('.conv-new-since')).toBeTruthy();
+  });
+});
+
+it('keeps an update unread while the reader is scrolled above newly rendered prose', async () => {
+  const { createActivityInboxStore } = await import('../../src/renderer/state/activityInbox.ts');
+  const store = createActivityInboxStore({ read: () => null, write: () => {} });
+  const original = { pid: 4821, sessionId: 's1', provider: 'claude', cwd: '/work', lastProse: turns[1]!.text, lastProseId: 2, events: 2 };
+  store.observe([original]);
+  const { container, rerender } = renderConv({ inboxSession: original, inboxStore: store, events: 2 });
+  await screen.findByText(turns[1]!.text);
+  const scroller = container.querySelector('.conv')!;
+  Object.defineProperties(scroller, { clientHeight: { configurable: true, value: 200 }, scrollHeight: { configurable: true, value: 2000 }, scrollTop: { configurable: true, writable: true, value: 500 } });
+  fireEvent.scroll(scroller);
+  const next = { ...original, lastProse: 'A new reply below the fold', lastProseId: 3, events: 3 }; store.observe([next]);
+  window.fleet!.conversation = async () => ({ turns: [...turns, { id: 3, ts: '2026-09-12T10:01:00Z', role: 'assistant', text: next.lastProse }] as never[], nextCursor: null });
+  rerender(<ConversationView sessionId="s1" provider="claude" events={3} pid={4821} tmux onOpenTerminal={() => {}} inboxSession={next} inboxStore={store} />);
+  await screen.findByText(next.lastProse);
+  expect(store.isUnread(next)).toBe(true); expect(scroller.scrollTop).toBe(500);
+  scroller.scrollTop = 1800; fireEvent.scroll(scroller);
+  expect(store.isUnread(next)).toBe(false);
+});
+
+it('does not acknowledge a newly selected session using the previous session page', async () => {
+  const { createActivityInboxStore } = await import('../../src/renderer/state/activityInbox.ts');
+  const store = createActivityInboxStore({ read: () => null, write: () => {} });
+  const original = { pid: 4821, sessionId: 's1', provider: 'claude', cwd: '/work', lastProse: turns[1]!.text };
+  const other = { ...original, pid: 4822, sessionId: 's2', lastProse: 'Earlier' }; store.observe([original, other]);
+  const next = { ...other, lastProse: turns[1]!.text }; store.observe([original, next]);
+  const { rerender } = renderConv({ inboxSession: original, inboxStore: store });
+  await screen.findByText(turns[1]!.text);
+  window.fleet!.conversation = () => new Promise(() => {});
+  rerender(<ConversationView sessionId="s2" provider="claude" events={null} pid={4822} tmux onOpenTerminal={() => {}} inboxSession={next} inboxStore={store} />);
+  expect(store.isUnread(next)).toBe(true);
+});
+
+
+describe('conversation receipts while covered or unfocused', () => {
+  async function unread() {
+    const { createActivityInboxStore } = await import('../../src/renderer/state/activityInbox.ts');
+    const store = createActivityInboxStore({ read: () => null, write: () => {} });
+    const original = { pid: 4821, sessionId: 's1', provider: 'claude', cwd: '/work', lastProse: 'Before', lastProseId: 1 };
+    store.observe([original]);
+    const next = { ...original, lastProse: turns[1]!.text, lastProseId: 2 }; store.observe([next]);
+    return { store, next };
+  }
+  it('retains unread behind a modal and acknowledges after the modal closes', async () => {
+    const { store, next } = await unread();
+    document.documentElement.classList.add('modal-open');
+    try {
+      renderConv({ inboxSession: next, inboxStore: store });
+      await screen.findByText(turns[1]!.text);
+      expect(store.isUnread(next)).toBe(true);
+      act(() => document.documentElement.classList.remove('modal-open'));
+      await waitFor(() => expect(store.isUnread(next)).toBe(false));
+    } finally { document.documentElement.classList.remove('modal-open'); }
+  });
+  it('retains unread in an unfocused desktop window and acknowledges after focus returns', async () => {
+    const { store, next } = await unread();
+    const focused = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    renderConv({ inboxSession: next, inboxStore: store });
+    await screen.findByText(turns[1]!.text);
+    expect(store.isUnread(next)).toBe(true);
+    focused.mockReturnValue(true); fireEvent(window, new Event('focus'));
+    await waitFor(() => expect(store.isUnread(next)).toBe(false));
+  });
+  it('retains unread beneath a covering pane even before its modal effect runs', async () => {
+    const { store, next } = await unread();
+    const { rerender } = renderConv({ inboxSession: next, inboxStore: store, unobscured: false });
+    await screen.findByText(turns[1]!.text);
+    expect(store.isUnread(next)).toBe(true);
+    rerender(<ConversationView sessionId="s1" provider="claude" events={null} pid={4821} tmux onOpenTerminal={() => {}} inboxSession={next} inboxStore={store} unobscured />);
+    await waitFor(() => expect(store.isUnread(next)).toBe(false));
   });
 });

@@ -428,3 +428,63 @@ describe('MainPane', () => {
     });
   });
 });
+
+describe('desktop attention navigation', () => {
+  it('reviews a waiting session and keeps the request in Needs you after opening', async () => {
+    const waiting = [{ ...sessions[0]! as object, activity: 'waiting_permission', name: 'Check release' }] as never[];
+    const select = vi.fn(), view = vi.fn();
+    const { rerender } = render(<MainPane selection={null} sessions={waiting} onSelect={select} onSetView={view} onClear={() => {}} railSide="left" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Needs you (1)' }));
+    expect(screen.getByRole('heading', { name: 'Check release' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Review Check release' }));
+    expect(select).toHaveBeenCalledWith(1); expect(view).toHaveBeenCalledWith('conversation');
+    rerender(<MainPane selection={{ pid: 1, view: 'conversation' }} sessions={waiting} onSelect={select} onSetView={view} onClear={() => {}} railSide="left" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Needs you (1)' })).toBeTruthy());
+  });
+});
+
+it('opens notification targets by provider and durable session identity after they arrive', async () => {
+  let notify: ((target: { provider: 'claude' | 'codex'; sessionId: string }) => void) | undefined;
+  Object.assign(window.fleet!, {
+    onNotificationOpen: (cb: typeof notify) => { notify = cb; return () => {}; },
+    notificationTakeOpen: async () => null,
+  });
+  const onSelect = vi.fn(), onSetView = vi.fn();
+  const props = { selection: null, onSelect, onSetView, onClear: () => {}, railSide: 'left' as const };
+  const { rerender } = render(<MainPane {...props} sessions={[]} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Needs you (0)' }));
+  act(() => notify?.({ provider: 'claude', sessionId: 's1' }));
+  expect(onSelect).not.toHaveBeenCalled();
+  rerender(<MainPane {...props} sessions={sessions} />);
+  await waitFor(() => expect(onSelect).toHaveBeenCalledWith(1));
+  expect(onSetView).toHaveBeenCalledWith('conversation');
+  expect(screen.getByRole('button', { name: 'Fleet' }).getAttribute('aria-pressed')).toBe('true');
+});
+
+it('keeps new transcript content unread beneath a file sheet until the sheet closes', async () => {
+  const { desktopInboxStore } = await import('../../src/renderer/state/activityInbox.ts');
+  const focused = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 600, height: 500, top: 0, left: 0, right: 600, bottom: 500, x: 0, y: 0, toJSON: () => ({}) });
+  const initial = { ...(sessions[0]! as unknown as Record<string, unknown>), pid: 5181, sessionId: 'sheet-receipt', lastProse: 'Read README.md', lastProseId: 101, events: 1 };
+  const first = { id: 101, ts: '2026-10-14T10:00:00Z', role: 'assistant' as const, text: 'Read README.md' };
+  let turns = [first];
+  Object.assign(window.fleet!, {
+    conversation: async () => ({ turns, nextCursor: null }),
+    fileProbe: async (_pid: number, candidates: string[]) => ({ ok: true, kinds: candidates.map(() => 'markdown') }),
+    fileOpen: async () => ({ ok: true, action: 'markdown', name: 'README.md', path: '/a/README.md', size: 12, text: 'File content' }),
+  });
+  const props = { selection: { pid: 5181, view: 'conversation' as const }, onSelect: () => {}, onSetView: () => {}, onClear: () => {}, railSide: 'left' as const };
+  try {
+    const { rerender, unmount, container } = render(<MainPane {...props} sessions={[initial] as never[]} />);
+    fireEvent.click(await within(container.querySelector('.conv')!).findByRole('button', { name: /README\.md/ }));
+    await screen.findByRole('dialog', { name: 'README.md' });
+    const next = { ...initial, lastProse: 'New reply under sheet', lastProseId: 102, events: 2 };
+    turns = [...turns, { ...first, id: 102, text: next.lastProse }];
+    rerender(<MainPane {...props} sessions={[next] as never[]} />);
+    await waitFor(() => expect(screen.getAllByText(next.lastProse).length).toBeGreaterThan(0));
+    expect(desktopInboxStore.isUnread(next as never)).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Close file' }));
+    await waitFor(() => expect(desktopInboxStore.isUnread(next as never)).toBe(false));
+    unmount();
+  } finally { focused.mockRestore(); bounds.mockRestore(); document.documentElement.classList.remove('modal-open'); }
+});

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OpenSession } from '../../fleet/state.ts';
 import type { PaneView, Selection } from '../state/useFleet.ts';
 import type { KillResult, RevealResult } from '../../main/ipc.ts';
@@ -14,6 +14,9 @@ import { FileLinkContext } from './FilePath.tsx';
 import { abbreviateHome } from '../pathFormat.ts';
 import { useFavourites, addFavourite, removeFavourite, MAX_FAVOURITES, lastSegment } from '../state/favourites.ts';
 import './MainPane.css';
+import { NotificationSettings } from './NotificationSettings.tsx';
+import { ActivityInbox, InboxNav, type InboxDestination } from './ActivityInbox.tsx';
+import { useActivityInbox, type InboxSession } from '../state/activityInbox.ts';
 
 /** Falls back to a closed refusal rather than throwing when the bridge is
  *  unavailable -- OpenSessionCard's onKill contract always resolves to a
@@ -223,10 +226,56 @@ export function MainPane({
   // below, per the Rules of Hooks; only actually rendered in the split
   // view further down.
   const favourites = useFavourites();
+  const inbox = useActivityInbox(sessions);
+  const [destination, setDestination] = useState<InboxDestination>('fleet');
+  const [notificationTarget, setNotificationTarget] = useState<{ provider: string; sessionId: string } | null>(null);
+  const notificationGeneration = useRef(0);
+  useEffect(() => {
+    let alive = true;
+    const api = window.fleet;
+    const initialGeneration = notificationGeneration.current;
+    const unsubscribe = api?.onNotificationOpen?.(target => {
+      notificationGeneration.current++;
+      setNotificationTarget(target);
+      void api.notificationTakeOpen?.().catch(error => console.error('Could not consume notification target:', error));
+    });
+    void api?.notificationTakeOpen?.().then(target => {
+      if (alive && target && notificationGeneration.current === initialGeneration) setNotificationTarget(target);
+    }, error => console.error('Could not restore notification target:', error));
+    return () => { alive = false; unsubscribe?.(); };
+  }, []);
+  useEffect(() => {
+    if (!notificationTarget) return;
+    const target = sessions.find(s => s.provider === notificationTarget.provider && s.sessionId === notificationTarget.sessionId);
+    if (!target) return;
+    setNotificationTarget(null); setDestination('fleet'); onSelect(target.pid); onSetView('conversation');
+  }, [notificationTarget, sessions, onSelect, onSetView]);
+  useEffect(() => {
+    if (destination === 'fleet') return;
+    const showSession = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && /^[1-9]$/.test(event.key)) setDestination('fleet');
+    };
+    window.addEventListener('keydown', showSession);
+    return () => window.removeEventListener('keydown', showSession);
+  }, [destination]);
+  const [previousSelection, setPreviousSelection] = useState(selection);
+  if (previousSelection?.pid !== selection?.pid || previousSelection?.view !== selection?.view) {
+    setPreviousSelection(selection);
+    if (destination !== 'fleet') setDestination('fleet');
+  }
+  const openInboxSession = (target: InboxSession) => {
+    setDestination('fleet'); onSelect(target.pid); onSetView(target.sessionId ? 'conversation' : 'terminal');
+  };
+  const inboxNav = <div className="mainpane-navigation"><InboxNav active={destination} needsCount={inbox.needsYou.length} updatesCount={inbox.updates.length}
+    onChange={next => { setDestination(next); if (next === 'fleet') onClear(); }} /><NotificationSettings session={sessions.find(s => s.pid === selection?.pid)} /></div>;
+  if (destination !== 'fleet') return <div className="mainpane">{inboxNav}<ActivityInbox kind={destination}
+    items={destination === 'needs-you' ? inbox.needsYou : inbox.updates} onOpen={openInboxSession} /></div>;
+
 
   if (selection === null) {
     return (
       <div className="mainpane">
+        {inboxNav}
         <FleetView
           payload={{
             version: 1, generatedAt: new Date().toISOString(),
@@ -255,7 +304,7 @@ export function MainPane({
   const paneFavFull = !isPaneFav && favourites.length >= MAX_FAVOURITES;
 
   return (
-    <div className="mainpane split">
+    <div className="mainpane-frame">{inboxNav}<div className="mainpane split">
       <SessionRail sessions={sessions} selectedPid={selection.pid} onSelect={onSelect} onKill={killSession}
         onReveal={revealSession} onReattach={reattachSession} onResume={resumeSession}
         // Task 5 (quick-answers design §9): Answer on a waiting session
@@ -385,6 +434,8 @@ export function MainPane({
               // Usage design, Part B: the swept fallback and the report-
               // upward callback that keeps headerContext current -- see
               // their own doc comments on ConversationView's props.
+              unobscured={!(currentViewer && viewerMode === 'sheet')}
+              inboxSession={session ?? undefined}
               context={session?.context ?? null}
               onContext={setLiveContext}
               // The foot's sub-agent chip. Same swept source as `events`
@@ -415,6 +466,6 @@ export function MainPane({
         )}
         </div>
       </section>
-    </div>
+    </div></div>
   );
 }

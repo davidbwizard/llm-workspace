@@ -530,7 +530,7 @@ describe('openSessions', () => {
     expect(open).toEqual([{
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, lastProse:null, events:null, agents:null, liveAgents:null, activity:null, tmux:false, junk:false, context:null,
+      sessionId:null, lastProse:null, lastProseId:null, events:null, agents:null, liveAgents:null, activity:null, tmux:false, junk:false, context:null,
       name:null,
     }]);
   });
@@ -1071,7 +1071,7 @@ describe('openSessionsLive', () => {
     expect(open).toEqual([{
       pid:42, provider:'codex', host:'iterm2', cwd:'/Users/me/orphan', project:'orphan',
       ageSeconds:120, rssBytes:50_000_000, match:'unknown',
-      sessionId:null, lastProse:null, events:null, agents:null, liveAgents:null, activity:null, tmux:false, junk:false, context:null,
+      sessionId:null, lastProse:null, lastProseId:null, events:null, agents:null, liveAgents:null, activity:null, tmux:false, junk:false, context:null,
       name:null,
     }]);
   });
@@ -2206,6 +2206,20 @@ describe('attentionCount', () => {
 });
 
 describe('root conversation sidebar signals',()=>{
+  it.each(['claude', 'codex'] as const)('identifies the latest %s main-thread reply, including identical repeated replies', provider => {
+    const db = openDb(':memory:');
+    insertEvents(db, [
+      ev({ provider, kind:'session.started', payload:{cwd:'/repo'}, contentHash:'start', ts:at(4) }),
+      ev({ provider, kind:'prose', payload:{text:'Done'}, contentHash:'first', ts:at(3) }),
+      ev({ provider, kind:'prose', payload:{text:'Done'}, contentHash:'second', ts:at(2) }),
+      ev({ provider, agentId:'child', kind:'prose', payload:{text:'Child answer'}, contentHash:'child', ts:at(1) }),
+    ]);
+    const processes: LiveProcess[] = [{pid:11, provider, cwd:'/repo', tty:null, host:'unknown', ageSeconds:600, rssBytes:null}];
+    const latest = db.prepare("SELECT id FROM events WHERE content_hash = 'second'").get() as {id:number};
+    expect(openSessionsLive(db, processes, NOW, {codexThreadForPid:()=> 's1'})[0])
+      .toMatchObject({lastProse:'Done', lastProseId:latest.id});
+    db.close();
+  });
   it('does not let a Codex child agent replace the main preview or completed turn',()=>{
     const db=openDb(':memory:');
     insertEvents(db,[

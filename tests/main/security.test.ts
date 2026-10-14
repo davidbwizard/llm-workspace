@@ -77,6 +77,9 @@ describe('renderer security posture', () => {
       // Fleet Mail's card badges: read-only and argument-free; main answers
       // from its own mail log (src/main/mailIpc.ts).
       'mail:badges',
+      // Main-window-only, shape-validated preferences and a rate-limited
+      // generic test notification; navigation consumes a main-owned target.
+      'notifications:get', 'notifications:set', 'notifications:take-open', 'notifications:test',
       // Per-viewer preferences (src/main/prefs.ts), kept by main so the
       // window's ORIGIN cannot partition them. 'prefs:all' is the one
       // SYNCHRONOUS channel in this app -- a sandboxed preload has no other

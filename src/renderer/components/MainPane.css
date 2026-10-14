@@ -93,3 +93,8 @@
 
 .native-terminal-note { display: flex; align-items: center; gap: 12px; padding: 8px 12px; color: var(--muted); font-size: 12px; }
 .native-terminal-note button { margin-left: auto; }
+
+.mainpane-frame { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
+
+.mainpane-navigation { display:flex; align-items:center; flex:none; background:var(--surface); border-bottom:1px solid var(--line); padding-right:12px; }
+.mainpane-navigation .inbox-nav { flex:1; border-bottom:0; }

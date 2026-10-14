@@ -40,6 +40,16 @@ Drafts and selection live in the mobile browser's storage, separate from desktop
 
 Mac file browsing, permission-mode changes, and Codex recovery controls remain desktop features. Existing prompt cards and Markdown rendering are shared with desktop; transcript HTML is not executed, and links open with opener isolation.
 
+## Attention and unread replies
+
+Desktop and mobile have **Needs you** and **Updates** beside the normal session view. Needs you includes confirmed waiting-input and waiting-permission states across folders, ordered by when that device first observed the wait. Opening a session does not dismiss its pending request. Updates includes new main-thread agent replies; tool activity and your own messages do not create unread dots.
+
+Read positions are separate on each device and survive reloads, keyed by provider and session ID. The initial session list establishes a quiet baseline. Replies are marked read only when the latest conversation is loaded, visible, and scrolled to the bottom. Terminal view, background tabs, and an offline mobile connection do not acknowledge them. The conversation marks the prior read boundary when available; if it is outside loaded history, it says so instead of inventing a position. Read state stores event IDs and fingerprints, not reply text, and retains up to 300 session records for 90 days.
+
+On desktop, the bell opens **Notifications**. Alerts are off until enabled. Choose waiting-for-you alerts, optional working-to-idle alerts, and whether to alert only while Fleet is in the background. Names and reply previews are hidden by default; a selected session can be muted. Native notification clicks revalidate the session identity before opening it. Fleet quietly baselines sessions on startup and bounds bursts to three alerts in 30 seconds. Fleet must remain running; macOS notification permissions and Focus settings control delivery. Use **Send test notification** to check this Mac's settings.
+
+Phone background push is not enabled by this update; the browser shows the live attention and unread views while connected.
+
 Use **… → Close session** beside the reply box to stop the selected agent on the Mac after confirming its name. Fleet rechecks the process identity and terminal control before sending SIGTERM. The session stays listed if the agent has not exited. Closing the browser alone still leaves agents running.
 
 The bottom toolbar places **Terminal** beside the bordered **image icon**; in terminal view it becomes **Conversation**. The **…** menu opens upward with Close session, Websites, and Copy session ID and PID (the same text format as desktop). Copy success or failure stays visible in the menu. Escape or tapping outside dismisses it.

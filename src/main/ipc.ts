@@ -1,3 +1,4 @@
+import { sanitizeForDisplay } from '../core/displayText.ts';
 import type { RemoteLifecycle } from './remote/lifecycle.ts';
 import { TerminalClients } from './terminalClients.ts';
 import { randomUUID } from 'node:crypto';
@@ -20,7 +21,7 @@ import {
   type SessionState, type OpenSession,
 } from '../fleet/state.ts';
 import type { Blocker } from '../store/signals.ts';
-import { sanitizeForTerminal, parseProcessChainHop, resolvePaths } from '../config.ts';
+import { parseProcessChainHop, resolvePaths } from '../config.ts';
 import { writeStoredTheme, type ThemeChoice } from './appearance.ts';
 import {
   getCachedLiveProcesses, refreshLiveProcesses, execFileSoft, readLiveSession, type ExecFn,
@@ -94,46 +95,6 @@ export interface FleetHistoryPayload {
   total: number;
 }
 
-// Unicode bidirectional overrides (U+202A-U+202E: LRE, RLE, PDF, LRO, RLO)
-// and isolates (U+2066-U+2069: LRI, RLI, FSI, PDI) -- e.g. U+202E
-// RIGHT-TO-LEFT OVERRIDE, the classic filename-spoofing trick. Their effect
-// is UNBOUNDED -- each re-orders how every character after it is DISPLAYED,
-// until a matching pop or the end of the string, without changing the text
-// itself. Inert in a terminal -- sanitizeForTerminal never touches them --
-// but not in a renderer, so what the user reads can differ from what the
-// agent actually wrote. This is the Trojan Source set.
-//
-// Written as \u escapes, deliberately -- not as the literal characters. An
-// earlier version of this file used the literal characters, which made the
-// set unreviewable (nobody can tell U+200B from U+200C by looking at a
-// blank space) and, worse, made this file itself a Trojan Source vector:
-// an unterminated LRE/RLO with no matching PDF reorders how the REST of
-// the file displays in an editor, diff viewer or review tool. Do not
-// "tidy" these back into literal characters.
-const BIDI_CONTROL = /[\u202a-\u202e\u2066-\u2069]/g;
-// Zero-width, no script role: zero-width space, word joiner, and the
-// byte-order mark. Deliberately NOT included here: ZWNJ/ZWJ (U+200C/U+200D)
-// are load-bearing for Persian, Arabic and Indic scripts (ZWNJ) and for
-// emoji sequences (ZWJ) -- stripping them silently corrupts correct text,
-// which is worse than leaving them, since it happens on honest content
-// every day rather than only under attack. LRM/RLM (U+200E/U+200F) are
-// also excluded: unlike the override/isolate set above, they only bias
-// adjacent neutral characters, not an unbounded span, so they cannot
-// reorder arbitrary following text the way BIDI_CONTROL's set can.
-//
-// Written as \u escapes for the same reason as BIDI_CONTROL above.
-const ZERO_WIDTH_FORMATTING = /[\u200b\u2060\ufeff]/g;
-
-/** sanitizeForTerminal (src/config.ts) strips terminal escape sequences and
- *  control characters -- correct for the terminal it was written for. It
- *  does not touch bidi overrides or zero-width formatting characters,
- *  because neither does anything on a terminal. Both do something on a
- *  renderer: this app exists to show faithfully what an agent said, so
- *  display integrity is the product, and provider text can quote arbitrary
- *  file content -- a realistic way such characters arrive. */
-function sanitizeForDisplay(s: string): string {
-  return sanitizeForTerminal(s).replace(BIDI_CONTROL, '').replace(ZERO_WIDTH_FORMATTING, '');
-}
 
 // Every SessionState field, classified into exactly one of these two lists:
 // text that can carry provider-authored prose (sanitised through
@@ -198,7 +159,7 @@ export const OPEN_SESSION_STRUCTURAL_FIELDS = [
   'context',
   // Counts this app derives from its own index, never text a model or a
   // user wrote -- nothing to sanitise, same as `events` above.
-  'agents', 'liveAgents', 'codexConnection',
+  'agents', 'liveAgents', 'codexConnection', 'lastProseId',
 ] as const satisfies readonly (keyof OpenSession)[];
 
 /** Sanitises every field named in `fields` whose current value is a string

@@ -1,0 +1,20 @@
+.inbox-nav { display:flex; flex:none; align-items:center; gap:4px; padding:8px 12px; border-bottom:1px solid var(--line); background:var(--surface); }
+.inbox-nav button { border:1px solid transparent; background:none; color:var(--muted); padding:7px 10px; border-radius:6px; font:inherit; font-size:12px; cursor:pointer; display:flex; gap:8px; align-items:center; }
+.inbox-nav button[aria-pressed="true"] { color:var(--ink); border-color:var(--line); background:var(--ground); }
+.inbox-count { font-family:var(--f-mono); font-size:11px; }
+.activity-inbox { padding:28px; overflow:auto; flex:1; min-height:0; color:var(--ink); }
+.inbox-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:24px; }
+.inbox-heading h1 { margin:0 0 8px; font-size:28px; }
+.inbox-heading p,.inbox-empty { color:var(--muted); margin:0; font-size:14px; }
+.inbox-list { list-style:none; margin:0; padding:0; display:grid; gap:12px; max-width:900px; }
+.inbox-card { padding:20px; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+.inbox-card.waiting { border-left:3px solid var(--critical); }
+.inbox-card.update { border-left:3px solid var(--accent); }
+.inbox-card-meta { display:flex; gap:12px; color:var(--muted); font-size:12px; }
+.inbox-card h2 { font-size:17px; margin:8px 0; }
+.inbox-status { color:var(--muted); font-size:12px; }
+.inbox-snippet { line-height:1.5; font-size:14px; white-space:pre-wrap; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+.inbox-card button,.inbox-heading button { border:1px solid var(--line); border-radius:6px; color:var(--ink); background:var(--ground); padding:8px 12px; cursor:pointer; font:inherit; font-size:12px; }
+.inbox-nav button:focus-visible,.inbox-card button:focus-visible,.inbox-heading button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.inbox-card .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+@media (max-width:600px) { .activity-inbox { padding:18px 12px; } .inbox-card { padding:16px; } .inbox-heading h1 { font-size:24px; } }

@@ -650,6 +650,8 @@ export interface OpenSession {
    *  sharing it. */
   sessionId: string | null;
   lastProse: string | null;
+  /** Main-thread prose event ID, also used by conversation turns. */
+  lastProseId?: number | null;
   events: number | null;
   /** Sub-agents this session has ever spawned, and how many of those are
    *  live right now -- the same pair, and the same recency heuristic, the
@@ -727,7 +729,7 @@ export interface OpenSession {
  *  (DB-targeted, further down), so the two cannot drift on what a card
  *  actually shows. */
 function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
-  sessionId: string | null; lastProse: string | null; events: number | null; activity: Activity | null;
+  sessionId: string | null; lastProse: string | null; lastProseId?: number | null; events: number | null; activity: Activity | null;
   agents?: number | null; liveAgents?: number | null;
 } | null, isTmux: (pid: number) => boolean,
   /** The name a PERSON gave this CODEX thread, or null. Codex writes no
@@ -753,6 +755,7 @@ function buildOpenSession(p: LiveProcess, m: MatchResult, enrichment: {
     // The id is still known and still true; only the enrichment is empty.
     sessionId: enrichment?.sessionId ?? (m.quality === 'unique' ? m.sessionId : null),
     lastProse: enrichment?.lastProse ?? null,
+    lastProseId: enrichment?.lastProseId ?? null,
     events: enrichment?.events ?? null,
     // `?? null`, never `?? 0`: no enrichment means no matched session to
     // count agents for, and that is not the same claim as "none".
@@ -1152,7 +1155,7 @@ export function openSessionsLive(
     p.liveSession ? [[p.liveSession.sessionId, p.liveSession.waitingFor ?? null] as const] : []));
 
   const enrichmentById = new Map<string, {
-    sessionId: string; lastProse: string | null; events: number | null; activity: Activity;
+    sessionId: string; lastProse: string | null; lastProseId: number | null; events: number | null; activity: Activity;
     agents: number; liveAgents: number;
   }>();
   // The real recency signal for compareOpenSessions' tiers 3/4 -- read
@@ -1208,8 +1211,11 @@ export function openSessionsLive(
     const rows = db.prepare(`
       SELECT session_id, COUNT(*) events, MAX(CASE WHEN provider <> 'codex' OR agent_id IS NULL THEN ts END) last_ts,
         (SELECT json_extract(payload,'$.text') FROM events p
-          WHERE p.session_id = e.session_id AND p.kind = 'prose' AND (p.provider <> 'codex' OR p.agent_id IS NULL)
+          WHERE p.session_id = e.session_id AND p.kind = 'prose' AND p.agent_id IS NULL
           ORDER BY p.ts DESC, p.id DESC LIMIT 1) last_prose,
+        (SELECT p.id FROM events p
+          WHERE p.session_id = e.session_id AND p.kind = 'prose' AND p.agent_id IS NULL
+          ORDER BY p.ts DESC, p.id DESC LIMIT 1) last_prose_id,
         (SELECT k.kind FROM events k
           WHERE k.session_id = e.session_id AND (k.provider <> 'codex' OR k.agent_id IS NULL)
           ORDER BY k.ts DESC, k.id DESC LIMIT 1) last_kind
@@ -1231,7 +1237,7 @@ export function openSessionsLive(
       if (pending) activity = pending.kind === 'questions' || pending.kind === 'elicitation'
         ? 'waiting_input' : 'waiting_permission';
       enrichmentById.set(r.session_id, {
-        sessionId: r.session_id, lastProse: r.last_prose ?? null, events: r.events ?? 0, activity,
+        sessionId: r.session_id, lastProse: r.last_prose ?? null, lastProseId: r.last_prose_id ?? null, events: r.events ?? 0, activity,
         agents: agentsById.get(r.session_id) ?? 0, liveAgents: liveAgentsById.get(r.session_id) ?? 0,
       });
       if (r.last_ts) lastActiveMsById.set(r.session_id, Date.parse(r.last_ts));

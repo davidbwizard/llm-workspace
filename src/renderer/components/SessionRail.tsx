@@ -20,6 +20,7 @@ import { lastSegment } from '../state/favourites.ts';
 import { isStackOpen, toggleStack, rememberKeys, moveRow } from '../state/groups.ts';
 import { useRailSlots } from '../state/useRailSlots.ts';
 import './SessionRail.css';
+import { useActivityInbox } from '../state/activityInbox.ts';
 
 // Sensible bounds for a drag-resized rail: narrow enough to reclaim real
 // space for the main pane, but never so narrow a card's own content (the
@@ -123,34 +124,7 @@ export function SessionRail({
   // any use for it.
   const [dragKey, setDragKey] = useState<string | null>(null);
 
-  // Unread tracking: `events` is the one counter OpenSession always grows
-  // monotonically as new agent output arrives for a uniquely-matched
-  // session (see fleet/state.ts's own doc comment on OpenSession --
-  // lastProse/events/activity are enrichment attached together, so events
-  // changing is exactly as reliable a "something new happened" signal as
-  // lastProse changing, and simpler to compare). Keyed by pid, in memory
-  // only for this run of the app -- it resets on restart.
-  //
-  // A pid's baseline is set the first time this component ever sees it
-  // (so a card's PRE-EXISTING event count is never reported as new -- only
-  // events that arrive while the rail is actually watching), and again
-  // every time that pid IS the current selection (so working in a session
-  // never causes it to light itself up the moment you look away).
-  const [seenEvents, setSeenEvents] = useState<Map<number, number>>(new Map());
-  useEffect(() => {
-    setSeenEvents(prev => {
-      let next: Map<number, number> | null = null;
-      for (const s of sessions) {
-        if (s.events == null) continue;
-        const shouldRecord = s.pid === selectedPid || !prev.has(s.pid);
-        if (shouldRecord && prev.get(s.pid) !== s.events) {
-          if (!next) next = new Map(prev);
-          next.set(s.pid, s.events);
-        }
-      }
-      return next ?? prev;
-    });
-  }, [sessions, selectedPid]);
+  const { isUnread } = useActivityInbox(sessions);
 
   // The handle sits on the rail's INNER edge (the border shared with the
   // main pane) -- which side that is depends on `side`, so both the drag
@@ -198,23 +172,8 @@ export function SessionRail({
     />
   );
 
-  // Unread is a per-viewer fact (has David actually looked at this card
-  // yet) that only this component tracks -- src/fleet/state.ts's own
-  // relevance sort (openSessions/openSessionsLive, run in the main
-  // process before `sessions` ever reaches here) has no visibility into
-  // it, and neither does useRailSlots below, which computes the row ORDER
-  // both this component and App.tsx share. isUnread is no longer fed into
-  // that order at all (see useRailSlots.ts's own doc comment for the proof
-  // that doing so was already inert, and why dropping it is what makes the
-  // computation callable from App, which cannot see this component's own
-  // `seenEvents`). What's left for isUnread here is the per-viewer signal
-  // itself: the unread DOT on a card, and the `unread` prop a folded
-  // StackCard shows for a member you have not looked at -- neither is
-  // about row order.
-  function isUnread(s: OpenSession): boolean {
-    return s.pid !== selectedPid && s.events != null && s.events > (seenEvents.get(s.pid) ?? s.events);
-  }
-
+  // The inbox store owns read receipts. The rail only displays them;
+  // unread never changes the shared row or keyboard-slot order.
   // The ONE shared row layout -- see useRailSlots.ts's own doc comment for
   // why this must be the same computation App.tsx uses for Cmd+1..9, rather
   // than a second, rail-local one that could drift from it. This component
@@ -474,7 +433,7 @@ export function SessionRail({
                         onAnswer={onAnswer} onMoveUp={move.up} onMoveDown={move.down} compact={compact}
                         // Folding a stack must not fold away the fact that
                         // something arrived in it. isUnread is this rail's
-                        // own per-viewer signal (seenEvents), so the stack
+                        // shared per-viewer read signal, so the stack
                         // cannot work it out for itself.
                         unread={row.members.some(isUnread)}
                         // A folded stack renders none of its members' own

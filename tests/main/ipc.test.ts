@@ -511,7 +511,7 @@ describe('buildFleetListPayload — process-only, never touches the index', () =
     expect(OPEN_SESSION_SANITISED_FIELDS).toEqual(['cwd', 'project', 'lastProse', 'name']);
     expect(OPEN_SESSION_STRUCTURAL_FIELDS).toEqual([
       'pid', 'host', 'ageSeconds', 'rssBytes', 'match', 'sessionId', 'provider', 'events', 'activity', 'tmux',
-      'junk', 'context', 'agents', 'liveAgents', 'codexConnection',
+      'junk', 'context', 'agents', 'liveAgents', 'codexConnection', 'lastProseId',
     ]);
   });
 
@@ -923,7 +923,7 @@ describe('defaultHop (B2)', () => {
 describe('IPC channel parity', () => {
   it('every channel main handles is exposed by the preload, and vice versa', () => {
     // Fleet Mail registers its own channels in mailIpc.ts, kept out of ipc.ts.
-    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8') + readFileSync('src/main/mailIpc.ts', 'utf8'));
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8') + readFileSync('src/main/mailIpc.ts', 'utf8') + readFileSync('src/main/notifications.ts', 'utf8'));
     const preload = strip(readFileSync('src/preload/index.ts', 'utf8'));
     const handled = [...ipc.matchAll(/ipcMain\.handle\('([^']+)'/g)].map(m => m[1]).sort();
     const exposed = [...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/g)].map(m => m[1]).sort();
@@ -1719,7 +1719,7 @@ describe('terminal:data parity', () => {
   // The parity test above only sees ipcMain.handle/ipcRenderer.invoke, so a
   // push channel is invisible to it and ships unguarded otherwise.
   it('every webContents.send channel has a matching ipcRenderer.on in preload', () => {
-    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8') + readFileSync('src/main/mailIpc.ts', 'utf8'));
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8') + readFileSync('src/main/mailIpc.ts', 'utf8') + readFileSync('src/main/notifications.ts', 'utf8'));
     const preload = strip(readFileSync('src/preload/index.ts', 'utf8'));
     const pushed = [...new Set([...ipc.matchAll(/webContents\.send\('([^']+)'/g)].map(m => m[1]))].sort();
     const heard = [...new Set([...preload.matchAll(/ipcRenderer\.on\('([^']+)'/g)].map(m => m[1]))].sort();

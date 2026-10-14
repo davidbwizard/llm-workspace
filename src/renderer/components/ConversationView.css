@@ -318,3 +318,7 @@ pre .fp:hover { text-decoration-color: var(--accent); color: var(--accent); }
 
 .convconnection { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 16px; color: var(--muted); font-size: 12px; }
 .convconnection:empty { display: none; }
+
+.conv-new-since { border-top:1px solid var(--accent); color:var(--accent); font-size:12px; padding:10px 0; margin:16px 0 8px; }
+.conv-new-since:focus { outline:2px solid var(--accent); outline-offset:4px; }
+.conv-unread-history { color:var(--muted); font-size:12px; padding:8px 0; }
