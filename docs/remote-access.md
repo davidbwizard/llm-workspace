@@ -30,7 +30,9 @@ Drafts and selection live in the mobile browser's storage, separate from desktop
 
 Mac file browsing, permission-mode changes, and Codex recovery controls remain desktop features. Existing prompt cards and Markdown rendering are shared with desktop; transcript HTML is not executed, and links open with opener isolation.
 
-Use **Close session** to stop the selected agent on the Mac after confirming its name. Fleet rechecks the process identity and terminal control before sending SIGTERM. The session stays listed if the agent has not exited. Closing the browser alone still leaves agents running.
+Use **… → Close session** beside the reply box to stop the selected agent on the Mac after confirming its name. Fleet rechecks the process identity and terminal control before sending SIGTERM. The session stays listed if the agent has not exited. Closing the browser alone still leaves agents running.
+
+The bottom toolbar places **Terminal** beside **Add image**; in terminal view it becomes **Conversation**. The **…** menu opens upward with Close session, Websites, and Copy session ID and PID (the same text format as desktop). Copy success or failure stays visible in the menu. Escape or tapping outside dismisses it.
 
 Use **Add image** beside the reply box to pick up to four PNG, JPEG, GIF or WebP images, at most 10 MB each. Thumbnails can be removed before sending; image-only replies are supported. Images upload only when you press Send, using bounded HTTP requests with one-use tickets issued to that connection. The Mac validates the file bytes and binds staged IDs to the device and session. An uncertain send preserves the draft and thumbnails; inspect the conversation before retrying. Selected images stay in memory while reconnecting, but are not saved across page reloads or changing sessions. Unsent uploads are discarded on disconnect; files handed to the agent use the existing temporary attachment retention.
 
@@ -45,7 +47,7 @@ tailscale serve --bg --https=8443 http://127.0.0.1:3000
 tailscale serve status --json
 ```
 
-Save `https://your-mac.your-tailnet.ts.net:8443` as the preview URL. Open **Websites** in the mobile session to see links for the selected project. **Refresh websites** checks availability again. Fleet checks whether the configured loopback port accepts connections; this is a reachability check, not proof that the website or its backend is healthy.
+Save `https://your-mac.your-tailnet.ts.net:8443` as the preview URL. Open **… → Websites** beside the reply box to see links for the selected project. **Refresh websites** checks availability again. Fleet checks whether the configured loopback port accepts connections; this is a reachability check, not proof that the website or its backend is healthy.
 
 Preview pages are a different origin from Fleet and cannot obtain Fleet's socket tickets or send authenticated controls. Fleet uses no authentication cookies. Preview links use `noopener noreferrer`.
 
@@ -71,3 +73,5 @@ Remaining device checks include phone/tablet keyboard behavior, approvals, suspe
 Automated acceptance for mobile controls on October 14: **3,419 tests pass** across 161 files, TypeScript checking and both production builds pass. HTTP/WebSocket tests cover upload origin checks, one-use tickets, validation, ownership and disconnect revocation; close tests inject signals and never stop a live agent. The independent review found a session-switching upload race, resolved by serializing upload/send at the connection level and refusing to send after a connection change. Phone (390px) and tablet (820px) fixture layouts were inspected.
 
 The packaged controls build is `dist/mobile-controls/mac-arm64/Fleet.app` in the feature worktree. At verification, the running main Fleet process was still the folder-grouping build started October 14 at 10:07:21. Quit Fleet, launch the controls build, and refresh the mobile page to use it.
+
+Toolbar follow-up: the 12 mobile renderer/connection tests and TypeScript check pass. Both production bundles and the `dist/mobile-toolbar/mac-arm64/Fleet.app` package build successfully; phone and tablet fixture layouts were checked with the menu open.

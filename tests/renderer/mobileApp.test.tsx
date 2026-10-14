@@ -119,13 +119,15 @@ it('requires confirmation before closing the named session and allows cancellati
   const f = controlsFixture();
   try {
     fireEvent.click(await screen.findByText('Phone task'));
-    fireEvent.click(screen.getByRole('button', { name: 'Close session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Session actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close session' }));
     const dialog = screen.getByRole('dialog', { name: 'Close session' });
     expect(within(dialog).getByText('Close Phone task?')).toBeTruthy();
     expect(f.request.mock.calls.some(c => c[0] === 'close')).toBe(false);
     fireEvent.click(within(dialog).getByText('Cancel'));
     expect(screen.queryByRole('dialog')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Close session' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Session actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close session' }));
     fireEvent.click(screen.getByText('Stop session'));
     await waitFor(() => expect(f.request).toHaveBeenCalledWith('close', { handle: 'h' }));
     expect(await screen.findByText(/Close requested/)).toBeTruthy();
@@ -154,7 +156,8 @@ it('shows website setup guidance and refreshes configured private links', async 
   const f = controlsFixture();
   try {
     fireEvent.click(await screen.findByText('Phone task'));
-    fireEvent.click(screen.getByRole('button', { name: 'Websites' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Session actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Websites' }));
     expect(screen.getByText(/No websites connected/)).toBeTruthy();
     await waitFor(() => expect(screen.getByText('Refresh websites')).toBeTruthy());
     f.request.mockImplementation(async op => op === 'previews' ? { ok: true, value: [{ id: 'site', label: 'My app', url: 'https://mac.tail123.ts.net:8443', available: true }] } : { ok: true, value: [] });
@@ -163,4 +166,46 @@ it('shows website setup guidance and refreshes configured private links', async 
     expect(link.getAttribute('href')).toBe('https://mac.tail123.ts.net:8443');
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
   } finally { f.view.unmount(); }
+});
+
+it('keeps terminal and the upward actions menu beside images, with copy feedback and dismissal', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  const f = controlsFixture();
+  try {
+    fireEvent.click(await screen.findByText('Phone task'));
+    const toolbar = screen.getByRole('group', { name: 'Reply tools' });
+    expect(within(toolbar).getByLabelText('Upload images')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Reply'), { target: { value: 'Keep draft' } });
+    fireEvent.click(within(toolbar).getByRole('button', { name: 'Terminal' }));
+    fireEvent.click(within(toolbar).getByRole('button', { name: 'Conversation' }));
+    expect((screen.getByLabelText('Reply') as HTMLTextAreaElement).value).toBe('Keep draft');
+    const more = within(toolbar).getByRole('button', { name: 'Session actions' });
+    fireEvent.click(more);
+    const menu = screen.getByRole('menu', { name: 'Session actions' });
+    fireEvent.keyDown(menu, { key: 'End' });
+    expect(document.activeElement).toBe(within(menu).getByRole('menuitem', { name: 'Copy session ID and PID' }));
+    expect(within(menu).getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Close session', 'Websites', 'Copy session ID and PID']);
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Copy session ID and PID' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('pid 10 session sid'));
+    expect(await screen.findByRole('menuitem', { name: 'Copied' })).toBeTruthy();
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull(); expect(document.activeElement).toBe(more);
+    fireEvent.click(more); fireEvent.pointerDown(screen.getByLabelText('Reply'));
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(f.request.mock.calls.some(c => c[0] === 'send')).toBe(false);
+  } finally { f.view.unmount(); vi.unstubAllGlobals(); }
+});
+
+it('keeps copy failure visible in the menu', async () => {
+  vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } });
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const f = controlsFixture();
+  try {
+    fireEvent.click(await screen.findByText('Phone task'));
+    fireEvent.click(screen.getByRole('button', { name: 'Session actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy session ID and PID' }));
+    expect(await screen.findByRole('menuitem', { name: 'Copy failed' })).toBeTruthy();
+    expect(screen.getByRole('menu')).toBeTruthy();
+  } finally { f.view.unmount(); vi.unstubAllGlobals(); error.mockRestore(); }
 });
