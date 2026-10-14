@@ -1744,7 +1744,8 @@ describe("session:launch / session:reattach -- Task 13's real handlers", () => {
     const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
     expect(ipc).toMatch(/import\s*\{[^}]*launchSession[^}]*\}\s*from\s*'\.\/launch\.ts'/);
     expect(ipc).toMatch(/import\s*\{[^}]*reattachSession[^}]*\}\s*from\s*'\.\/launch\.ts'/);
-    const launchHandler = ipc.match(/ipcMain\.handle\(\s*'session:launch',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
+    expect(ipc).toMatch(/'session:launch',[^\n]*launchFromFleet\(/);
+    const launchHandler = ipc.match(/const launchFromFleet = async ([\s\S]*?)\n {2}\};/)?.[1] ?? '';
     const reattachHandler = ipc.match(/ipcMain\.handle\(\s*'session:reattach',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
     expect(launchHandler).toMatch(/launchSession\(/);
     expect(reattachHandler).toMatch(/reattachSession\(/);
@@ -1760,7 +1761,8 @@ describe("session:launch / session:reattach -- Task 13's real handlers", () => {
   it('session:launch puts the session name through launchCommand, and refuses when it is rejected', () => {
     const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
     expect(ipc).toMatch(/import\s*\{[^}]*launchCommand[^}]*\}\s*from\s*'\.\/launch\.ts'/);
-    const launchHandler = ipc.match(/ipcMain\.handle\(\s*'session:launch',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
+    expect(ipc).toMatch(/'session:launch',[^\n]*launchFromFleet\(/);
+    const launchHandler = ipc.match(/const launchFromFleet = async ([\s\S]*?)\n {2}\};/)?.[1] ?? '';
     expect(launchHandler).toMatch(/launchCommand\(/);
     // The refusal must come BEFORE launchSession is ever called.
     const refusal = launchHandler.indexOf("status: 'failed', reason: command.reason");
@@ -1793,7 +1795,8 @@ describe("session:launch / session:reattach -- Task 13's real handlers", () => {
   it("session:watch's ingestSpool dependency calls notifySessionChanged", () => {
     const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8'));
     expect(ipc).toMatch(/import\s*\{[^}]*notifySessionChanged[^}]*\}\s*from\s*'\.\/sessionLive\.ts'/);
-    const watchHandler = ipc.match(/ipcMain\.handle\(\s*'session:watch',([\s\S]*?)\n {2}\}\);/)?.[1] ?? '';
+    expect(ipc).toMatch(/return watchFleetSession!\('desktop'/);
+    const watchHandler = ipc.match(/watchFleetSession = ([\s\S]*?)\n {2}\};/)?.[1] ?? '';
     const ingestDep = watchHandler.match(/ingestSpool:\s*\(\)\s*=>\s*\{([\s\S]*?)\},\s*\}\),/)?.[1] ?? '';
     expect(ingestDep).toMatch(/notifySessionChanged\(touched\)/);
     // Guards against a version that calls it unconditionally: it must only

@@ -5,7 +5,7 @@ import {
   attachTerminal, detachTerminal, detachAllTerminals, resizeTerminal, sendRawFor,
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry } from '../../src/main/sessions.ts';
-import { newSession, type TmuxResult } from '../../src/main/tmux.ts';
+import { newSession, resizeWindow, type TmuxResult } from '../../src/main/tmux.ts';
 
 function fakeWin(sent: unknown[]) {
   return {
@@ -435,6 +435,27 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
     detachAllTerminals();
     clearRegistry();
     killTestSession();
+  });
+
+  it('keeps independent ignore-size viewers alive when the phone detaches', async () => {
+    killTestSession();
+    expect(newSession(TEST_SESSION, process.cwd(), 'bash', 100, 30).ok).toBe(true);
+    await delay(200);
+    registerSession(TEST_PID, TEST_SESSION);
+    const desktop: unknown[] = []; const phone: unknown[] = [];
+    expect(await attachTerminal(TEST_PID, 100, 30, fakeWin(desktop), {}, 0, 'desktop', true)).toEqual({ status: 'attached' });
+    expect(await attachTerminal(TEST_PID, 100, 30, fakeWin(phone), {}, 0, 'phone', true)).toEqual({ status: 'attached' });
+    await delay(200);
+    expect(resizeWindow(TEST_SESSION, 100, 30).ok).toBe(true);
+    resizeTerminal(TEST_PID, 40, 20, {}, 'phone');
+    await delay(150);
+    expect(execFileSync('tmux', ['display-message', '-p', '-t', `=${TEST_SESSION}:`, '#{pane_width}']).toString().trim()).toBe('100');
+    detachTerminal(TEST_PID, 'phone');
+    execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, '-l', 'echo DESKTOP_SURVIVES']);
+    execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, 'Enter']);
+    await delay(250);
+    expect(desktop.map(payloadData).join('')).toContain('DESKTOP_SURVIVES');
+    expect(() => execFileSync('tmux', ['has-session', '-t', `=${TEST_SESSION}`])).not.toThrow();
   });
 
   it('attaches as a real client and streams real pane bytes through the coalescer', async () => {

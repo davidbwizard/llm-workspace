@@ -103,6 +103,8 @@ declare global {
       // The recovery path for reattach's 'killed_not_relaunched' state --
       // see preload/index.ts's own comment on it.
       resume: (sessionId: string, cwd: string, cols: number, rows: number) => Promise<LaunchResult>;
+      takeTerminalControl?: (pid: number) => Promise<unknown>;
+      onTerminalControl?: (cb: (payload: { pid: number; controlling: boolean; cols: number; rows: number }) => void) => () => void;
       onTerminalData: (cb: (payload: TerminalDataPayload) => void) => () => void;
       onTerminalExit: (cb: (payload: { pid: number; exhausted: boolean }) => void) => () => void;
       // Main validates the value against its own three literals

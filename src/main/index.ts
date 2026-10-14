@@ -17,7 +17,7 @@ import { refreshHelperIfInstalled } from '../hooks/switch.ts';
 import { refreshStatusLineIfInstalled } from '../hooks/usageSwitch.ts';
 import { pruneSnapshots } from '../providers/claude/statusLine.ts';
 import { resolvePaths } from '../config.ts';
-import { registerIpc, registerPrefsIpc, pushFleet, refreshPushEnrichment, refreshChecks } from './ipc.ts';
+import { registerIpc, registerPrefsIpc, pushFleet, refreshPushEnrichment, refreshChecks, fleetTerminals } from './ipc.ts';
 import { refreshLiveProcesses } from '../discovery/live.ts';
 import { codexRecovery, codexDisplay, refreshCodexDisplay } from './codexRecoveryRuntime.ts';
 import { adoptRunningSessions } from './sessions.ts';
@@ -123,7 +123,8 @@ function createWindow(): void {
   // before (leaked processes). watchSessionFor(null, ...) is idempotent
   // (a no-op with nothing watched), so this is safe even when the window
   // closing was itself the trigger that already tore the watch down.
-  win.on('closed', () => { mainWindow = null; watchSessionFor(null, NOOP_WATCH_DEPS); });
+  win.on('closed', () => { mainWindow = null; watchSessionFor(null, NOOP_WATCH_DEPS);
+    fleetTerminals.release('desktop'); });
 
   win.once('ready-to-show', () => win.show());
 
@@ -457,6 +458,7 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 
 app.on('before-quit', () => {
   releaseAllSessionClients();
+  fleetTerminals.close();
   if (spoolTimer) clearInterval(spoolTimer);
   if (discoveryTimer) clearInterval(discoveryTimer);
   // Cancels a coalesced push already scheduled but not yet fired. Without
@@ -468,6 +470,7 @@ app.on('before-quit', () => {
   // 'closed' handler's own call to this (win.on('closed') above), since
   // before-quit runs regardless of whether that handler already fired.
   watchSessionFor(null, NOOP_WATCH_DEPS);
+    fleetTerminals.release('desktop');
   if (mailPushTimer) clearTimeout(mailPushTimer);
   postOffice?.stop();
   mailDb?.close();

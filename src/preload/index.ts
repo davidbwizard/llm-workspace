@@ -152,6 +152,12 @@ const api = {
   // the provider is hardcoded to 'claude', never taken from the renderer.
   resume: (sessionId: string, cwd: string, cols: number, rows: number) =>
     ipcRenderer.invoke('session:resume', sessionId, cwd, cols, rows),
+  takeTerminalControl: (pid: number) => ipcRenderer.invoke('session:control', pid),
+  onTerminalControl: (cb: (payload: { pid: number; controlling: boolean; cols: number; rows: number }) => void) => {
+    const handler = (_e: unknown, payload: { pid: number; controlling: boolean; cols: number; rows: number }) => cb(payload);
+    ipcRenderer.on('terminal:control', handler);
+    return () => ipcRenderer.off('terminal:control', handler);
+  },
   onTerminalData: (cb: (payload: unknown) => void) => {
     const handler = (_e: unknown, payload: unknown) => cb(payload);
     ipcRenderer.on('terminal:data', handler);

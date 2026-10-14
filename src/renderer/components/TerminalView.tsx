@@ -35,6 +35,7 @@ export function TerminalView({ pid }: { pid: number }) {
   // fires at stream rate -- both are rare, one-time-per-attachment events.
   const [refusalText, setRefusalText] = useState<string | null>(null);
   const [gapDetected, setGapDetected] = useState(false);
+  const [controlling, setControlling] = useState(true);
 
   useEffect(() => {
     setRefusalText(null);
@@ -69,6 +70,7 @@ export function TerminalView({ pid }: { pid: number }) {
     fit.fit();
 
     let alive = true;
+    let ownsInput = true;
 
     // That first fit measures whatever width this element has on the mount
     // tick, which is before the rail beside it has taken its share of the row
@@ -109,8 +111,8 @@ export function TerminalView({ pid }: { pid: number }) {
     // A real tmux client -- attach spawns `tmux attach` inside a pty --
     // learns our size the moment the pty is created at it, and pty.resize
     // (main) makes tmux follow every resize after that on its own.
-    const onResize = term.onResize(({ cols, rows }) => { void api.resize(pid, cols, rows); });
-    const ro = new ResizeObserver(() => fit.fit());
+    const onResize = term.onResize(({ cols, rows }) => { if (ownsInput) void api.resize(pid, cols, rows); });
+    const ro = new ResizeObserver(() => { if (ownsInput) fit.fit(); });
     ro.observe(el);
 
     // Nothing to queue any more: tmux redraws its own full screen the
@@ -122,6 +124,13 @@ export function TerminalView({ pid }: { pid: number }) {
       // this filter, one session's output would land in another's terminal.
       if (p.pid !== pid) return;
       applyPayload(p);
+    });
+    const unsubControl = api.onTerminalControl?.(p => {
+      if (p.pid !== pid) return;
+      ownsInput = p.controlling;
+      setControlling(p.controlling);
+      term.options.disableStdin = !p.controlling;
+      if (p.controlling) fit.fit(); else term.resize(p.cols, p.rows);
     });
     const unsubExit = api.onTerminalExit(({ pid: exitedPid, exhausted }) => {
       if (exitedPid !== pid) return;
@@ -152,7 +161,7 @@ export function TerminalView({ pid }: { pid: number }) {
       void bridge.attach(pid, term.cols, term.rows).then(r => {
         const res = r as AttachResult;
         if (!alive) return;
-        if (res.status === 'refused') setRefusalText(ATTACH_REFUSAL_TEXT[res.reason]);
+        if (res.status === 'refused') setRefusalText(ATTACH_REFUSAL_TEXT[res.reason] ?? 'Terminal is unavailable. Reopen the session to retry.');
       }).catch(err => {
         if (!alive) return;
         console.error('Terminal attach failed:', err);
@@ -160,12 +169,13 @@ export function TerminalView({ pid }: { pid: number }) {
       });
     }
 
-    const onData = term.onData(text => { void api.sendRaw(pid, text); });
+    const onData = term.onData(text => { if (ownsInput) void api.sendRaw(pid, text); });
 
     return () => {
       alive = false;
       unsub();
       unsubExit();
+      unsubControl?.();
       onData.dispose();
       onResize.dispose();
       cancelAnimationFrame(firstFrame);
@@ -181,6 +191,9 @@ export function TerminalView({ pid }: { pid: number }) {
 
   return (
     <div className="term-wrap">
+      {!controlling && <p className="term-gap" role="status">Viewing terminal. <button onClick={() => {
+        void window.fleet?.takeTerminalControl?.(pid).catch(error => { console.error('Could not take terminal control:', error); });
+      }}>Take control</button></p>}
       {gapDetected && (
         <p className="term-gap" role="status">Some output may be missing -- a message was dropped.</p>
       )}
