@@ -22,6 +22,8 @@ Official references: [Tailscale Serve](https://tailscale.com/docs/features/tails
 
 ## Using sessions
 
+Mobile conversations use “Your messages in a bubble” by default: your messages are right-aligned in neutral bubbles and agent replies stay left-aligned without a margin rule.
+
 The mobile list follows Fleet's existing discovery. An external session may be view only when Fleet cannot verify a controllable tmux binding. Select a conversation, send a reply, answer a prompt, or open Terminal. New session shows your favourite folders, offers known projects, and accepts an optional name for either provider; mobile cannot browse arbitrary Mac directories.
 
 Desktop and mobile have independent selected-session watchers and terminal attachments. One Fleet device at a time controls each terminal. Observers see the owner's terminal dimensions and can choose Take control. Closing a browser connection releases only that device's resources; it does not kill the agent. Other terminal programs outside Fleet are outside Fleet's ownership arbitration.

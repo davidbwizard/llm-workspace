@@ -33,7 +33,10 @@
 .mobile-back { display:none; }
 .mobile-transcript { overflow:auto; flex:1; padding:24px max(20px,calc((100% - 760px)/2)); overscroll-behavior:contain; }
 .mobile-transcript article { margin-bottom:28px; line-height:1.65; overflow-wrap:anywhere; }
-.mobile-transcript article[data-role=assistant] { border-left:2px solid var(--accent); padding-left:16px; }
+/* Mobile defaults to desktop's “Your messages in a bubble” style. */
+.mobile-transcript article[data-role=user] { width:fit-content; max-width:78%; margin-left:auto; padding:8px 12px; background:var(--raised); border:1px solid var(--line-soft); border-radius:var(--r-md); color:var(--ink-2); }
+.mobile-transcript article[data-role=user] small { text-align:right; }
+.mobile-transcript article[data-role=user] p:last-child { margin-bottom:0; }
 .mobile-transcript article small { display:block; color:var(--muted); margin-bottom:8px; }
 .mobile-transcript pre { overflow:auto; }
 .mobile-transcript p { margin:0 0 12px; }
