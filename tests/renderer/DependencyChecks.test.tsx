@@ -170,9 +170,9 @@ describe('the app installs nothing', () => {
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     panel(readiness([check('tmux', 'missing'), check('claude', 'ok'), check('codex', 'ok')]));
     fireEvent.click(screen.getByRole('button', { name: 'Copy brew install tmux' }));
-    // The write is deferred by a microtask on purpose (state/useCopy.ts):
+    // The shared copy hook handles both immediate throws and rejections;
     // a clipboard accessor that THROWS rather than rejecting has to land in
-    // the same failure path, so it is wrapped in a resolved promise.
+    // the same failure path as an asynchronous rejection.
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('brew install tmux'));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy());
   });

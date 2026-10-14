@@ -891,7 +891,7 @@ describe('OpenSessionCard', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Copy session id and pid' }));
       // The menu stays open: this item's only result IS its label, so
       // closing it would hide the outcome. Awaiting that label is also what
-      // lets useCopy's deferred write land before the assertion below --
+      // lets useCopy's success acknowledgement land before the assertion below --
       // it goes through a promise, so a synchronous check sees nothing.
       await screen.findByRole('button', { name: 'Copied' });
       expect(writeText).toHaveBeenCalledWith('pid 4242 session sess-abc');

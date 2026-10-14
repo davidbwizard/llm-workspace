@@ -9,8 +9,8 @@
 // work.
 //
 // navigator.clipboard is absent in jsdom and THROWS rather than rejecting
-// in some browsers, so the call is wrapped in a resolved promise: both a
-// throw and a rejection land in the same failure path.
+// in some browsers. Invoke it inside the user gesture for Safari, and
+// handle both synchronous throws and promise rejections.
 import { useEffect, useRef, useState } from 'react';
 
 export const COPY_LABEL = { idle: 'Copy', copied: 'Copied', failed: 'Copy failed' } as const;
@@ -41,12 +41,13 @@ export function useCopy(): { state: CopyState; copy: (text: string) => void } {
   };
 
   const copy = (text: string) => {
-    Promise.resolve()
-      .then(() => navigator.clipboard.writeText(text))
-      .then(() => settle('copied'), (err: unknown) => {
-        console.error('clipboard write failed:', err);
-        settle('failed');
-      });
+    const failed = (err: unknown) => {
+      console.error('clipboard write failed:', err);
+      settle('failed');
+    };
+    try {
+      navigator.clipboard.writeText(text).then(() => settle('copied'), failed);
+    } catch (err) { failed(err); }
   };
 
   return { state, copy };

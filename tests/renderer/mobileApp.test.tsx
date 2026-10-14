@@ -209,3 +209,20 @@ it('keeps copy failure visible in the menu', async () => {
     expect(screen.getByRole('menu')).toBeTruthy();
   } finally { f.view.unmount(); vi.unstubAllGlobals(); error.mockRestore(); }
 });
+it('copies on the tap even when the menu loses focus before click, as on Safari', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  const f = controlsFixture();
+  try {
+    fireEvent.click(await screen.findByText('Phone task'));
+    fireEvent.click(screen.getByRole('button', { name: 'Session actions' }));
+    const copy = screen.getByRole('menuitem', { name: 'Copy session ID and PID' });
+    fireEvent.pointerDown(copy);
+    fireEvent.blur(document.activeElement!, { relatedTarget: null });
+    expect(screen.getByRole('menu')).toBeTruthy();
+    fireEvent.click(copy);
+    // The clipboard request must start in the click handler, before any promise continuation.
+    expect(writeText).toHaveBeenCalledWith('pid 10 session sid');
+    expect(await screen.findByRole('menuitem', { name: 'Copied' })).toBeTruthy();
+  } finally { f.view.unmount(); vi.unstubAllGlobals(); }
+});

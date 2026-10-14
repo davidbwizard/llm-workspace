@@ -16,7 +16,8 @@ export function MobileSessionMenu({ pid, sessionId, canClose, onClose, onWebsite
     return () => document.removeEventListener('pointerdown', outside);
   }, [open]);
   return <div className="mobile-menu-anchor" ref={root} onBlur={event => {
-    if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+    // Safari taps can blur to null before click; outside pointerdown still dismisses the menu.
+    if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
   }} onKeyDown={event => {
     if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); dismiss(); }
     if (!open || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
