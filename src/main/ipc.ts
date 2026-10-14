@@ -1723,10 +1723,10 @@ export function registerIpc(
       send: payload => {
         if (proc?.provider === 'codex' && payload.sessionId) {
           codexAppServer.watch(payload.sessionId, () => notifySessionChanged(new Set([payload.sessionId!])));
-        } else codexAppServer.stop();
+        } else codexAppServer.release('desktop');
         if (win && !win.isDestroyed()) win.webContents.send('session:live', payload);
       },
-      onClose: () => codexAppServer.stop(),
+      onClose: () => codexAppServer.release('desktop'),
     };
     const proc = validPid === null ? null : getCachedLiveProcesses().find(p => p.pid === validPid);
     return watchSessionFor(validPid, deps);

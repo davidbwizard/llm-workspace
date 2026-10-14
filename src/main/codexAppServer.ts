@@ -1,3 +1,4 @@
+import { CodexSubscriptions } from './codexSubscriptions.ts';
 import { isUtf8 } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
 import { createConnection, type Socket } from 'node:net';
@@ -596,7 +597,7 @@ export class CodexAppServer {
   }
 }
 
-export const codexAppServer = new CodexAppServer();
+export const codexAppServer = new CodexSubscriptions(() => new CodexAppServer());
 
 export type CodexNameResult = { ok: true } | { ok: false; reason: string };
 

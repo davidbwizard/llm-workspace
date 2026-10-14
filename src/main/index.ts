@@ -23,7 +23,7 @@ import { codexRecovery, codexDisplay, refreshCodexDisplay } from './codexRecover
 import { adoptRunningSessions } from './sessions.ts';
 import { readStoredTheme } from './appearance.ts';
 import { openPrefs, type PrefsDb } from './prefs.ts';
-import { notifySessionChanged, pushSessionLive, watchSessionFor, type WatchDeps } from './sessionLive.ts';
+import { notifySessionChanged, pushSessionLive, watchSessionFor, releaseAllSessionClients, type WatchDeps } from './sessionLive.ts';
 import { contextMenuTemplate } from './contextMenu.ts';
 import { applyLoginPathOnce } from './loginPath.ts';
 
@@ -456,6 +456,7 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
 app.on('before-quit', () => {
+  releaseAllSessionClients();
   if (spoolTimer) clearInterval(spoolTimer);
   if (discoveryTimer) clearInterval(discoveryTimer);
   // Cancels a coalesced push already scheduled but not yet fired. Without

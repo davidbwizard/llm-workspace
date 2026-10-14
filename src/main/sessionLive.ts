@@ -433,112 +433,73 @@ interface WatchState {
   sessionId: string | null;
   watcher: WatchHandle | null;
   timer: NodeJS.Timeout | null;
-  deps: WatchDeps;
+  subscribers: Map<string, WatchDeps>;
 }
 
-/** The one conversation pane's watch, if any. A module-level singleton, not
- *  per-window state: this app shows one conversation pane at a time (spec
- *  2026-09-17-live-conversation-feedback), and pushSessionLive/
- *  notifySessionChanged both take no pid of their own -- they act on
- *  whichever watch is current, which only makes sense if there is exactly
- *  one. */
-let watchState: WatchState | null = null;
+const watches = new Map<number, WatchState>();
+const clients = new Map<string, number>();
 
-/** Releases whatever is currently watched -- the timer first (a pending
- *  coalesced push must never fire after its watcher, and the session it was
- *  for, are gone) and then the watcher itself. Safe to call with nothing
- *  watched (every call site, including every early-return in
- *  watchSessionFor below, goes through this rather than checking first). */
-function teardownWatch(): void {
-  if (!watchState) return;
-  if (watchState.timer) clearTimeout(watchState.timer);
-  if (watchState.watcher) watchState.watcher.close();
-  watchState.deps.onClose?.();
-  watchState = null;
+export function releaseSessionClient(clientId: string): void {
+  const pid = clients.get(clientId);
+  if (pid === undefined) return;
+  clients.delete(clientId);
+  const state = watches.get(pid);
+  if (!state) return;
+  const deps = state.subscribers.get(clientId);
+  state.subscribers.delete(clientId);
+  if (state.subscribers.size === 0) {
+    watches.delete(pid);
+    if (state.timer) clearTimeout(state.timer);
+    state.watcher?.close();
+  }
+  deps?.onClose?.();
 }
 
-/** Starts a fs.watch on Claude's own ~/.claude/sessions/<pid>.json for a
- *  verified-live Claude pid -- the file Claude Code flips busy/idle/waiting
- *  in as it works (src/providers/claude/liveSession.ts), so watching it is
- *  what gets a working/idle/waiting flip to the pane in ~0ms instead of
- *  waiting on the next transcript write or the 5s sweep. The path is built
- *  from `pid` alone, which by the time this is called has already passed
- *  watchSessionFor's own validation (a positive integer present in a real
- *  discovery sweep) -- never from renderer-supplied text, which is the
- *  whole point of validating before this is ever reached.
- *
- *  Returns null on any failure to start (fs.watch can throw synchronously,
- *  e.g. ENOENT if the file does not exist yet) -- logged, never thrown,
- *  since a failed fast-path watch must not stop the pid from being watched
- *  at all: the pane still gets updates from the ordinary watcher/spool/
- *  ingest pushes and the 5s sweep, exactly as a Codex session always does. */
-function startClaudeWatch(pid: number, watch: (path: string) => WatchHandle): WatchHandle | null {
-  const path = join(resolvePaths(homedir()).claudeLiveSessions, `${pid}.json`);
+export function releaseAllSessionClients(): void {
+  for (const id of [...clients.keys()]) releaseSessionClient(id);
+}
+
+function pushWatch(state: WatchState): void {
+  if (watches.get(state.pid) !== state) return;
+  const deps = state.subscribers.values().next().value as WatchDeps | undefined;
+  if (!deps) return;
+  const payload = deps.buildPayload();
+  if (!payload) {
+    for (const client of [...state.subscribers.keys()]) releaseSessionClient(client);
+    return;
+  }
+  state.sessionId = payload.sessionId;
+  for (const subscriber of [...state.subscribers.values()]) subscriber.send(payload);
+}
+
+function schedulePush(state: WatchState): void {
+  if (state.timer || watches.get(state.pid) !== state) return;
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    try { pushWatch(state); }
+    catch (error) { console.error('session live push failed:', error); }
+  }, 250);
+}
+
+function startClaudeWatch(state: WatchState, watch: (path: string) => WatchHandle): WatchHandle | null {
+  const path = join(resolvePaths(homedir()).claudeLiveSessions, `${state.pid}.json`);
   try {
     const handle = watch(path);
-    handle.on('error', err => {
-      console.error('session live watch failed, falling back to the 5s sweep:', { pid, path, error: err });
-      // A watcher that has emitted 'error' is not guaranteed to have closed
-      // its own underlying handle (Node's docs do not promise this) --
-      // closed explicitly here rather than left to leak, then dropped from
-      // watchState so teardownWatch never double-closes it. The session
-      // itself stays watched; only the fast path is gone.
-      handle.close();
-      if (watchState && watchState.watcher === handle) watchState.watcher = null;
+    handle.on('error', error => {
+      console.error('session live watch failed, falling back to the 5s sweep:', { pid: state.pid, path, error });
+      if (state.watcher === handle) { state.watcher = null; handle.close(); }
     });
-    // The whole point of this watch: a status flip (working/idle/waiting)
-    // with no accompanying transcript write -- most visibly Claude entering
-    // a question or permission prompt, which by definition stops writing --
-    // otherwise reaches the pane only on the 5s sweep. Guarded on `handle`
-    // still being the tracked watcher, same as the 'error' handler above,
-    // so a change on a watcher that has already been superseded (a fast
-    // session switch) or closed on error cannot schedule a push for
-    // whatever is watched now.
-    //
-    // Caveat: if Claude Code ever rewrites this file by atomic rename
-    // rather than writing it in place, fs.watch on the path stops emitting
-    // after the first write (a Node/OS limitation, not fixable here). The
-    // 5s sweep remains the real backstop regardless of whether this fires.
-    handle.on('change', () => {
-      if (watchState?.watcher === handle) schedulePush();
-    });
+    handle.on('change', () => { if (state.watcher === handle) schedulePush(state); });
     return handle;
-  } catch (err) {
-    console.error('session live watch failed to start, falling back to the 5s sweep:', { pid, path, error: err });
+  } catch (error) {
+    console.error('session live watch failed to start, falling back to the 5s sweep:', { pid: state.pid, path, error });
     return null;
   }
 }
 
-/** Starts, moves, or stops the conversation pane's live watch. `pid` is
- *  untrusted renderer input (session:watch's own argument, src/main/ipc.ts)
- *  and is revalidated here regardless of what the preload's type signature
- *  claims: a positive integer, and present in `deps.processes()` -- the
- *  discovery cache the rest of this app already trusts as "a process we
- *  ourselves found running" -- or the call is refused and logged. Nothing
- *  else the renderer could send ever reaches a file path.
- *
- *  Validates BEFORE tearing anything down, and a refusal leaves whatever was
- *  already watched untouched and still pushing -- fix round 1 (review of
- *  d3d5010): tearing down unconditionally meant a refused pid arriving
- *  mid-session-switch (0, -1, 1.5, or a pid that had just fallen out of the
- *  discovery cache) silently killed the live-push channel for the pane that
- *  WAS working, with nothing surfaced beyond a log line, until the renderer
- *  happened to call this again with a good pid. `pid: null` is the one
- *  exception -- the renderer's own explicit "stop" (closing the pane, or
- *  switching to a session's Terminal view) -- which always tears down,
- *  since there is no "existing good watch to protect" reading of a
- *  deliberate stop request.
- *
- *  Returns whether a session is now being watched: true only for a
- *  validated pid that started (or moved) a watch, false for null and for
- *  every refusal (including a refusal that left a prior watch running --
- *  the return value answers "is a session now being watched BECAUSE OF THIS
- *  CALL", not "is one being watched at all"). */
-export function watchSessionFor(pid: number | null, deps: WatchDeps): boolean {
-  if (pid === null) {
-    teardownWatch();
-    return false;
-  }
+/** A client owns a subscription, never the shared watcher or agent. */
+export function subscribeSession(clientId: string, pid: number | null, deps: WatchDeps): boolean {
+  if (pid === null) { releaseSessionClient(clientId); return false; }
   if (!Number.isInteger(pid) || pid <= 0) {
     console.error('session:watch refused a pid that is not a positive integer:', pid);
     return false;
@@ -548,70 +509,33 @@ export function watchSessionFor(pid: number | null, deps: WatchDeps): boolean {
     console.error('session:watch refused a pid absent from the discovery cache:', pid);
     return false;
   }
-
-  teardownWatch();
-  const watcher = proc.provider === 'claude' ? startClaudeWatch(pid, deps.watch ?? defaultWatch) : null;
-
-  // watchState is assigned BEFORE buildPayload runs, not after, so the
-  // watcher just opened above is reachable through it even if buildPayload
-  // throws (it reaches db.prepare(...).get() and currentBlockers, so a closed
-  // or busy database can throw). Every teardown path -- teardownWatch
-  // itself, win.on('closed'), before-quit -- reaches the watcher only
-  // through watchState, so assigning it after a call that can throw would
-  // leave the watcher referenced by nothing, unrecoverable for the life of
-  // the process.
-  watchState = { pid, sessionId: null, watcher, timer: null, deps };
-  // Pushed once immediately, before returning, so the pane is not left
-  // blank until the first change -- the same reasoning pushFleet's own
-  // callers apply on startup (src/main/index.ts).
+  releaseSessionClient(clientId);
+  let state = watches.get(pid);
+  if (!state) {
+    state = { pid, sessionId: null, watcher: null, timer: null, subscribers: new Map() };
+    watches.set(pid, state);
+    if (proc.provider === 'claude') state.watcher = startClaudeWatch(state, deps.watch ?? defaultWatch);
+  }
+  state.subscribers.set(clientId, deps);
+  clients.set(clientId, pid);
+  // Register before reading: cleanup still owns the watcher if the read throws.
   const payload = deps.buildPayload();
-  watchState.sessionId = payload?.sessionId ?? null;
+  state.sessionId = payload?.sessionId ?? null;
   if (payload) deps.send(payload);
   return true;
 }
 
-/** Sends the current watch's payload, or releases it when the watched pid
- *  no longer resolves to a live process at all (buildPayload's null --
- *  see WatchDeps' own doc comment). Called with no session watched is a
- *  no-op: src/main/index.ts calls this unconditionally after every 5s
- *  discovery sweep, whether or not a pane is currently open. */
+/** Compatibility entry for the existing single desktop window. */
+export function watchSessionFor(pid: number | null, deps: WatchDeps): boolean {
+  return subscribeSession('desktop', pid, deps);
+}
+
 export function pushSessionLive(): void {
-  if (!watchState) return;
-  const payload = watchState.deps.buildPayload();
-  if (!payload) {
-    teardownWatch();
-    return;
-  }
-  // A session id can change under an unchanged pid -- Claude's own `/clear`
-  // (spec 2026-09-15-exact-session-identity-design.md) -- so this is
-  // refreshed on every push, not read once at watch time, or a
-  // notifySessionChanged for the NEW session id would never match.
-  watchState.sessionId = payload.sessionId;
-  watchState.deps.send(payload);
+  for (const state of [...watches.values()]) pushWatch(state);
 }
 
-/** Coalesces a push at 250ms, so a burst of triggers in the same window --
- *  an agent streaming a long response, or Claude's status file flipping
- *  through busy/waiting in quick succession -- still costs at most one push,
- *  the same trade pushFleet's own pushTimer already makes. Shared by
- *  notifySessionChanged (the watcher/spool/ingest triggers, below) and
- *  startClaudeWatch's own 'change' subscription (above), so the two can
- *  never double the push rate by both firing in the same window. No-op with
- *  nothing watched, or with a coalesce already pending. */
-function schedulePush(): void {
-  if (!watchState || watchState.timer) return;
-  const state = watchState;
-  state.timer = setTimeout(() => {
-    state.timer = null;
-    pushSessionLive();
-  }, 250);
-}
-
-/** The bridge from the app's ordinary change signals (the watcher/spool/
- *  ingest triggers src/main/index.ts already coalesces fleet:update from)
- *  to the conversation pane: a push only when one of `sessionIds` is the
- *  session currently being watched. */
 export function notifySessionChanged(sessionIds: Set<string>): void {
-  if (!watchState || watchState.sessionId === null || !sessionIds.has(watchState.sessionId)) return;
-  schedulePush();
+  for (const state of watches.values()) {
+    if (state.sessionId !== null && sessionIds.has(state.sessionId)) schedulePush(state);
+  }
 }
