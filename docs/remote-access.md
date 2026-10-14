@@ -81,6 +81,8 @@ Project-specific setup still matters: allow exactly the private hostname in the 
 - Eight concurrent browser connections, bounded messages/queues, per-connection rate limits, single-use bootstrap tickets, and heartbeat cleanup protect the Mac from abandoned or slow tabs.
 - Disabling remote access closes browser connections and their watchers/PTYs. It leaves the tmux agents running. Quitting Fleet drains remote operations before closing its databases.
 - Build both renderers with `npm run build:app`. The mobile bundle ships under `out/mobile` and works without a Vite development server. `npm run dist:mac` packages both.
+- Before replacing `/Applications/Fleet.app`, check that **all** GUI processes for that path have exited, not just the PID recorded before quitting. Recheck immediately before copying. After installation, verify the bundle hash and that the reopened GUI started after the copy finished, then open an existing Codex conversation. Keep existing relay processes and their bundles intact; quitting Fleet must not stop the agents.
+- Finder launches may have no UTF-8 locale. Codex inventory explicitly uses `tmux -u` so tab-delimited binding data survives that environment; checking only a shell-launched development build does not cover this restart failure.
 
 ## Acceptance record
 

@@ -40,6 +40,19 @@ it('clears previously ready display metadata if an inventory read fails', async 
   expect(f.display.connection(11)).toMatchObject({ state: 'unknown', recoverable: false });
   expect(f.display.thread(11)).toBe(false);
 });
+it('preserves conversation identity when Finder supplies no UTF-8 locale', async () => {
+  const f = fixture();
+  const rows = `${NAME}\t11\t/repo\t${binding}\t\t\t\t\nfleet-codex-relay-aaaaaaaa\t12\t/repo\t\t\t\t\t`;
+  // Captured from tmux 3.7c with LANG/LC_ALL unset: without -u, tabs
+  // become underscores, including the trailing empty inventory fields.
+  const read = async (command: string, args: string[]) => command === 'tmux'
+    ? args.includes('-u') ? rows : rows.replaceAll('\t', '_')
+    : f.processLine;
+  const display = new CodexRecoveryDisplay(f.recovery, { read, nameForPid: () => NAME });
+  await display.refresh();
+  expect(display.thread(11)).toBe(ID);
+  expect(display.connection(11)).toMatchObject({ state: 'ready', recoverable: true });
+});
 it('uses the first pane of a session, matching fresh ownership resolution', async () => {
   const f = fixture();
   f.read.mockResolvedValueOnce(`${NAME}\t11\t/repo\t${binding}\t\t\t\t\n${NAME}\t99\t/repo\t\t\t\t\t\nfleet-codex-relay-aaaaaaaa\t12\t/repo\t\t\t\t\t`);

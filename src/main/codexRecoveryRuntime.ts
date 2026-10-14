@@ -118,7 +118,9 @@ export class CodexRecoveryDisplay {
     const read = this.deps.read ?? readDisplay;
     const format = ['#{session_name}', '#{pane_pid}', '#{pane_current_path}', '#{@llmws-codex-binding}',
       '#{@llmws-codex-connected}', '#{@llmws-codex-thread}', `#{${RECOVERY_OPTION}}`, `#{${CODEX_INPUT_OPTION}}`].join('\t');
-    const raw = await read('tmux', ['list-panes', '-a', '-F', format]);
+    // Finder may supply no UTF-8 locale; tmux otherwise replaces our tab
+    // separators with underscores and every managed identity disappears.
+    const raw = await read('tmux', ['-u', 'list-panes', '-a', '-F', format]);
     const panes = new Map<string, string[]>();
     for (const line of raw.split('\n')) {
       const fields = line.split('\t');
