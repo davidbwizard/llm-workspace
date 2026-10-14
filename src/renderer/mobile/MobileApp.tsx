@@ -8,6 +8,8 @@ import type { LaunchResult } from '../../main/launch.ts';
 import { MarkdownText } from '../components/ConversationView.tsx';
 import { PromptCard } from '../components/PromptCard.tsx';
 import { CodexPromptCard } from '../components/CodexPromptCard.tsx';
+import { WorkingStrip } from '../components/WorkingStrip.tsx';
+import { StatusIcon } from '../components/StatusIcon.tsx';
 import { TerminalView } from '../components/TerminalView.tsx';
 import { MobileConnection } from './connection.ts';
 import { MobileSessionMenu } from './MobileSessionMenu.tsx';
@@ -87,7 +89,7 @@ export function MobileApp({ connection = defaultConnection }: { connection?: Mob
     <header className="mobile-top"><h1>Fleet</h1><span role="status" data-state={state}>{state === 'ready' ? 'Connected to your Mac' : state === 'connecting' ? 'Connecting…' : 'Offline — reconnecting'}</span><button disabled={state !== 'ready'} onClick={() => void openLaunch()}>New session</button></header>
     {error && <div className="mobile-notice" role="alert">{error}<button aria-label="Dismiss message" onClick={() => setError('')}>×</button></div>}
     <div className="mobile-workspace">
-      <nav className="mobile-rail" aria-label="Sessions"><h2>Sessions <small>{sessions.length}</small></h2><MobileSessionList sessions={sessions} selected={session} onSelect={select} />{!sessions.length && <p>{state === 'ready' ? 'No running sessions. Start one in a known project.' : 'Keep Fleet running on your Mac and connect this device to Tailscale.'}</p>}</nav>
+      <nav className="mobile-rail" aria-label="Sessions"><h2>Sessions <small>{sessions.length}</small></h2><MobileSessionList ready={state === 'ready'} sessions={sessions} selected={session} onSelect={select} />{!sessions.length && <p>{state === 'ready' ? 'No running sessions. Start one in a known project.' : 'Keep Fleet running on your Mac and connect this device to Tailscale.'}</p>}</nav>
       <main className="mobile-main">{session ? <><div className="mobile-session-header"><button className="mobile-back" onClick={() => setShowRail(true)}>Sessions</button><h2>{session.name || session.cwd?.split('/').pop() || session.provider}</h2></div>
         <Session key={session.handle ?? session.pid} session={session} terminal={terminal} connection={connection} ready={state === 'ready'} onTerminal={() => setTerminal(true)} onToggleTerminal={() => setTerminal(v => !v)} onClose={() => setCloseTarget(session)} onError={setError} />
       </> : <p className="mobile-empty">Choose a session to pick up where you left off.</p>}</main>
@@ -128,9 +130,22 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
     if (event === 'terminal:control' && p.pid === session.pid) setControlling(p.controlling === true);
   }), [connection, session.pid]);
   const scroll = useRef<HTMLDivElement>(null); const bottom = useRef(true);
+  const prompts = useRef<HTMLFieldSetElement>(null);
+  const reviewPending = useRef(false);
+  function focusRequest() {
+    prompts.current?.focus({ preventScroll: true });
+    prompts.current?.scrollIntoView({ block: 'nearest' });
+  }
+  function reviewRequest() {
+    if (terminal) { reviewPending.current = true; onToggleTerminal(); }
+    else focusRequest();
+  }
   useEffect(() => {
-    if (!ready || !session.handle) return;
-    let alive = true; let refreshing = false;
+    if (!terminal && reviewPending.current) { reviewPending.current = false; focusRequest(); }
+  }, [terminal]);
+  useEffect(() => {
+    if (!ready || !session.handle) { setLive(null); return; }
+    let alive = true; let refreshing = false; let receivedLive = false;
     const refresh = async () => {
       if (refreshing) return; refreshing = true;
       try {
@@ -142,10 +157,10 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
     const unsub = connection.onEvent((event, data) => {
       const next = data as SessionLivePayload;
       if (event !== 'session:live' || next.pid !== session.pid || next.sessionId !== session.sessionId || !alive) return;
-      setLive(next); transcript.request();
+      receivedLive = true; setLive(next); transcript.request();
     });
     void connection.request('watch', { handle: session.handle }).then(r => { if (!r.ok && alive) onError('Could not watch this session. Reopen it from the list.'); });
-    void connection.request('live', { handle: session.handle }).then(r => { if (r.ok && alive) setLive(r.value as SessionLivePayload); });
+    void connection.request('live', { handle: session.handle }).then(r => { if (r.ok && alive && !receivedLive) setLive(r.value as SessionLivePayload); });
     void connection.request('previews', { handle: session.handle }).then(r => { if (r.ok && alive) setPreviews(r.value as Preview[]); });
     transcript.request(); const timer = setInterval(() => transcript.request(), 5000);
     return () => { alive = false; unsub(); transcript.close(); clearInterval(timer); void connection.request('watch', { handle: null }); };
@@ -173,6 +188,8 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
       requestAnimationFrame(() => { if (scroll.current) scroll.current.scrollTop += scroll.current.scrollHeight - priorHeight; });
     } catch (e) { onError(messageFor(e)); } finally { setLoadingOlder(false); }
   }
+  const hasPrompt = ready && !!(live?.prompt || live?.codex?.prompts.length);
+  const waiting = ready && (live?.activity === 'waiting' || !!live?.prompt || !!live?.codex?.prompts.some(prompt => prompt.isBlocking !== false));
   if (!session.handle) return <p className="mobile-empty">Fleet cannot verify this session yet. Check its desktop view.</p>;
   return <>
     {showPreviews && <section className="mobile-websites" aria-label="Project websites"><div className="mobile-website-heading"><h3>Websites</h3><button type="button" aria-label="Hide websites" onClick={() => setShowPreviews(false)}>×</button></div><div className="mobile-previews">{previews.map(p => p.available ? <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer">Open {p.label}</a> : <span key={p.id}>{p.label} — server unavailable</span>)}</div>{!previews.length && <p>No websites connected for this folder. On your Mac, add one in Fleet Settings → Remote access → Project previews. Keep its local development server running.</p>}<button disabled={!ready || checkingPreviews} onClick={() => void refreshPreviews()}>{checkingPreviews ? 'Checking…' : 'Refresh websites'}</button></section>}
@@ -181,10 +198,14 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
         {page?.nextCursor && <button disabled={loadingOlder || !ready} onClick={() => void older()}>Load earlier messages</button>}
         {!page && <p>{ready ? 'Loading conversation…' : 'Reconnect to read the conversation.'}</p>}
         {page?.turns.map(turn => <article key={turn.id} data-role={turn.role}><small>{turn.role === 'user' ? 'You' : session.provider}</small><MarkdownText text={turn.text} /></article>)}
-        <fieldset disabled={!ready} className="mobile-prompts">{live?.prompt && <PromptCard pid={session.pid} prompt={live.prompt} onOpenTerminal={onTerminal} answerPrompt={(_pid, key, value) => answer('answerClaude', key, value)} />}{live?.codex?.prompts.map(prompt => <CodexPromptCard key={prompt.key} pid={session.pid} prompt={prompt} onOpenTerminal={onTerminal} answerPrompt={(_pid, key, value) => answer('answerCodex', key, value)} />)}</fieldset>
+        <fieldset disabled={!ready} className="mobile-prompts" ref={prompts} tabIndex={-1} aria-label="Session requests">{ready && live?.prompt && <PromptCard pid={session.pid} prompt={live.prompt} onOpenTerminal={onTerminal} answerPrompt={(_pid, key, value) => answer('answerClaude', key, value)} />}{ready && live?.codex?.prompts.map(prompt => <CodexPromptCard key={prompt.key} pid={session.pid} prompt={prompt} onOpenTerminal={onTerminal} answerPrompt={(_pid, key, value) => answer('answerCodex', key, value)} />)}</fieldset>
       </div>
     </>}
       {!terminal && <div className="mobile-attachments">{images.map((image, index) => <figure key={image.url}><img src={image.url} alt={image.file.name} /><button type="button" disabled={sending} aria-label={`Remove ${image.file.name}`} onClick={() => { URL.revokeObjectURL(image.url); setImages(old => old.filter((_, i) => i !== index)); }}>×</button></figure>)}</div>}
+      {ready && (waiting || hasPrompt ? <div className="mobile-attention-strip">
+        <span className="mobile-activity" data-activity="waiting_input"><StatusIcon activity="waiting_input" size={20} /><span role="status">{waiting ? 'Waiting on you' : 'Needs your input'}</span></span>
+        {hasPrompt ? <button type="button" onClick={reviewRequest}>Review request</button> : !terminal ? <button type="button" onClick={onTerminal}>Open terminal</button> : <span className="mobile-attention-hint">Answer in the terminal</span>}
+      </div> : live?.activity === 'working' ? <div className="mobile-working-strip"><WorkingStrip provider={session.provider} since={live.since} /></div> : null)}
       <form className="mobile-composer" onSubmit={e => { e.preventDefault(); void send(); }}>{!terminal && <><label htmlFor="mobile-reply" className="visually-hidden">Reply</label><textarea id="mobile-reply" value={draft} disabled={sending} placeholder={session.controllable ? 'Message this session…' : 'This session is view only'} onChange={e => { setDraft(e.target.value); try { writeLocal(draftKey, e.target.value); } catch { onError('Draft could not be saved on this device. Keep this page open.'); } }} /></>}<div className="mobile-reply-tools" role="group" aria-label="Reply tools"><label className="mobile-image-picker" title="Upload image"><ImageIcon size={22} aria-hidden="true" /><input type="file" aria-label="Upload images" accept="image/png,image/jpeg,image/gif,image/webp" multiple disabled={!ready || !session.controllable || sending || images.length >= MOBILE_IMAGE_LIMIT} onChange={e => { pickImages(e.target.files); e.target.value = ''; }} /></label><button type="button" disabled={!terminal && (!session.controllable || !ready)} onClick={onToggleTerminal}>{terminal ? 'Conversation' : 'Terminal'}</button><MobileSessionMenu pid={session.pid} sessionId={session.sessionId} canClose={ready && session.controllable} onClose={onClose} onWebsites={() => { setShowPreviews(true); if (ready) void refreshPreviews(); }} />{!terminal && <button className="mobile-send" disabled={!ready || !session.controllable || (!draft.trim() && !images.length) || sending}>{sending ? 'Sending…' : 'Send'}</button>}</div></form>
   </>;
 }

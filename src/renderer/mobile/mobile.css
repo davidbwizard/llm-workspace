@@ -92,3 +92,27 @@
 .mobile-session-menu button { display:block; width:100%; text-align:left; border:0; background:transparent; font-size:14px; }
 .mobile-session-menu button:hover,.mobile-session-menu button:focus-visible { background:var(--raised); }
 .mobile-reply-tools button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+/* Match desktop status shapes and motion without changing mobile backgrounds. */
+.mobile-rail .mobile-session-meta { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px 12px; width:100%; }
+.mobile-app .mobile-activity { display:inline-flex; align-items:center; gap:7px; font-size:14px; color:var(--muted); }
+.mobile-activity .stateicon { flex:none; color:inherit; }
+.mobile-app .mobile-activity[data-activity=working] { color:var(--accent); }
+.mobile-activity[data-activity=working] .stateicon { animation:mobile-status-spin 1.6s linear infinite; }
+.mobile-app .mobile-activity[data-activity=waiting_input],.mobile-app .mobile-activity[data-activity=waiting_permission] { color:var(--critical); font-weight:600; }
+.mobile-activity[data-activity=waiting_input] .stateicon,.mobile-activity[data-activity=waiting_permission] .stateicon { animation:mobile-status-pulse 1.8s ease-in-out infinite; }
+.mobile-app .mobile-activity[data-activity=error] { color:var(--signal); }
+.mobile-rail .mobile-session-row[data-activity=working] { border-left:3px solid var(--accent); }
+.mobile-rail .mobile-session-row[data-activity=waiting_input],.mobile-rail .mobile-session-row[data-activity=waiting_permission] { border-color:var(--critical); border-left-width:3px; }
+.mobile-rail .mobile-folder-waiting { color:var(--critical); font-weight:600; }
+.mobile-rail .mobile-folder-working { padding:0 12px 8px 32px; font-size:13px; color:var(--accent); }
+.mobile-attention-strip { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:10px 12px; border-top:2px solid var(--critical); flex-shrink:0; }
+.mobile-attention-strip button { border-color:var(--critical); }
+.mobile-attention-hint { color:var(--ink-2); font-size:13px; }
+.mobile-working-strip { flex-shrink:0; }
+.mobile-working-strip .strip { background:transparent; padding:12px; flex-wrap:wrap; font-size:13px; }
+.mobile-working-strip .secs { margin-left:auto; }
+.mobile-prompts:focus-visible { outline:2px solid var(--critical); outline-offset:2px; }
+@keyframes mobile-status-spin { to { transform:rotate(360deg); } }
+@keyframes mobile-status-pulse { 0%,100% { opacity:1; } 50% { opacity:.3; } }
+@media(prefers-reduced-motion:reduce) { .mobile-activity .stateicon { animation:none !important; opacity:1; } }
