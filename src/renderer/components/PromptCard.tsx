@@ -82,7 +82,8 @@ function isAnswered(q: PromptQuestion, picked: Picked | undefined): boolean {
   return picked.other !== undefined ? textOk(picked.other) : picked.options.length === 1;
 }
 
-export function PromptCard({ pid, prompt, onOpenTerminal }: {
+export function PromptCard({ pid, prompt, onOpenTerminal, answerPrompt = window.fleet?.answerPrompt }: {
+  answerPrompt?: NonNullable<Window['fleet']>['answerPrompt'];
   pid: number;
   prompt: PromptView;
   onOpenTerminal: () => void;
@@ -132,7 +133,7 @@ export function PromptCard({ pid, prompt, onOpenTerminal }: {
     setResultMsg(null);
     setShowTerminalLink(false);
     try {
-      const r: AnswerResult | undefined = await window.fleet?.answerPrompt(pid, prompt.id, answer);
+      const r: AnswerResult | undefined = await answerPrompt?.(pid, prompt.id, answer);
       if (!aliveRef.current) return;
       if (!r) {
         setResultMsg('Could not reach the app.');

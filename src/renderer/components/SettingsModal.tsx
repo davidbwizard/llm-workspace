@@ -1,3 +1,4 @@
+import { RemoteSettings } from './RemoteSettings.tsx';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   APPEARANCES, COMPACT_CARDS, DEFAULT_SETTINGS, MESSAGE_STYLES, TEXT_SIZES, setSettings, useSettings,
@@ -496,6 +497,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             {usageError !== null && <p className="settingserror" role="alert">{usageError}</p>}
           </div>
         </section>
+
+        {open && <RemoteSettings />}
 
         {/* Design §5: the first-run checks stay reachable afterwards, because
             a dependency can disappear later -- an uninstall, a Homebrew

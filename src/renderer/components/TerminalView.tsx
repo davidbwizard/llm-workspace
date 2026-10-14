@@ -25,7 +25,8 @@ const ATTACH_REFUSAL_TEXT: Record<AttachRefusalReason, string> = {
  *  per chunk would re-render the card tree at stream rate, which is the
  *  mistake FleetView's own un-debounced subscription would invite copying.
  *  The stream is measured at up to ~30 MB/s (src/main/stream.ts). */
-export function TerminalView({ pid }: { pid: number }) {
+export type TerminalBridge = Pick<NonNullable<Window['fleet']>, 'attach' | 'detach' | 'resize' | 'sendRaw' | 'onTerminalData' | 'onTerminalExit' | 'onTerminalControl' | 'takeTerminalControl'>;
+export function TerminalView({ pid, bridge = window.fleet }: { pid: number; bridge?: TerminalBridge }) {
   const host = useRef<HTMLDivElement | null>(null);
   // Only two things ever go through React state: whether attach refused
   // (so a refusal renders why instead of an empty black terminal -- an
@@ -43,7 +44,7 @@ export function TerminalView({ pid }: { pid: number }) {
     const el = host.current;
     if (!el) return;
 
-    const api = window.fleet;
+    const api = bridge;
     if (!api) { setRefusalText('Could not reach the app.'); return; }
 
     // xterm measures its cell width by drawing to a canvas 2D context, which
@@ -156,9 +157,9 @@ export function TerminalView({ pid }: { pid: number }) {
     function attachOnce(): void {
       // Re-read rather than closing over the narrowed `api`: this is a hoisted
       // declaration, so TypeScript will not carry the outer null-check into it.
-      const bridge = window.fleet;
-      if (!bridge) return;
-      void bridge.attach(pid, term.cols, term.rows).then(r => {
+      const terminalBridge = bridge;
+      if (!terminalBridge) return;
+      void terminalBridge.attach(pid, term.cols, term.rows).then(r => {
         const res = r as AttachResult;
         if (!alive) return;
         if (res.status === 'refused') setRefusalText(ATTACH_REFUSAL_TEXT[res.reason] ?? 'Terminal is unavailable. Reopen the session to retry.');
@@ -183,7 +184,7 @@ export function TerminalView({ pid }: { pid: number }) {
       void api.detach(pid);
       term.dispose();
     };
-  }, [pid]);
+  }, [pid, bridge]);
 
   if (refusalText) {
     return <p className="term-refused" role="status">{refusalText}</p>;
@@ -192,7 +193,7 @@ export function TerminalView({ pid }: { pid: number }) {
   return (
     <div className="term-wrap">
       {!controlling && <p className="term-gap" role="status">Viewing terminal. <button onClick={() => {
-        void window.fleet?.takeTerminalControl?.(pid).catch(error => { console.error('Could not take terminal control:', error); });
+        void bridge?.takeTerminalControl?.(pid).catch(error => { console.error('Could not take terminal control:', error); });
       }}>Take control</button></p>}
       {gapDetected && (
         <p className="term-gap" role="status">Some output may be missing -- a message was dropped.</p>

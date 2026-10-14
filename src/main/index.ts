@@ -1,3 +1,10 @@
+import { codexAppServer } from './codexAppServer.ts';
+import { RemoteLifecycle } from './remote/lifecycle.ts';
+import { readRemoteConfig, writeRemoteConfig } from './remote/config.ts';
+import { startRemoteServer } from './remote/server.ts';
+import { previewsForProject } from './remote/previews.ts';
+import { registerRemoteIpc, fleetSessionOperations, watchFleetSession } from './ipc.ts';
+import { releaseSessionClient } from './sessionLive.ts';
 import { app, BrowserWindow, shell, nativeTheme, Menu, Notification } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync, existsSync, chmodSync } from 'node:fs';
@@ -65,6 +72,9 @@ function scheduleMailPush(): void {
   }, 250);
 }
 let prefsDb: PrefsDb | null = null;
+let remoteAccess: RemoteLifecycle | null = null;
+let remoteShutdownComplete = false;
+let remoteShutdownStarted = false;
 let watcher: Watcher | null = null;
 let spoolTimer: NodeJS.Timeout | null = null;
 // Refreshes discovery/live.ts's process cache; buildFleetPayload reads that
@@ -123,7 +133,7 @@ function createWindow(): void {
   // before (leaked processes). watchSessionFor(null, ...) is idempotent
   // (a no-op with nothing watched), so this is safe even when the window
   // closing was itself the trigger that already tore the watch down.
-  win.on('closed', () => { mainWindow = null; watchSessionFor(null, NOOP_WATCH_DEPS);
+  win.on('closed', () => { mainWindow = null; watchSessionFor(null, NOOP_WATCH_DEPS); codexAppServer.release('desktop');
     fleetTerminals.release('desktop'); });
 
   win.once('ready-to-show', () => win.show());
@@ -351,6 +361,26 @@ app.whenReady().then(async () => {
   // launched or reattached session gets the identical immediate refresh a
   // kill already does, rather than sitting stale in the rail for up to 5s.
   registerIpc(db, startBackgroundWork, () => pushAfterDiscoverySweep(), () => pushAfterDiscoverySweep());
+  const remotePath = join(homedir(), '.llm-workspace', 'remote.json');
+  remoteAccess = new RemoteLifecycle({
+    read: () => readRemoteConfig(remotePath), save: config => { writeRemoteConfig(remotePath, config); },
+    start: config => {
+      if (!fleetSessionOperations || !watchFleetSession) throw new Error('Fleet session services are not ready.');
+      const operations = fleetSessionOperations;
+      return startRemoteServer(config, {
+        operations, terminals: fleetTerminals, assets: join(app.getAppPath(), 'out', 'mobile'),
+        watch: (client, pid, emit) => watchFleetSession!(client, pid, emit),
+        release: client => { releaseSessionClient(client); codexAppServer.release(client); },
+        previews: async handle => {
+          const target = operations.resolve(handle);
+          const project = target && operations.dependencies.list().find(row => row.pid === target.pid)?.cwd;
+          return project ? previewsForProject(config, project) : [];
+        },
+      });
+    },
+  });
+  registerRemoteIpc(remoteAccess);
+  await remoteAccess.initialize();
   createWindow();
 
   // Live process discovery (pgrep/ps/lsof) has nothing to do with the
@@ -456,8 +486,19 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
-app.on('before-quit', () => {
+app.on('before-quit', event => {
+  if (remoteAccess && !remoteShutdownComplete) {
+    event.preventDefault();
+    if (!remoteShutdownStarted) {
+      remoteShutdownStarted = true;
+      void remoteAccess.close().then(() => { remoteShutdownComplete = true; app.quit(); }, error => {
+        console.error('Remote shutdown failed:', error); remoteShutdownStarted = false;
+      });
+    }
+    return;
+  }
   releaseAllSessionClients();
+  codexAppServer.stop();
   fleetTerminals.close();
   if (spoolTimer) clearInterval(spoolTimer);
   if (discoveryTimer) clearInterval(discoveryTimer);

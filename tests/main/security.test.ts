@@ -86,6 +86,7 @@ describe('renderer security posture', () => {
       // against a closed list and the value as JSON, bounded, and migration
       // never overwrites a preference already stored.
       'prefs:migrate', 'prefs:set',
+      'remote:configure', 'remote:disable', 'remote:enable', 'remote:get',
       // Quick answers: main re-derives the prompt and checks the answer and
       // the pane before any key -- see tests/main/answer.test.ts's guards.
       'session:answer',
@@ -100,7 +101,7 @@ describe('renderer security posture', () => {
       // Input acknowledgment freshly checks that PID and the exact thread
       // before clearing uncertainty; it never edits or replays native text.
       'session:codex:input:clear', 'session:codex:recover',
-      'session:conversation', 'session:detach',
+      'session:control', 'session:conversation', 'session:detach',
       // The only channels where a string a MODEL wrote reaches an OS call.
       // Every check is in src/main/files.ts (tests/main/files.test.ts), and
       // the call itself is shell.showItemInFolder -- asserted below.

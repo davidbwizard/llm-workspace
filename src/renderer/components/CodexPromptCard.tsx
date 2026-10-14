@@ -5,7 +5,8 @@ import { ProviderMark } from './ProviderMark.tsx';
 import './PromptCard.css';
 
 /** Codex's own app-server request, separate from Claude's tmux prompt path. */
-export function CodexPromptCard({ pid, prompt, onOpenTerminal }: {
+export function CodexPromptCard({ pid, prompt, onOpenTerminal, answerPrompt = window.fleet?.answerCodexPrompt }: {
+  answerPrompt?: NonNullable<Window['fleet']>['answerCodexPrompt'];
   pid: number; prompt: CodexPrompt; onOpenTerminal: () => void;
 }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -32,9 +33,8 @@ export function CodexPromptCard({ pid, prompt, onOpenTerminal }: {
     setSending(true);
     setMessage(null);
     try {
-      const api = window.fleet;
-      if (!api) throw new Error('Fleet bridge unavailable');
-      const result = await api.answerCodexPrompt(pid, prompt.key, answer);
+      if (!answerPrompt) throw new Error('Fleet bridge unavailable');
+      const result = await answerPrompt(pid, prompt.key, answer);
       if (!mounted.current || currentKey.current !== key) return;
       if (result.status === 'sent') {
         setMessage('Sending…');

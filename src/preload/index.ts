@@ -16,6 +16,10 @@ function readPrefsOnce(): Record<string, string> {
 }
 
 const api = {
+  remoteGet: () => ipcRenderer.invoke('remote:get'),
+  remoteConfigure: (config: unknown) => ipcRenderer.invoke('remote:configure', config),
+  remoteEnable: () => ipcRenderer.invoke('remote:enable'),
+  remoteDisable: () => ipcRenderer.invoke('remote:disable'),
   listFleet: () => ipcRenderer.invoke('fleet:list'),
   listHistory: (offset: number, limit: number) => ipcRenderer.invoke('fleet:history', offset, limit),
   // The app's first destructive channel. pid is the only argument -- main

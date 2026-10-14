@@ -182,3 +182,7 @@ Pin the dev port (`port: 5173, strictPort: true`). It does not merge dev and
 packaged, but it stops the silent drift to 5175/5176. The trade is that a
 busy port then fails the dev server loudly instead of blanking preferences
 quietly.
+
+## Private mobile access
+
+Opt-in Tailscale Serve access lets a phone or tablet view Fleet sessions, reply, answer prompts, take terminal control, and start sessions in known projects. Desktop settings include a locally generated QR code and separately configured private development-preview links. See [remote access setup](remote-access.md) for configuration, device restrictions, and the pending real-device acceptance checklist.

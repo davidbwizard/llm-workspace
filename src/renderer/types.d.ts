@@ -30,6 +30,10 @@ declare global {
     // straight through and throw at mount with no user-visible signal --
     // marking it optional forces every call site to check first.
     fleet?: {
+      remoteGet?: () => Promise<import('../main/remote/lifecycle.ts').RemoteStatus>;
+      remoteConfigure?: (config: unknown) => Promise<import('../main/remote/lifecycle.ts').RemoteStatus>;
+      remoteEnable?: () => Promise<import('../main/remote/lifecycle.ts').RemoteStatus>;
+      remoteDisable?: () => Promise<import('../main/remote/lifecycle.ts').RemoteStatus>;
       listFleet: () => Promise<FleetListPayload>;
       listHistory: (offset: number, limit: number) => Promise<FleetHistoryPayload>;
       killSession: (pid: number) => Promise<KillResult>;

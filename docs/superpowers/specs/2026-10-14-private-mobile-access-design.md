@@ -45,7 +45,7 @@ The browser initially receives a current snapshot and subsequently receives boun
 
 ## Private access and authorization
 
-Use Tailscale Serve with HTTPS and access rules restricted to David's devices. Bind Fleet's service only to `127.0.0.1`; do not enable public Funnel access or listen on the LAN. Setup is opt-in and shows whether the private endpoint is ready. Disabling access closes remote connections and stops the listener without terminating sessions.
+Use Tailscale Serve with HTTPS and access rules restricted to David's devices. Bind Fleet's service only to `127.0.0.1`; do not enable public Funnel access or listen on the LAN. Setup is opt-in and shows whether the private endpoint is ready. Show a locally generated QR code for the configured private Fleet URL, as requested during implementation; it contains no credential or pairing secret and does not bypass Tailscale authentication. Disabling access closes remote connections and stops the listener without terminating sessions.
 
 Configure the exact allowed HTTPS hostname and David's expected Tailscale login locally. Require the trusted Serve identity header on every API request and WebSocket upgrade; missing or mismatched identity fails closed. Serve strips client-supplied identity headers before forwarding. The loopback service trusts local processes on this Mac, consistent with Fleet's existing local-user boundary; it is not isolation from compromised local software.
 

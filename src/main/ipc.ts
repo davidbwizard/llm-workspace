@@ -1,3 +1,4 @@
+import type { RemoteLifecycle } from './remote/lifecycle.ts';
 import { TerminalClients } from './terminalClients.ts';
 import { randomUUID } from 'node:crypto';
 import { sessionActions } from './sessionActions.ts';
@@ -1634,7 +1635,20 @@ export async function refreshChecks(win: BrowserWindow | null): Promise<Readines
  *  The other two take renderer data, and prefs.ts validates both -- the key
  *  against a closed list, the value as bounded JSON -- so these signatures
  *  narrow nothing at the trust boundary. */
+let favoriteProjects = (): string[] => [];
+export function registerRemoteIpc(remote: RemoteLifecycle): void {
+  ipcMain.handle('remote:get', () => remote.status());
+  ipcMain.handle('remote:configure', (_event, config: unknown) => remote.configure(config));
+  ipcMain.handle('remote:enable', () => remote.configure({ ...remote.status().config, enabled: true }));
+  ipcMain.handle('remote:disable', () => remote.configure({ ...remote.status().config, enabled: false }));
+}
 export function registerPrefsIpc(prefsDb: PrefsDb): void {
+  favoriteProjects = () => {
+    const raw = readAllPrefs(prefsDb)['llmws.favourites'];
+    if (!raw) return [];
+    try { const value: unknown = JSON.parse(raw); return Array.isArray(value) ? value.filter((p): p is string => typeof p === 'string') : []; }
+    catch { console.error('Could not read favorite projects for remote launch.'); return []; }
+  };
   ipcMain.on('prefs:all', event => { event.returnValue = readAllPrefs(prefsDb); });
   ipcMain.handle('prefs:set', (_event, key: unknown, value: unknown) => writePref(prefsDb, key, value));
   ipcMain.handle('prefs:migrate', (_event, incoming: unknown) => {
@@ -2144,7 +2158,7 @@ export function registerIpc(
   fleetSessionOperations = new SessionOperations({
     list: () => buildFleetListPayload().openSessions.map(row => ({ ...row })),
     identity: fleetSessionIdentity,
-    projects: () => [...new Set(cachedPushOpenSessions.map(row => row.cwd).filter((cwd): cwd is string => !!cwd))],
+    projects: () => [...new Set([...cachedPushOpenSessions.map(row => row.cwd).filter((cwd): cwd is string => !!cwd), ...favoriteProjects()])],
     conversation: (id, cursor) => conversationFor(db, id, undefined, parseConversationCursor(cursor)),
     live: pid => buildSessionLive(db, pid, getCachedLiveProcesses(), Date.now(), {
       cached: cachedPushOpenSessions, codexSnapshot: id => codexAppServer.snapshot(id),

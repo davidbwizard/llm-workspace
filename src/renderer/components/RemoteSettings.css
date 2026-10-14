@@ -1,0 +1,13 @@
+.remote-settings fieldset { border:0; padding:0; margin:16px 0; min-width:0; }
+.remote-settings label { display:flex; flex-direction:column; gap:6px; margin:12px 0; }
+.remote-settings input { padding:8px 10px; border:1px solid var(--line); border-radius:5px; background:var(--surface); color:var(--ink); font:inherit; }
+.remote-settings button { padding:8px 12px; border:1px solid var(--line); border-radius:5px; background:var(--raised); color:var(--ink); cursor:pointer; }
+.remote-settings button:disabled { opacity:.5; }
+.remote-settings-actions { display:flex; flex-wrap:wrap; gap:8px; margin:16px 0; }
+.remote-settings details { margin:16px 0; }
+.remote-settings summary { cursor:pointer; }
+.remote-settings pre { white-space:pre-wrap; overflow-wrap:anywhere; font:12px var(--f-mono); user-select:text; }
+.remote-pairing { display:flex; align-items:center; gap:20px; flex-wrap:wrap; margin:16px 0; }
+.remote-pairing img { background:white; border-radius:8px; }
+.remote-pairing code { display:block; user-select:text; overflow-wrap:anywhere; margin:12px 0; }
+.remote-preview { border-bottom:1px solid var(--line); padding-bottom:16px; }
