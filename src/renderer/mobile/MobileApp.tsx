@@ -8,6 +8,7 @@ import { PromptCard } from '../components/PromptCard.tsx';
 import { CodexPromptCard } from '../components/CodexPromptCard.tsx';
 import { TerminalView } from '../components/TerminalView.tsx';
 import { MobileConnection } from './connection.ts';
+import { MobileSessionList } from './MobileSessionList.tsx';
 import { terminalBridge, unwrap } from './bridge.ts';
 import './mobile.css';
 export interface MobileSession { handle: string | null; pid: number; sessionId: string | null; provider: 'claude' | 'codex'; name?: string | null; cwd: string | null; activity?: string; controllable: boolean }
@@ -73,7 +74,7 @@ export function MobileApp({ connection = defaultConnection }: { connection?: Mob
     <header className="mobile-top"><h1>Fleet</h1><span role="status" data-state={state}>{state === 'ready' ? 'Connected to your Mac' : state === 'connecting' ? 'Connecting…' : 'Offline — reconnecting'}</span><button disabled={state !== 'ready'} onClick={() => void openLaunch()}>New session</button></header>
     {error && <div className="mobile-notice" role="alert">{error}<button aria-label="Dismiss message" onClick={() => setError('')}>×</button></div>}
     <div className="mobile-workspace">
-      <nav className="mobile-rail" aria-label="Sessions"><h2>Sessions <small>{sessions.length}</small></h2>{sessions.map(row => <button key={row.pid} aria-current={row === session} onClick={() => select(row)}><strong>{row.name || row.cwd?.split('/').pop() || row.provider}</strong><span>{row.provider} · {row.activity ?? 'running'}</span>{!row.controllable && <small>View only</small>}</button>)}{!sessions.length && <p>{state === 'ready' ? 'No running sessions. Start one in a known project.' : 'Keep Fleet running on your Mac and connect this device to Tailscale.'}</p>}</nav>
+      <nav className="mobile-rail" aria-label="Sessions"><h2>Sessions <small>{sessions.length}</small></h2><MobileSessionList sessions={sessions} selected={session} onSelect={select} />{!sessions.length && <p>{state === 'ready' ? 'No running sessions. Start one in a known project.' : 'Keep Fleet running on your Mac and connect this device to Tailscale.'}</p>}</nav>
       <main className="mobile-main">{session ? <><div className="mobile-session-header"><button className="mobile-back" onClick={() => setShowRail(true)}>Sessions</button><h2>{session.name || session.cwd?.split('/').pop() || session.provider}</h2><button disabled={!session.controllable || state !== 'ready'} onClick={() => setTerminal(v => !v)}>{terminal ? 'Conversation' : 'Terminal'}</button></div>
         <Session key={`${session.handle}:${state}`} session={session} terminal={terminal} connection={connection} ready={state === 'ready'} onTerminal={() => setTerminal(true)} onError={setError} />
       </> : <p className="mobile-empty">Choose a session to pick up where you left off.</p>}</main>

@@ -1,9 +1,44 @@
 import { expect, it, vi } from 'vitest';
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MobileApp } from '../../src/renderer/mobile/MobileApp.tsx';
 import type { MobileConnection } from '../../src/renderer/mobile/connection.ts';
 import type { MobileSession } from '../../src/renderer/mobile/MobileApp.tsx';
 vi.mock('../../src/renderer/components/TerminalView.tsx', () => ({ TerminalView: () => <div>Terminal</div> }));
+it('groups sessions by full folder path and keeps waiting status visible when collapsed', async () => {
+  localStorage.clear();
+  const rows = [
+    { pid: 1, cwd: '/work/project', name: 'Claude task', provider: 'claude', activity: 'waiting_input' },
+    { pid: 2, cwd: '/work/project', name: 'Codex task', provider: 'codex', activity: 'working' },
+    { pid: 3, cwd: '/other/project', name: 'Other task', provider: 'codex', activity: 'idle' },
+    { pid: 4, cwd: '/other/project', name: 'Another task', provider: 'claude', activity: 'idle' },
+    { pid: 5, cwd: null, name: 'Unknown folder', provider: 'codex', activity: 'idle' },
+  ].map(row => ({ ...row, handle: `handle-${row.pid}`, sessionId: `session-${row.pid}`, controllable: true }));
+  const request = async (op: string, payload?: { handle?: string }) => {
+    if (op === 'list') return { ok: true, value: rows };
+    if (op === 'conversation') return { ok: true, value: { turns: [{ id: 1, role: 'assistant', text: `Conversation ${payload?.handle}`, ts: '' }], nextCursor: null } };
+    if (op === 'live') return { ok: true, value: null };
+    return { ok: true, value: [] };
+  };
+  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
+  const view = render(<MobileApp connection={connection} />);
+  try {
+    const group = await screen.findByRole('region', { name: '/work/project' });
+    const other = screen.getByRole('region', { name: '/other/project' });
+    expect(within(group).getByText('Claude task')).toBeTruthy();
+    expect(within(group).getByText('Codex task')).toBeTruthy();
+    expect(within(group).queryByText('Other task')).toBeNull();
+    expect(within(other).getByText('Other task')).toBeTruthy();
+    expect(screen.getByText('Unknown folder')).toBeTruthy();
+    const toggle = within(group).getByRole('button', { name: 'project, 2 sessions' });
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(within(group).queryByRole('button', { name: /Claude task/ })).toBeNull();
+    expect(within(group).getByText('1 waiting on you')).toBeTruthy();
+    fireEvent.click(toggle);
+    fireEvent.click(within(group).getByRole('button', { name: /Codex task/ }));
+    expect(await screen.findByText('Conversation handle-2')).toBeTruthy();
+  } finally { view.unmount(); }
+});
 it('waits for a launched Codex thread identity before selecting its conversation', async () => {
   localStorage.clear(); vi.useFakeTimers();
   let rows: MobileSession[] = [];
