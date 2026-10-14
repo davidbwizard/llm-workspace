@@ -12,6 +12,8 @@ import './ReplyPopover.css';
  *  second, drifting copy -- these strings were settled against a real
  *  misfire during part 1 and are not casual wording. */
 export const REFUSAL_TEXT: Record<KeysRefusalReason, string> = {
+  input_busy: 'Another device controls this terminal or an input action is still running.',
+  input_uncertain: 'This reply may have reached the agent. Check Terminal before trying again.',
   codex_not_ready: 'Codex is reconnecting. Your draft is kept until the same conversation is ready.',
   codex_identity_required: 'This Codex conversation cannot be verified. Open Terminal to check it.',
   codex_identity_changed: 'Codex changed conversations. Your message was not sent.',

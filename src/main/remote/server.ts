@@ -60,20 +60,32 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
     wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws));
   });
   wss.on('connection', ws => {
+    const output = new Map<string, { bytes: number; at: number }>(); let outputBytes = 0; let terminalHandle: string | null = null;
     const client = randomUUID(); let authenticated = false; let cleaned = false; let alive = true; let sequence = 0;
     const frames = new Budget(512, 1000);
-    const budget = new Budget(120, 60_000); const rawBudget = new Budget(256 * 1024, 1000);
+    const readBudget = new Budget(90, 60_000); const mutationBudget = new Budget(30, 60_000);
+    const terminalBudget = new Budget(120, 60_000); const rawBudget = new Budget(256 * 1024, 1000);
     const send = (value: unknown) => {
       if (ws.readyState !== WebSocket.OPEN || cleaned) return;
       const data = JSON.stringify(value);
       if (ws.bufferedAmount + Buffer.byteLength(data) > 1024 * 1024) { ws.terminate(); cleanup(); return; }
       ws.send(data, error => { if (error) { ws.terminate(); cleanup(); } });
     };
-    const emit = (event: string, payload: unknown) => send({ event, payload, generation, client, sequence: ++sequence });
+    const emit = (event: string, payload: unknown) => {
+      const p = object(payload);
+      if (event === 'terminal:exit' && p?.reason === 'slow_viewer') { ws.terminate(); cleanup(); return; }
+      if (event === 'terminal:data' && typeof p?.data === 'string') {
+        const bytes = Buffer.byteLength(p.data) + 256;
+        if (outputBytes + bytes > 1024 * 1024 || output.size >= 256) { ws.terminate(); cleanup(); return; }
+        const delivery = randomUUID(); output.set(delivery, { bytes, at: Date.now() }); outputBytes += bytes;
+        payload = { ...p, delivery };
+      }
+      send({ event, payload, generation, client, sequence: ++sequence });
+    };
     const authTimer = setTimeout(() => { ws.terminate(); cleanup(); }, 5000);
-    const heartbeat = setInterval(() => { if (!alive) { ws.terminate(); cleanup(); return; } alive = false; ws.ping(); }, 7000);
+    const heartbeat = setInterval(() => { if (!alive || (output.size > 0 && Date.now() - output.values().next().value!.at > 15_000)) { ws.terminate(); cleanup(); return; } alive = false; ws.ping(); }, 7000);
     const cleanup = () => {
-      if (cleaned) return; cleaned = true; clearTimeout(authTimer); clearInterval(heartbeat); cleanups.delete(cleanup);
+      if (cleaned) return; cleaned = true; clearTimeout(authTimer); clearInterval(heartbeat); cleanups.delete(cleanup); output.clear(); outputBytes = 0;
       services.terminals.release(client); services.release(client); services.operations.release(client);
     };
     cleanups.add(cleanup);
@@ -82,6 +94,17 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
       if (cleaned || stopping) return { ok: false, reason: 'unavailable' };
       const p = object(payload);
       switch (op) {
+        case 'terminal:detach': {
+          // Releasing this socket's resources needs no still-live session identity.
+          services.terminals.release(client); output.clear(); outputBytes = 0; terminalHandle = null;
+          return { ok: true, value: { status: 'detached' } };
+        }
+        case 'terminal:ack': {
+          const receipt = typeof p?.delivery === 'string' ? output.get(p.delivery) : undefined;
+          if (!receipt) return { ok: false, reason: 'invalid' };
+          output.delete(p!.delivery as string); outputBytes -= receipt.bytes;
+          return { ok: true, value: null };
+        }
         case 'list': return { ok: true, value: services.operations.list() };
         case 'projects': return { ok: true, value: services.operations.projects() };
         case 'conversation': case 'live': return services.operations.read(client, op, payload);
@@ -92,18 +115,20 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
           return target ? { ok: true, value: services.watch(client, target.pid, data => emit('session:live', data)) } : { ok: false, reason: 'stale' };
         }
         case 'previews': return typeof p?.handle === 'string' && services.previews ? { ok: true, value: await services.previews(p.handle) } : { ok: false, reason: 'unsupported' };
-        case 'terminal:attach': case 'terminal:detach': case 'terminal:resize': case 'terminal:input': case 'terminal:control': {
+        case 'terminal:attach': case 'terminal:resize': case 'terminal:input': case 'terminal:control': {
           if (op === 'terminal:input' && (typeof p?.data !== 'string' || !rawBudget.take(Buffer.byteLength(p.data)))) return { ok: false, reason: 'busy' };
           const target = typeof p?.handle === 'string' ? services.operations.resolve(p.handle) : null;
           if (!target?.tmux) return { ok: false, reason: 'stale' };
           let result: unknown;
-          if (op === 'terminal:detach') { services.terminals.release(client, target.pid); result = { status: 'detached' }; }
-          else if (op === 'terminal:control') result = services.terminals.takeControl(client, target.pid);
+          if (op === 'terminal:control') result = services.terminals.takeControl(client, target.pid);
           else if (op === 'terminal:input') {
             if (typeof p!.data !== 'string') return { ok: false, reason: 'invalid' };
             result = services.terminals.input(client, target.pid, p!.data);
           } else {
             if (typeof p!.cols !== 'number' || typeof p!.rows !== 'number') return { ok: false, reason: 'invalid' };
+            if (op === 'terminal:attach' && terminalHandle !== p!.handle) {
+              services.terminals.release(client); output.clear(); outputBytes = 0; terminalHandle = p!.handle as string;
+            }
             result = op === 'terminal:attach' ? await services.terminals.attach(client, target.pid, p!.cols, p!.rows, emit) : services.terminals.resize(client, target.pid, p!.cols, p!.rows);
             if (cleaned) services.terminals.release(client);
           }
@@ -123,8 +148,11 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
       if (!p || p.v !== REMOTE_VERSION || typeof p.id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(p.id) || typeof p.op !== 'string') { ws.terminate(); cleanup(); return; }
       const id = p.id; const op = p.op; const payload = p.payload;
       if (p.client !== client || p.generation !== generation) { send({ id, result: { ok: false, reason: 'stale' } }); return; }
-      if (op !== 'terminal:input' && !budget.take()) { send({ id, result: { ok: false, reason: 'busy' } }); return; }
       const mutation = ['send', 'answerClaude', 'answerCodex', 'launch'].includes(op);
+      const releases = op === 'terminal:detach' || (op === 'watch' && object(payload)?.handle === null);
+      const exempt = releases || op === 'terminal:input' || op === 'terminal:ack';
+      const budget = mutation ? mutationBudget : op.startsWith('terminal:') ? terminalBudget : readBudget;
+      if (!exempt && !budget.take()) { send({ id, result: { ok: false, reason: 'busy' } }); return; }
       const work = (async () => {
         try {
           const result = mutation ? await receipts.run(String(object(payload)?.handle ?? 'launch'), id, JSON.stringify([op, payload]), () => dispatch(op, payload)) : await dispatch(op, payload);

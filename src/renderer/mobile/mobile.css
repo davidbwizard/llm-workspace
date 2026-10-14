@@ -1,7 +1,7 @@
 @import '../theme.css';
 /* Fleet's existing Karla/Fraunces palette; a single session on phones, a persistent rail on tablets. */
 .mobile-app { height:100dvh; display:flex; flex-direction:column; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); color:var(--ink); background:var(--ground); }
-.mobile-app button,.mobile-app select,.mobile-app textarea { font:inherit; color:inherit; background:var(--surface); border:1px solid var(--line); border-radius:6px; }
+.mobile-app button,.mobile-app select,.mobile-app textarea,.mobile-app input { font:inherit; color:inherit; background:var(--surface); border:1px solid var(--line); border-radius:6px; }
 .mobile-app button { min-height:44px; padding:8px 12px; cursor:pointer; }
 .mobile-app button:disabled { opacity:.5; cursor:default; }
 .mobile-app h1,.mobile-app h2,.mobile-app p { margin:0; }
@@ -42,3 +42,13 @@
 .mobile-modal select { padding:12px; max-width:100%; }
 .mobile-actions { display:flex; gap:12px; justify-content:flex-end; }
 @media(max-width:700px) { .mobile-top { padding:10px 12px; gap:12px; } .mobile-top span { font-size:12px; } .mobile-rail { width:100%; border:0; } .mobile-back { display:block; } .mobile-app[data-show-rail=true] .mobile-main,.mobile-app[data-show-rail=false] .mobile-rail { display:none; } .mobile-transcript { padding:16px; } .mobile-session-header,.mobile-composer { padding:10px; } }
+
+.mobile-app .visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+
+.mobile-favorites { margin:16px 0; }
+.mobile-favorites h3 { font:600 16px var(--f-body); margin:0 0 8px; }
+.mobile-favorites p { color:var(--muted); font-size:14px; }
+.mobile-favorites button { display:block; width:100%; margin:6px 0; text-align:left; overflow-wrap:anywhere; }
+.mobile-favorites button[aria-pressed=true] { border-color:var(--accent); background:var(--accent-soft); }
+.mobile-modal input { padding:12px; font-size:16px; }
+.mobile-modal form { max-height:calc(100dvh - 40px); overflow:auto; }

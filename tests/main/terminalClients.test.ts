@@ -5,7 +5,7 @@ function fixture() {
   const deps = {
     identity: (pid: number): string | null => pid === 10 ? 'exact-process' : null,
     attach: vi.fn(async (client: string, _pid: number, _cols: number, _rows: number, emit: (event: string, payload: unknown) => void) => { outputs.set(client, emit); return { status: 'attached' }; }),
-    detach: vi.fn(), resize: vi.fn(), size: vi.fn(), input: vi.fn(), busy: () => false,
+    detach: vi.fn(), restoreSize: vi.fn(), resize: vi.fn(), size: vi.fn(), input: vi.fn(), busy: () => false,
   };
   return { manager: new TerminalClients(deps), deps, outputs };
 }
@@ -41,4 +41,12 @@ it('rejects a changed process identity and an operation still awaiting approval 
   deps.busy = () => false; deps.identity = () => 'reused-pid';
   expect(manager.input('phone', 10, 'x')).toMatchObject({ status: 'refused', reason: 'stale' });
   expect(deps.input).not.toHaveBeenCalled(); manager.close();
+});
+
+it('restores normal pane sizing only after the last Fleet viewer detaches', async () => {
+  const { manager, deps } = fixture();
+  await manager.attach('desktop', 10, 80, 24, () => {});
+  await manager.attach('phone', 10, 40, 20, () => {});
+  manager.release('phone'); expect(deps.restoreSize).not.toHaveBeenCalled();
+  manager.release('desktop'); expect(deps.restoreSize).toHaveBeenCalledWith(10);
 });

@@ -10,6 +10,7 @@ import { reloadFavourites } from '../../src/renderer/state/favourites.ts';
 // viewer steps aside under it. Same stubs as tests/renderer/TerminalView.test.tsx.
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
+    options = {};
     onData() { return { dispose() {} }; }
     onResize() { return { dispose() {} }; }
     loadAddon() {}

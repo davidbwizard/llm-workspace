@@ -5,6 +5,7 @@ export interface TerminalClientDeps {
   detach(client: string, pid: number): void;
   resize(client: string, pid: number, cols: number, rows: number): void;
   size(pid: number, cols: number, rows: number): void;
+  restoreSize?(pid: number): void;
   input(client: string, pid: number, data: string): void;
   busy(pid: number): boolean;
 }
@@ -76,7 +77,7 @@ export class TerminalClients {
       if (!pane.viewers.delete(client)) continue;
       try { this.deps.detach(client, pid); }
       finally {
-        if (!pane.viewers.size) this.panes.delete(pid);
+        if (!pane.viewers.size) { this.panes.delete(pid); this.deps.restoreSize?.(pid); }
         else { if (pane.owner === client) pane.owner = null; this.broadcast(pid, pane); }
       }
     }

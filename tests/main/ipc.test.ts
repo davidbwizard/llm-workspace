@@ -2147,3 +2147,13 @@ describe('asynchronous Fleet Codex native transport',()=>{
     expect(edits).toEqual(['paste-buffer','send-keys','paste-buffer','send-keys']);
   });
 });
+describe('cross-device input coordination wiring', () => {
+  const source = readFileSync('src/main/ipc.ts', 'utf8');
+  for (const channel of ['session:mode:set', 'session:codex:input:clear', 'session:codex:recover']) {
+    it(`${channel} enters the shared input coordinator`, () => {
+      const start = source.indexOf(`ipcMain.handle('${channel}'`);
+      const end = source.indexOf('ipcMain.handle(', start + 15);
+      expect(source.slice(start, end)).toContain('serializeInput<');
+    });
+  }
+});

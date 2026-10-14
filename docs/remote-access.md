@@ -22,7 +22,7 @@ Official references: [Tailscale Serve](https://tailscale.com/docs/features/tails
 
 ## Using sessions
 
-The mobile list follows Fleet's existing discovery. An external session may be view only when Fleet cannot verify a controllable tmux binding. Select a conversation, send a reply, answer a prompt, or open Terminal. New session offers known/favourite folders; mobile cannot browse arbitrary Mac directories.
+The mobile list follows Fleet's existing discovery. An external session may be view only when Fleet cannot verify a controllable tmux binding. Select a conversation, send a reply, answer a prompt, or open Terminal. New session shows your favourite folders, offers known projects, and accepts an optional name for either provider; mobile cannot browse arbitrary Mac directories.
 
 Desktop and mobile have independent selected-session watchers and terminal attachments. One Fleet device at a time controls each terminal. Observers see the owner's terminal dimensions and can choose Take control. Closing a browser connection releases only that device's resources; it does not kill the agent. Other terminal programs outside Fleet are outside Fleet's ownership arbitration.
 
@@ -63,3 +63,5 @@ Implementation is in the `feat/private-mobile-access` worktree. Automated checks
 Pending real-device acceptance: Tailscale sign-in and private policy, actual Serve mappings, Wi-Fi and cellular access, phone/tablet keyboard behavior, existing Claude/Codex replies and approvals, new sessions, simultaneous different Codex views, suspension/reconnect without duplicated input, and an actual project's backend/live reload. No claim of successful device access until these checks pass.
 
 The existing running Fleet process was observed starting October 9, 2026 at 09:45:40 local time; it does not contain this feature. It has not been restarted by this implementation.
+
+Automated acceptance on October 14: **3,406 tests pass** across 160 files; TypeScript checking and both production renderer builds pass. An independent security/correctness review found five important issues; each was fixed with regression coverage (identity/display consistency, bounded terminal delivery, action capacity under read load, desktop input coordination, visible terminal refusals). Mutation metadata diagnostics remain a minor follow-up. Browser fixture layouts were inspected at 390px and 820px, including favourites and session naming. These checks do not replace the pending real-device checklist above.

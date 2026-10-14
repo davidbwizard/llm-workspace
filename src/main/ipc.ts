@@ -41,7 +41,7 @@ import { createStager, createFileStager } from './staging.ts';
 import { resolveLiveTmux, tmuxNameForPid, forgetSession, launchedAtForPid } from './sessions.ts';
 import {
   sendKeyName, capturePane, setSessionOption, loadBuffer, pasteBuffer, deleteBuffer,
-  paneInMode, cancelCopyMode, panePid, resizeWindow,
+  paneInMode, cancelCopyMode, panePid, resizeWindow, windowSizePolicy, setWindowSizePolicy, type WindowSizePolicy,
   type TmuxResult, type TmuxExec,
 } from './tmux.ts';
 import { makeCoalescer, type Coalescer, type TerminalDataPayload } from './stream.ts';
@@ -776,7 +776,7 @@ export async function revealSession(rawPid: unknown, opts: {
   return { status: 'revealed' };
 }
 
-export type KeysRefusalReason = 'codex_input_pending' | 'codex_prompt_open' | 'codex_not_ready' | 'codex_identity_required' | 'codex_identity_changed' | 'not_tmux' | 'session_gone' | 'invalid_pid' | 'prompt_open' | 'attachment_gone' | OutboundRefusal;
+export type KeysRefusalReason = 'input_busy' | 'input_uncertain' | 'codex_input_pending' | 'codex_prompt_open' | 'codex_not_ready' | 'codex_identity_required' | 'codex_identity_changed' | 'not_tmux' | 'session_gone' | 'invalid_pid' | 'prompt_open' | 'attachment_gone' | OutboundRefusal;
 export type KeysResult =
   | { status: 'sent'; queued: boolean }
   | { status: 'refused'; reason: KeysRefusalReason }
@@ -1360,7 +1360,13 @@ export async function attachTerminal(
 
   const coalescer = makeCoalescer(pid, (payload: TerminalDataPayload) => {
     if (!win.isDestroyed()) win.webContents.send('terminal:data', payload);
-  }, deps.schedule);
+  }, deps.schedule, clientId === 'desktop' ? undefined : {
+    maxBufferedChars: 256 * 1024,
+    onOverflow: () => {
+      detachTerminal(pid, clientId);
+      if (!win.isDestroyed()) win.webContents.send('terminal:exit', { pid, exhausted: true, reason: 'slow_viewer' });
+    },
+  });
   clientPty.onData(chunk => coalescer.push(chunk));
 
   attachments.set(terminalKey(pid, clientId), { name, pty: clientPty, coalescer });
@@ -1371,6 +1377,7 @@ export async function attachTerminal(
     attachments.delete(terminalKey(pid, clientId));
     try { coalescer.flushNow(); }
     catch (error) { console.error('terminal: flush after client exit failed:', error); }
+    finally { coalescer.dispose(); }
     console.warn('terminal: tmux client exited:', { pid, name, exitCode, signal });
     if (win.isDestroyed()) return;
     const exhausted = reconnects >= 3;
@@ -1422,6 +1429,7 @@ export function detachTerminal(rawPid: unknown, clientId = 'desktop'): { status:
     // tmux client looks like. IPty.kill swallows a "no such process" error
     // internally, so this is safe even if the client has already exited on
     // its own (the tmux session ended, say).
+    existing.coalescer.dispose();
     existing.pty.kill();
   }
   return { status: 'detached' };
@@ -1684,6 +1692,7 @@ export function fleetSessionIdentity(pid: number): SessionIdentity | null {
   return { pid, provider: process.provider, sessionId: target?.sessionId ?? null, started, tmux };
 }
 
+const priorTerminalSizing = new Map<number, { name: string; policy: WindowSizePolicy }>();
 export const fleetTerminals = new TerminalClients({
   identity: pid => { const identity = fleetSessionIdentity(pid); return identity?.tmux ? JSON.stringify(identity) : null; },
   attach: (client, pid, cols, rows, emit) => attachTerminal(pid, cols, rows, {
@@ -1697,8 +1706,19 @@ export const fleetTerminals = new TerminalClients({
   size: (pid, cols, rows) => {
     const name = resolveLiveTmux(pid);
     if (!name) throw new Error('terminal session ended');
+    if (!priorTerminalSizing.has(pid)) {
+      const policy = windowSizePolicy(name);
+      if (!policy) throw new Error('Could not read terminal sizing policy.');
+      priorTerminalSizing.set(pid, { name, policy });
+    }
     const result = resizeWindow(name, cols, rows);
     if (!result.ok) throw new Error('terminal pane resize failed');
+  },
+  restoreSize: pid => {
+    const previous = priorTerminalSizing.get(pid); priorTerminalSizing.delete(pid);
+    if (!previous || resolveLiveTmux(pid) !== previous.name) return;
+    const result = setWindowSizePolicy(previous.name, previous.policy);
+    if (!result.ok) console.error('Could not restore terminal sizing:', result.error);
   },
   input: (client, pid, data) => {
     const result = sendRawFor(pid, data, {}, client);
@@ -1707,7 +1727,7 @@ export const fleetTerminals = new TerminalClients({
   busy: pid => sessionActions.busy(`pid:${pid}`),
 });
 
-async function serializeInput<T>(pid: unknown, effect: () => Promise<T> | T, refused: () => T, prompt?: string, client = 'desktop'): Promise<T> {
+async function serializeInput<T>(pid: unknown, effect: () => Promise<T> | T, refused: (reason: string) => T, prompt?: string, client = 'desktop'): Promise<T> {
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return effect();
   const before = fleetSessionIdentity(pid);
   const key = `pid:${pid}`;
@@ -1721,7 +1741,7 @@ async function serializeInput<T>(pid: unknown, effect: () => Promise<T> | T, ref
     if (promptKey && (value as { status?: string })?.status === 'refused') sessionActions.releasePrompt(key, promptKey);
     return { ok: true, value };
   });
-  return result.ok ? result.value as T : refused();
+  return result.ok ? result.value as T : refused(result.reason);
 }
 
 export function registerIpc(
@@ -1912,7 +1932,7 @@ export function registerIpc(
       { busy: busyForPid, provider: providerForPid });
   };
   const sendMessage = (pid: unknown, text: unknown, attach: unknown, expected: unknown, client = 'desktop') =>
-    serializeInput<KeysResult>(pid, () => sendMessageUnchecked(pid, text, attach, expected), () => ({ status: 'refused', reason: 'session_gone' }), undefined, client);
+    serializeInput<KeysResult>(pid, () => sendMessageUnchecked(pid, text, attach, expected), reason => reason === 'uncertain' ? ({ status: 'interrupted', reason: 'input_uncertain' }) : ({ status: 'refused', reason: reason === 'busy' ? 'input_busy' : 'session_gone' }), undefined, client);
   ipcMain.handle('session:keys', (_event, pid, text, attach, expected) => sendMessage(pid, text, attach, expected));
   // Quick answers (src/main/answer.ts): answers the prompt Claude is
   // waiting on, by tmux keystrokes checked against the pane. Every argument
@@ -1930,7 +1950,7 @@ export function registerIpc(
       )?.prompt ?? null,
     });
   const answerClaude = (pid: unknown, key: unknown, answer: unknown, client = 'desktop') =>
-    serializeInput<AnswerResult>(pid, () => answerClaudeUnchecked(pid, key, answer), () => ({ status: 'refused', reason: 'stale' }), typeof key === 'string' ? key : undefined, client);
+    serializeInput<AnswerResult>(pid, () => answerClaudeUnchecked(pid, key, answer), reason => ({ status: 'refused', reason: reason === 'uncertain' ? 'unconfirmed_partial' : reason === 'busy' ? 'busy' : 'stale' }), typeof key === 'string' ? key : undefined, client);
   ipcMain.handle('session:answer', (_event, pid, key, answer) => answerClaude(pid, key, answer));
   const answerCodexUnchecked = (pid: unknown, key: unknown, answer: unknown): CodexAnswerResult => {
     if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0)
@@ -1949,7 +1969,7 @@ export function registerIpc(
       : { status: 'refused', reason: 'stale' };
   };
   const answerCodex = (pid: unknown, key: unknown, answer: unknown, client = 'desktop') =>
-    serializeInput<CodexAnswerResult>(pid, () => answerCodexUnchecked(pid, key, answer), () => ({ status: 'refused', reason: 'stale' }), typeof key === 'string' ? key : undefined, client);
+    serializeInput<CodexAnswerResult>(pid, () => answerCodexUnchecked(pid, key, answer), reason => ({ status: 'refused', reason: reason === 'uncertain' ? 'unavailable' : 'stale' }), typeof key === 'string' ? key : undefined, client);
   ipcMain.handle('session:codex:answer', (_event, pid, key, answer) => answerCodex(pid, key, answer));
   // The mode switcher (src/main/mode.ts). The renderer names a pid and a
   // mode and nothing else: main resolves the provider itself, checks the
@@ -1970,7 +1990,7 @@ export function registerIpc(
       && codexRecovery.connection(pid)?.state !== 'ready')
       return Promise.resolve({ status: 'refused', reason: 'unconfirmed' });
     const initialThread = typeof pid === 'number' ? resolveOwnedCodexPid(pid)?.binding.threadId : undefined;
-    return setModeFor(pid, mode, {
+    return serializeInput<ModeSetResult>(pid, () => setModeFor(pid, mode, {
       provider: providerForPid,
       promptOpen: p => {
         const exact = resolveOwnedCodexPid(p)?.binding.threadId;
@@ -1982,30 +2002,35 @@ export function registerIpc(
         return promptOpenFor(p, {
         cached: cachedPushOpenSessions, processes: getCachedLiveProcesses(), read: readLiveSession,
       }); },
-    });
+    }), () => ({ status: 'refused', reason: 'in_flight' }));
   });
   ipcMain.handle('session:codex:input:clear', async (event, pid: unknown, expected: unknown): Promise<CodexInputClearResult> => {
-    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0 || typeof expected !== 'string')
-      return { status: 'refused', reason: 'invalid' };
-    const tui = resolveOwnedCodexPid(pid);
-    if (!tui || tui.binding.threadId !== expected) return { status: 'refused', reason: 'stale' };
-    if (!codexInput.clear(pid, expected)) return { status: 'refused', reason: 'unavailable' };
-    await refreshCodexDisplay(true);
-    refreshPushEnrichment(db, getCachedLiveProcesses());
-    pushFleet(BrowserWindow.fromWebContents(event.sender));
-    pushSessionLive();
-    return { status: 'cleared' };
+    return serializeInput<CodexInputClearResult>(pid, async () => {
+      if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0 || typeof expected !== 'string')
+        return { status: 'refused', reason: 'invalid' };
+      const tui = resolveOwnedCodexPid(pid);
+      if (!tui || tui.binding.threadId !== expected) return { status: 'refused', reason: 'stale' };
+      if (!codexInput.clear(pid, expected)) return { status: 'refused', reason: 'unavailable' };
+      await refreshCodexDisplay(true);
+      refreshPushEnrichment(db, getCachedLiveProcesses());
+      pushFleet(BrowserWindow.fromWebContents(event.sender));
+      pushSessionLive();
+      return { status: 'cleared' };
+    }, () => ({ status: 'refused', reason: 'unavailable' }));
   });
   ipcMain.handle('session:codex:recover', async (event, pid: unknown): Promise<CodexRecoveryResult> => {
-    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0)
-      return { status: 'failed', reason: 'Invalid native Codex terminal.' };
-    const result = await codexRecovery.recover(pid);
-    await refreshCodexDisplay(true);
-    refreshPushEnrichment(db, getCachedLiveProcesses());
-    pushFleet(BrowserWindow.fromWebContents(event.sender));
-    pushSessionLive();
-    return result;
+    return serializeInput<CodexRecoveryResult>(pid, async () => {
+      if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0)
+        return { status: 'failed', reason: 'Invalid native Codex terminal.' };
+      const result = await codexRecovery.recover(pid);
+      await refreshCodexDisplay(true);
+      refreshPushEnrichment(db, getCachedLiveProcesses());
+      pushFleet(BrowserWindow.fromWebContents(event.sender));
+      pushSessionLive();
+      return result;
+    }, () => ({ status: 'failed', reason: 'Another device controls this terminal or an input action is still running.' }));
   });
+
   ipcMain.handle('app:theme', (_event, theme: unknown) => applyThemeChoice(theme));
 
   // Quick answers (src/hooks/switch.ts): the Settings switch's own reads
@@ -2158,6 +2183,7 @@ export function registerIpc(
   fleetSessionOperations = new SessionOperations({
     list: () => buildFleetListPayload().openSessions.map(row => ({ ...row })),
     identity: fleetSessionIdentity,
+    favorites: () => favoriteProjects(),
     projects: () => [...new Set([...cachedPushOpenSessions.map(row => row.cwd).filter((cwd): cwd is string => !!cwd), ...favoriteProjects()])],
     conversation: (id, cursor) => conversationFor(db, id, undefined, parseConversationCursor(cursor)),
     live: pid => buildSessionLive(db, pid, getCachedLiveProcesses(), Date.now(), {

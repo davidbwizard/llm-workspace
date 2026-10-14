@@ -8,21 +8,24 @@
 export const COALESCE_MS = 16;
 export const MAX_FLUSH_CHARS = 262_144;
 
-export type TerminalDataPayload = { version: 1; pid: number; seq: number; data: string };
+export type TerminalDataPayload = { version: 1; pid: number; seq: number; data: string; delivery?: string };
 
-export type Coalescer = { push(chunk: string): void; flushNow(): void };
+export type Coalescer = { push(chunk: string): void; flushNow(): void; dispose(): void };
 
 export function makeCoalescer(
   pid: number,
   emit: (payload: TerminalDataPayload) => void,
   schedule: (fn: () => void) => void = fn => { setTimeout(fn, COALESCE_MS); },
+  limits?: { maxBufferedChars: number; onOverflow(): void },
 ): Coalescer {
   let buffer = '';
+  let disposed = false;
   let seq = 0;
   let armed = false;
 
   function flushNow(): void {
     armed = false;
+    if (disposed) return;
     if (buffer.length === 0) return;
     const data = buffer.slice(0, MAX_FLUSH_CHARS);
     buffer = buffer.slice(MAX_FLUSH_CHARS);
@@ -39,7 +42,14 @@ export function makeCoalescer(
   }
 
   return {
-    push(chunk: string): void { buffer += chunk; arm(); },
+    push(chunk: string): void {
+      if (disposed) return;
+      if (limits && buffer.length + chunk.length > limits.maxBufferedChars) {
+        disposed = true; buffer = ''; limits.onOverflow(); return;
+      }
+      buffer += chunk; arm();
+    },
+    dispose(): void { disposed = true; buffer = ''; },
     flushNow,
   };
 }

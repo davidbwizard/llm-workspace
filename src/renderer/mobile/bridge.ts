@@ -6,12 +6,17 @@ export function unwrap<T>(result: OperationResult): T {
   return result.value as T;
 }
 export function terminalBridge(connection: MobileConnection, handle: string): TerminalBridge {
-  const request = async (op: string, payload: object = {}) => unwrap(await connection.request('terminal:' + op, { handle, ...payload }));
+  const request = async (op: string, payload: object = {}) => {
+    const result = unwrap<{ status?: string; reason?: string }>(await connection.request('terminal:' + op, { handle, ...payload }));
+    if (result?.status === 'refused') throw new Error(`Terminal action refused (${result.reason ?? 'unavailable'}). Reopen Terminal or take control to retry.`);
+    return result;
+  };
   const subscribe = <T,>(event: string, callback: (payload: T) => void) => connection.onEvent((name, payload) => { if (name === event) callback(payload as T); });
   return {
     attach: (_pid, cols, rows) => request('attach', { cols, rows }), detach: () => request('detach'),
     resize: (_pid, cols, rows) => request('resize', { cols, rows }), sendRaw: (_pid, data) => request('input', { data }),
     takeTerminalControl: () => request('control'),
+    ackTerminalOutput: delivery => request('ack', { delivery }),
     onTerminalData: cb => subscribe('terminal:data', cb), onTerminalExit: cb => subscribe('terminal:exit', cb),
     onTerminalControl: cb => subscribe('terminal:control', cb),
   };

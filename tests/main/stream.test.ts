@@ -58,3 +58,10 @@ describe('terminal stream coalescing', () => {
     expect(scheduled).toBe(1);
   });
 });
+it('bounds queued terminal data and discards it on overflow or disposal', () => {
+  const emitted: unknown[] = []; const scheduled: Array<() => void> = []; let overflows = 0;
+  const c = makeCoalescer(1, p => emitted.push(p), fn => scheduled.push(fn), { maxBufferedChars: 100, onOverflow: () => { overflows++; } });
+  c.push('x'.repeat(80)); c.push('x'.repeat(80));
+  expect(overflows).toBe(1); scheduled.shift()?.(); c.push('more'); c.flushNow(); expect(emitted).toEqual([]);
+  const d = makeCoalescer(2, p => emitted.push(p), fn => scheduled.push(fn)); d.push('pending'); d.dispose(); scheduled.shift()?.(); expect(emitted).toEqual([]);
+});

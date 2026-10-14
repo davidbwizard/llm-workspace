@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, act } from '@testing-library/react';
+import { render, act, screen } from '@testing-library/react';
 import { TerminalView } from '../../src/renderer/components/TerminalView.tsx';
 
 // Captures every xterm call the component makes, so tests can assert on
@@ -9,6 +9,7 @@ import { TerminalView } from '../../src/renderer/components/TerminalView.tsx';
 // below stands in for it, and Task 14's manual pass is what verifies the
 // real thing renders.
 const writes: string[] = [];
+const writeCallbacks: Array<() => void> = [];
 let resizeCb: ((e: { cols: number; rows: number }) => void) | null = null;
 let dataCb: ((text: string) => void) | null = null;
 let webglShouldThrow = false;
@@ -23,14 +24,15 @@ const terminalOptions: Array<{ fontFamily?: string }> = [];
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
-    cols = 80; rows = 24;
+    cols = 80; rows = 24; options = {};
+    resize() {}
     constructor(opts: { fontFamily?: string }) { terminalOptions.push(opts); }
     loadAddon() {}
     open() {}
     dispose() {}
     onResize(cb: (e: { cols: number; rows: number }) => void) { resizeCb = cb; return { dispose() { resizeCb = null; } }; }
     onData(cb: (text: string) => void) { dataCb = cb; return { dispose() { dataCb = null; } }; }
-    write(d: string) { writes.push(d); }
+    write(d: string, callback?: () => void) { writes.push(d); if (callback) writeCallbacks.push(callback); }
   },
 }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }));
@@ -54,7 +56,7 @@ let handler: ((p: unknown) => void) | null = null;
 let exitHandler: ((p: { pid: number; exhausted: boolean }) => void) | null = null;
 
 beforeEach(() => {
-  writes.length = 0;
+  writes.length = 0; writeCallbacks.length = 0;
   terminalOptions.length = 0;
   resizeCb = null;
   dataCb = null;
@@ -274,4 +276,21 @@ describe('TerminalView', () => {
     });
     expect(container.textContent).not.toMatch(/missing|gap|dropped/i);
   });
+});
+
+it('shows refused raw input instead of silently dropping typed text', async () => {
+  window.fleet!.sendRaw = vi.fn(async () => ({ status: 'refused', reason: 'stale' }));
+  const view = render(<TerminalView pid={4821} />);
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { dataCb?.('x'); });
+  expect(screen.getByRole('status').textContent).toContain('stale');
+  view.unmount();
+});
+it('acknowledges remote terminal chunks only after xterm consumes them', async () => {
+  const ackTerminalOutput = vi.fn(async () => {});
+  const view = render(<TerminalView pid={4821} bridge={{ ...window.fleet!, ackTerminalOutput }} />);
+  handler?.({ version: 1, pid: 4821, seq: 0, data: 'hello', delivery: 'delivery-1' });
+  expect(ackTerminalOutput).not.toHaveBeenCalled();
+  await act(async () => { writeCallbacks[0]?.(); });
+  expect(ackTerminalOutput).toHaveBeenCalledWith('delivery-1'); view.unmount();
 });

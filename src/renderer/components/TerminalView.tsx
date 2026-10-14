@@ -25,7 +25,7 @@ const ATTACH_REFUSAL_TEXT: Record<AttachRefusalReason, string> = {
  *  per chunk would re-render the card tree at stream rate, which is the
  *  mistake FleetView's own un-debounced subscription would invite copying.
  *  The stream is measured at up to ~30 MB/s (src/main/stream.ts). */
-export type TerminalBridge = Pick<NonNullable<Window['fleet']>, 'attach' | 'detach' | 'resize' | 'sendRaw' | 'onTerminalData' | 'onTerminalExit' | 'onTerminalControl' | 'takeTerminalControl'>;
+export type TerminalBridge = Pick<NonNullable<Window['fleet']>, 'attach' | 'detach' | 'resize' | 'sendRaw' | 'onTerminalData' | 'onTerminalExit' | 'onTerminalControl' | 'takeTerminalControl'> & { ackTerminalOutput?(delivery: string): Promise<unknown> };
 export function TerminalView({ pid, bridge = window.fleet }: { pid: number; bridge?: TerminalBridge }) {
   const host = useRef<HTMLDivElement | null>(null);
   // Only two things ever go through React state: whether attach refused
@@ -72,6 +72,17 @@ export function TerminalView({ pid, bridge = window.fleet }: { pid: number; brid
 
     let alive = true;
     let ownsInput = true;
+    let attached = false;
+    term.options.disableStdin = true;
+    function reportInputError(error: unknown): void {
+      if (!alive) return;
+      ownsInput = false; term.options.disableStdin = true;
+      setRefusalText(error instanceof Error ? error.message : 'Terminal input failed. Reopen the session to retry.');
+    }
+    function checkResult(result: unknown): void {
+      const r = result as { status?: string; reason?: string } | null;
+      if (r?.status === 'refused') reportInputError(new Error(`Terminal input refused (${r.reason ?? 'unavailable'}). Reopen Terminal or take control to retry.`));
+    }
 
     // That first fit measures whatever width this element has on the mount
     // tick, which is before the rail beside it has taken its share of the row
@@ -106,13 +117,15 @@ export function TerminalView({ pid, bridge = window.fleet }: { pid: number; brid
       // attachment), so the very first message never counts as a gap.
       if (lastSeq !== null && p.seq !== lastSeq + 1) setGapDetected(true);
       lastSeq = p.seq;
-      term.write(p.data);
+      term.write(p.data, () => {
+        if (alive && p.delivery && api?.ackTerminalOutput) void api.ackTerminalOutput(p.delivery).catch(reportInputError);
+      });
     }
 
     // A real tmux client -- attach spawns `tmux attach` inside a pty --
     // learns our size the moment the pty is created at it, and pty.resize
     // (main) makes tmux follow every resize after that on its own.
-    const onResize = term.onResize(({ cols, rows }) => { if (ownsInput) void api.resize(pid, cols, rows); });
+    const onResize = term.onResize(({ cols, rows }) => { if (attached && ownsInput) void api.resize(pid, cols, rows).then(checkResult, reportInputError); });
     const ro = new ResizeObserver(() => { if (ownsInput) fit.fit(); });
     ro.observe(el);
 
@@ -162,6 +175,7 @@ export function TerminalView({ pid, bridge = window.fleet }: { pid: number; brid
       void terminalBridge.attach(pid, term.cols, term.rows).then(r => {
         const res = r as AttachResult;
         if (!alive) return;
+        if (res.status === 'attached') { attached = true; term.options.disableStdin = !ownsInput; }
         if (res.status === 'refused') setRefusalText(ATTACH_REFUSAL_TEXT[res.reason] ?? 'Terminal is unavailable. Reopen the session to retry.');
       }).catch(err => {
         if (!alive) return;
@@ -170,7 +184,7 @@ export function TerminalView({ pid, bridge = window.fleet }: { pid: number; brid
       });
     }
 
-    const onData = term.onData(text => { if (ownsInput) void api.sendRaw(pid, text); });
+    const onData = term.onData(text => { if (attached && ownsInput) void api.sendRaw(pid, text).then(checkResult, reportInputError); });
 
     return () => {
       alive = false;
@@ -181,7 +195,7 @@ export function TerminalView({ pid, bridge = window.fleet }: { pid: number; brid
       onResize.dispose();
       cancelAnimationFrame(firstFrame);
       ro.disconnect();
-      void api.detach(pid);
+      void api.detach(pid).catch(error => console.error('Terminal detach failed:', error));
       term.dispose();
     };
   }, [pid, bridge]);
@@ -193,7 +207,10 @@ export function TerminalView({ pid, bridge = window.fleet }: { pid: number; brid
   return (
     <div className="term-wrap">
       {!controlling && <p className="term-gap" role="status">Viewing terminal. <button onClick={() => {
-        void bridge?.takeTerminalControl?.(pid).catch(error => { console.error('Could not take terminal control:', error); });
+        void bridge?.takeTerminalControl?.(pid).then(result => {
+          const r = result as { status?: string; reason?: string };
+          if (r.status === 'refused') setRefusalText(`Could not take control (${r.reason ?? 'unavailable'}). Reopen Terminal to retry.`);
+        }, error => setRefusalText(error instanceof Error ? error.message : 'Could not take terminal control.'));
       }}>Take control</button></p>}
       {gapDetected && (
         <p className="term-gap" role="status">Some output may be missing -- a message was dropped.</p>

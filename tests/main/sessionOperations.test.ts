@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionOperations, type SessionIdentity } from '../../src/main/sessionOperations.ts';
@@ -51,5 +51,22 @@ it('refuses a project whose symlink target changed after listing', async () => {
     rmSync(join(root, 'link')); symlinkSync(join(root, 'b'), join(root, 'link'));
     expect(await o.mutate('phone', 'launch', { project, provider: 'codex' })).toMatchObject({ ok: false, reason: 'stale' });
     expect(launch).not.toHaveBeenCalled();
+  } finally { rmSync(root, { recursive: true }); }
+});
+it('never binds a stale display row to a newly verified conversation', async () => {
+  const f = fixture();
+  f.change({ pid: 10, sessionId: 's2', provider: 'codex', started: 'start1', tmux: 'llmws-codex-a' });
+  const row = f.operations.list()[0]!;
+  expect(row.handle).toBeNull(); expect(row.controllable).toBe(false);
+  expect(await f.operations.mutate('phone', 'send', { handle: row.handle, text: 'draft for s1' })).toMatchObject({ ok: false });
+  expect(f.send).not.toHaveBeenCalled();
+});
+it('marks known favourites in the project list without exposing launch paths as authority', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fleet-favorites-'));
+  try {
+    const f = fixture();
+    const operations = new SessionOperations({ ...f.operations.dependencies, projects: () => [root], favorites: () => [root] });
+    const project = operations.projects()[0]!;
+    expect(project.favorite).toBe(true); expect(project.id).not.toBe(root); expect(operations.projectPath(project.id)).toBe(realpathSync(root));
   } finally { rmSync(root, { recursive: true }); }
 });

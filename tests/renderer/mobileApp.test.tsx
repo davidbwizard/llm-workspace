@@ -22,3 +22,19 @@ it('lists existing sessions and preserves the reply after a lost acknowledgement
   expect((screen.getByLabelText('Reply') as HTMLTextAreaElement).value).toBe('Keep this draft');
   expect(request.mock.calls.filter(c => c[0] === 'send')).toHaveLength(1); view.unmount();
 });
+it('shows favourite folders and sends the optional session name when launching', async () => {
+  localStorage.clear();
+  const request = vi.fn(async (op: string, _payload?: unknown) => {
+    if (op === 'projects') return { ok: true, value: [{ id: 'favorite-project', label: 'Fleet — /work/fleet', favorite: true }, { id: 'other-project', label: 'Other — /work/other', favorite: false }] };
+    if (op === 'launch') return { ok: true, value: { status: 'launched', pid: 88 } };
+    return { ok: true, value: [] };
+  });
+  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
+  const view = render(<MobileApp connection={connection} />);
+  fireEvent.click(screen.getByText('New session'));
+  const favorite = await screen.findByRole('button', { name: 'Fleet — /work/fleet' }); fireEvent.click(favorite);
+  fireEvent.change(screen.getByLabelText('Session name (optional)'), { target: { value: 'Phone follow-up' } });
+  fireEvent.click(screen.getByText('Start session'));
+  await waitFor(() => expect(request).toHaveBeenCalledWith('launch', { project: 'favorite-project', provider: 'codex', name: 'Phone follow-up' }));
+  view.unmount();
+});

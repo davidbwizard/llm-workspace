@@ -5,7 +5,7 @@ import {
   attachTerminal, detachTerminal, detachAllTerminals, resizeTerminal, sendRawFor,
 } from '../../src/main/ipc.ts';
 import { registerSession, clearRegistry } from '../../src/main/sessions.ts';
-import { newSession, resizeWindow, type TmuxResult } from '../../src/main/tmux.ts';
+import { newSession, resizeWindow, windowSizePolicy, setWindowSizePolicy, type TmuxResult } from '../../src/main/tmux.ts';
 
 function fakeWin(sent: unknown[]) {
   return {
@@ -446,6 +446,7 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
     expect(await attachTerminal(TEST_PID, 100, 30, fakeWin(desktop), {}, 0, 'desktop', true)).toEqual({ status: 'attached' });
     expect(await attachTerminal(TEST_PID, 100, 30, fakeWin(phone), {}, 0, 'phone', true)).toEqual({ status: 'attached' });
     await delay(200);
+    const priorPolicy = windowSizePolicy(TEST_SESSION); expect(priorPolicy).not.toBeNull();
     expect(resizeWindow(TEST_SESSION, 100, 30).ok).toBe(true);
     resizeTerminal(TEST_PID, 40, 20, {}, 'phone');
     await delay(150);
@@ -455,6 +456,8 @@ describe.skipIf(!TMUX_AVAILABLE)('stream bridge against a real tmux session', ()
     execFileSync('tmux', ['send-keys', '-t', `=${TEST_SESSION}:`, 'Enter']);
     await delay(250);
     expect(desktop.map(payloadData).join('')).toContain('DESKTOP_SURVIVES');
+    expect(setWindowSizePolicy(TEST_SESSION, priorPolicy!).ok).toBe(true);
+    expect(windowSizePolicy(TEST_SESSION)).toBe(priorPolicy);
     expect(() => execFileSync('tmux', ['has-session', '-t', `=${TEST_SESSION}`])).not.toThrow();
   });
 

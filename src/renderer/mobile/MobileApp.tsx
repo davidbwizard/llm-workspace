@@ -1,3 +1,4 @@
+import { transcriptRefresh } from './refresh.ts';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ConversationPage } from '../../store/conversation.ts';
 import type { SessionLivePayload } from '../../main/sessionLive.ts';
@@ -10,6 +11,7 @@ import { MobileConnection } from './connection.ts';
 import { terminalBridge, unwrap } from './bridge.ts';
 import './mobile.css';
 export interface MobileSession { handle: string | null; pid: number; sessionId: string | null; provider: 'claude' | 'codex'; name?: string | null; cwd: string | null; activity?: string; controllable: boolean }
+interface MobileProject { id: string; label: string; favorite?: boolean }
 interface Preview { id: string; label: string; url: string; available: boolean }
 const defaultConnection = new MobileConnection(typeof location === 'undefined' ? '' : location.origin);
 const messageFor = (error: unknown) => error instanceof Error ? error.message : 'Could not reach Fleet. Check the connection.';
@@ -21,7 +23,8 @@ export function MobileApp({ connection = defaultConnection }: { connection?: Mob
   const [selected, setSelected] = useState(() => readLocal('fleet:mobile:selection'));
   const [terminal, setTerminal] = useState(false); const [showRail, setShowRail] = useState(true);
   const [error, setError] = useState(''); const [newSession, setNewSession] = useState(false);
-  const [projects, setProjects] = useState<Array<{ id: string; label: string }>>([]);
+  const [projects, setProjects] = useState<MobileProject[]>([]);
+  const [sessionName, setSessionName] = useState('');
   const [project, setProject] = useState(''); const [provider, setProvider] = useState<'claude' | 'codex'>('codex');
   const [launching, setLaunching] = useState(false); const waitingPid = useRef<number | null>(null);
   const retry = useRef(0);
@@ -54,16 +57,16 @@ export function MobileApp({ connection = defaultConnection }: { connection?: Mob
     return () => { alive = false; clearInterval(timer); };
   }, [connection, state]);
   async function openLaunch() {
-    setError(''); setNewSession(true);
-    try { const rows = unwrap<Array<{ id: string; label: string }>>(await connection.request('projects', {})); setProjects(rows); setProject(rows[0]?.id ?? ''); }
+    setError(''); setSessionName(''); setNewSession(true);
+    try { const rows = unwrap<MobileProject[]>(await connection.request('projects', {})); setProjects(rows); setProject(rows[0]?.id ?? ''); }
     catch (e) { setError(messageFor(e)); }
   }
   async function launch() {
     setLaunching(true); setError('');
     try {
-      const result = unwrap<LaunchResult>(await connection.request('launch', { project, provider }));
+      const result = unwrap<LaunchResult>(await connection.request('launch', { project, provider, ...(sessionName.trim() ? { name: sessionName.trim() } : {}) }));
       if (result.status !== 'launched') throw new Error(result.reason);
-      waitingPid.current = result.pid; setNewSession(false); setError('Session started. Waiting for Fleet to discover it…');
+      waitingPid.current = result.pid; setNewSession(false); setError(result.warning || 'Session started. Waiting for Fleet to discover it…');
     } catch (e) { setError(messageFor(e)); } finally { setLaunching(false); }
   }
   return <div className="mobile-app" data-show-rail={showRail}>
@@ -75,7 +78,7 @@ export function MobileApp({ connection = defaultConnection }: { connection?: Mob
         <Session key={`${session.handle}:${state}`} session={session} terminal={terminal} connection={connection} ready={state === 'ready'} onTerminal={() => setTerminal(true)} onError={setError} />
       </> : <p className="mobile-empty">Choose a session to pick up where you left off.</p>}</main>
     </div>
-    {newSession && <div className="mobile-modal" role="dialog" aria-modal="true" aria-label="New session"><form onSubmit={e => { e.preventDefault(); void launch(); }}><h2>New session</h2><p>Runs on your Mac, available on every device.</p><label>Agent<select value={provider} onChange={e => setProvider(e.target.value as 'claude' | 'codex')}><option value="codex">Codex</option><option value="claude">Claude</option></select></label><label>Project<select value={project} onChange={e => setProject(e.target.value)}>{projects.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>{!projects.length && <p>Open a project in Fleet on your Mac first.</p>}<div className="mobile-actions"><button type="button" disabled={launching} onClick={() => setNewSession(false)}>Cancel</button><button disabled={!project || launching || state !== 'ready'}>{launching ? 'Starting…' : 'Start session'}</button></div></form></div>}
+    {newSession && <div className="mobile-modal" role="dialog" aria-modal="true" aria-label="New session"><form onSubmit={e => { e.preventDefault(); void launch(); }}><h2>New session</h2><p>Runs on your Mac, available on every device.</p><label>Agent<select value={provider} onChange={e => setProvider(e.target.value as 'claude' | 'codex')}><option value="codex">Codex</option><option value="claude">Claude</option></select></label><div className="mobile-favorites"><h3>Favourites</h3>{projects.some(p => p.favorite) ? projects.filter(p => p.favorite).map(p => <button key={p.id} type="button" aria-pressed={project === p.id} onClick={() => setProject(p.id)}>{p.label}</button>) : <p>Star folders in desktop Fleet to keep them here.</p>}</div><label>Project<select value={project} onChange={e => setProject(e.target.value)}>{projects.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label><label>Session name (optional)<input value={sessionName} maxLength={64} placeholder="Name this session" onChange={e => setSessionName(e.target.value)} /></label>{!projects.length && <p>Open a project in Fleet on your Mac first.</p>}<div className="mobile-actions"><button type="button" disabled={launching} onClick={() => setNewSession(false)}>Cancel</button><button disabled={!project || launching || state !== 'ready'}>{launching ? 'Starting…' : 'Start session'}</button></div></form></div>}
   </div>;
 }
 function Session({ session, terminal, connection, ready, onTerminal, onError }: { session: MobileSession; terminal: boolean; connection: MobileConnection; ready: boolean; onTerminal(): void; onError(message: string): void }) {
@@ -83,7 +86,12 @@ function Session({ session, terminal, connection, ready, onTerminal, onError }: 
   const [previews, setPreviews] = useState<Preview[]>([]); const [sending, setSending] = useState(false); const [loadingOlder, setLoadingOlder] = useState(false);
   const draftKey = `fleet:mobile:draft:${session.provider}:${session.sessionId ?? session.handle}`;
   const [draft, setDraft] = useState(() => readLocal(draftKey));
+  const [controlling, setControlling] = useState(false);
   const bridge = useMemo(() => terminalBridge(connection, session.handle ?? ''), [connection, session.handle]);
+  useEffect(() => connection.onEvent((event, payload) => {
+    const p = payload as { pid: number; controlling?: boolean };
+    if (event === 'terminal:control' && p.pid === session.pid) setControlling(p.controlling === true);
+  }), [connection, session.pid]);
   const scroll = useRef<HTMLDivElement>(null); const bottom = useRef(true);
   useEffect(() => {
     if (!ready || !session.handle) return;
@@ -95,22 +103,24 @@ function Session({ session, terminal, connection, ready, onTerminal, onError }: 
         if (alive) setPage(old => old ? { turns: [...old.turns.filter(t => !next.turns.some(n => n.id === t.id)), ...next.turns].sort((a, b) => a.ts.localeCompare(b.ts) || a.id - b.id), nextCursor: old.nextCursor } : next);
       } catch (e) { if (alive) onError(messageFor(e)); } finally { refreshing = false; }
     };
+    const transcript = transcriptRefresh(refresh);
     const unsub = connection.onEvent((event, data) => {
       const next = data as SessionLivePayload;
       if (event !== 'session:live' || next.pid !== session.pid || next.sessionId !== session.sessionId || !alive) return;
-      setLive(next); void refresh();
+      setLive(next); transcript.request();
     });
     void connection.request('watch', { handle: session.handle }).then(r => { if (!r.ok && alive) onError('Could not watch this session. Reopen it from the list.'); });
     void connection.request('live', { handle: session.handle }).then(r => { if (r.ok && alive) setLive(r.value as SessionLivePayload); });
     void connection.request('previews', { handle: session.handle }).then(r => { if (r.ok && alive) setPreviews(r.value as Preview[]); });
-    void refresh(); const timer = setInterval(() => { void refresh(); }, 5000);
-    return () => { alive = false; unsub(); clearInterval(timer); void connection.request('watch', { handle: null }); };
+    transcript.request(); const timer = setInterval(() => transcript.request(), 5000);
+    return () => { alive = false; unsub(); transcript.close(); clearInterval(timer); void connection.request('watch', { handle: null }); };
   }, [connection, ready, session.handle, session.pid, session.sessionId, onError]);
   useEffect(() => { if (bottom.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [page]);
   async function send() {
     if (sending || !draft.trim()) return; setSending(true);
     try {
       const result = unwrap<{ status: string; reason?: string }>(await connection.request('send', { handle: session.handle, text: draft }));
+      if (result.status === 'interrupted') throw new Error('The reply may have been sent. Check the terminal before trying again.');
       if (!['sent', 'queued'].includes(result.status)) throw new Error(`Reply refused: ${result.reason ?? result.status}. Check Terminal.`);
       setDraft(''); writeLocal(draftKey, '');
     } catch (e) { onError(messageFor(e)); } finally { setSending(false); }
@@ -131,7 +141,7 @@ function Session({ session, terminal, connection, ready, onTerminal, onError }: 
   if (!session.handle) return <p className="mobile-empty">Fleet cannot verify this session yet. Check its desktop view.</p>;
   return <>
     {!!previews.length && <div className="mobile-previews">{previews.map(p => p.available ? <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer">Open {p.label}</a> : <span key={p.id}>{p.label} — server unavailable</span>)}</div>}
-    {terminal ? <><TerminalView key={String(ready)} pid={session.pid} bridge={bridge} /><div className="mobile-keys">{[['Esc', '\x1b'], ['Tab', '\t'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['Ctrl-C', '\x03'], ['Enter', '\r']].map(([label, data]) => <button key={label} disabled={!ready} onClick={() => { void bridge.sendRaw(session.pid, data!).catch(e => onError(messageFor(e))); }}>{label}</button>)}</div></> : <>
+    {terminal ? <><TerminalView key={String(ready)} pid={session.pid} bridge={bridge} /><div className="mobile-keys">{[['Esc', '\x1b'], ['Tab', '\t'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['Ctrl-C', '\x03'], ['Enter', '\r']].map(([label, data]) => <button key={label} disabled={!ready || !controlling} onClick={() => { void bridge.sendRaw(session.pid, data!).catch(e => onError(messageFor(e))); }}>{label}</button>)}</div></> : <>
       <div className="mobile-transcript" ref={scroll} onScroll={() => { const el = scroll.current; if (el) bottom.current = el.scrollHeight - el.clientHeight - el.scrollTop < 100; }}>
         {page?.nextCursor && <button disabled={loadingOlder || !ready} onClick={() => void older()}>Load earlier messages</button>}
         {!page && <p>{ready ? 'Loading conversation…' : 'Reconnect to read the conversation.'}</p>}

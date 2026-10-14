@@ -14,6 +14,7 @@ export interface SessionOperationDeps {
   list(): Array<{ pid: number; sessionId: string | null; cwd: string | null; provider: string; [key: string]: unknown }>;
   identity(pid: number): SessionIdentity | null;
   projects(): string[];
+  favorites?(): string[];
   conversation(sessionId: string, cursor: unknown): Promise<unknown> | unknown;
   live(pid: number): unknown;
   send(pid: number, text: string, expectedSessionId: string, client?: string): Promise<unknown>;
@@ -43,11 +44,11 @@ export class SessionOperations {
     const rows = this.dependencies.list().map(row => {
       const identity = this.dependencies.identity(row.pid);
       let handle: string | null = null;
-      if (identity?.started) {
+      if (identity?.started && identity.sessionId === row.sessionId && identity.provider === row.provider) {
         handle = [...this.handles].find(([, prior]) => same(prior, identity))?.[0] ?? randomUUID();
         this.handles.set(handle, identity); keep.add(handle);
       }
-      return { ...row, handle, controllable: !!identity?.tmux };
+      return { ...row, handle, controllable: !!handle && !!identity?.tmux };
     });
     for (const key of this.handles.keys()) if (!keep.has(key)) this.handles.delete(key);
     return rows;
@@ -58,18 +59,19 @@ export class SessionOperations {
     const current = this.dependencies.identity(saved.pid);
     return current && same(saved, current) ? current : null;
   }
-  projects(): Array<{ id: string; label: string }> {
-    const result: Array<{ id: string; label: string }> = [];
+  projects(): Array<{ id: string; label: string; favorite: boolean }> {
+    const result: Array<{ id: string; label: string; favorite: boolean }> = [];
+    const favorites = new Set((this.dependencies.favorites?.() ?? []).map(canonical).filter(Boolean));
     const keep = new Set<string>();
     for (const source of new Set(this.dependencies.projects())) {
       const real = canonical(source);
       if (!real) continue;
       const id = [...this.projectHandles].find(([, p]) => p.source === source && p.real === real)?.[0] ?? randomUUID();
       this.projectHandles.set(id, { source, real }); keep.add(id);
-      result.push({ id, label: `${basename(real)} — ${real}` });
+      result.push({ id, label: `${basename(real)} — ${real}`, favorite: favorites.has(real) });
     }
     for (const key of this.projectHandles.keys()) if (!keep.has(key)) this.projectHandles.delete(key);
-    return result;
+    return result.sort((a, b) => Number(b.favorite) - Number(a.favorite));
   }
   projectPath(id: string): string | null {
     const project = this.projectHandles.get(id);

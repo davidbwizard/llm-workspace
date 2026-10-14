@@ -211,11 +211,7 @@ export function cancelCopyMode(name: string, exec: TmuxExec = defaultExec): Tmux
   return exec(['send-keys', '-t', target(name), '-X', 'cancel']);
 }
 
-/** No production caller since the streaming bridge (ipc.ts) started
- *  attaching a real pty client -- tmux resizes the window itself to
- *  follow that client's own size, the same way it would for a real
- *  terminal. Kept here with its own direct coverage in
- *  tests/main/tmux.test.ts as a general-purpose primitive. */
+/** Fleet's controller sets the shared pane size explicitly; observer clients ignore their own size. */
 export function resizeWindow(name: string, cols: number, rows: number, exec: TmuxExec = defaultExec): TmuxResult {
   guard(name);
   return exec(['resize-window', '-t', target(name), '-x', String(cols), '-y', String(rows)]);
@@ -308,4 +304,18 @@ export function pasteBuffer(name: string, buffer: string, exec: TmuxExec = defau
 export function deleteBuffer(buffer: string, exec: TmuxExec = defaultExec): TmuxResult {
   guardBuffer(buffer);
   return exec(['delete-buffer', '-b', buffer]);
+}
+
+export type WindowSizePolicy = 'largest' | 'smallest' | 'manual' | 'latest';
+export function windowSizePolicy(name: string, exec: TmuxExec = defaultExec): WindowSizePolicy | null {
+  guard(name);
+  const result = exec(['show-options', '-A', '-w', '-v', '-t', target(name), 'window-size']);
+  if (!result.ok) return null;
+  const value = result.stdout.trim();
+  return ['largest', 'smallest', 'manual', 'latest'].includes(value) ? value as WindowSizePolicy : null;
+}
+export function setWindowSizePolicy(name: string, policy: WindowSizePolicy, exec: TmuxExec = defaultExec): TmuxResult {
+  guard(name);
+  if (!['largest', 'smallest', 'manual', 'latest'].includes(policy)) return { ok: false, error: 'invalid window size policy' };
+  return exec(['set-option', '-w', '-t', target(name), 'window-size', policy]);
 }

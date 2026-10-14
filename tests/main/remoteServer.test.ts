@@ -11,10 +11,11 @@ const config = { enabled: true, port: 43189, origin: 'https://mac.tail123.ts.net
 let service: Awaited<ReturnType<typeof startRemoteServer>>;
 let dir: string;
 afterEach(async () => { await service?.close(); if (dir) rmSync(dir, { recursive: true }); });
-async function start() {
+let terminalEmit: ((event: string, payload: unknown) => void) | undefined;
+async function start(withTerminal = false) {
   dir = mkdtempSync(join(tmpdir(), 'fleet-remote-')); writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Fleet</title>');
-  const operations = new SessionOperations({ list: () => [], identity: () => null, projects: () => [], conversation: () => null, live: () => null, send: async () => null, answerClaude: () => null, answerCodex: () => null, launch: () => null });
-  const terminals = new TerminalClients({ identity: () => null, attach: async () => ({ status: 'refused' }), detach() {}, resize() {}, size() {}, input() {}, busy: () => false });
+  const operations = new SessionOperations({ list: () => withTerminal ? [{ pid: 10, sessionId: 's', provider: 'codex', cwd: '/tmp' }] : [], identity: () => withTerminal ? { pid: 10, sessionId: 's', provider: 'codex', started: 'start', tmux: 'owned' } : null, projects: () => [], conversation: () => null, live: () => null, send: async () => null, answerClaude: () => null, answerCodex: () => null, launch: () => null });
+  const terminals = new TerminalClients({ identity: () => 'owned', attach: async (_client, _pid, _cols, _rows, emit) => { terminalEmit = emit; return { status: 'attached' }; }, detach() {}, resize() {}, size() {}, input() {}, busy: () => false });
   service = await startRemoteServer(config, { operations, terminals, assets: dir, watch: () => true, release() {} });
 }
 function get(path: string, extra: Record<string, string> = {}, method = 'GET') {
@@ -60,4 +61,45 @@ it('limits bootstrap requests and leaves no listener after shutdown', async () =
   let status = 0; for (let n = 0; n < 241; n++) status = (await get('/api/bootstrap')).status;
   expect(status).toBe(429); await service.close();
   await expect(get('/')).rejects.toThrow();
+});
+
+it('requires terminal consumption acknowledgments and disconnects only the slow viewer', async () => {
+  await start(true);
+  const boot = JSON.parse((await get('/api/bootstrap')).body);
+  const ws = new WebSocket('ws://127.0.0.1:' + config.port + '/socket', { headers: { Host: new URL(config.origin).host, Origin: config.origin, 'Tailscale-User-Login': config.login } });
+  const next = () => new Promise<any>(resolve => ws.once('message', d => resolve(JSON.parse(d.toString()))));
+  await new Promise(resolve => ws.once('open', resolve));
+  let response = next(); ws.send(JSON.stringify({ v: 1, op: 'authenticate', ticket: boot.ticket, generation: boot.generation })); const ready = await response;
+  let counter = 0;
+  async function call(op: string, payload: unknown) { const result = next(); ws.send(JSON.stringify({ v: 1, id: 'req' + ++counter, op, payload, client: ready.client, generation: boot.generation })); return result; }
+  const list = await call('list', {}); const handle = list.result.value[0].handle;
+  // attach emits the owner event before its response; consume both.
+  const attached = new Promise<void>(resolve => { const listener = (data: Buffer) => { if (JSON.parse(data.toString()).id) { ws.off('message', listener); resolve(); } }; ws.on('message', listener); });
+  ws.send(JSON.stringify({ v: 1, id: 'attach', op: 'terminal:attach', payload: { handle, cols: 80, rows: 24 }, client: ready.client, generation: boot.generation })); await attached;
+  response = next(); terminalEmit!('terminal:data', { pid: 10, seq: 0, data: 'first' }); const chunk = await response;
+  expect(chunk.payload.delivery).toBeTypeOf('string');
+  expect((await call('terminal:ack', { delivery: chunk.payload.delivery })).result.ok).toBe(true);
+  const closed = new Promise(resolve => ws.once('close', resolve));
+  for (let n = 0; n < 3; n++) {
+    response = next(); terminalEmit!('terminal:data', { pid: 10, seq: n + 1, data: 'x'.repeat(256 * 1024) });
+    await response; // Network is drained, but xterm consumption is deliberately not acknowledged.
+  }
+  terminalEmit!('terminal:data', { pid: 10, seq: 4, data: 'x'.repeat(256 * 1024) });
+  await closed;
+  expect((await get('/')).status).toBe(200);
+});
+
+it('reserves action capacity and permits cleanup after the read budget is exhausted', async () => {
+  await start(); const boot = JSON.parse((await get('/api/bootstrap')).body);
+  const ws = new WebSocket('ws://127.0.0.1:' + config.port + '/socket', { headers: { Host: new URL(config.origin).host, Origin: config.origin, 'Tailscale-User-Login': config.login } });
+  const next = () => new Promise<any>(resolve => ws.once('message', d => resolve(JSON.parse(d.toString()))));
+  await new Promise(resolve => ws.once('open', resolve));
+  let response = next(); ws.send(JSON.stringify({ v: 1, op: 'authenticate', ticket: boot.ticket, generation: boot.generation })); const ready = await response;
+  let counter = 0;
+  async function call(op: string, payload: unknown) { const result = next(); ws.send(JSON.stringify({ v: 1, id: 'req' + ++counter, op, payload, client: ready.client, generation: boot.generation })); return result; }
+  let last: any; for (let i = 0; i < 91; i++) last = await call('list', {});
+  expect(last.result).toMatchObject({ ok: false, reason: 'busy' });
+  expect((await call('send', { handle: 'old', text: 'hello' })).result).toMatchObject({ ok: false, reason: 'stale' });
+  expect((await call('watch', { handle: null })).result.ok).toBe(true);
+  expect((await call('terminal:detach', { handle: 'old' })).result.ok).toBe(true); ws.close();
 });
