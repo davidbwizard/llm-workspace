@@ -29,6 +29,7 @@ const api = {
   remoteConfigure: (config: unknown) => ipcRenderer.invoke('remote:configure', config),
   remoteEnable: () => ipcRenderer.invoke('remote:enable'),
   remoteDisable: () => ipcRenderer.invoke('remote:disable'),
+  openPhonePreview: (pid: number, sessionId: string, url: string) => ipcRenderer.invoke('remote:preview:open', pid, sessionId, url),
   listFleet: () => ipcRenderer.invoke('fleet:list'),
   listHistory: (offset: number, limit: number) => ipcRenderer.invoke('fleet:history', offset, limit),
   // The app's first destructive channel. pid is the only argument -- main

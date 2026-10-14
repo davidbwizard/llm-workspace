@@ -53,7 +53,7 @@ export class MobileConnection {
     if (this.status !== 'ready' || !ws || ws.readyState !== 1) return Promise.resolve({ ok: false, reason: 'unavailable' });
     if (this.pending.size >= 128) return Promise.resolve({ ok: false, reason: 'busy' });
     const id = crypto.randomUUID();
-    const mutation = ['send', 'answerClaude', 'answerCodex', 'launch', 'close', 'terminal:input'].includes(op);
+    const mutation = ['send', 'answerClaude', 'answerCodex', 'launch', 'close', 'terminal:input', 'preview:open'].includes(op);
     return new Promise(resolve => {
       const timer = setTimeout(() => { this.pending.delete(id); resolve({ ok: false, reason: mutation ? 'uncertain' : 'unavailable' }); }, 30_000);
       this.pending.set(id, { resolve, mutation, timer });

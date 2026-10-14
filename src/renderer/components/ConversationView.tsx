@@ -1,7 +1,7 @@
 import type { CodexConnection } from '../../core/codexRecovery.ts';
 import { useDraft, updateDraft } from '../state/drafts.ts';
 export { clearDrafts } from '../state/drafts.ts';
-import { Fragment, cloneElement, createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentProps, type MutableRefObject, type ReactElement, type ReactNode } from 'react';
+import { Fragment, cloneElement, createContext, isValidElement, memo, useContext, useEffect, useMemo, useLayoutEffect, useRef, useState, useSyncExternalStore, type ComponentProps, type MutableRefObject, type ReactElement, type ReactNode } from 'react';
 import Markdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ConversationPage, ConversationTurn } from '../../store/conversation.ts';
@@ -26,6 +26,7 @@ import { useCopy, COPY_LABEL } from '../state/useCopy.ts';
 import { useSessionLive, type SessionMode } from '../state/useSessionLive.ts';
 import { addPending, pendingFor, dropPending, matchPending, markQueued, tickIdle, NOT_SEEN_AFTER_MS } from '../state/pending.ts';
 import './ConversationView.css';
+import { LocalWebsiteContext, LocalWebsiteLink, type LocalWebsiteAccess } from './LocalWebsiteLink.tsx';
 import { desktopInboxStore, findUnreadBoundary, inboxSessionKey, type InboxSession } from '../state/activityInbox.ts';
 
 /** Transcript text is untrusted, so markdown rendering is locked down:
@@ -164,7 +165,7 @@ function UserText({ id, text }: { id: number; text: string }) {
 }
 
 const MARKDOWN_COMPONENTS: Components = {
-  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+  a: ({ node: _node, ...props }) => <LocalWebsiteLink {...props} />,
   img: ({ src, alt }) => <LinkedImage src={typeof src === 'string' ? src : undefined} alt={alt} />,
   pre: ({ node: _node, ...props }) => <CodeBlock {...props} />,
   // The only span this pane can produce is the one remarkFilePaths marks
@@ -840,6 +841,10 @@ export function ConversationView({ unobscured = true, inboxSession, inboxStore =
    *  render exactly as they did before this prop existed. */
   onContext?: (context: SessionContext | null) => void;
 }) {
+  const websiteAccess = useMemo<LocalWebsiteAccess | null>(() => pid !== null && sessionId ? {
+    open: url => window.fleet?.openPhonePreview?.(pid, sessionId, url)
+      ?? Promise.resolve({ ok: false as const, message: 'Website sharing is unavailable. Reopen Fleet and try again.' }),
+  } : null, [pid, sessionId]);
   const settings = useSettings();
   const inboxRevision = useSyncExternalStore(inboxStore.subscribe, inboxStore.getSnapshot, inboxStore.getSnapshot);
   const inboxKey = inboxSession ? inboxSessionKey(inboxSession) : null;
@@ -1344,6 +1349,7 @@ export function ConversationView({ unobscured = true, inboxSession, inboxStore =
           // conversation shorter than the pane to the bottom.
           <div className="convstack">
             <SessionIdContext.Provider value={sessionId}>
+            <LocalWebsiteContext.Provider value={websiteAccess}>
             {loadingMore && <p className="conv-loading-more">Loading more…</p>}
             {!loadingMore && nextCursor === null && turns.length > 0 && (
               // A genuine end-of-history fact, not an apology -- unlike the
@@ -1451,6 +1457,7 @@ export function ConversationView({ unobscured = true, inboxSession, inboxStore =
                 </article>
               );
             })}
+            </LocalWebsiteContext.Provider>
             </SessionIdContext.Provider>
           </div>
         )}

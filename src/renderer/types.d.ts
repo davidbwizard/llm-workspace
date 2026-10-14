@@ -39,6 +39,7 @@ declare global {
       remoteConfigure?: (config: unknown) => Promise<import('../main/remote/lifecycle.ts').RemoteStatus>;
       remoteEnable?: () => Promise<import('../main/remote/lifecycle.ts').RemoteStatus>;
       remoteDisable?: () => Promise<import('../main/remote/lifecycle.ts').RemoteStatus>;
+      openPhonePreview?: (pid: number, sessionId: string, url: string) => Promise<import('../core/preview.ts').PreviewOpenResult>;
       listFleet: () => Promise<FleetListPayload>;
       listHistory: (offset: number, limit: number) => Promise<FleetHistoryPayload>;
       killSession: (pid: number) => Promise<KillResult>;

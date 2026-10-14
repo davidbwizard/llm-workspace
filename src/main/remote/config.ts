@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { object } from '../../core/remote.ts';
-export interface PreviewConfig { id: string; project: string; label: string; localPort: number; url: string }
+export interface PreviewConfig { id: string; project: string; label: string; localPort: number; url: string; managed?: true; localHost?: '127.0.0.1' | '::1' }
 export interface RemoteConfig { enabled: boolean; port: number; origin: string; login: string; previews: PreviewConfig[] }
 export const DEFAULT_REMOTE: RemoteConfig = { enabled: false, port: 43180, origin: '', login: '', previews: [] };
 function port(value: unknown): value is number { return Number.isInteger(value) && (value as number) >= 1024 && (value as number) <= 65535; }
@@ -19,14 +19,17 @@ export function parseRemoteConfig(value: unknown): RemoteConfig {
   if (!p.enabled && p.origin === '' && p.login === '' && !p.previews.length) return { ...DEFAULT_REMOTE, port: p.port, previews: [] };
   const origin = endpoint(p.origin);
   if (!p.login) throw new Error('Enter your Tailscale login.');
+  const gatewayPort = p.port === 65535 ? 65534 : p.port + 1;
   const ids = new Set<string>(); const ports = new Set<string>();
   const previews = p.previews.map(raw => {
     const q = object(raw);
-    if (!q || Object.keys(q).some(k => !['id', 'project', 'label', 'localPort', 'url'].includes(k)) || typeof q.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(q.id) || typeof q.project !== 'string' || !isAbsolute(q.project) || q.project.length > 4096 || typeof q.label !== 'string' || !q.label.trim() || q.label.length > 80 || !port(q.localPort) || q.localPort === p.port) throw new Error('Invalid preview settings.');
+    if (!q || Object.keys(q).some(k => !['id', 'project', 'label', 'localPort', 'url', 'managed', 'localHost'].includes(k)) || typeof q.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(q.id) || typeof q.project !== 'string' || !isAbsolute(q.project) || q.project.length > 4096 || typeof q.label !== 'string' || !q.label.trim() || q.label.length > 80 || !port(q.localPort) || q.localPort === p.port) throw new Error('Invalid preview settings.');
+    const managed = 'managed' in q || 'localHost' in q;
+    if (managed && (q.managed !== true || !['127.0.0.1', '::1'].includes(q.localHost as string) || q.localPort === gatewayPort)) throw new Error('Invalid managed preview settings.');
     const url = endpoint(q.url);
     if (url.hostname !== origin.hostname || url.origin === origin.origin || ids.has(q.id) || ports.has(url.port)) throw new Error('Previews need unique HTTPS ports on this Mac, separate from Fleet.');
     ids.add(q.id); ports.add(url.port);
-    return { id: q.id, project: q.project, label: q.label, localPort: q.localPort, url: url.origin };
+    return { id: q.id, project: q.project, label: q.label, localPort: q.localPort, url: url.origin, ...(managed ? { managed: true as const, localHost: q.localHost as '127.0.0.1' | '::1' } : {}) };
   });
   return { enabled: p.enabled, port: p.port, origin: origin.origin, login: p.login, previews };
 }

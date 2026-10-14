@@ -12,3 +12,9 @@ it('rejects same-origin, foreign-host and duplicate preview mappings', () => {
   for (const url of [valid.origin, 'https://evil.ts.net:8443', 'javascript:alert(1)', valid.origin + ':8443/?x=1']) expect(() => parseRemoteConfig({ ...valid, previews: [{ ...preview, url }] })).toThrow();
   expect(() => parseRemoteConfig({ ...valid, previews: [preview, { ...preview, id: 'other' }] })).toThrow();
 });
+it('validates paired managed preview fields and reserves the gateway port', () => {
+  const preview = { id: 'site', project: '/tmp', label: 'Site', localPort: 3000, url: valid.origin + ':8443', managed: true, localHost: '::1' };
+  expect(parseRemoteConfig({ ...valid, previews: [preview] }).previews[0]).toEqual(preview);
+  for (const change of [{ managed: false }, { managed: undefined }, { localHost: undefined }, { localHost: '0.0.0.0' }, { localPort: 43181 }]) expect(() => parseRemoteConfig({ ...valid, previews: [{ ...preview, ...change }] })).toThrow();
+  expect(() => parseRemoteConfig({ ...valid, port: 65535, previews: [{ ...preview, localPort: 65534 }] })).toThrow();
+});

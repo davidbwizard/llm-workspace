@@ -1,11 +1,13 @@
 import { Image as ImageIcon } from '@phosphor-icons/react';
 import { MOBILE_IMAGE_BYTES, MOBILE_IMAGE_LIMIT } from '../../core/remote.ts';
 import { transcriptRefresh } from './refresh.ts';
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ConversationPage } from '../../store/conversation.ts';
 import type { SessionLivePayload } from '../../main/sessionLive.ts';
 import type { LaunchResult } from '../../main/launch.ts';
 import { MarkdownText } from '../components/ConversationView.tsx';
+import { LocalWebsiteContext, LocalWebsiteInput, type LocalWebsiteAccess } from '../components/LocalWebsiteLink.tsx';
+import type { PreviewOpenResult } from '../../core/preview.ts';
 import { PromptCard } from '../components/PromptCard.tsx';
 import { CodexPromptCard } from '../components/CodexPromptCard.tsx';
 import { WorkingStrip } from '../components/WorkingStrip.tsx';
@@ -123,11 +125,37 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
   const imagesRef = useRef(images); imagesRef.current = images;
   useEffect(() => () => { for (const image of imagesRef.current) URL.revokeObjectURL(image.url); }, []);
   function clearImages() { for (const image of imagesRef.current) URL.revokeObjectURL(image.url); setImages([]); }
-  async function refreshPreviews() {
-    if (checkingPreviews) return; setCheckingPreviews(true);
-    try { setPreviews(unwrap<Preview[]>(await connection.request('previews', { handle: session.handle }))); }
-    catch (e) { onError(messageFor(e)); } finally { setCheckingPreviews(false); }
-  }
+  const previewLifetime = useMemo(() => ({ active: true, refreshing: false, refreshAgain: false }), [connection, session.handle]);
+  useEffect(() => { previewLifetime.active = true; return () => { previewLifetime.active = false; }; }, [previewLifetime]);
+  const refreshPreviews = useCallback(async function refresh() {
+    if (!previewLifetime.active) return;
+    if (previewLifetime.refreshing) { previewLifetime.refreshAgain = true; return; }
+    previewLifetime.refreshAgain = false; previewLifetime.refreshing = true; setCheckingPreviews(true);
+    try {
+      const next = unwrap<Preview[]>(await connection.request('previews', { handle: session.handle }));
+      if (previewLifetime.active) setPreviews(next);
+    } catch (e) { if (previewLifetime.active) onError(messageFor(e)); }
+    finally {
+      previewLifetime.refreshing = false;
+      if (previewLifetime.active) {
+        setCheckingPreviews(false);
+        if (previewLifetime.refreshAgain) void refresh();
+      }
+    }
+  }, [connection, session.handle, previewLifetime, onError]);
+  const openWebsite = useCallback(async (url: string): Promise<PreviewOpenResult> => {
+    const response = await connection.request('preview:open', { handle: session.handle, url });
+    if (!response.ok && response.reason === 'uncertain') return {
+      ok: false,
+      message: 'Connection lost before Fleet confirmed setup. This website may already be connected. Reconnect and check Websites, or safely retry Open website.',
+    };
+    const result = unwrap<PreviewOpenResult>(response);
+    if (result.ok && previewLifetime.active) await refreshPreviews();
+    return result;
+  }, [connection, session.handle, refreshPreviews, previewLifetime]);
+  const websiteAccess = useMemo<LocalWebsiteAccess>(() => ({
+    mobile: true, disabled: !ready, open: openWebsite,
+  }), [ready, openWebsite]);
   function pickImages(files: FileList | null) {
     if (!files) return;
     const next = Array.from(files);
@@ -222,8 +250,8 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
   const hasPrompt = ready && !!(live?.prompt || live?.codex?.prompts.length);
   const waiting = ready && (live?.activity === 'waiting' || !!live?.prompt || !!live?.codex?.prompts.some(prompt => prompt.isBlocking !== false));
   if (!session.handle) return <p className="mobile-empty">Fleet cannot verify this session yet. Check its desktop view.</p>;
-  return <>
-    {showPreviews && <section className="mobile-websites" aria-label="Project websites"><div className="mobile-website-heading"><h3>Websites</h3><button type="button" aria-label="Hide websites" onClick={() => setShowPreviews(false)}>×</button></div><div className="mobile-previews">{previews.map(p => p.available ? <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer">Open {p.label}</a> : <span key={p.id}>{p.label} — server unavailable</span>)}</div>{!previews.length && <p>No websites connected for this folder. On your Mac, add one in Fleet Settings → Remote access → Project previews. Keep its local development server running.</p>}<button disabled={!ready || checkingPreviews} onClick={() => void refreshPreviews()}>{checkingPreviews ? 'Checking…' : 'Refresh websites'}</button></section>}
+  return <LocalWebsiteContext.Provider value={websiteAccess}>
+    {showPreviews && <section className="mobile-websites" aria-label="Project websites"><div className="mobile-website-heading"><h3>Websites</h3><button type="button" aria-label="Hide websites" onClick={() => setShowPreviews(false)}>×</button></div><div className="mobile-previews">{previews.map(p => p.available ? <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer">Open {p.label}</a> : <span key={p.id}>{p.label} — server unavailable</span>)}</div>{!previews.length && <p>No websites connected for this folder. Paste a localhost address below and keep its development server running on your Mac.</p>}<button disabled={!ready || checkingPreviews} onClick={() => void refreshPreviews()}>{checkingPreviews ? 'Checking…' : 'Refresh websites'}</button><LocalWebsiteInput /></section>}
     {terminal ? <><TerminalView key={String(ready)} pid={session.pid} bridge={bridge} /><div className="mobile-keys">{[['Esc', '\x1b'], ['Tab', '\t'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['Ctrl-C', '\x03'], ['Enter', '\r']].map(([label, data]) => <button key={label} disabled={!ready || !controlling} onClick={() => { void bridge.sendRaw(session.pid, data!).catch(e => onError(messageFor(e))); }}>{label}</button>)}</div></> : <>
       <div className="mobile-transcript" ref={scroll} onScroll={() => { const el = scroll.current; if (el) { const remaining = el.scrollHeight - el.clientHeight - el.scrollTop; bottom.current = remaining < 100; setAtBottom(remaining <= 1); } }}>
         {page?.nextCursor && <button disabled={loadingOlder || !ready} onClick={() => void older()}>Load earlier messages</button>}
@@ -238,5 +266,5 @@ function Session({ session, terminal, connection, ready, onTerminal, onToggleTer
         {hasPrompt ? <button type="button" onClick={reviewRequest}>Review request</button> : !terminal ? <button type="button" onClick={onTerminal}>Open terminal</button> : <span className="mobile-attention-hint">Answer in the terminal</span>}
       </div> : live?.activity === 'working' ? <div className="mobile-working-strip"><WorkingStrip provider={session.provider} since={live.since} /></div> : null)}
       <form className="mobile-composer" onSubmit={e => { e.preventDefault(); void send(); }}>{!terminal && <><label htmlFor="mobile-reply" className="visually-hidden">Reply</label><textarea id="mobile-reply" value={draft} disabled={sending} placeholder={session.controllable ? 'Message this session…' : 'This session is view only'} onChange={e => { setDraft(e.target.value); try { writeLocal(draftKey, e.target.value); } catch { onError('Draft could not be saved on this device. Keep this page open.'); } }} /></>}<div className="mobile-reply-tools" role="group" aria-label="Reply tools"><label className="mobile-image-picker" title="Upload image"><ImageIcon size={22} aria-hidden="true" /><input type="file" aria-label="Upload images" accept="image/png,image/jpeg,image/gif,image/webp" multiple disabled={!ready || !session.controllable || sending || images.length >= MOBILE_IMAGE_LIMIT} onChange={e => { pickImages(e.target.files); e.target.value = ''; }} /></label><button type="button" disabled={!terminal && (!session.controllable || !ready)} onClick={onToggleTerminal}>{terminal ? 'Conversation' : 'Terminal'}</button><MobileSessionMenu pid={session.pid} sessionId={session.sessionId} canClose={ready && session.controllable} onClose={onClose} onWebsites={() => { setShowPreviews(true); if (ready) void refreshPreviews(); }} />{!terminal && <button className="mobile-send" disabled={!ready || !session.controllable || (!draft.trim() && !images.length) || sending}>{sending ? 'Sending…' : 'Send'}</button>}</div></form>
-  </>;
+  </LocalWebsiteContext.Provider>;
 }

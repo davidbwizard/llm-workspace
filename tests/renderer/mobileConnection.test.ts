@@ -31,3 +31,17 @@ it('serializes upload and send across session views and stops before sending aft
   expect(request.mock.calls.filter(c => c[0] === 'send')).toHaveLength(0);
   expect(await client.sendReply('second-session', 'hello', [])).toMatchObject({ ok: true });
 });
+it.each(['disconnect', 'timeout'] as const)('marks preview setup %s uncertain and never repeats setup on reconnect', async failure => {
+  vi.useFakeTimers();
+  const sockets: Socket[] = [];
+  const client = new MobileConnection('https://mac.tail.ts.net', { bootstrap: async () => ({ generation: 'g', ticket: 't' }), socket: () => { const socket = new Socket(); sockets.push(socket); return socket as unknown as WebSocket; } });
+  try {
+    await client.connect(); const first = sockets[0]!; first.onopen?.(); first.receive({ event: 'ready', generation: 'g', client: 'c1' });
+    const pending = client.request('preview:open', { handle: 'h', url: 'http://localhost:3000/path' });
+    expect(first.sent.filter(request => request.op === 'preview:open')).toHaveLength(1);
+    if (failure === 'disconnect') first.close(); else await vi.advanceTimersByTimeAsync(30_000);
+    expect(await pending).toEqual({ ok: false, reason: 'uncertain' });
+    await client.connect(); const second = sockets[1]!; second.onopen?.(); second.receive({ event: 'ready', generation: 'g', client: 'c2' });
+    expect(second.sent.map(request => request.op)).toEqual(['authenticate']);
+  } finally { client.close(); vi.useRealTimers(); }
+});

@@ -3,6 +3,9 @@ import { RemoteLifecycle } from './remote/lifecycle.ts';
 import { readRemoteConfig, writeRemoteConfig } from './remote/config.ts';
 import { startRemoteServer } from './remote/server.ts';
 import { previewsForProject } from './remote/previews.ts';
+import { PreviewManager } from './remote/previewManager.ts';
+import { startPreviewGateway } from './remote/previewGateway.ts';
+import { openSessionPreview, registerPreviewIpc } from './remote/previewIpc.ts';
 import { registerRemoteIpc, fleetSessionOperations, watchFleetSession } from './ipc.ts';
 import { releaseSessionClient } from './sessionLive.ts';
 import { app, BrowserWindow, shell, nativeTheme, Menu, Notification } from 'electron';
@@ -368,24 +371,60 @@ app.whenReady().then(async () => {
     open:()=>{ if (!mainWindow || mainWindow.isDestroyed()) createWindow(); else { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } },
   });
   const remotePath = join(homedir(), '.llm-workspace', 'remote.json');
+  let previewGateway: Promise<Awaited<ReturnType<typeof startPreviewGateway>>> | null = null;
+  let previewGatewayPort: number | null = null;
+  const closePreviewGateway = async () => {
+    const pending = previewGateway; previewGateway = null; previewGatewayPort = null;
+    if (pending) await (await pending).close();
+  };
+  const ensurePreviewGateway = async (forStartup = false) => {
+    const status = remoteAccess!.status();
+    const config = status.config;
+    if (!forStartup && status.state !== 'ready') throw new Error('Remote access is restarting. Try again.');
+    if (!config.enabled) throw new Error('Enable Remote access before opening a phone preview.');
+    const port = config.port === 65535 ? 65534 : config.port + 1;
+    // A settings restart may still be draining the old gateway. Never hand
+    // Tailscale a different port that this instance has not actually bound.
+    if (previewGateway && previewGatewayPort !== port) throw new Error('Remote settings changed. Try again.');
+    if (!previewGateway) {
+      const starting = startPreviewGateway({ port, getConfig: () => remoteAccess!.status().config });
+      previewGateway = starting; previewGatewayPort = port;
+      try { await starting; }
+      catch (error) { if (previewGateway === starting) { previewGateway = null; previewGatewayPort = null; } throw error; }
+    } else await previewGateway;
+    const current = remoteAccess!.status();
+    if ((!forStartup && current.state !== 'ready') || !current.config.enabled || current.config.port !== config.port) throw new Error('Remote settings changed. Try again.');
+    return port;
+  };
+  const previewManager = new PreviewManager({
+    getConfig: () => remoteAccess!.status().config,
+    save: (config, expected) => remoteAccess!.configureIfCurrent(config, expected),
+    ensureGateway: ensurePreviewGateway,
+  });
   remoteAccess = new RemoteLifecycle({
     read: () => readRemoteConfig(remotePath), save: config => { writeRemoteConfig(remotePath, config); },
-    start: config => {
+    start: async config => {
       if (!fleetSessionOperations || !watchFleetSession) throw new Error('Fleet session services are not ready.');
       const operations = fleetSessionOperations;
-      return startRemoteServer(config, {
+      if (config.previews.some(preview => preview.managed)) await ensurePreviewGateway(true);
+      let service: Awaited<ReturnType<typeof startRemoteServer>>;
+      try { service = await startRemoteServer(config, {
         operations, terminals: fleetTerminals, assets: join(app.getAppPath(), 'out', 'mobile'),
         watch: (client, pid, emit) => watchFleetSession!(client, pid, emit),
         release: client => { releaseSessionClient(client); codexAppServer.release(client); },
         previews: async handle => {
           const target = operations.resolve(handle);
           const project = target && operations.dependencies.list().find(row => row.pid === target.pid)?.cwd;
-          return project ? previewsForProject(config, project) : [];
+          return project ? previewsForProject(remoteAccess!.status().config, project) : [];
         },
-      });
+        openPreview: (handle, url) => openSessionPreview(operations, (project, raw, current) => previewManager.open(project, raw, current), handle, url),
+      }); } catch (error) { await closePreviewGateway(); throw error; }
+      return { close: async () => { await service.close(); await closePreviewGateway(); } };
     },
   });
   registerRemoteIpc(remoteAccess);
+  registerPreviewIpc({ window: () => mainWindow, operations: () => fleetSessionOperations,
+    open: (project, url, current) => previewManager.open(project, url, current) });
   await remoteAccess.initialize();
   createWindow();
 

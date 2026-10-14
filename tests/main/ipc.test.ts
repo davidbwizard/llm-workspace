@@ -923,7 +923,7 @@ describe('defaultHop (B2)', () => {
 describe('IPC channel parity', () => {
   it('every channel main handles is exposed by the preload, and vice versa', () => {
     // Fleet Mail registers its own channels in mailIpc.ts, kept out of ipc.ts.
-    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8') + readFileSync('src/main/mailIpc.ts', 'utf8') + readFileSync('src/main/notifications.ts', 'utf8'));
+    const ipc = strip(readFileSync('src/main/ipc.ts', 'utf8') + readFileSync('src/main/mailIpc.ts', 'utf8') + readFileSync('src/main/notifications.ts', 'utf8') + readFileSync('src/main/remote/previewIpc.ts', 'utf8'));
     const preload = strip(readFileSync('src/preload/index.ts', 'utf8'));
     const handled = [...ipc.matchAll(/ipcMain\.handle\('([^']+)'/g)].map(m => m[1]).sort();
     const exposed = [...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/g)].map(m => m[1]).sort();

@@ -58,7 +58,17 @@ Use the bordered **image icon** beside the reply box to pick up to four PNG, JPE
 
 ## Development website previews
 
-In Remote access settings, add the project's absolute folder, a label, its running development server's local port, and a private preview HTTPS origin. It must use this Mac's Tailscale hostname with a different HTTPS port from Fleet. Each preview needs its own Serve mapping; Fleet does not discover ports, start servers, or change Serve mappings.
+For a localhost link in a conversation, choose **Open on phone** on desktop or **Open website** on mobile. Desktop shows a private link and QR code; mobile shows a link to open in a new tab. If the address is inside a code block, paste it into **… → Websites → Website address on your Mac**. Setup happens only after you press the button. It checks the running server belongs to the selected session's project, chooses an unused private HTTPS port, and adds the site to Websites. Keep Fleet, Tailscale, and the project development server running.
+
+Automatic previews accept explicit `http://localhost:PORT`, `http://127.0.0.1:PORT`, and `http://[::1]:PORT` addresses on ports 1024–65535. Paths, queries, and fragments are retained. Fleet handles IPv4/IPv6 listeners and forwards a local Host header, so a Vite hostname allowlist normally needs no edit. Live reload WebSockets use the same authenticated proxy. The gateway binds only to IPv4 loopback at Fleet's remote port plus one (65534 when Fleet uses 65535). That port must be free. Tailscale Serve receives a separate HTTPS mapping between 8444 and 8499; existing mappings are preserved and Funnel is never enabled.
+
+Managed previews check the configured Tailscale login, origin, and project listener before forwarding. They do not forward Tailscale identity headers, cookies, or Authorization headers, and do not return Set-Cookie headers. Consequently, cookie/bearer sign-in flows need separate project-specific setup; this feature is intended for development previews, not a generic authenticated application gateway. Separate ports isolate web origins but **do not isolate JavaScript cookies on the shared hostname**. Run trusted development sites only. Fleet itself does not use authentication cookies. Apps that hard-code other localhost API addresses, OAuth callbacks, or a custom live-reload port may still need project configuration.
+
+Removing a managed preview in Settings disables its Fleet route and closes active connections. Its unused private Tailscale mapping remains reserved; Fleet does not delete externally managed Serve settings on removal. A changed or occupied mapping produces an error instead of being overwritten. If setup loses its reply, refresh Websites or retry the same link; repeated setup reuses the verified project/port mapping.
+
+The manual setup below remains available for existing previews and custom applications.
+
+For a manual preview, add the project's absolute folder, a label, its running development server's local port, and a private preview HTTPS origin in Remote access settings. It must use this Mac's Tailscale hostname with a different HTTPS port from Fleet. Add its Serve mapping yourself. Fleet does not automatically discover or start project servers.
 
 Example with Fleet on HTTPS 443 and a project on local port 3000, after verifying HTTPS 8443 is free:
 

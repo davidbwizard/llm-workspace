@@ -89,7 +89,7 @@ describe('renderer security posture', () => {
       // against a closed list and the value as JSON, bounded, and migration
       // never overwrites a preference already stored.
       'prefs:migrate', 'prefs:set',
-      'remote:configure', 'remote:disable', 'remote:enable', 'remote:get',
+      'remote:configure', 'remote:disable', 'remote:enable', 'remote:get', 'remote:preview:open',
       // Quick answers: main re-derives the prompt and checks the answer and
       // the pane before any key -- see tests/main/answer.test.ts's guards.
       'session:answer',

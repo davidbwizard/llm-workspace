@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
-import { startRemoteServer } from '../../src/main/remote/server.ts';
+import { startRemoteServer, type RemoteServices } from '../../src/main/remote/server.ts';
 import { createStager } from '../../src/main/staging.ts';
 import { SessionOperations } from '../../src/main/sessionOperations.ts';
 import { TerminalClients } from '../../src/main/terminalClients.ts';
@@ -13,11 +13,11 @@ let service: Awaited<ReturnType<typeof startRemoteServer>>;
 let dir: string;
 afterEach(async () => { await service?.close(); if (dir) rmSync(dir, { recursive: true }); });
 let terminalEmit: ((event: string, payload: unknown) => void) | undefined;
-async function start(withTerminal = false) {
+async function start(withTerminal = false, openPreview?: RemoteServices['openPreview']) {
   dir = mkdtempSync(join(tmpdir(), 'fleet-remote-')); writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Fleet</title>');
   const operations = new SessionOperations({ list: () => withTerminal ? [{ pid: 10, sessionId: 's', provider: 'codex', cwd: '/tmp' }] : [], identity: () => withTerminal ? { pid: 10, sessionId: 's', provider: 'codex', started: 'start', tmux: 'owned' } : null, projects: () => [], conversation: () => null, live: () => null, send: async (_pid, _text, _sid, _client, images) => ({ status: 'sent', images }), images: createStager(join(dir, 'images')), close: async () => ({ status: 'killed' }), answerClaude: () => null, answerCodex: () => null, launch: () => null });
   const terminals = new TerminalClients({ identity: () => 'owned', attach: async (_client, _pid, _cols, _rows, emit) => { terminalEmit = emit; return { status: 'attached' }; }, detach() {}, resize() {}, size() {}, input() {}, busy: () => false });
-  service = await startRemoteServer(config, { operations, terminals, assets: dir, watch: () => true, release() {} });
+  service = await startRemoteServer(config, { operations, terminals, assets: dir, watch: () => true, release() {}, openPreview });
 }
 function get(path: string, extra: Record<string, string> = {}, method = 'GET', bytes?: Buffer) {
   return new Promise<{ status: number; body: string }>((resolve, reject) => {
@@ -114,6 +114,17 @@ async function client() {
   let n = 0;
   return { ws, call: async (op: string, payload: unknown = {}) => { const result = next(); ws.send(JSON.stringify({ v: 1, id: 'r' + ++n, op, payload, client: ready.client, generation: boot.generation })); return (await result).result; } };
 }
+it('prepares a website on the authenticated phone connection and rejects extra authority fields', async () => {
+  const calls: unknown[] = [];
+  await start(true, async (handle, url) => { calls.push([handle, url]); return { ok: true, url: 'https://mac.tail123.ts.net:8444/game' }; });
+  const phone = await client(); const handle = (await phone.call('list')).value[0].handle;
+  expect(await phone.call('preview:open', { handle, url: 'http://localhost:5199/game', project: '/other' })).toEqual({ ok: false, reason: 'invalid' });
+  expect(calls).toHaveLength(0);
+  expect(await phone.call('preview:open', { handle, url: 'http://localhost:5199/game' })).toEqual({ ok: true, value: { ok: true, url: 'https://mac.tail123.ts.net:8444/game' } });
+  expect(calls).toEqual([[handle, 'http://localhost:5199/game']]);
+  expect((await phone.call('list')).value[0].handle).toBe(handle);
+  phone.ws.close();
+});
 it('uploads validated image bytes using a one-use origin-bound ticket and sends only owned IDs', async () => {
   await start(true); const phone = await client(); const tablet = await client();
   const handle = (await phone.call('list')).value[0].handle;

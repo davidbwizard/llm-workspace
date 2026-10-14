@@ -15,6 +15,7 @@ export interface RemoteServices {
   watch(client: string, pid: number | null, emit: (payload: unknown) => void): boolean;
   release(client: string): void;
   previews?(handle: string): Promise<unknown>;
+  openPreview?(handle: string, url: unknown): Promise<unknown>;
 }
 export async function startRemoteServer(raw: RemoteConfig, services: RemoteServices) {
   const config = parseRemoteConfig(raw);
@@ -23,6 +24,7 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
   if (!statSync(resolve(root, 'index.html')).isFile()) throw new Error('Mobile build is missing. Run npm run build:mobile.');
   const generation = randomUUID(); const tickets = new Tickets(); const receipts = new SessionActions();
   const requests = new Budget(240, 60_000); const handshakes = new Budget(60, 60_000);
+  const previewSetups = new Budget(12, 60_000);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
   const uploads = new ImageUploads(services.operations);
   let stopping = false;
@@ -123,6 +125,12 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
           return target ? { ok: true, value: services.watch(client, target.pid, data => emit('session:live', data)) } : { ok: false, reason: 'stale' };
         }
         case 'previews': return typeof p?.handle === 'string' && services.previews ? { ok: true, value: await services.previews(p.handle) } : { ok: false, reason: 'unsupported' };
+        case 'preview:open': {
+          if (!p || Object.keys(p).some(key => !['handle', 'url'].includes(key)) || typeof p.handle !== 'string' || typeof p.url !== 'string' || p.url.length > 8192) return { ok: false, reason: 'invalid' };
+          if (!services.openPreview) return { ok: false, reason: 'unsupported' };
+          if (!previewSetups.take()) return { ok: false, reason: 'busy' };
+          return { ok: true, value: await services.openPreview(p.handle, p.url) };
+        }
         case 'terminal:attach': case 'terminal:resize': case 'terminal:input': case 'terminal:control': {
           if (op === 'terminal:input' && (typeof p?.data !== 'string' || !rawBudget.take(Buffer.byteLength(p.data)))) return { ok: false, reason: 'busy' };
           const target = typeof p?.handle === 'string' ? services.operations.resolve(p.handle) : null;
@@ -156,7 +164,7 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
       if (!p || p.v !== REMOTE_VERSION || typeof p.id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(p.id) || typeof p.op !== 'string') { ws.terminate(); cleanup(); return; }
       const id = p.id; const op = p.op; const payload = p.payload;
       if (p.client !== client || p.generation !== generation) { send({ id, result: { ok: false, reason: 'stale' } }); return; }
-      const mutation = ['send', 'answerClaude', 'answerCodex', 'launch', 'close', 'image:prepare'].includes(op);
+      const mutation = ['send', 'answerClaude', 'answerCodex', 'launch', 'close', 'image:prepare', 'preview:open'].includes(op);
       const releases = op === 'terminal:detach' || (op === 'watch' && object(payload)?.handle === null);
       const exempt = releases || op === 'terminal:input' || op === 'terminal:ack';
       const budget = mutation ? mutationBudget : op.startsWith('terminal:') ? terminalBudget : readBudget;
