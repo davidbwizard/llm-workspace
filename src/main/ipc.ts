@@ -688,6 +688,7 @@ export async function killSession(rawPid: unknown, opts: {
   exec?: ExecFn;
   hop?: (pid: number) => Promise<string>;
   signal?: SignalFn;
+  current?: () => boolean;
 } = {}): Promise<KillResult> {
   if (typeof rawPid !== 'number' || !Number.isInteger(rawPid) || rawPid <= 0) {
     return { status: 'refused', reason: 'invalid_pid' };
@@ -701,6 +702,8 @@ export async function killSession(rawPid: unknown, opts: {
 
   const live = await refreshLiveProcesses(opts.exec);
   if (!live.some(p => p.pid === pid)) return { status: 'refused', reason: 'not_discovered' };
+
+  if (opts.current && !opts.current()) return { status: 'refused', reason: 'not_discovered' };
 
   try {
     (opts.signal ?? defaultSignal)(pid, 'SIGTERM');
@@ -2191,7 +2194,13 @@ export function registerIpc(
       cached: cachedPushOpenSessions, codexSnapshot: id => codexAppServer.snapshot(id),
       codexConnection: p => codexDisplay.connection(p),
     }),
-    send: (pid, text, id, client) => sendMessage(pid, text, undefined, id, client),
+    send: (pid, text, id, client, images) => sendMessage(pid, text, images ? { images } : undefined, id, client),
+    images: stager,
+    close: (target, client, current) => serializeInput<KillResult | { status: 'refused'; reason: string }>(target.pid, async () => {
+      const result = await killSession(target.pid, { current: () => current() && fleetTerminals.canAct(client, target.pid) });
+      if (onSessionKill && result.status === 'killed') setImmediate(onSessionKill);
+      return result;
+    }, reason => ({ status: 'refused' as const, reason }), undefined, client),
     answerClaude, answerCodex,
     launch: (provider, cwd, name) => launchFromFleet(provider, cwd, 100, 32, name),
   });

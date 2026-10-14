@@ -17,3 +17,17 @@ it('marks lost mutations uncertain and never resends them after reconnect', asyn
   const listener = vi.fn(); client.onEvent(listener); first.receive({ event: 'session:live', client: 'c1', generation: 'g', payload: {} });
   expect(listener).not.toHaveBeenCalled(); client.close();
 });
+it('serializes upload and send across session views and stops before sending after reconnect', async () => {
+  const client = new MobileConnection('https://mac.tail.ts.net');
+  let finish!: (value: any) => void;
+  const upload = vi.spyOn(client, 'uploadImage').mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const request = vi.spyOn(client, 'request').mockResolvedValue({ ok: true, value: { status: 'sent' } });
+  const first = client.sendReply('first-session', '', [new File(['image'], 'image.png')]);
+  await vi.waitFor(() => expect(upload).toHaveBeenCalledTimes(1));
+  expect(await client.sendReply('second-session', 'hello', [])).toMatchObject({ ok: false, reason: 'busy' });
+  expect(request.mock.calls.filter(c => c[0] === 'image:clear')).toHaveLength(1);
+  client.close(); finish({ ok: true, value: { id: 'old-connection-image' } });
+  expect(await first).toMatchObject({ ok: false, reason: 'unavailable' });
+  expect(request.mock.calls.filter(c => c[0] === 'send')).toHaveLength(0);
+  expect(await client.sendReply('second-session', 'hello', [])).toMatchObject({ ok: true });
+});

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { basename, isAbsolute } from 'node:path';
-import { object, type OperationResult, type RemoteOperation } from '../core/remote.ts';
+import type { StageResult } from './staging.ts';
+import { MOBILE_IMAGE_LIMIT, object, type OperationResult, type RemoteOperation } from '../core/remote.ts';
 
 export interface SessionIdentity {
   pid: number;
@@ -17,9 +18,11 @@ export interface SessionOperationDeps {
   favorites?(): string[];
   conversation(sessionId: string, cursor: unknown): Promise<unknown> | unknown;
   live(pid: number): unknown;
-  send(pid: number, text: string, expectedSessionId: string, client?: string): Promise<unknown>;
+  send(pid: number, text: string, expectedSessionId: string, client?: string, images?: string[]): Promise<unknown>;
   answerClaude(pid: number, key: string, answer: unknown, client?: string): Promise<unknown> | unknown;
   answerCodex(pid: number, key: string, answer: unknown, client?: string): Promise<unknown> | unknown;
+  images?: { stage(bytes: Uint8Array): Promise<StageResult>; discard(id: string): Promise<void> };
+  close?(target: SessionIdentity, client: string, current: () => boolean): Promise<unknown>;
   launch(provider: 'claude' | 'codex', cwd: string, name?: string): Promise<unknown> | unknown;
 }
 function same(a: SessionIdentity, b: SessionIdentity): boolean {
@@ -38,6 +41,7 @@ function canonical(path: string): string | null {
 export class SessionOperations {
   private handles = new Map<string, SessionIdentity>();
   private projectHandles = new Map<string, { source: string; real: string }>();
+  private uploads = new Map<string, Map<string, string>>();
   constructor(readonly dependencies: SessionOperationDeps) {}
   list() {
     const keep = new Set<string>();
@@ -101,11 +105,24 @@ export class SessionOperations {
     const target = this.resolve(p.handle);
     if (!target) return { ok: false, reason: 'stale' };
     if (!target.tmux) return { ok: false, reason: 'unsupported' };
+    if (operation === 'close') {
+      if (!this.dependencies.close) return { ok: false, reason: 'unsupported' };
+      const handle = p.handle;
+      return { ok: true, value: await this.dependencies.close(target, client, () => !!this.resolve(handle)) };
+    }
     if (!target.sessionId) return { ok: false, reason: 'unavailable' };
     let value: unknown;
     if (operation === 'send') {
-      if (typeof p.text !== 'string' || !p.text.trim() || Buffer.byteLength(p.text) > 32 * 1024) return { ok: false, reason: 'invalid' };
-      value = await this.dependencies.send(target.pid, p.text, target.sessionId, client);
+      const images = p.images === undefined ? [] : p.images;
+      const owned = this.uploads.get(client);
+      if (!Array.isArray(images) || images.length > MOBILE_IMAGE_LIMIT || new Set(images).size !== images.length
+        || images.some(id => typeof id !== 'string' || owned?.get(id) !== p.handle)
+        || typeof p.text !== 'string' || (!p.text.trim() && !images.length) || Buffer.byteLength(p.text) > 32 * 1024) return { ok: false, reason: 'invalid' };
+      // Once sending starts the agent may need these files, even if its acknowledgement is lost.
+      for (const id of images) owned!.delete(id);
+      value = images.length
+        ? await this.dependencies.send(target.pid, p.text, target.sessionId, client, images)
+        : await this.dependencies.send(target.pid, p.text, target.sessionId, client);
     } else if (operation === 'answerClaude' || operation === 'answerCodex') {
       if (typeof p.key !== 'string' || !p.key || p.key.length > 1024 || p.answer === undefined) return { ok: false, reason: 'invalid' };
       if (target.provider !== (operation === 'answerClaude' ? 'claude' : 'codex')) return { ok: false, reason: 'invalid' };
@@ -113,5 +130,30 @@ export class SessionOperations {
     } else return { ok: false, reason: 'unsupported' };
     return { ok: true, value };
   }
-  release(_client: string): void { /* Subscriptions and terminals are released by their owning adapters. */ }
+  async stageImage(client: string, handle: string, bytes: Uint8Array): Promise<OperationResult> {
+    const target = this.resolve(handle);
+    if (!target?.tmux || !target.sessionId) return { ok: false, reason: 'stale' };
+    const stager = this.dependencies.images;
+    if (!stager) return { ok: false, reason: 'unsupported' };
+    let owned = this.uploads.get(client);
+    if (!owned) { owned = new Map(); this.uploads.set(client, owned); }
+    if (owned.size >= MOBILE_IMAGE_LIMIT) return { ok: false, reason: 'busy' };
+    const reservation = randomUUID(); owned.set(reservation, handle);
+    try {
+      const result = await stager.stage(bytes);
+      if (!result.ok) return { ok: false, reason: 'invalid', message: `Image upload failed: ${result.reason}. Use PNG, JPEG, GIF or WebP up to 10 MB.` };
+      if (this.uploads.get(client) !== owned || !this.resolve(handle)) {
+        await stager.discard(result.id); return { ok: false, reason: 'stale' };
+      }
+      owned.set(result.id, handle);
+      return { ok: true, value: { id: result.id } };
+    } finally { owned.delete(reservation); }
+  }
+  async discardImages(client: string): Promise<void> {
+    const owned = this.uploads.get(client); this.uploads.delete(client);
+    if (owned) await Promise.all([...owned.keys()].map(id => this.dependencies.images?.discard(id)));
+  }
+  release(client: string): void {
+    void this.discardImages(client).catch(() => console.error('Remote image cleanup failed'));
+  }
 }

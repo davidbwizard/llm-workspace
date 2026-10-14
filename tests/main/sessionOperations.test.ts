@@ -70,3 +70,32 @@ it('marks known favourites in the project list without exposing launch paths as 
     expect(project.favorite).toBe(true); expect(project.id).not.toBe(root); expect(operations.projectPath(project.id)).toBe(realpathSync(root));
   } finally { rmSync(root, { recursive: true }); }
 });
+it('closes only a verified target and passes a fresh guard to the close operation', async () => {
+  const f = fixture(); const close = vi.fn(async (_target, _client, current) => ({ status: current() ? 'killed' : 'refused' }));
+  const o = new SessionOperations({ ...f.operations.dependencies, close });
+  const handle = o.list()[0]!.handle!;
+  expect(await o.mutate('phone', 'close', { handle })).toMatchObject({ ok: true, value: { status: 'killed' } });
+  f.change(null);
+  expect(close.mock.calls[0]![2]()).toBe(false);
+  expect(await o.mutate('phone', 'close', { handle })).toMatchObject({ ok: false, reason: 'stale' });
+  expect(close).toHaveBeenCalledTimes(1);
+});
+it('binds uploaded images to the device and exact session and discards unsent images on disconnect', async () => {
+  const f = fixture(); const discard = vi.fn(async () => {});
+  const o = new SessionOperations({ ...f.operations.dependencies, images: { stage: async () => ({ ok: true, id: 'image-id' }), discard } });
+  const handle = o.list()[0]!.handle!;
+  expect(await o.stageImage('phone', handle, Buffer.from('image'))).toMatchObject({ ok: true, value: { id: 'image-id' } });
+  expect(await o.mutate('tablet', 'send', { handle, text: '', images: ['image-id'] })).toMatchObject({ ok: false, reason: 'invalid' });
+  expect(await o.mutate('phone', 'send', { handle, text: '', images: ['/etc/passwd'] })).toMatchObject({ ok: false, reason: 'invalid' });
+  expect(await o.mutate('phone', 'send', { handle, text: '', images: ['image-id'] })).toMatchObject({ ok: true });
+  expect(f.send).toHaveBeenCalledWith(10, '', 's1', 'phone', ['image-id']);
+  o.release('phone'); expect(discard).not.toHaveBeenCalled();
+  await o.stageImage('tablet', handle, Buffer.from('image')); o.release('tablet'); expect(discard).toHaveBeenCalledWith('image-id');
+});
+it('discards an upload if the session changes while bytes are being staged', async () => {
+  const f = fixture(); const discard = vi.fn(async () => {});
+  const o = new SessionOperations({ ...f.operations.dependencies, images: { stage: async () => { f.change(null); return { ok: true, id: 'stale-image' }; }, discard } });
+  const handle = o.list()[0]!.handle!;
+  expect(await o.stageImage('phone', handle, Buffer.from('image'))).toMatchObject({ ok: false, reason: 'stale' });
+  expect(discard).toHaveBeenCalledWith('stale-image');
+});

@@ -2,7 +2,7 @@ import type { MobileConnection } from './connection.ts';
 import type { TerminalBridge } from '../components/TerminalView.tsx';
 import type { OperationResult } from '../../core/remote.ts';
 export function unwrap<T>(result: OperationResult): T {
-  if (!result.ok) throw new Error(result.reason === 'uncertain' ? 'Connection lost. The action may have been sent. Check the session before trying again.' : `Could not complete the action (${result.reason}).`);
+  if (!result.ok) throw new Error(result.reason === 'uncertain' ? 'Connection lost. The action may have been sent. Check the session before trying again.' : result.message ?? `Could not complete the action (${result.reason}).`);
   return result.value as T;
 }
 export function terminalBridge(connection: MobileConnection, handle: string): TerminalBridge {

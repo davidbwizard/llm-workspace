@@ -6,6 +6,7 @@ export class MobileConnection {
   private socket?: WebSocket; private epoch = 0; private client = ''; private generation = '';
   private status: ConnectionState = 'offline'; private pending = new Map<string, Pending>();
   private listeners = new Set<() => void>(); private events = new Set<(event: string, payload: unknown) => void>();
+  private sendingReply = false;
   private opening?: ReturnType<typeof setTimeout>;
   constructor(private origin: string, private dependencies: Dependencies = {
     bootstrap: async () => { const response = await fetch('/api/bootstrap', { cache: 'no-store', credentials: 'omit' }); if (!response.ok) throw new Error('Private connection refused. Check Tailscale and the Mac settings.'); return response.json(); },
@@ -52,13 +53,44 @@ export class MobileConnection {
     if (this.status !== 'ready' || !ws || ws.readyState !== 1) return Promise.resolve({ ok: false, reason: 'unavailable' });
     if (this.pending.size >= 128) return Promise.resolve({ ok: false, reason: 'busy' });
     const id = crypto.randomUUID();
-    const mutation = ['send', 'answerClaude', 'answerCodex', 'launch', 'terminal:input'].includes(op);
+    const mutation = ['send', 'answerClaude', 'answerCodex', 'launch', 'close', 'terminal:input'].includes(op);
     return new Promise(resolve => {
       const timer = setTimeout(() => { this.pending.delete(id); resolve({ ok: false, reason: mutation ? 'uncertain' : 'unavailable' }); }, 30_000);
       this.pending.set(id, { resolve, mutation, timer });
       try { ws.send(JSON.stringify({ v: REMOTE_VERSION, id, op, payload, client: this.client, generation: this.generation })); }
       catch { this.close(); }
     });
+  }
+  async sendReply(handle: string, text: string, images: File[]): Promise<OperationResult> {
+    if (this.sendingReply) return { ok: false, reason: 'busy', message: 'Another reply is still sending on this device. Wait for it to finish.' };
+    this.sendingReply = true; const epoch = this.epoch;
+    try {
+      const ids: string[] = [];
+      if (images.length) {
+        const cleared = await this.request('image:clear', {}); if (!cleared.ok) return cleared;
+        for (const file of images) {
+          const result = await this.uploadImage(handle, file); if (!result.ok) return result;
+          ids.push((result.value as { id: string }).id);
+        }
+      }
+      if (epoch !== this.epoch) return { ok: false, reason: 'unavailable', message: 'Connection changed. Your reply has not been sent.' };
+      return await this.request('send', { handle, text, ...(ids.length ? { images: ids } : {}) });
+    } finally { this.sendingReply = false; }
+  }
+  async uploadImage(handle: string, file: File): Promise<OperationResult> {
+    const epoch = this.epoch;
+    const prepared = await this.request('image:prepare', { handle });
+    if (!prepared.ok) return prepared;
+    const ticket = (prepared.value as { ticket: string }).ticket;
+    try {
+      const response = await fetch('/api/images', {
+        method: 'POST', credentials: 'omit', headers: { 'X-Fleet-Upload-Ticket': ticket, 'Content-Type': 'application/octet-stream' },
+        body: file, signal: AbortSignal.timeout(30_000),
+      });
+      if (epoch !== this.epoch) return { ok: false, reason: 'stale' };
+      if (!response.ok) return { ok: false, reason: 'unavailable', message: `Image upload failed (${response.status}). Try again after checking the connection.` };
+      return await response.json() as OperationResult;
+    } catch { return { ok: false, reason: 'unavailable', message: 'Image upload interrupted. Your reply has not been sent.' }; }
   }
   close(): void { ++this.epoch; this.socket?.close(); this.socket = undefined; this.settleOffline(); }
 }

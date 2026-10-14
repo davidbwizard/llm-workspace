@@ -7,6 +7,7 @@ import { object, REMOTE_VERSION, type OperationResult, type RemoteOperation } fr
 import type { SessionOperations } from '../sessionOperations.ts';
 import type { TerminalClients } from '../terminalClients.ts';
 import { SessionActions } from '../sessionActions.ts';
+import { ImageUploads } from './imageUploads.ts';
 import { authorize, Budget, Tickets } from './auth.ts';
 import { parseRemoteConfig, type RemoteConfig } from './config.ts';
 export interface RemoteServices {
@@ -23,16 +24,21 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
   const generation = randomUUID(); const tickets = new Tickets(); const receipts = new SessionActions();
   const requests = new Budget(240, 60_000); const handshakes = new Budget(60, 60_000);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
+  const uploads = new ImageUploads(services.operations);
   let stopping = false;
   const pending = new Set<Promise<void>>();
   const cleanups = new Set<() => void>();
   const server = createServer((req, res) => {
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'");
     const fail = (status: number) => { res.writeHead(status); res.end(); };
     if (stopping || !requests.take()) return fail(429);
     if (!authorize(req, config)) return fail(403);
+    if (req.method === 'POST' && req.url === '/api/images') {
+      if (!authorize(req, config, true)) { req.resume(); return fail(403); }
+      const work = uploads.receive(req, res); pending.add(work); void work.finally(() => pending.delete(work)); return;
+    }
     if (req.method !== 'GET') { req.resume(); return fail(405); }
     if (req.url === '/api/bootstrap') {
       res.setHeader('Content-Type', 'application/json');
@@ -86,7 +92,7 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
     const heartbeat = setInterval(() => { if (!alive || (output.size > 0 && Date.now() - output.values().next().value!.at > 15_000)) { ws.terminate(); cleanup(); return; } alive = false; ws.ping(); }, 7000);
     const cleanup = () => {
       if (cleaned) return; cleaned = true; clearTimeout(authTimer); clearInterval(heartbeat); cleanups.delete(cleanup); output.clear(); outputBytes = 0;
-      services.terminals.release(client); services.release(client); services.operations.release(client);
+      uploads.release(client); services.terminals.release(client); services.release(client); services.operations.release(client);
     };
     cleanups.add(cleanup);
     ws.on('pong', () => { alive = true; }); ws.on('close', cleanup); ws.on('error', () => { ws.terminate(); cleanup(); });
@@ -108,7 +114,9 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
         case 'list': return { ok: true, value: services.operations.list() };
         case 'projects': return { ok: true, value: services.operations.projects() };
         case 'conversation': case 'live': return services.operations.read(client, op, payload);
-        case 'send': case 'answerClaude': case 'answerCodex': case 'launch': return services.operations.mutate(client, op as RemoteOperation, payload);
+        case 'image:prepare': return typeof p?.handle === 'string' ? uploads.prepare(client, p.handle) : { ok: false, reason: 'invalid' };
+        case 'image:clear': await services.operations.discardImages(client); return { ok: true, value: null };
+        case 'send': case 'answerClaude': case 'answerCodex': case 'launch': case 'close': return services.operations.mutate(client, op as RemoteOperation, payload);
         case 'watch': {
           if (p?.handle === null) return { ok: true, value: services.watch(client, null, () => {}) };
           const target = typeof p?.handle === 'string' ? services.operations.resolve(p.handle) : null;
@@ -148,7 +156,7 @@ export async function startRemoteServer(raw: RemoteConfig, services: RemoteServi
       if (!p || p.v !== REMOTE_VERSION || typeof p.id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(p.id) || typeof p.op !== 'string') { ws.terminate(); cleanup(); return; }
       const id = p.id; const op = p.op; const payload = p.payload;
       if (p.client !== client || p.generation !== generation) { send({ id, result: { ok: false, reason: 'stale' } }); return; }
-      const mutation = ['send', 'answerClaude', 'answerCodex', 'launch'].includes(op);
+      const mutation = ['send', 'answerClaude', 'answerCodex', 'launch', 'close', 'image:prepare'].includes(op);
       const releases = op === 'terminal:detach' || (op === 'watch' && object(payload)?.handle === null);
       const exempt = releases || op === 'terminal:input' || op === 'terminal:ack';
       const budget = mutation ? mutationBudget : op.startsWith('terminal:') ? terminalBudget : readBudget;

@@ -104,7 +104,12 @@ export function createStager(dir: string) {
     }));
   }
 
-  return { stage, pathFor, sweep };
+  async function discard(id: string): Promise<void> {
+    const file = staged.get(id); if (!file) return;
+    await unlink(file).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
+    staged.delete(id);
+  }
+  return { stage, pathFor, sweep, discard };
 }
 
 // Any other file attached in the conversation pane. It is not attached the

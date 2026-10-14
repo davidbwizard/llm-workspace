@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MobileApp } from '../../src/renderer/mobile/MobileApp.tsx';
-import type { MobileConnection } from '../../src/renderer/mobile/connection.ts';
+import { MobileConnection } from '../../src/renderer/mobile/connection.ts';
 import type { MobileSession } from '../../src/renderer/mobile/MobileApp.tsx';
 vi.mock('../../src/renderer/components/TerminalView.tsx', () => ({ TerminalView: () => <div>Terminal</div> }));
 it('groups sessions by full folder path and keeps waiting status visible when collapsed', async () => {
@@ -19,7 +19,7 @@ it('groups sessions by full folder path and keeps waiting status visible when co
     if (op === 'live') return { ok: true, value: null };
     return { ok: true, value: [] };
   };
-  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
+  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, sendReply: MobileConnection.prototype.sendReply, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
   const view = render(<MobileApp connection={connection} />);
   try {
     const group = await screen.findByRole('region', { name: '/work/project' });
@@ -50,7 +50,7 @@ it('waits for a launched Codex thread identity before selecting its conversation
     if (op === 'live') return { ok: true, value: null };
     return { ok: true, value: [] };
   };
-  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
+  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, sendReply: MobileConnection.prototype.sendReply, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
   const view = render(<MobileApp connection={connection} />);
   try {
     await act(async () => { fireEvent.click(screen.getByText('New session')); });
@@ -74,7 +74,7 @@ it('lists existing sessions and preserves the reply after a lost acknowledgement
     if (op === 'live') return { ok: true, value: null };
     return { ok: true, value: [] };
   });
-  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
+  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, sendReply: MobileConnection.prototype.sendReply, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
   const view = render(<MobileApp connection={connection} />);
   fireEvent.click(await screen.findByText('Current work'));
   expect(await screen.findByText('Existing conversation')).toBeTruthy();
@@ -91,7 +91,7 @@ it('shows favourite folders and sends the optional session name when launching',
     if (op === 'launch') return { ok: true, value: { status: 'launched', pid: 88 } };
     return { ok: true, value: [] };
   });
-  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
+  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, sendReply: MobileConnection.prototype.sendReply, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
   const view = render(<MobileApp connection={connection} />);
   fireEvent.click(screen.getByText('New session'));
   const favorite = await screen.findByRole('button', { name: 'Fleet — /work/fleet' }); fireEvent.click(favorite);
@@ -99,4 +99,68 @@ it('shows favourite folders and sends the optional session name when launching',
   fireEvent.click(screen.getByText('Start session'));
   await waitFor(() => expect(request).toHaveBeenCalledWith('launch', { project: 'favorite-project', provider: 'codex', name: 'Phone follow-up' }));
   view.unmount();
+});
+function controlsFixture() {
+  localStorage.clear();
+  let rows = [{ handle: 'h', pid: 10, sessionId: 'sid', provider: 'codex', name: 'Phone task', cwd: '/work', controllable: true }];
+  const request = vi.fn(async (op: string, _payload?: unknown): Promise<any> => {
+    if (op === 'list') return { ok: true, value: rows };
+    if (op === 'conversation') return { ok: true, value: { turns: [], nextCursor: null } };
+    if (op === 'live') return { ok: true, value: null };
+    if (op === 'send') return { ok: false, reason: 'uncertain' };
+    if (op === 'close') { rows = []; return { ok: true, value: { status: 'killed' } }; }
+    return { ok: true, value: [] };
+  });
+  const uploadImage = vi.fn(async () => ({ ok: true, value: { id: 'image-1' } }));
+  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, sendReply: MobileConnection.prototype.sendReply, request, uploadImage, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
+  return { request, uploadImage, view: render(<MobileApp connection={connection} />) };
+}
+it('requires confirmation before closing the named session and allows cancellation', async () => {
+  const f = controlsFixture();
+  try {
+    fireEvent.click(await screen.findByText('Phone task'));
+    fireEvent.click(screen.getByRole('button', { name: 'Close session' }));
+    const dialog = screen.getByRole('dialog', { name: 'Close session' });
+    expect(within(dialog).getByText('Close Phone task?')).toBeTruthy();
+    expect(f.request.mock.calls.some(c => c[0] === 'close')).toBe(false);
+    fireEvent.click(within(dialog).getByText('Cancel'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Close session' }));
+    fireEvent.click(screen.getByText('Stop session'));
+    await waitFor(() => expect(f.request).toHaveBeenCalledWith('close', { handle: 'h' }));
+    expect(await screen.findByText(/Close requested/)).toBeTruthy();
+  } finally { f.view.unmount(); }
+});
+it('uploads an image-only reply and retains the image after an uncertain send', async () => {
+  const create = vi.fn(() => 'blob:preview'); const revoke = vi.fn();
+  vi.stubGlobal('URL', class extends URL { static createObjectURL = create; static revokeObjectURL = revoke; });
+  const f = controlsFixture();
+  try {
+    fireEvent.click(await screen.findByText('Phone task'));
+    const file = new File(['image'], 'screen.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Upload images'), { target: { files: [file] } });
+    expect(screen.getByAltText('screen.png')).toBeTruthy();
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(f.request).toHaveBeenCalledWith('send', { handle: 'h', text: '', images: ['image-1'] }));
+    expect(f.uploadImage).toHaveBeenCalledWith('h', file);
+    expect(await screen.findByText(/may have been sent/)).toBeTruthy();
+    expect(screen.getByAltText('screen.png')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Remove screen.png'));
+    expect(revoke).toHaveBeenCalledWith('blob:preview');
+    expect(screen.queryByAltText('screen.png')).toBeNull();
+  } finally { f.view.unmount(); vi.unstubAllGlobals(); }
+});
+it('shows website setup guidance and refreshes configured private links', async () => {
+  const f = controlsFixture();
+  try {
+    fireEvent.click(await screen.findByText('Phone task'));
+    fireEvent.click(screen.getByRole('button', { name: 'Websites' }));
+    expect(screen.getByText(/No websites connected/)).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('Refresh websites')).toBeTruthy());
+    f.request.mockImplementation(async op => op === 'previews' ? { ok: true, value: [{ id: 'site', label: 'My app', url: 'https://mac.tail123.ts.net:8443', available: true }] } : { ok: true, value: [] });
+    fireEvent.click(screen.getByText('Refresh websites'));
+    const link = await screen.findByRole('link', { name: 'Open My app' });
+    expect(link.getAttribute('href')).toBe('https://mac.tail123.ts.net:8443');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+  } finally { f.view.unmount(); }
 });

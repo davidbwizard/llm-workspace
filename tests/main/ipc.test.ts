@@ -798,6 +798,13 @@ describe('killSession', () => {
   // The one path that actually signals: pid is a positive integer, not
   // this app or an ancestor of it, and IS present in a sweep run by this
   // very call -- only then does a signal go out, and it is always SIGTERM.
+  it('rechecks the remote identity after async discovery and refuses a changed process', async () => {
+    let valid = true; const signal = vi.fn();
+    const exec: ExecFn = async (bin, args) => { valid = false; return bin === 'ps' && args[0] === '-axo' ? '4242 claude\n' : ''; };
+    expect(await killSession(4242, { hop: noAncestors, exec, signal, current: () => valid })).toEqual({ status: 'refused', reason: 'not_discovered' });
+    expect(signal).not.toHaveBeenCalled();
+  });
+
   it('signals a freshly discovered pid with SIGTERM, never SIGKILL', async () => {
     const signal = vi.fn();
     const exec: ExecFn = async (bin, args) => (bin === 'ps' && args[0] === '-axo' ? '4242 claude\n' : '');

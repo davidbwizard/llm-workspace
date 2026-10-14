@@ -28,7 +28,11 @@ Desktop and mobile have independent selected-session watchers and terminal attac
 
 Drafts and selection live in the mobile browser's storage, separate from desktop preferences. On a lost acknowledgment Fleet preserves the draft and says the action may have been sent. Check the conversation or terminal before manually retrying. Reconnection refreshes reads and subscriptions; it never automatically replays replies, approvals, launches, or raw terminal input. There is no offline action queue or service worker.
 
-Uploads, Mac file browsing, permission-mode changes, and Codex recovery controls remain desktop features. Existing prompt cards and Markdown rendering are shared with desktop; transcript HTML is not executed, and links open with opener isolation.
+Mac file browsing, permission-mode changes, and Codex recovery controls remain desktop features. Existing prompt cards and Markdown rendering are shared with desktop; transcript HTML is not executed, and links open with opener isolation.
+
+Use **Close session** to stop the selected agent on the Mac after confirming its name. Fleet rechecks the process identity and terminal control before sending SIGTERM. The session stays listed if the agent has not exited. Closing the browser alone still leaves agents running.
+
+Use **Add image** beside the reply box to pick up to four PNG, JPEG, GIF or WebP images, at most 10 MB each. Thumbnails can be removed before sending; image-only replies are supported. Images upload only when you press Send, using bounded HTTP requests with one-use tickets issued to that connection. The Mac validates the file bytes and binds staged IDs to the device and session. An uncertain send preserves the draft and thumbnails; inspect the conversation before retrying. Selected images stay in memory while reconnecting, but are not saved across page reloads or changing sessions. Unsent uploads are discarded on disconnect; files handed to the agent use the existing temporary attachment retention.
 
 ## Development website previews
 
@@ -41,7 +45,7 @@ tailscale serve --bg --https=8443 http://127.0.0.1:3000
 tailscale serve status --json
 ```
 
-Save `https://your-mac.your-tailnet.ts.net:8443` as the preview URL. The mobile view shows a link only for the selected project. Fleet checks whether the configured loopback port accepts connections; this is a reachability check, not proof that the website or its backend is healthy.
+Save `https://your-mac.your-tailnet.ts.net:8443` as the preview URL. Open **Websites** in the mobile session to see links for the selected project. **Refresh websites** checks availability again. Fleet checks whether the configured loopback port accepts connections; this is a reachability check, not proof that the website or its backend is healthy.
 
 Preview pages are a different origin from Fleet and cannot obtain Fleet's socket tickets or send authenticated controls. Fleet uses no authentication cookies. Preview links use `noopener noreferrer`.
 
@@ -60,8 +64,10 @@ Project-specific setup still matters: allow exactly the private hostname in the 
 
 Implementation is in the `feat/private-mobile-access` worktree. Automated checks cover private configuration, origin/login/ticket checks, real HTTP/WebSocket traffic, input receipts, session identity changes, multi-client subscriptions, terminal ownership and disposable real tmux detach/size behavior, preserved uncertain drafts, and local QR encoding.
 
-Pending real-device acceptance: Tailscale sign-in and private policy, actual Serve mappings, Wi-Fi and cellular access, phone/tablet keyboard behavior, existing Claude/Codex replies and approvals, new sessions, simultaneous different Codex views, suspension/reconnect without duplicated input, and an actual project's backend/live reload. No claim of successful device access until these checks pass.
+On October 14, the user confirmed private phone access and new Claude/Codex sessions working. Folder grouping was subsequently accepted. The close, image upload, and Websites controls are the next build and still need device acceptance.
 
-The existing running Fleet process was observed starting October 9, 2026 at 09:45:40 local time; it does not contain this feature. It has not been restarted by this implementation.
+Remaining device checks include phone/tablet keyboard behavior, approvals, suspension/reconnect, image delivery to both providers, and an actual project's backend/live reload. Actual website mapping requires a selected project and local URL; no preview has been configured automatically.
 
-Automated acceptance on October 14: **3,406 tests pass** across 160 files; TypeScript checking and both production renderer builds pass. An independent security/correctness review found five important issues; each was fixed with regression coverage (identity/display consistency, bounded terminal delivery, action capacity under read load, desktop input coordination, visible terminal refusals). Mutation metadata diagnostics remain a minor follow-up. Browser fixture layouts were inspected at 390px and 820px, including favourites and session naming. These checks do not replace the pending real-device checklist above.
+Automated acceptance for mobile controls on October 14: **3,419 tests pass** across 161 files, TypeScript checking and both production builds pass. HTTP/WebSocket tests cover upload origin checks, one-use tickets, validation, ownership and disconnect revocation; close tests inject signals and never stop a live agent. The independent review found a session-switching upload race, resolved by serializing upload/send at the connection level and refusing to send after a connection change. Phone (390px) and tablet (820px) fixture layouts were inspected.
+
+The packaged controls build is `dist/mobile-controls/mac-arm64/Fleet.app` in the feature worktree. At verification, the running main Fleet process was still the folder-grouping build started October 14 at 10:07:21. Quit Fleet, launch the controls build, and refresh the mobile page to use it.
