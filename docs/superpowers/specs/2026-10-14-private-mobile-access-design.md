@@ -1,6 +1,6 @@
 # Private mobile access to Fleet
 
-Status: proposed design for review; implementation has not started.
+Status: core design approved in conversation on 2026-10-14; implementation plan written for review. Includes the requested private website-preview workflow.
 
 ## Intent and agreed scope
 
@@ -86,6 +86,16 @@ Selection, scroll position and unsent drafts are local to each device in this ve
 Mobile connections do not create a second discovery loop, database writer or Fleet instance. Closing the desktop window on macOS may leave the existing Fleet main process and mobile service running; client cleanup must not stop remote subscriptions. Cmd-Q stops the service and reports disconnection. Verify current provider lifecycle behavior rather than assuming every Codex process survives Fleet shutdown.
 
 Keep desktop behavior unchanged when remote access is disabled. Readiness and setup errors are explicit. Do not change system sleep settings or Tailscale configuration silently; document the required setup and expose an intentional keep-awake option only if included in the reviewed implementation plan.
+
+## Private development previews
+
+Add an Open preview action for explicitly configured development servers associated with a project. David can ask an agent to change a site, open the actual site in his phone's browser, test it, then return to Fleet with feedback. This supports websites, web apps and browser games. Native desktop/mobile windows require their own remote-desktop or device-build workflow and are not served by this feature.
+
+Store preview definitions locally on the Mac. Each definition binds a project to a label, a loopback development-server port and a separate private HTTPS origin. Use Tailscale Serve to forward that origin to the configured loopback port. Never publish arbitrary ports discovered in agent output, accept a remote-supplied proxy target, or mount development content under Fleet's own origin. A different HTTPS port is a different browser origin; Fleet's control interface uses no cross-port authentication cookies and still checks the exact Origin and anti-CSRF value. Preview links open in a separate tab with opener isolation. Projects may have several explicitly named previews.
+
+Do not rewrite application source or weaken host/CORS checks automatically. Document exact host allowlisting, WebSocket forwarding for live reload, relative or separately reachable API URLs, and OAuth redirect configuration where the application needs them. A successful HTML response alone does not prove the site's backend or live reload works. Verify those paths on an actual phone. Development-server creation and lifecycle remain with the agent/project; opening a preview does not start or stop a process.
+
+Setup must preserve any pre-existing Tailscale Serve mappings. Configuring or removing one Fleet/preview endpoint cannot reset unrelated services. Only activate the explicitly reviewed private mappings; verify the reported endpoint is private before presenting it as ready.
 
 ## Verification and acceptance
 
