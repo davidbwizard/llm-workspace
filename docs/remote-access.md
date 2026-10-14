@@ -2,6 +2,12 @@
 
 Remote access runs inside Fleet on your Mac and is off by default. Viewing a session uses the existing Claude/Codex process and conversation. It does not launch another agent. New session explicitly launches one on the Mac in a currently known or favourite project.
 
+## Which app to open
+
+Use **`/Applications/Fleet.app`** on the Mac. This one app includes the desktop interface, the private remote service, and the mobile browser interface. There is no separate mobile Mac app to run. Open the saved private HTTPS address on your phone or tablet while Fleet and Tailscale are running on the Mac.
+
+Build directories and feature worktrees are development outputs, not everyday launch locations. `npm run dist:mac` packages both interfaces into `dist/mac-arm64/Fleet.app`; install the verified bundle in `/Applications` and launch that copy. Quit the desktop app before replacing its installed bundle. Do not delete old build folders while an existing agent relay still uses them.
+
 ## Setup
 
 1. Install Tailscale on the Mac and your phone/tablet and sign in to the same account. Keep the Mac awake, online, and Fleet running. Fleet does not change sleep settings.
@@ -66,16 +72,12 @@ Project-specific setup still matters: allow exactly the private hostname in the 
 
 ## Acceptance record
 
-Implementation is in the `feat/private-mobile-access` worktree. Automated checks cover private configuration, origin/login/ticket checks, real HTTP/WebSocket traffic, input receipts, session identity changes, multi-client subscriptions, terminal ownership and disposable real tmux detach/size behavior, preserved uncertain drafts, and local QR encoding.
+The mobile feature was merged into the active base branch, `fix/preview-question-free-text`, on October 14, 2026. The merged build passed **3,427 tests across 161 files**, TypeScript checking, both production renderer builds, and macOS packaging. The verified bundle is installed and running at `/Applications/Fleet.app`.
 
-On October 14, the user confirmed private phone access and new Claude/Codex sessions working. Folder grouping was subsequently accepted. The close, image upload, and Websites controls are the next build and still need device acceptance.
+Automated checks cover private configuration, origin/login/ticket validation, real HTTP/WebSocket traffic, input receipts, session identity changes, multi-client subscriptions, terminal ownership, disposable real tmux detach/size behavior, uncertain drafts, local QR encoding, image upload validation and revocation, and the Safari menu blur/copy event sequence. Close tests inject signals and never stop a live agent. Phone (390px) and tablet (820px) fixture layouts were inspected.
 
-Remaining device checks include phone/tablet keyboard behavior, approvals, suspension/reconnect, image delivery to both providers, and an actual project's backend/live reload. Actual website mapping requires a selected project and local URL; no preview has been configured automatically.
+The user confirmed private phone access, new Claude/Codex sessions, folder grouping, image upload, and the updated conversation appearance. Browser verification copied and pasted fixture session details successfully; the clipboard fix still needs a phone Safari retest.
 
-Automated acceptance for mobile controls on October 14: **3,419 tests pass** across 161 files, TypeScript checking and both production builds pass. HTTP/WebSocket tests cover upload origin checks, one-use tickets, validation, ownership and disconnect revocation; close tests inject signals and never stop a live agent. The independent review found a session-switching upload race, resolved by serializing upload/send at the connection level and refusing to send after a connection change. Phone (390px) and tablet (820px) fixture layouts were inspected.
+A project running locally on port 5173 has a private preview configured on HTTPS port 8443. Its page and Vite live reload connection were verified through that private address. After switching to the installed Fleet app, the Fleet page, authenticated bootstrap, and preview all returned HTTP 200; all 15 existing tmux panes retained their process IDs.
 
-The packaged controls build is `dist/mobile-controls/mac-arm64/Fleet.app` in the feature worktree. At verification, the running main Fleet process was still the folder-grouping build started October 14 at 10:07:21. Quit Fleet, launch the controls build, and refresh the mobile page to use it.
-
-Toolbar follow-up: the 12 mobile renderer/connection tests and TypeScript check pass. Both production bundles and the `dist/mobile-toolbar/mac-arm64/Fleet.app` package build successfully; phone and tablet fixture layouts were checked with the menu open.
-
-Image/copy follow-up: the picker uses the Phosphor Image icon. The session menu tolerates Safari taps that blur to null before click, and clipboard writes start directly inside the gesture handler. A regression test covers that event sequence; 370 affected renderer tests and TypeScript pass. Browser verification copied and pasted the fixture session details successfully. The updated package is `dist/mobile-image-copy/mac-arm64/Fleet.app`; phone Safari still needs the user’s device retest.
+Further device checks include phone/tablet keyboard behavior, approvals, suspension/reconnect, image delivery to both providers, and any project-specific backend integration. These are not implied by the automated checks or HTTP availability checks above.
