@@ -2181,7 +2181,8 @@ export function registerIpc(
   };
   ipcMain.handle('session:launch', (_event, provider, cwd, cols, rows, name) => launchFromFleet(provider, cwd, cols, rows, name));
   fleetSessionOperations = new SessionOperations({
-    list: () => buildFleetListPayload().openSessions.map(row => ({ ...row })),
+    // Mobile polls continuously: use the enriched desktop snapshot, including Codex thread identity and names.
+    list: () => cachedPushOpenSessions.map(row => ({ ...sanitizeFields(row, OPEN_SESSION_SANITISED_FIELDS) })),
     identity: fleetSessionIdentity,
     favorites: () => favoriteProjects(),
     projects: () => [...new Set([...cachedPushOpenSessions.map(row => row.cwd).filter((cwd): cwd is string => !!cwd), ...favoriteProjects()])],

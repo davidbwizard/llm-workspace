@@ -1,8 +1,35 @@
 import { expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MobileApp } from '../../src/renderer/mobile/MobileApp.tsx';
 import type { MobileConnection } from '../../src/renderer/mobile/connection.ts';
+import type { MobileSession } from '../../src/renderer/mobile/MobileApp.tsx';
 vi.mock('../../src/renderer/components/TerminalView.tsx', () => ({ TerminalView: () => <div>Terminal</div> }));
+it('waits for a launched Codex thread identity before selecting its conversation', async () => {
+  localStorage.clear(); vi.useFakeTimers();
+  let rows: MobileSession[] = [];
+  const request = async (op: string) => {
+    if (op === 'list') return { ok: true, value: rows };
+    if (op === 'projects') return { ok: true, value: [{ id: 'project', label: 'Project' }] };
+    if (op === 'launch') return { ok: true, value: { status: 'launched', pid: 88 } };
+    if (op === 'conversation') return { ok: true, value: { turns: [{ id: 1, role: 'assistant', text: 'Ready to work', ts: '' }], nextCursor: null } };
+    if (op === 'live') return { ok: true, value: null };
+    return { ok: true, value: [] };
+  };
+  const connection = { state: () => 'ready', subscribe: () => () => {}, onEvent: () => () => {}, request, connect: vi.fn(), close: vi.fn() } as unknown as MobileConnection;
+  const view = render(<MobileApp connection={connection} />);
+  try {
+    await act(async () => { fireEvent.click(screen.getByText('New session')); });
+    await act(async () => { fireEvent.click(screen.getByText('Start session')); });
+    rows = [{ pid: 88, provider: 'codex', sessionId: null, handle: null, cwd: '/work', controllable: false }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.queryByText(/Fleet cannot verify this session/)).toBeNull();
+    rows = [{ ...rows[0]!, sessionId: 'new-thread', handle: 'verified', controllable: true }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(screen.getByText('Ready to work')).toBeTruthy();
+    expect(localStorage.getItem('fleet:mobile:selection')).toBe('new-thread');
+  } finally { view.unmount(); vi.useRealTimers(); }
+});
 it('lists existing sessions and preserves the reply after a lost acknowledgement', async () => {
   localStorage.clear();
   const request = vi.fn(async (op: string) => {

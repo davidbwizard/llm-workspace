@@ -49,7 +49,7 @@ export function MobileApp({ connection = defaultConnection }: { connection?: Mob
         const rows = unwrap<MobileSession[]>(await connection.request('list', {}));
         if (!alive) return; setSessions(rows);
         const launched = rows.find(row => row.pid === waitingPid.current);
-        if (launched) { waitingPid.current = null; select(launched); }
+        if (launched?.handle && launched.sessionId) { waitingPid.current = null; select(launched); }
       } catch (e) { if (alive) setError(messageFor(e)); }
       finally { running = false; }
     };
