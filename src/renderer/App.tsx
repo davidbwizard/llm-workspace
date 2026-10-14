@@ -111,9 +111,26 @@ export function App() {
   rowsRef.current = rows;
   const selectRef = useRef(select);
   selectRef.current = select;
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  const setViewRef = useRef(setView);
+  setViewRef.current = setView;
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
+      // Cmd+Shift+C / Cmd+Shift+T: the pane's two views. Checked BEFORE the
+      // digit guard below, which drops anything with Shift held.
+      if (e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey) {
+        const key = e.key.toLowerCase();
+        if (key !== 'c' && key !== 't') return;
+        // Nothing selected means there is no pane to switch, so the chord
+        // did not act -- same rule the digit branch holds itself to, and
+        // the reason preventDefault sits after this and not before it.
+        if (selectionRef.current === null) return;
+        e.preventDefault();
+        setViewRef.current(key === 'c' ? 'conversation' : 'terminal');
+        return;
+      }
       // Meta alone -- Ctrl/Alt/Shift riding along means something else
       // entirely (a browser/OS chord, or nothing this app defines).
       if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;

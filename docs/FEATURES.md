@@ -186,3 +186,77 @@ quietly.
 ## Private mobile access
 
 Opt-in Tailscale Serve access lets a phone or tablet view Fleet sessions, reply, answer prompts, take terminal control, and start sessions in known projects. Desktop settings include a locally generated QR code and separately configured private development-preview links. See [remote access setup](remote-access.md) for configuration, device restrictions, and the pending real-device acceptance checklist.
+
+---
+
+## Permission heatmap, and the allowlist it suggests
+
+**Status: not started. The data it needs was verified present 2026-10-04.**
+
+Fleet sees every permission request before anything else does, and already
+keeps them: `signal_events` holds 1,237 `PermissionRequest` rows spanning
+2026-09-18 to 2026-10-04, each carrying its `tool_name` and the whole
+`tool_input` payload. Nothing ever reads them back. The app that is
+interrupted by these prompts is the one place that can say which of them
+were not worth asking.
+
+Measured on that table, this machine, those 16 days: 963 of the 1,237 were
+Bash. By first word -- `tmux` 281, `git` 157, `cd` 125, `node` 100, `ps` 44.
+Four hundred-odd of those are read-only commands answered by hand.
+
+### What to build
+
+A view that groups the stored requests by tool and by command, over a
+window, and offers to turn a row into a permission rule. The claude-code
+plugin skill `fewer-permission-prompts` already does a weaker version of
+this offline, by scraping transcripts; Fleet holds the same facts first
+hand, with session and timestamp attached.
+
+### What has to be solved first
+
+- **A command's first word is not a permission rule.** Claude Code matches
+  patterns like `Bash(git status:*)`. Grouping by head is the right way to
+  LOOK at the data and the wrong way to suggest a rule: `git push --force`
+  must never inherit what `git status` was granted. The safe suggestion is
+  narrower than the interesting grouping, and the gap between them is the
+  design.
+- **Which settings file.** Project `.claude/settings.json` or user
+  `~/.claude/settings.json`. Writing to the wrong one either leaks a
+  project rule to every project or hides it from the one that needed it.
+- **Suggest, never apply.** Writing an allowlist entry removes a security
+  control. It needs an explicit yes each time, and it must show the exact
+  rule text before it writes anything.
+
+---
+
+## Reap idle tmux sessions
+
+**Status: not started. The cost has been measured twice.**
+
+Sessions accumulate and nothing removes them. Ten are live right now, the
+oldest created 2026-09-17 and untouched for seventeen days. An earlier
+accumulation reached sixteen sessions over fourteen days holding roughly
+5 GB; before that a fifo leak left 538 orphaned processes and 3.5 GB. Both
+were found by hand with `ps`, after the machine was already hurting.
+
+Fleet knows every session's age and last activity. It is the only thing
+positioned to notice.
+
+### What to build
+
+A list of stale sessions with age and last activity, and a reap that takes
+them away. Nothing automatic.
+
+### What has to be solved first
+
+- **Idle is not dead.** A session blocked on a prompt produces no output
+  for hours and must never be reaped -- that is the exact session the app
+  exists to protect. Age alone is the wrong signal; it needs last activity
+  AND "not currently waiting on you".
+- **Reaping destroys work.** Killing a tmux session with a live agent in it
+  loses whatever that agent had not written down. Confirmation every time,
+  no default-on sweep, and the confirmation should say what is running.
+- **Orphans outlive their session.** The two Codex relay processes left
+  behind on 2026-10-01 survived the app that spawned them and appeared in
+  no session listing at all. A reaper that only knows tmux will not see
+  them.

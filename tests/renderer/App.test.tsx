@@ -4,6 +4,27 @@ import { App, ErrorBoundary } from '../../src/renderer/App.tsx';
 import { reloadSettings, setSettings } from '../../src/renderer/state/settings.ts';
 import { reloadGroups } from '../../src/renderer/state/groups.ts';
 
+// Switching the pane to the Terminal view mounts TerminalView, and xterm
+// needs a real DOM that jsdom does not provide -- the reasoning
+// TerminalView.test.tsx's own header already sets out. Unmocked it throws,
+// App's ErrorBoundary swallows the subtree, and a view-switch assertion
+// then fails for a reason that has nothing to do with the chord under
+// test. These stand-ins are the smallest shape TerminalView mounts
+// against; nothing here asserts on the terminal itself, and the real one
+// is still verified by hand.
+vi.mock('@xterm/xterm', () => ({
+  Terminal: class {
+    cols = 80; rows = 24; options = { disableStdin: false };
+    loadAddon() {} open() {} dispose() {} write() {}
+    onResize() { return { dispose() {} }; }
+    onData() { return { dispose() {} }; }
+  },
+}));
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }));
+vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class { dispose() {} } }));
+class ResizeObserverStub { observe() {} unobserve() {} disconnect() {} }
+(globalThis as unknown as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver = ResizeObserverStub;
+
 function Boom(): never {
   throw new Error('kaboom');
 }
@@ -114,6 +135,17 @@ describe('App -- Cmd+1..9 session shortcuts', () => {
       revealSession: vi.fn().mockResolvedValue({ status: 'revealed' }),
       reattach: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
       resume: vi.fn().mockResolvedValue({ status: 'failed', reason: 'not exercised' }),
+      // TerminalView's own IPC surface. The Cmd+Shift+T test genuinely
+      // mounts that component, and a missing method throws straight into
+      // App's ErrorBoundary, which replaces the whole pane -- hiding the
+      // very thing the chord was supposed to do. Nothing here is asserted
+      // on; they exist so the view can mount.
+      attach: vi.fn().mockResolvedValue({ status: 'attached' }),
+      detach: vi.fn().mockResolvedValue(undefined),
+      resize: vi.fn(),
+      sendRaw: vi.fn(),
+      onTerminalData: vi.fn(() => () => {}),
+      onTerminalExit: vi.fn(() => () => {}),
     };
     const result = render(<App />);
     await waitFor(() => expect(screen.getByText(`${n} open`)).toBeTruthy());
@@ -184,6 +216,56 @@ describe('App -- Cmd+1..9 session shortcuts', () => {
     const { unmount } = await renderWithSessions(3);
     unmount();
     expect(() => pressCmd('1')).not.toThrow();
+  });
+
+  // Cmd+Shift+C / Cmd+Shift+T: the pane's two views, reachable without the
+  // mouse. The Cmd+1..9 branch above deliberately ignores anything with
+  // Shift held, so these sit beside that guard rather than inside it.
+  describe('Cmd+Shift+C / Cmd+Shift+T view shortcuts', () => {
+    const pressed = (name: RegExp) =>
+      screen.getByRole('button', { name }).getAttribute('aria-pressed');
+
+    it('switches the selected session to the Terminal view on Cmd+Shift+T', async () => {
+      await renderWithSessions(3);
+      pressCmd('1');
+      await waitFor(() => expect(pressed(/^conversation$/i)).toBe('true'));
+      pressCmd('T', { shiftKey: true });
+      await waitFor(() => expect(pressed(/^terminal$/i)).toBe('true'));
+    });
+
+    it('switches back to the Conversation view on Cmd+Shift+C', async () => {
+      await renderWithSessions(3);
+      pressCmd('1');
+      pressCmd('T', { shiftKey: true });
+      await waitFor(() => expect(pressed(/^terminal$/i)).toBe('true'));
+      pressCmd('C', { shiftKey: true });
+      await waitFor(() => expect(pressed(/^conversation$/i)).toBe('true'));
+    });
+
+    // Same rule the digit chords hold themselves to: a chord that did not
+    // act must not swallow whatever the OS would otherwise do with it.
+    it('does nothing, and keeps default, when no session is selected', async () => {
+      const { container } = await renderWithSessions(3);
+      const event = pressCmd('T', { shiftKey: true });
+      expect(container.querySelector('.panetitle')).toBeNull();
+      expect(event.defaultPrevented).toBe(false);
+    });
+
+    it('prevents default only once it has actually switched the view', async () => {
+      await renderWithSessions(3);
+      pressCmd('1');
+      const event = pressCmd('T', { shiftKey: true });
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it('ignores the chord without Shift, and with Ctrl or Alt riding along', async () => {
+      await renderWithSessions(3);
+      pressCmd('1');
+      pressCmd('t');
+      pressCmd('T', { shiftKey: true, ctrlKey: true });
+      pressCmd('T', { shiftKey: true, altKey: true });
+      await waitFor(() => expect(pressed(/^conversation$/i)).toBe('true'));
+    });
   });
 
   // Item 3 of the slot-hotkeys task: what the chord does on a STACK row --
