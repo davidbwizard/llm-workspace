@@ -1,7 +1,8 @@
 .inbox-nav { display:flex; flex:none; align-items:center; gap:4px; padding:8px 12px; border-bottom:1px solid var(--line); background:var(--surface); }
 .inbox-nav button { border:1px solid transparent; background:none; color:var(--muted); padding:7px 10px; border-radius:6px; font:inherit; font-size:12px; cursor:pointer; display:flex; gap:8px; align-items:center; }
 .inbox-nav button[aria-pressed="true"] { color:var(--ink); border-color:var(--line); background:var(--ground); }
-.inbox-count { font-family:var(--f-mono); font-size:11px; }
+.inbox-count { display:inline-flex; flex:none; align-items:center; justify-content:center; box-sizing:border-box; min-width:20px; height:20px; padding:0 5px; border-radius:999px; font-family:var(--f-mono); font-size:11px; line-height:1; }
+.inbox-count.has-items { background:var(--critical); color:var(--ground); font-weight:700; }
 .activity-inbox { padding:28px; overflow:auto; flex:1; min-height:0; color:var(--ink); }
 .inbox-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:24px; }
 .inbox-heading h1 { margin:0 0 8px; font-size:28px; }

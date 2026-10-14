@@ -4,7 +4,7 @@ export type InboxDestination = 'fleet' | InboxKind;
 export function InboxNav({ active, needsCount, updatesCount, onChange, fleetLabel = 'Fleet' }: { active: InboxDestination; needsCount: number; updatesCount: number; onChange: (destination: InboxDestination) => void; fleetLabel?: string }) {
   return <nav className="inbox-nav" aria-label="Fleet views">
     {([['fleet', fleetLabel, null], ['needs-you', 'Needs you', needsCount], ['updates', 'Updates', updatesCount]] as const).map(([key, label, count]) =>
-      <button type="button" key={key} aria-pressed={active === key} aria-label={count === null ? label : `${label} (${count})`} onClick={() => onChange(key)}>{label}{count !== null && <span className="inbox-count" aria-hidden="true">{count}</span>}</button>)}
+      <button type="button" key={key} aria-pressed={active === key} aria-label={count === null ? label : `${label} (${count})`} onClick={() => onChange(key)}>{label}{count !== null && <span className={`inbox-count${count > 0 ? ' has-items' : ''}`} aria-hidden="true">{count}</span>}</button>)}
   </nav>;
 }
 export function ActivityInbox({ kind, items, onOpen, onNotifications }: { kind: InboxKind; items: InboxItem[]; onOpen: (session: InboxSession) => void; onNotifications?: () => void }) {
